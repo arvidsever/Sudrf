@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sudrf — передача дизайна в SwiftUI (v2)</title>
+<style>
+  :root {
+    --ink: #1d1d1f; --ink2: #555558; --ink3: #86868b;
+    --rule: #e3e3e6; --accent: #0a7aff; --bg: #fcfcfd;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: var(--ink); background: var(--bg); font-size: 13px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 820px; margin: 0 auto; padding: 56px 48px 64px; }
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 18px; margin-bottom: 30px; }
+  .kicker { font-size: 12px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase; color: var(--ink3); margin-bottom: 6px; }
+  h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.3px; }
+  .meta { font-size: 12px; color: var(--ink3); }
+  h2 { font-size: 16px; font-weight: 700; margin: 32px 0 10px; letter-spacing: -0.1px; }
+  p { margin: 0 0 10px; text-wrap: pretty; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 12.5px; }
+  th { text-align: left; font-weight: 600; color: var(--ink2); border-bottom: 1.5px solid var(--ink); padding: 6px 10px 6px 0; }
+  td { border-bottom: 1px solid var(--rule); padding: 6px 10px 6px 0; vertical-align: top; }
+  code, .file { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; background: rgba(0,0,0,0.045); padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+  pre { background: rgba(0,0,0,0.045); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.5; margin: 8px 0 16px; }
+  pre code { background: none; padding: 0; white-space: pre; }
+  .callout { border: 1px solid var(--rule); border-radius: 10px; padding: 12px 16px; margin: 10px 0 16px; background: #ffffff; }
+  .callout strong { color: var(--ink); }
+  @media print {
+    body { background: #fff; font-size: 12pt; }
+    .page { max-width: none; padding: 0.4in 0.2in; }
+    h2 { break-after: avoid; }
+    table, pre, .callout { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="kicker">Передача дизайна · SwiftUI · v3</div>
+  <h1>Sudrf — фильтры · карточки · инспектор · движение дела</h1>
+  <div class="meta">Источник: «Sudrf Prototype — Direction A v3.html» · двойной клик → движение по инстанциям, частные жалобы, переключатель актов · 10 июня 2026</div>
+</header>
+
+<h2>1 · Файлы</h2>
+<table>
+  <tr><th style="width:240px">Файл</th><th>Что это</th></tr>
+  <tr><td><span class="file">handoff/SudrfApp.swift</span></td><td>Точка входа: главный <code>WindowGroup</code> + <code>WindowGroup(for: ActWindowPayload.self)</code> для отдельных окон с текстом акта.</td></tr>
+  <tr><td><span class="file">handoff/ContentView.swift</span></td><td>Трёхпанельный <code>HSplitView</code>: фильтры → карточки → инспектор. Обе границы перетаскиваются штатно, инспектор появляется при выборе карточки.</td></tr>
+  <tr><td><span class="file">handoff/SearchModel.swift</span></td><td>Модель v2: три поля запроса вместо <code>fieldKind</code>+<code>query</code>, комбинирование по «И», <code>captchaURL</code>/<code>actMissing</code>/<code>hasSearched</code>, <code>resetQueries()</code>, <code>closeInspector()</code>.</td></tr>
+  <tr><td><span class="file">handoff/ActWindow.swift</span></td><td>Новый: <code>ActWindowPayload</code> (Codable+Hashable для <code>openWindow</code>), <code>ActWindowView</code> с тулбар-кнопкой PDF, <code>ActPDFExporter</code> — постраничный A4 через <code>NSPrintOperation</code>.</td></tr>
+  <tr><td><span class="file">handoff/ActTextView.swift</span></td><td>Без изменений: типографика акта + <code>CourtActFormatter</code> (заголовки, «установил:/решил:», красная строка, fallback для «простыни»).</td></tr>
+  <tr><td><span class="file">CaseCardParser.swift</span></td><td>Без изменений: парсер карточки с сохранением абзацев (фикс «простыни»).</td></tr>
+  <tr><td><span class="file">SudrfKit/Movement.swift</span> <strong>(v3)</strong></td><td>Новый: модели движения (<code>CaseMovement</code>, <code>CaseInstance</code>, <code>CaseSession</code>, <code>PrivateComplaint</code>, <code>CaseAct</code>) + <code>MovementService</code>. Сервис отдаёт демо (дело 2-3204/2026) — в шапке файла схема подключения реальных вызовов (1-я инст. + вышестоящие ПО УИД).</td></tr>
+  <tr><td><span class="file">CaseMovementView.swift</span> <strong>(v3)</strong></td><td>Новый: вид «движение дела» (B3) — блоки по инстанциям, судья в шапке блока, частные жалобы — чип «обжаловано · ЧЖ» с раскрытием на месте.</td></tr>
+</table>
+
+<h2>2 · Движение дела (v3)</h2>
+<ul>
+  <li><strong>Одинарный клик</strong> по карточке — текст акта в инспекторе (как в v2). <strong>Двойной клик</strong> (<code>.onTapGesture(count: 2)</code> перед одинарным) — «провал» в движение дела в центральной колонке.</li>
+  <li><strong>Блок инстанции</strong> — двухстрочная шапка: суд + № + чип «по УИД»; ниже судья слева и результат справа. Цвет инстанции: синий / индиго / бирюзовый.</li>
+  <li><strong>Частные жалобы</strong> — чип «обжаловано · ЧЖ ▸» на строке-определении; клик раскрывает движение жалобы на месте (своё № дела в апелляции, тоже по УИД).</li>
+  <li><strong>Переключатель актов</strong> — правый инспектор в режиме движения: список актов с цветными точками инстанций (определение 1-й инст. / решение / апелляционное / кассационное), ниже — текст выбранного; кнопки «отдельное окно» и PDF — на выбранный акт.</li>
+  <li><strong>Сборка по УИД</strong> — вышестоящие инстанции ищутся на доменах ВС региона и кассационного КСОЮ по тому же УИД. В пакете — демо; реальная схема в <code>Movement.swift</code>.</li>
+</ul>
+
+<h2>3 · Раскладка и поведение (база v2)</h2>
+<ul>
+  <li><strong>Три панели в <code>HSplitView</code>:</strong> фильтры (260–420 pt, ideal 312), карточки (min 360, <code>layoutPriority(1)</code>), инспектор (320–580 pt, ideal 420). Сплиттеры между панелями macOS даёт бесплатно — ничего рисовать не нужно.</li>
+  <li><strong>Инспектор</strong> — условная третья панель: <code>if model.selectedResultIndex != nil</code>. Появление/уход анимируются модификатором <code>.animation(…, value: selectedResultIndex == nil)</code>.</li>
+  <li><strong>Три поля запроса</strong> (№ дела / ФИО / УИД) — отдельный <code>Grid</code> под разделителем; каждое поле сабмитит поиск по Return. Кнопки «Сбросить» и «Искать» (prominent, <code>.defaultAction</code>).</li>
+  <li><strong>Карточки</strong> — скруглённые (радиус 11) с обводкой <code>primary.opacity(0.09)</code>; выбранная — заливка <code>accentColor.opacity(0.13)</code> + обводка <code>accentColor.opacity(0.5)</code>.</li>
+  <li><strong>Кнопки инспектора</strong> (borderless, в шапке): открыть в отдельном окне · PDF · закрыть. Обе первые задизейблены, пока карточка грузится; PDF — ещё и когда акт не опубликован.</li>
+  <li><strong>Подсказка про «И» и 262-ФЗ</strong> — caption2 внизу левой панели, прижата к низу.</li>
+</ul>
+
+<h2>4 · Комбинированный поиск — как устроен</h2>
+<p>Форма <code>sud_delo</code> принимает по одному полю на запрос, поэтому: один сетевой запрос по самому селективному заполненному полю (№ дела → УИД → ФИО), остальные дофильтровывают выдачу локально:</p>
+<pre><code>let primary: (SearchField, String) =
+    !num.isEmpty ? (.caseNumber, num)
+    : !uid.isEmpty ? (.uid, uid)
+    : (.name, name)
+var res = try await client.search(court:…, field: primary.0, value: primary.1)
+if !num.isEmpty, primary.0 != .caseNumber { res = res.filter { $0.caseNumber == num } }
+if !name.isEmpty, primary.0 != .name { res = res.filter { ($0.essence ?? "").localizedCaseInsensitiveContains(name) } }
+if !uid.isEmpty, primary.0 != .uid { res = res.filter { ($0.caseUID ?? "") == uid } }</code></pre>
+<p>Если форма конкретного суда умеет несколько параметров сразу — фильтры можно перенести в <code>SudrfURLBuilder</code>, интерфейс не изменится.</p>
+
+<h2>5 · Отдельное окно и PDF</h2>
+<pre><code>// открыть акт в отдельном окне (снимок, не ссылка на модель)
+openWindow(value: ActWindowPayload(caseNumber: r.caseNumber, actText: model.actText))
+
+// PDF: NSSavePanel → NSAttributedString (CourtActFormatter) → NSTextView
+// → NSPrintOperation(jobDisposition: .save) — AppKit сам режет на страницы A4
+ActPDFExporter.save(caseNumber: r.caseNumber, text: model.actText)</code></pre>
+<ul>
+  <li>Payload — <code>Codable &amp; Hashable</code>: повторный вызов с тем же делом поднимает уже открытое окно вместо дубля.</li>
+  <li>PDF — постраничный A4 (595×842 pt): поля 70/56/56/64 (слева запас под подшивку), выключка по формату с переносами, та же типографика, что в <code>ActTextView</code> (центрированные заголовки, курсивные глаголы, красная строка) — оба рендера питаются одним <code>CourtActFormatter</code>.</li>
+</ul>
+
+<h2>6 · Карта компонентов (прототип → SwiftUI)</h2>
+<table>
+  <tr><th>В прототипе</th><th>В SwiftUI</th></tr>
+  <tr><td>Перетаскиваемые границы панелей</td><td><code>HSplitView</code> + <code>frame(minWidth:idealWidth:maxWidth:)</code></td></tr>
+  <tr><td>Карточка результата</td><td><code>ResultCard</code> в <code>LazyVStack(spacing: 10)</code></td></tr>
+  <tr><td>Кнопка ↗ (отдельное окно)</td><td><code>Image(systemName: "arrow.up.forward.app")</code> + <code>openWindow</code></td></tr>
+  <tr><td>Кнопка PDF + тост</td><td><code>Image(systemName: "square.and.arrow.down")</code> + <code>NSSavePanel</code> (тост не нужен — система даёт фидбек)</td></tr>
+  <tr><td>Плавающее окно акта</td><td>Второй <code>WindowGroup</code>, заголовок «Дело № … — текст судебного акта»</td></tr>
+  <tr><td>Пикеры, капча, пустые состояния, бейдж</td><td>Как в прошлой передаче: <code>Picker</code>/<code>CaptchaBanner</code>/<code>CenterNote</code>/<code>ForceBadge</code></td></tr>
+</table>
+
+<h2>7 · Не вошло / на потом</h2>
+<ul>
+  <li>Колонтитул PDF (№ дела и УИД на каждой странице) — через подкласс NSView с <code>drawPageBorder</code>.</li>
+  <li>Клавиатурная навигация по карточкам (↑/↓ + Return).</li>
+  <li>Тёмная тема, плотность и засечки из Tweaks — семантические цвета дают тёмную тему бесплатно; засечки — <code>ActTextView(text:, serif: true)</code>.</li>
+</ul>
+
+<div class="callout">
+  <strong>Проверка:</strong> код написан против актуального API SudrfKit и macOS 13+ (Grid, HSplitView, openWindow, NSPrintOperation). Скомпилировать локально я не могу — если Xcode что-то подсветит, пришлите ошибку.
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,145 @@
+import Foundation
+
+/// Одна строка таблицы результатов поиска.
+public struct CaseSearchResult: Sendable, Equatable {
+    public var caseNumber: String          // № дела (текст ссылки)
+    public var receiptDate: String?        // дата поступления
+    public var essence: String?            // существо / стороны
+    public var judge: String?              // судья
+    public var decisionDate: String?       // дата решения
+    public var result: String?             // результат
+    public var legalForceDate: String?     // дата вступления в силу
+    public var caseID: String?             // case_id из ссылки на карточку
+    public var caseUID: String?            // case_uid (GUID) из ссылки
+    public var cardURL: URL?               // абсолютная ссылка на карточку
+
+    public init(caseNumber: String,
+                receiptDate: String? = nil,
+                essence: String? = nil,
+                judge: String? = nil,
+                decisionDate: String? = nil,
+                result: String? = nil,
+                legalForceDate: String? = nil,
+                caseID: String? = nil,
+                caseUID: String? = nil,
+                cardURL: URL? = nil) {
+        self.caseNumber = caseNumber
+        self.receiptDate = receiptDate
+        self.essence = essence
+        self.judge = judge
+        self.decisionDate = decisionDate
+        self.result = result
+        self.legalForceDate = legalForceDate
+        self.caseID = caseID
+        self.caseUID = caseUID
+        self.cardURL = cardURL
+    }
+}
+
+/// Текст одного судебного акта из вкладки «СУДЕБНЫЕ АКТЫ» карточки.
+public struct CaseActText: Sendable, Equatable, Identifiable {
+    public let id: String       // «doc1», «doc2», …
+    public var kind: String     // тип из ярлыка: «Решения» / «Определение» / «Постановления»
+    public var label: String    // полный ярлык: «Судебный акт #1 (Решения)»
+    public var body: String     // текст акта (с сохранёнными абзацами)
+
+    public init(id: String, kind: String, label: String, body: String) {
+        self.id = id; self.kind = kind; self.label = label; self.body = body
+    }
+}
+
+/// Карточка дела с метаданными, разобранным движением и текстами актов.
+/// Вид жалобы из вкладки «Обжалование» карточки 1-й инстанции.
+public enum AppealKind: Sendable, Equatable {
+    case appeal            // апелляционная жалоба / представление
+    case cassation         // кассационная жалоба / представление
+    case privateComplaint  // частная жалоба
+    case other             // замечания на протокол, надзор и прочее — не круг
+}
+
+/// Одна запись вкладки «Обжалование» (ЖАЛОБА № N): вид, вышестоящий суд и даты
+/// движения. Источник истины для различения круг апелляции/кассации vs частная
+/// жалоба — поле «Вид жалобы (представления)».
+public struct AppealRecord: Sendable, Equatable {
+    public let kind: AppealKind
+    public let rawKind: String        // исходный «Вид жалобы (представления)»
+    public let higherCourt: String?   // «Вышестоящий суд»
+    public let sentUpDate: String?    // «Направлено в вышестоящую инстанцию»
+    public let returnedDate: String?  // «Возвращено из вышестоящей инстанции»
+    public let hearingDate: String?   // «Дата рассмотрения жалобы»
+    public let result: String?        // «Результат обжалования»
+
+    public init(kind: AppealKind, rawKind: String, higherCourt: String? = nil,
+                sentUpDate: String? = nil, returnedDate: String? = nil,
+                hearingDate: String? = nil, result: String? = nil) {
+        self.kind = kind; self.rawKind = rawKind; self.higherCourt = higherCourt
+        self.sentUpDate = sentUpDate; self.returnedDate = returnedDate
+        self.hearingDate = hearingDate; self.result = result
+    }
+}
+
+public struct CaseCard: Sendable {
+    public var rawText: String          // весь текст карточки (для отладки/фолбэка)
+    public var actText: String?         // текст первого судебного акта (для обратной совместимости)
+    public var sessions: [CaseSession]  // движение дела из вкладки «ДВИЖЕНИЕ ДЕЛА»/«СЛУШАНИЯ»
+    public var judge: String?           // судья из вкладки «ДЕЛО»/«ПРОИЗВОДСТВО»
+    public var result: String?          // результат рассмотрения из той же вкладки
+    public var uid: String?             // уникальный идентификатор дела (УИД)
+    public var caseNumber: String?      // номер дела из заголовка карточки
+    public var category: String?        // категория дела
+    public var receiptDate: String?     // дата поступления
+    public var decisionDate: String?    // дата рассмотрения
+    public var acts: [CaseActText]      // все судебные акты карточки (инлайн-тексты)
+    public var appeals: [AppealRecord]  // вкладка «Обжалование» (в карточке 1-й инстанции)
+    public var parties: CaseParties     // вкладка «СТОРОНЫ ПО ДЕЛУ» (истцы/ответчики/третьи)
+
+    public init(rawText: String, actText: String?,
+                sessions: [CaseSession] = [], judge: String? = nil, result: String? = nil,
+                uid: String? = nil, caseNumber: String? = nil, category: String? = nil,
+                receiptDate: String? = nil, decisionDate: String? = nil,
+                acts: [CaseActText] = [], appeals: [AppealRecord] = [],
+                parties: CaseParties = CaseParties()) {
+        self.rawText = rawText
+        self.actText = actText
+        self.sessions = sessions
+        self.judge = judge
+        self.result = result
+        self.uid = uid
+        self.caseNumber = caseNumber
+        self.category = category
+        self.receiptDate = receiptDate
+        self.decisionDate = decisionDate
+        self.acts = acts
+        self.appeals = appeals
+        self.parties = parties
+    }
+}
+
+public enum SudrfError: Error, CustomStringConvertible {
+    /// На форме/выдаче обнаружена капча. Решать её программно нельзя —
+    /// нужно открыть `formURL` в браузере и ввести код вручную.
+    case captchaRequired(formURL: URL)
+    case decodingFailed
+    case http(status: Int)
+    case parsing(String)
+    case invalidValue(String)
+    case unknownCartoteka(String)
+
+    public var description: String {
+        switch self {
+        case .captchaRequired(let url):
+            return "На форме этого суда стоит капча. Решать её автоматически нельзя — "
+                 + "откройте в браузере и введите код вручную: \(url.absoluteString)"
+        case .decodingFailed:
+            return "Не удалось декодировать ответ как windows-1251."
+        case .http(let status):
+            return "HTTP-ошибка: статус \(status)."
+        case .parsing(let what):
+            return "Ошибка разбора HTML: \(what)"
+        case .invalidValue(let v):
+            return "Значение нельзя представить в cp1251: «\(v)»."
+        case .unknownCartoteka(let id):
+            return "Неизвестная картотека: «\(id)»."
+        }
+    }
+}

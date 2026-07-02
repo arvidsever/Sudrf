@@ -1,0 +1,606 @@
+//  Movement.swift — Sudrf · v3
+//  Модели движения дела по инстанциям + MovementService (реальные сетевые вызовы).
+//
+//  Алгоритм сборки:
+//    1. fetchCard(1-я инстанция) → сессии из таблицы карточки + текст акта.
+//    2. Для каждого higherCourtDomain: поиск по УИД → fetchCard → инстанция.
+//    3. Частные жалобы на определения не разбираются автоматически (complaints = [:]).
+
+import Foundation
+
+// MARK: - Модель
+
+public struct CaseSession: Sendable, Equatable, Identifiable, Codable {
+    // id — только для Identifiable в UI; при декодировании создаётся заново,
+    // поэтому в == не участвует (иначе кэшированное движение никогда не было
+    // бы равно свежему с тем же содержимым).
+    enum CodingKeys: String, CodingKey { case date, time, room, event, result, complaintID }
+    public let id = UUID()
+    public var date: String          // «23.04.2026»
+    public var time: String?         // «14:00»
+    public var room: String?         // зал, «215»
+    public var event: String         // «Судебное заседание»
+    public var result: String?       // «иск удовлетворён частично»
+    /// Идентификатор частной жалобы, поданной на определение этого события.
+    public var complaintID: String?
+
+    public init(date: String, time: String? = nil, room: String? = nil,
+                event: String, result: String? = nil, complaintID: String? = nil) {
+        self.date = date; self.time = time; self.room = room
+        self.event = event; self.result = result; self.complaintID = complaintID
+    }
+
+    public static func == (lhs: CaseSession, rhs: CaseSession) -> Bool {
+        lhs.date == rhs.date && lhs.time == rhs.time && lhs.room == rhs.room
+            && lhs.event == rhs.event && lhs.result == rhs.result
+            && lhs.complaintID == rhs.complaintID
+    }
+}
+
+public struct PrivateComplaint: Sendable, Equatable, Identifiable, Codable {
+    public let id: String
+    public var label: String         // «Частная жалоба на отказ в обеспечительных мерах»
+    public var court: String         // суд апелляционной инстанции
+    public var caseNumber: String    // № дела жалобы, «33-1102/2026»
+    public var foundByUID: Bool
+    public var rows: [CaseSession]
+
+    public init(id: String, label: String, court: String, caseNumber: String,
+                foundByUID: Bool, rows: [CaseSession]) {
+        self.id = id; self.label = label; self.court = court
+        self.caseNumber = caseNumber; self.foundByUID = foundByUID; self.rows = rows
+    }
+}
+
+public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
+    public enum Level: String, Sendable, Codable { case first, appeal, cassation, supervisory }
+    public var id: String { domain + "/" + caseNumber }
+    public var level: Level
+    public var court: String
+    public var caseNumber: String
+    public var judge: String?
+    public var domain: String
+    /// true, если карточка найдена по УИД в вышестоящем суде.
+    public var foundByUID: Bool
+    public var result: String?
+    public var sessions: [CaseSession]
+    /// id опубликованного судебного акта этой инстанции (для переключателя), если есть.
+    public var actID: String?
+    /// Если задан — инстанция не загружена автоматически (форма суда под капчей).
+    /// URL формы поиска, которую нужно открыть, чтобы пользователь ввёл код вручную.
+    public var captchaFormURL: URL?
+
+    public init(level: Level, court: String, caseNumber: String, judge: String?,
+                domain: String, foundByUID: Bool, result: String?,
+                sessions: [CaseSession], actID: String? = nil,
+                captchaFormURL: URL? = nil) {
+        self.level = level; self.court = court; self.caseNumber = caseNumber
+        self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
+        self.result = result; self.sessions = sessions; self.actID = actID
+        self.captchaFormURL = captchaFormURL
+    }
+}
+
+public struct CaseAct: Sendable, Equatable, Identifiable, Codable {
+    public let id: String
+    public var title: String         // «Решение», «Апелляционное определение»
+    public var date: String
+    public var courtShort: String    // «1-я инстанция», «ВС Коми», «3-й КСОЮ»
+    public var instanceLevel: CaseInstance.Level
+
+    public init(id: String, title: String, date: String, courtShort: String,
+                instanceLevel: CaseInstance.Level) {
+        self.id = id; self.title = title; self.date = date
+        self.courtShort = courtShort; self.instanceLevel = instanceLevel
+    }
+}
+
+public struct CaseMovement: Sendable, Equatable, Codable {
+    public var uid: String
+    public var caseNumber: String
+    public var inForce: Bool
+    public var instances: [CaseInstance]
+    public var complaints: [String: PrivateComplaint]   // id → жалоба
+    public var acts: [CaseAct]
+    public var actBodies: [String: String]              // act.id → текст акта
+    public var category: String?                        // категория дела (карточка 1-й инстанции)
+    public var parties: CaseParties                     // стороны (карточка; фолбэк — выдача)
+
+    public init(uid: String, caseNumber: String, inForce: Bool,
+                instances: [CaseInstance], complaints: [String: PrivateComplaint],
+                acts: [CaseAct], actBodies: [String: String] = [:],
+                category: String? = nil, parties: CaseParties = CaseParties()) {
+        self.uid = uid; self.caseNumber = caseNumber; self.inForce = inForce
+        self.instances = instances; self.complaints = complaints
+        self.acts = acts; self.actBodies = actBodies
+        self.category = category; self.parties = parties
+    }
+}
+
+// MARK: - Сервис
+
+public protocol MovementProviding: Sendable {
+    func movement(for base: CaseSearchResult,
+                  court: Court,
+                  cartoteka: Cartoteka) async throws -> CaseMovement
+}
+
+/// Часть интерфейса `SudrfClient`, нужная сервису движения (подменяется в тестах).
+public protocol CaseProviding: Sendable {
+    func search(court: Court, cartoteka: Cartoteka,
+                field: SearchField, value: String) async throws -> [CaseSearchResult]
+    func fetchCard(court: Court, caseID: String, caseUID: String,
+                   deloID: String, new: String) async throws -> CaseCard
+}
+
+extension SudrfClient: CaseProviding {}
+
+public actor MovementService: MovementProviding {
+
+    private let client: any CaseProviding
+    /// Домены вышестоящих судов, на которых ищем дело по УИД.
+    private let higherCourtDomains: [String]
+
+    public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = []) {
+        self.client = client
+        self.higherCourtDomains = higherCourtDomains
+    }
+
+    public func movement(for base: CaseSearchResult,
+                         court: Court,
+                         cartoteka: Cartoteka) async throws -> CaseMovement {
+        guard let caseID = base.caseID, let caseUID = base.caseUID else {
+            return Self.minimalMovement(base: base, court: court)
+        }
+
+        // 1. Карточка 1-й инстанции: сессии + текст акта
+        let baseCard = try await client.fetchCard(court: court, caseID: caseID,
+                                                   caseUID: caseUID, deloID: cartoteka.deloID,
+                                                   new: cartoteka.new)
+
+        // УИД дела (вида 11RS0001-01-2025-011255-03) — из метаданных карточки.
+        // НЕ путать с base.caseUID: это внутренний GUID ссылки на карточку
+        // (параметр case_uid=…), у каждого суда он свой — для сквозного поиска
+        // по инстанциям не годится.
+        let uid = baseCard.uid
+        // Вкладка «Обжалование» 1-й инстанции — авторитетный классификатор жалоб
+        // (вид + даты). Парсится из уже загруженной карточки, без доп. запросов.
+        let appeals = baseCard.appeals
+        var acts: [CaseAct] = []
+        var actBodies: [String: String] = [:]
+        var baseActID: String? = nil
+
+        if let actText = baseCard.actText {
+            let actID = "act_\(court.domain)"
+            let date = base.decisionDate ?? base.receiptDate ?? "—"
+            acts.append(CaseAct(id: actID,
+                                title: Self.actTitle(cartotekaID: cartoteka.id, level: .first),
+                                date: date, courtShort: "1-я инстанция", instanceLevel: .first))
+            actBodies[actID] = actText
+            baseActID = actID
+        }
+
+        var instances: [CaseInstance] = [CaseInstance(
+            level: .first,
+            court: court.title,
+            caseNumber: base.caseNumber,
+            judge: base.judge ?? baseCard.judge,
+            domain: court.domain,
+            foundByUID: false,
+            result: base.result ?? baseCard.result,
+            sessions: baseCard.sessions,
+            actID: baseActID)]
+
+        // 1b. Тот же суд: другие круги под этим же УИД. После отмены вышестоящим
+        //     судом и возврата на новое рассмотрение в том же суде заводится НОВАЯ
+        //     карточка (новый № дела) под тем же УИД. Прежде искались только
+        //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
+        //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
+        if let uid {
+            let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
+                                                          field: .uid, value: uid)) ?? []
+            for r in sameCourtRows {
+                guard let rID = r.caseID, let rUID = r.caseUID else { continue }
+                // Базовый круг и уже добавленные — пропускаем (№ может идти с
+                // дописками «… ~ М-…», поэтому сравнение префиксом).
+                if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
+                if instances.contains(where: { $0.domain == court.domain
+                                            && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
+                guard let card = try? await client.fetchCard(court: court, caseID: rID, caseUID: rUID,
+                                                             deloID: cartoteka.deloID,
+                                                             new: cartoteka.new) else { continue }
+                var roundActID: String? = nil
+                if let actText = card.actText {
+                    let actID = "act_\(court.domain)#\(r.caseNumber)"
+                    let date = r.decisionDate ?? r.receiptDate ?? card.decisionDate ?? "—"
+                    acts.append(CaseAct(id: actID,
+                                        title: Self.actTitle(cartotekaID: cartoteka.id, level: .first),
+                                        date: date, courtShort: "1-я инстанция", instanceLevel: .first))
+                    actBodies[actID] = actText
+                    roundActID = actID
+                }
+                instances.append(CaseInstance(
+                    level: .first,
+                    court: court.title,
+                    caseNumber: r.caseNumber,
+                    judge: r.judge ?? card.judge,
+                    domain: court.domain,
+                    foundByUID: true,
+                    result: r.result ?? card.result,
+                    sessions: card.sessions,
+                    actID: roundActID))
+            }
+        }
+
+        // 2. Вышестоящие суды: поиск по УИД → карточка → инстанция.
+        //    Если в карточке УИД не указан, сквозной поиск невозможен — пропускаем.
+        for domain in higherCourtDomains {
+            guard let uid else { break }
+            let level = Self.courtLevel(forDomain: domain)
+            let higherCourt = Court(domain: domain,
+                                    title: Self.shortCourtName(forDomain: domain),
+                                    level: level)
+            let cartotekaIDs = Self.higherCartotekaIDs(baseID: cartoteka.id, level: level)
+            let toTry = CartotekaRegistry.sets(for: level).filter { cartotekaIDs.contains($0.id) }
+            guard !toTry.isEmpty else { continue }
+
+            for higherCart in toTry {
+                do {
+                    let results = try await client.search(court: higherCourt,
+                                                          cartoteka: higherCart,
+                                                          field: .uid, value: uid)
+                    // Строки без ID карточки бесполезны (по ним не открыть карточку).
+                    let usable = results.filter { $0.caseID != nil && $0.caseUID != nil }
+                    guard !usable.isEmpty else { continue }   // картотека пуста — пробуем следующую
+
+                    let instLevel = Self.instanceLevel(forCourtLevel: level)
+
+                    // По одному УИД суд может вернуть НЕСКОЛЬКО записей: например, два
+                    // круга апелляции — исходный и новый, после возврата из кассации на
+                    // новое рассмотрение. Перебираем все и каждый круг кладём отдельной
+                    // инстанцией (а не только первый, как было раньше).
+                    var rounds: [(inst: CaseInstance, act: CaseAct?, body: String?, sortKey: Int)] = []
+                    for r in usable {
+                        guard let hID = r.caseID, let hUID = r.caseUID else { continue }
+                        let higherCard = try await client.fetchCard(court: higherCourt,
+                                                                    caseID: hID, caseUID: hUID,
+                                                                    deloID: higherCart.deloID,
+                                                                    new: higherCart.new)
+                        // Круг или нет — решает вкладка «Обжалование» (вид жалобы),
+                        // с откатом к различителю по результату. Частные жалобы и
+                        // прочее (замечания на протокол) кругом не считаем.
+                        if !Self.isRoundOfAppeal(row: r, card: higherCard, appeals: appeals) { continue }
+
+                        // actID уникален по № дела: при двух кругах из одного суда
+                        // прежний "act_<домен>" схлопывал оба акта в один.
+                        let actID = "act_\(domain)#\(r.caseNumber)"
+                        var act: CaseAct? = nil
+                        var body: String? = nil
+                        if let actText = higherCard.actText {
+                            let date = r.decisionDate ?? r.receiptDate ?? "—"
+                            act = CaseAct(
+                                id: actID,
+                                title: Self.actTitle(cartotekaID: higherCart.id, level: instLevel),
+                                date: date,
+                                courtShort: Self.shortCourtName(forDomain: domain),
+                                instanceLevel: instLevel)
+                            body = actText
+                        }
+                        let inst = CaseInstance(
+                            level: instLevel,
+                            court: higherCourt.title,
+                            caseNumber: r.caseNumber,
+                            judge: r.judge ?? higherCard.judge,
+                            domain: domain,
+                            foundByUID: true,
+                            result: r.result ?? higherCard.result,
+                            sessions: higherCard.sessions,
+                            actID: higherCard.actText != nil ? actID : nil)
+                        rounds.append((inst, act, body,
+                                       Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
+                    }
+
+                    // Круги — по хронологии (старый → новый). Сортировка инстанций
+                    // ниже устойчива по уровню, поэтому порядок кругов сохранится.
+                    rounds.sort { $0.sortKey < $1.sortKey }
+                    for entry in rounds {
+                        if let a = entry.act, let b = entry.body {
+                            acts.append(a); actBodies[a.id] = b
+                        }
+                        instances.append(entry.inst)
+                    }
+                    break   // записи апелляции найдены в этой картотеке — к следующему суду
+                } catch SudrfError.captchaRequired(let formURL) {
+                    // Форма этого суда под капчей — автопоиск невозможен. Добавляем
+                    // заглушку: пользователь введёт код во всплывающем окне (см. UI).
+                    let instLevel = Self.instanceLevel(forCourtLevel: level)
+                    if !instances.contains(where: { $0.domain == domain }) {
+                        instances.append(CaseInstance(
+                            level: instLevel,
+                            court: higherCourt.title,
+                            caseNumber: "—",
+                            judge: nil,
+                            domain: domain,
+                            foundByUID: false,
+                            result: nil,
+                            sessions: [],
+                            actID: nil,
+                            captchaFormURL: formURL))
+                    }
+                    break
+                }
+                catch { continue }
+            }
+        }
+
+        let sortedInst = instances.sorted { Self.instanceOrderKey($0) < Self.instanceOrderKey($1) }
+        let sortedActs = acts.sorted { Self.actOrderKey($0) < Self.actOrderKey($1) }
+
+        // Стороны: вкладка «СТОРОНЫ ПО ДЕЛУ» карточки — авторитетный источник;
+        // если её нет/пуста — фолбэк к разбору колонки выдачи («ИСТЕЦ: …»).
+        var parties = baseCard.parties
+        if parties.isEmpty, let p = CaseParties.split(essence: base.essence).parties {
+            parties = p
+        }
+        parties.inferKindIfNeeded(caseNumber: base.caseNumber)
+
+        return CaseMovement(uid: uid ?? "", caseNumber: base.caseNumber,
+                            inForce: base.legalForceDate != nil,
+                            instances: sortedInst, complaints: [:],
+                            acts: sortedActs, actBodies: actBodies,
+                            category: baseCard.category, parties: parties)
+    }
+}
+
+// MARK: - Вспомогательные методы
+
+extension MovementService {
+
+    /// Определяет звено суда по домену (эвристика по структуре имени).
+    static func courtLevel(forDomain domain: String) -> CourtLevel {
+        if domain == "vkas.sudrf.ru" { return .cassation }   // Кассационный военный суд
+        if domain == "vap.sudrf.ru"  { return .appeal }      // Апелляционный военный суд
+        if domain.range(of: #"^vs(?:--|\.)"#, options: .regularExpression) != nil { return .subject }
+        if domain.range(of: #"\dkas\.sudrf\.ru"#, options: .regularExpression) != nil { return .cassation }
+        if domain.range(of: #"\dap\.sudrf\.ru"#, options: .regularExpression) != nil { return .appeal }
+        if domain.contains("asoy") { return .appeal }
+        return .subject
+    }
+
+    /// Уровень инстанции относительно базового дела (районный суд).
+    static func instanceLevel(forCourtLevel level: CourtLevel) -> CaseInstance.Level {
+        switch level {
+        case .district:   return .first
+        case .subject:    return .appeal
+        case .appeal:     return .appeal
+        case .cassation:  return .cassation
+        }
+    }
+
+    /// Главный классификатор: показывать ли запись вышестоящего суда как круг
+    /// (полноценную апелляцию/кассацию). Авторитетный источник — вкладка
+    /// «Обжалование» карточки 1-й инстанции: запись наверху сшивается с жалобой по
+    /// датам (дата рассмотрения наверху = «Дата рассмотрения жалобы»; дата
+    /// поступления наверх = «Направлено в вышестоящую инстанцию») и решает её «Вид»:
+    ///   • апелляционная / кассационная → круг (показываем);
+    ///   • частная жалоба / прочее (замечания на протокол и т. п.) → не круг.
+    /// Если по датам жалоба не нашлась (нет вкладки/расхождение дат) — откат к
+    /// различителю по «Результату рассмотрения» самой карточки.
+    static func isRoundOfAppeal(row: CaseSearchResult, card: CaseCard,
+                                appeals: [AppealRecord]) -> Bool {
+        if let match = matchAppeal(receipt: card.receiptDate ?? row.receiptDate,
+                                   decision: card.decisionDate ?? row.decisionDate,
+                                   in: appeals) {
+            switch match.kind {
+            case .appeal, .cassation:        return true
+            case .privateComplaint, .other:  return false
+            }
+        }
+        return !isPrivateComplaintByResult(row: row, card: card)
+    }
+
+    /// Сшивка записи вышестоящего суда с жалобой из вкладки «Обжалование» по датам.
+    /// Приоритет — дата рассмотрения (точная), затем дата направления/поступления.
+    static func matchAppeal(receipt: String?, decision: String?,
+                            in appeals: [AppealRecord]) -> AppealRecord? {
+        func norm(_ s: String?) -> String? {
+            guard let s else { return nil }
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
+        if let d = norm(decision),
+           let m = appeals.first(where: { norm($0.hearingDate) == d }) { return m }
+        if let r = norm(receipt),
+           let m = appeals.first(where: { norm($0.sentUpDate) == r }) { return m }
+        return nil
+    }
+
+    /// Фолбэк-различитель по полю «Результат рассмотрения» апелляционной карточки:
+    /// круг пересматривает РЕШЕНИЕ/ПРИГОВОР, частная жалоба — ОПРЕДЕЛЕНИЕ. Категория
+    /// и ярлык акта не годятся (категория — существо спора; акт и там, и там —
+    /// «Апелляционное определение»). Консервативно: при пустом результате не
+    /// считаем частной жалобой.
+    static func isPrivateComplaintByResult(row: CaseSearchResult, card: CaseCard) -> Bool {
+        let result = (card.result ?? row.result ?? "").lowercased()
+        guard !result.isEmpty else { return false }
+        let reviewsRuling   = result.contains("определени")             // ОПРЕДЕЛЕНИЕ
+        let reviewsJudgment = result.contains("решени")                 // РЕШЕНИЕ
+                           || result.contains("приговор")               // ПРИГОВОР
+        return reviewsRuling && !reviewsJudgment
+    }
+
+    /// Хронологический ключ инстанции для сортировки движения: строго по дате
+    /// начала производства (самое раннее событие движения), при равенстве — по
+    /// уровню. Жёсткого закрепления 1-й инстанции сверху НЕТ: при возврате на
+    /// новое рассмотрение (горсуд → ВС → горсуд) второй круг 1-й инстанции
+    /// корректно встаёт ПОСЛЕ вышестоящего суда. Недатированные инстанции уходят
+    /// в конец (тай-брейк по уровню сохраняет 1-ю инстанцию выше пустых вышестоящих).
+    public static func instanceOrderKey(_ inst: CaseInstance) -> (Int, Int) {
+        let earliest = inst.sessions.compactMap { dateSortKey($0.date) }
+            .filter { $0 != Int.max }.min() ?? Int.max
+        return (earliest, levelOrder(inst.level))
+    }
+
+    /// Хронологический ключ судебного акта (панель «Судебные акты»): строго по
+    /// дате акта, при равенстве — по уровню. 1-я инстанция не закрепляется сверху
+    /// принудительно (см. `instanceOrderKey`).
+    public static func actOrderKey(_ act: CaseAct) -> (Int, Int) {
+        return (dateSortKey(act.date), levelOrder(act.instanceLevel))
+    }
+
+    /// Сравнение № дел с учётом «дописок» в выдаче («2-7212/2025 ~ М-5922/2025»):
+    /// номера считаются одним делом, если один — префикс другого (по «голому»
+    /// номеру до разделителей). Нужно, чтобы при переопросе домашнего суда не
+    /// продублировать базовый круг.
+    static func sameCaseNumber(_ a: String, _ b: String) -> Bool {
+        func bare(_ s: String) -> String {
+            let cut = s.components(separatedBy: CharacterSet(charactersIn: "~("))
+                .first ?? s
+            return cut.trimmingCharacters(in: .whitespaces)
+        }
+        let x = bare(a), y = bare(b)
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        return x == y || x.hasPrefix(y) || y.hasPrefix(x)
+    }
+
+    /// Ключ сортировки из даты «дд.мм.гггг» → гггг*10000 + мм*100 + дд.
+    /// Непарсируемые/пустые даты уходят в конец (Int.max), чтобы недатированный
+    /// круг не вклинивался между датированными.
+    static func dateSortKey(_ date: String?) -> Int {
+        guard let date else { return Int.max }
+        let parts = date.split(separator: ".")
+        guard parts.count == 3,
+              let d = Int(parts[0]), let m = Int(parts[1]), let y = Int(parts[2]) else {
+            return Int.max
+        }
+        return y * 10_000 + m * 100 + d
+    }
+
+    /// Идентификаторы картотек вышестоящего суда, соответствующих базовой картотеке.
+    /// Возвращает пустой массив, если соответствие неизвестно ИЛИ суд этого звена
+    /// в инстанционную цепочку данного дела не входит — тогда суд пропускается.
+    ///
+    /// Инстанционные цепочки (надзор ВС РФ — вне проекта, у него свой портал):
+    ///   мировой судья → район (апелляция, база u2/g2/p2) → КСОЮ → [ВС РФ]
+    ///   район (1 инст) → суд субъекта (апелляция) → КСОЮ → [ВС РФ]
+    ///   суд субъекта (1 инст) → АСОЮ (апелляция) → КСОЮ → [ВС РФ]
+    ///   КоАП: район (adm) → субъект (adm1) → КСОЮ (adm3, вступившие);
+    ///         район (admj — жалоба на несудебное/мировое постановление)
+    ///         → субъект (adm2) → КСОЮ (adm3). АСОЮ в КоАП не участвует.
+    static func higherCartotekaIDs(baseID: String, level: CourtLevel) -> [String] {
+        let prefix = String(baseID.prefix(while: { $0.isLetter })).lowercased()
+        // База u2/g2/p2 районного звена — апелляция на мировых судей: её акты
+        // минуют суд субъекта и АСОЮ, кассация — сразу в КСОЮ.
+        let isAppellateBase = baseID.hasSuffix("2")
+        switch level {
+        case .district:
+            return []
+        case .subject:
+            if isAppellateBase { return [] }
+            switch prefix {
+            case "g":   return ["g2"]
+            case "u":   return ["u2"]
+            case "p":   return ["p2"]
+            case "adm":  return ["adm1"]
+                // Постановление судьи 1-й инстанции по делу об АП (adm_case)
+                // обжалуется в суд субъекта по картотеке «жалобы на постановления»
+                // (adm1_case, 1502001).
+            case "admj": return ["adm2"]
+                // Решение райсуда по жалобе на несудебное постановление (adm1_case)
+                // → суд субъекта по картотеке «жалобы на решения по жалобам»
+                // (adm2_case, 1513001). КСОЮ (.cassation) ниже — adm3 (вступившие).
+            default:    return []
+            }
+        case .appeal:
+            // АСОЮ — апелляция только на акты судов субъектов, принятые ими по
+            // 1-й инстанции. Для дел районного звена (а это сегодня единственная
+            // стартовая точка поиска) АСОЮ инстанцией не является. Ветка
+            // заработает, когда появится поиск от суда субъекта как 1-й инстанции.
+            return []
+        case .cassation:
+            switch prefix {
+            case "g":   return ["g3"]
+            case "u":   return ["u3"]
+            case "p":   return ["p3"]
+            case "adm", "admj": return ["adm3"]
+            default:    return []
+            }
+        }
+    }
+
+    /// Название акта по картотеке и уровню инстанции.
+    static func actTitle(cartotekaID: String, level: CaseInstance.Level) -> String {
+        let prefix = String(cartotekaID.prefix(while: { $0.isLetter })).lowercased()
+        switch level {
+        case .first:
+            switch prefix {
+            case "u":    return "Приговор"
+            case "admj": return "Решение"        // решение по жалобе на постановление по делу об АП
+            case "adm":  return "Постановление"  // постановление по делу об АП (рассмотрение по существу)
+            default:     return "Решение"
+            }
+        case .appeal:
+            if prefix == "u" { return "Апелляционное постановление" }
+            // АП во второй инстанции (суд субъекта по протесту/жалобе на не
+            // вступившее решение) оформляется «Решением», а не апелляционным
+            // определением.
+            if prefix == "adm" || prefix == "admj" { return "Решение" }
+            return "Апелляционное определение"
+        case .cassation:
+            // По делам об АП КСОЮ выносит постановление (ст. 30.17 КоАП),
+            // по ГПК/УПК/КАС — кассационное определение.
+            if prefix == "adm" || prefix == "admj" { return "Постановление" }
+            return "Определение суда кассационной инстанции"
+        case .supervisory:
+            return "Постановление Президиума"
+        }
+    }
+
+    /// Краткое/полное название суда из домена для отображения в интерфейсе.
+    static func shortCourtName(forDomain domain: String) -> String {
+        // Если домен есть в справочнике — берём официальное название.
+        if let c = CourtDirectory.court(forDomain: domain) { return c.title }
+        // vs--komi.sudrf.ru / vs.komi.sudrf.ru → «ВС Komi»
+        if let m = domain.range(of: #"^vs(?:--|\.)"#, options: .regularExpression) {
+            let rest = domain[m.upperBound...].components(separatedBy: ".").first ?? ""
+            return "ВС \(rest.capitalized)"
+        }
+        // 3kas.sudrf.ru → «3-й КСОЮ»
+        if let m = domain.range(of: #"\dkas"#, options: .regularExpression) {
+            let num = String(domain[m.lowerBound])
+            return "\(num)-й КСОЮ"
+        }
+        return domain.components(separatedBy: ".").first.map { $0.uppercased() } ?? domain
+    }
+
+    static func levelOrder(_ level: CaseInstance.Level) -> Int {
+        switch level {
+        case .first:       return 0
+        case .appeal:      return 1
+        case .cassation:   return 2
+        case .supervisory: return 3
+        }
+    }
+
+    /// Минимальное движение без сетевых запросов — когда у записи нет ID карточки.
+    /// УИД здесь неизвестен: карточка не загружалась, а `base.caseUID` — это
+    /// GUID ссылки на карточку, а не УИД.
+    static func minimalMovement(base: CaseSearchResult, court: Court) -> CaseMovement {
+        let inst = CaseInstance(
+            level: .first, court: court.title, caseNumber: base.caseNumber,
+            judge: base.judge, domain: court.domain, foundByUID: false,
+            result: base.result, sessions: [], actID: nil)
+        return CaseMovement(uid: "", caseNumber: base.caseNumber,
+                            inForce: base.legalForceDate != nil,
+                            instances: [inst], complaints: [:], acts: [], actBodies: [:],
+                            parties: {
+                                var p = CaseParties.split(essence: base.essence).parties
+                                    ?? CaseParties()
+                                p.inferKindIfNeeded(caseNumber: base.caseNumber)
+                                return p
+                            }())
+    }
+}
+
+//  Демо-набор (demoMovement) переехал в тестовый таргет:
+//  Tests/SudrfKitTests/DemoMovement.swift — в собранное приложение не попадает.

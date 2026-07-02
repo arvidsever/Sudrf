@@ -1,0 +1,204 @@
+import Foundation
+import Security
+
+/// Сетевой клиент: прямые HTTP-запросы к суду, троттлинг, cookies, декодирование cp1251.
+///
+/// Важно: на машине пользователя (в отличие от песочницы Claude) запросы к
+/// `*.sudrf.ru` проходят напрямую — браузер не нужен.
+public actor SudrfClient {
+
+    private let session: URLSession
+    private let userAgent: String
+    private let minInterval: TimeInterval
+    private var lastRequestAt: Date?
+
+    public init(minInterval: TimeInterval = 1.5,
+                userAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                trustCourtCertificates: Bool = true) {
+        let cfg = URLSessionConfiguration.default
+        cfg.httpCookieStorage = HTTPCookieStorage.shared
+        cfg.httpShouldSetCookies = true
+        cfg.httpCookieAcceptPolicy = .always
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        cfg.timeoutIntervalForRequest = 30
+        // Сайты судов используют российские корневые сертификаты (Минцифры),
+        // которых нет в доверенном хранилище Apple. Делегат принимает сертификат
+        // ТОЛЬКО для доменов судов; для прочих хостов — обычная проверка.
+        let delegate: (any URLSessionDelegate)? = trustCourtCertificates ? SudrfTLSDelegate() : nil
+        self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+    }
+
+    /// Число повторов при временных ошибках (502/503/504, обрывы соединения).
+    public var maxAttempts = 3
+
+    /// Загрузить страницу и декодировать как windows-1251.
+    public func fetchHTML(_ url: URL) async throws -> String {
+        var lastError: Error = SudrfError.http(status: 0)
+        let attempts = max(1, maxAttempts)
+        for attempt in 0..<attempts {
+            try await throttle()
+            var req = URLRequest(url: url)
+            req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+            req.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+
+            do {
+                let (data, response) = try await session.data(for: req)
+                let http = response as? HTTPURLResponse
+                if let http, (500..<600).contains(http.statusCode) {
+                    // Сервер суда периодически отдаёт 502/503 — повторяем.
+                    lastError = SudrfError.http(status: http.statusCode)
+                    guard attempt + 1 < attempts else { break }   // после последней попытки не спим
+                    try await backoff(attempt)
+                    continue
+                }
+                if let http, !(200..<300).contains(http.statusCode) {
+                    throw SudrfError.http(status: http.statusCode)
+                }
+                // Суды отдают windows-1251, единый портал — тоже cp1251; UTF-8 как запасной.
+                let ctype = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) { return s }
+                if let s = Cyrillic1251.decode(data) { return s }
+                if let s = String(data: data, encoding: .utf8) { return s }
+                throw SudrfError.decodingFailed
+            } catch let e as URLError {
+                lastError = e
+                guard attempt + 1 < attempts else { break }
+                try await backoff(attempt)
+                continue
+            }
+        }
+        throw lastError
+    }
+
+    private func backoff(_ attempt: Int) async throws {
+        try await Task.sleep(nanoseconds: UInt64(Double(attempt + 1) * 0.8 * 1_000_000_000))
+    }
+
+    /// Высокоуровневый поиск. Если на форме или выдаче есть капча — бросает
+    /// `.captchaRequired` (решать её программно нельзя).
+    /// Модульный хост приводится к дефисной форме; при сетевой ошибке — фолбэк
+    /// на точечную форму хоста (перебор обоих вариантов).
+    public func search(court: Court,
+                       cartoteka: Cartoteka,
+                       field: SearchField,
+                       value: String) async throws -> [CaseSearchResult] {
+        try await withHostFallback(court) { c in
+            try await self.searchOnce(court: c, cartoteka: cartoteka, field: field, value: value)
+        }
+    }
+
+    private func searchOnce(court: Court,
+                            cartoteka: Cartoteka,
+                            field: SearchField,
+                            value: String) async throws -> [CaseSearchResult] {
+        let builder = SudrfURLBuilder(court: court)
+
+        // 1) Проверяем форму на капчу.
+        let formURL = try builder.formURL(cartoteka)
+        let formHTML = try await fetchHTML(formURL)
+        if CaptchaDetector.hasCaptcha(in: formHTML) {
+            throw SudrfError.captchaRequired(formURL: formURL)
+        }
+
+        // 2) Прямой GET выдачи.
+        let url = try builder.searchURL(cartoteka: cartoteka, field: field, value: value)
+        let html = try await fetchHTML(url)
+        if CaptchaDetector.hasCaptcha(in: html) {
+            throw SudrfError.captchaRequired(formURL: url)
+        }
+        return try ResultsParser.parse(html: html, court: court)
+    }
+
+    /// Загрузить карточку дела и извлечь метаданные, движение и тексты актов
+    /// (капчи здесь нет). Для апелляции/кассации передавайте `new` из картотеки.
+    public func fetchCard(court: Court,
+                          caseID: String,
+                          caseUID: String,
+                          deloID: String,
+                          new: String = "0") async throws -> CaseCard {
+        try await withHostFallback(court) { c in
+            let builder = SudrfURLBuilder(court: c)
+            let url = try builder.cardURL(caseID: caseID, caseUID: caseUID, deloID: deloID, new: new)
+            let html = try await self.fetchHTML(url)
+            return try CaseCardParser.parse(html: html)
+        }
+    }
+
+    /// Выполняет запрос на дефисной форме хоста; при сетевой/HTTP-ошибке повторяет
+    /// на альтернативной (точечной) форме. Капча — не проблема хоста, пробрасывается.
+    private func withHostFallback<T>(_ court: Court,
+                                     _ body: (Court) async throws -> T) async throws -> T {
+        let primary = court.withDomain(SudrfHost.moduleHost(court.domain))
+        do {
+            return try await body(primary)
+        } catch let e as SudrfError {
+            if case .captchaRequired = e { throw e }
+            guard let alt = SudrfHost.alternate(primary.domain) else { throw e }
+            return try await body(court.withDomain(alt))
+        } catch {
+            guard let alt = SudrfHost.alternate(primary.domain) else { throw error }
+            return try await body(court.withDomain(alt))
+        }
+    }
+
+    // MARK: - throttle
+
+    private func throttle() async throws {
+        if let last = lastRequestAt {
+            let elapsed = Date().timeIntervalSince(last)
+            if elapsed < minInterval {
+                let wait = minInterval - elapsed
+                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            }
+        }
+        lastRequestAt = Date()
+    }
+}
+
+/// Делегат TLS для доменов судов: сайты используют сертификаты российских
+/// корней (Минцифры), которых нет в доверенном хранилище Apple. Корень и
+/// промежуточные сертификаты Минцифры (из ресурсов пакета) добавляются
+/// ЯКОРЯМИ к системным, после чего цепочка проверяется штатной оценкой
+/// SecTrust — самоподписанный или подменённый сертификат отклоняется.
+/// Для всех прочих хостов — стандартная системная проверка.
+final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
+
+    private let trustedSuffixes = ["sudrf.ru", "mos-gorsud.ru"]
+
+    /// «Russian Trusted Root CA» и промежуточные «Russian Trusted Sub CA»
+    /// (2022 и 2024) — DER-файлы из ресурсов SudrfKit.
+    /// internal (не private) — доступность ресурсов проверяется тестом.
+    static let russianAnchors: [SecCertificate] = {
+        ["RussianTrustedRootCA", "RussianTrustedSubCA", "RussianTrustedSubCA2024"]
+            .compactMap { Bundle.module.url(forResource: $0, withExtension: "cer") }
+            .compactMap { try? Data(contentsOf: $0) }
+            .compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+    }()
+
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        let host = challenge.protectionSpace.host.lowercased()
+        guard trustedSuffixes.contains(where: { host == $0 || host.hasSuffix("." + $0) }) else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // Российские корни — В ДОПОЛНЕНИЕ к системным (не вместо них):
+        // суды с сертификатами публичных ЦС тоже проходят.
+        SecTrustSetAnchorCertificates(trust, Self.russianAnchors as CFArray)
+        SecTrustSetAnchorCertificatesOnly(trust, false)
+        if SecTrustEvaluateWithError(trust, nil) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+}

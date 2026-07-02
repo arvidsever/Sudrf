@@ -1,0 +1,53 @@
+# project.yml — генерация настоящего Xcode-проекта с app-таргетом.
+#
+# SwiftPM сам .app-бандл собрать не умеет, поэтому правильный способ —
+# Xcode-проект. Чтобы не держать .xcodeproj в репозитории, он генерируется:
+#
+#   brew install xcodegen
+#   xcodegen                 # создаст Sudrf.xcodeproj рядом с этим файлом
+#   open Sudrf.xcodeproj     # схема Sudrf → ⌘R
+#
+# App-таргет компилирует Sources/SudrfApp и линкует библиотеку SudrfKit
+# из этого же пакета (локальная SPM-зависимость). Бандл получает Info.plist
+# с LSMinimumSystemVersion 26.0 — Liquid Glass включается штатно.
+
+name: Sudrf
+options:
+  bundleIdPrefix: ru.sudrf
+  deploymentTarget:
+    macOS: "26.0"
+
+packages:
+  SudrfKit:
+    path: .
+
+targets:
+  Sudrf:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/SudrfApp
+      - path: Assets.xcassets
+    dependencies:
+      - package: SudrfKit
+        product: SudrfKit
+    info:
+      path: Generated/Sudrf-Info.plist
+      properties:
+        CFBundleName: Sudrf
+        CFBundleDisplayName: Sudrf
+        # Версия следует номеру изменений (ИЗМЕНЕНИЯ-vNN.md).
+        CFBundleShortVersionString: "17.0"
+        CFBundleVersion: "17"
+        LSMinimumSystemVersion: "26.0"
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        CFBundleDevelopmentRegion: ru
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: NO

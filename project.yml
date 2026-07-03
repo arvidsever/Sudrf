@@ -36,9 +36,10 @@ targets:
       properties:
         CFBundleName: Sudrf
         CFBundleDisplayName: Sudrf
-        # Версия следует номеру изменений (ИЗМЕНЕНИЯ-vNN.md).
-        CFBundleShortVersionString: "22.0"
-        CFBundleVersion: "22"
+        # Версия следует номеру изменений (ИЗМЕНЕНИЯ-vNN.md); значения — в
+        # MARKETING_VERSION/CURRENT_PROJECT_VERSION (единый источник, виден в General).
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "26.0"
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
@@ -48,7 +49,29 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
         MACOSX_DEPLOYMENT_TARGET: "26.0"
+        # Версия и билд (следуют ИЗМЕНЕНИЯ-vNN.md); Info.plist ссылается на них.
+        MARKETING_VERSION: "22.0"
+        CURRENT_PROJECT_VERSION: "22"
+        # Дублирует ключ Info.plist — чтобы General → App Category показывал «Productivity».
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: YES
+
+# Shared-схема app-бандла. Без неё Xcode после регенерации делает активной
+# авто-схему executable-продукта пакета (SudrfApp) — «Run» запускает голый
+# бинарник (иконка «exec», без Liquid Glass). Запускать нужно схему «Sudrf».
+schemes:
+  Sudrf:
+    build:
+      targets:
+        Sudrf: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

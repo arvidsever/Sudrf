@@ -78,7 +78,7 @@ enum MovementDerivation {
         // Какие звенья присутствуют.
         let hasFirst     = mv.instances.contains { $0.level == .first }
         let hasAppeal    = mv.instances.contains { $0.level == .appeal }
-        let hasCassation = mv.instances.contains { $0.level == .cassation }
+        let hasCassation = mv.instances.contains { $0.level == .cassation || $0.level == .vsCassation }
         let present = [hasFirst, hasAppeal, hasCassation]
         let highestIdx = present.lastIndex(of: true) ?? 0
 

@@ -24,6 +24,7 @@ extension CaseInstance.Level {
         case .first:       return Color(red: 0.04, green: 0.48, blue: 1.0)   // синий
         case .appeal:      return Color(red: 0.37, green: 0.36, blue: 0.90)  // индиго
         case .cassation:   return Color(red: 0.11, green: 0.56, blue: 0.62)  // бирюзовый
+        case .vsCassation: return Color(red: 0.72, green: 0.20, blue: 0.30)  // тёмно-красный (ВС РФ)
         case .supervisory: return Color(red: 0.55, green: 0.40, blue: 0.20)
         }
     }
@@ -349,6 +350,9 @@ private struct InstanceBlock: View {
                 Text(instance.court).font(.system(size: 12.5, weight: .bold)).lineLimit(1)
                 Text("№ \(instance.caseNumber)").font(.caption).foregroundStyle(.secondary)
                 if instance.foundByUID { TinyChip(text: "по УИД", color: instance.level.tint) }
+                if let note = instance.note {
+                    TinyChip(text: note, color: Color(red: 0.72, green: 0.20, blue: 0.30))
+                }
                 Spacer(minLength: 4)
             }
             HStack(spacing: 8) {

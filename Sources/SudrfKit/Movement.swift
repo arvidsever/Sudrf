@@ -53,7 +53,9 @@ public struct PrivateComplaint: Sendable, Equatable, Identifiable, Codable {
 }
 
 public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
-    public enum Level: String, Sendable, Codable { case first, appeal, cassation, supervisory }
+    public enum Level: String, Sendable, Codable {
+        case first, appeal, cassation, vsCassation, supervisory
+    }
     public var id: String { domain + "/" + caseNumber }
     public var level: Level
     public var court: String
@@ -69,15 +71,18 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// Если задан — инстанция не загружена автоматически (форма суда под капчей).
     /// URL формы поиска, которую нужно открыть, чтобы пользователь ввёл код вручную.
     public var captchaFormURL: URL?
+    /// Пометка к инстанции (напр. «отказ в передаче», «возврат без рассмотрения»
+    /// для «отказных» производств ВС РФ). Отображается отдельным чипом.
+    public var note: String?
 
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
                 sessions: [CaseSession], actID: String? = nil,
-                captchaFormURL: URL? = nil) {
+                captchaFormURL: URL? = nil, note: String? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
         self.result = result; self.sessions = sessions; self.actID = actID
-        self.captchaFormURL = captchaFormURL
+        self.captchaFormURL = captchaFormURL; self.note = note
     }
 }
 
@@ -135,15 +140,29 @@ public protocol CaseProviding: Sendable {
 
 extension SudrfClient: CaseProviding {}
 
+/// Часть интерфейса `VSRFClient`, нужная сервису движения для второй кассации
+/// (Верховный Суд РФ, vsrf.ru). Подменяется в тестах.
+public protocol VSRFProviding: Sendable {
+    func search(uniqueNumber: String?, oldCaseNumber: String?,
+                keywords: String?) async throws -> VSRFSearchResults
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard
+}
+
+extension VSRFClient: VSRFProviding {}
+
 public actor MovementService: MovementProviding {
 
     private let client: any CaseProviding
     /// Домены вышестоящих судов, на которых ищем дело по УИД.
     private let higherCourtDomains: [String]
+    /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
+    private let vsrf: (any VSRFProviding)?
 
-    public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = []) {
+    public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
+                vsrf: (any VSRFProviding)? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
+        self.vsrf = vsrf
     }
 
     public func movement(for base: CaseSearchResult,
@@ -330,6 +349,24 @@ public actor MovementService: MovementProviding {
                     break
                 }
                 catch { continue }
+            }
+        }
+
+        // 3. Вторая кассация — Верховный Суд РФ (vsrf.ru, отдельная платформа).
+        //    Опрашивается, только если внедрён клиент `vsrf`. Дело (истребованное,
+        //    с УИД) и «отказные» жалобы (без истребования) отбираются по УИД и по
+        //    тройке (суд 1-й инст. + № дела 1-й инст. + фамилия любой из сторон).
+        if let vsrf {
+            let surnames = Set((baseCard.parties.plaintiffs
+                                + baseCard.parties.defendants
+                                + baseCard.parties.thirdParties)
+                               .compactMap { VSRFLinkKey.surname($0) })
+            if uid != nil || !surnames.isEmpty {
+                let vs = await Self.vsrfInstances(vsrf: vsrf, uid: uid,
+                                                  firstInstanceCourt: court.title,
+                                                  firstInstanceCaseNumber: base.caseNumber,
+                                                  partySurnames: surnames)
+                instances.append(contentsOf: vs)
             }
         }
 
@@ -551,6 +588,8 @@ extension MovementService {
             // по ГПК/УПК/КАС — кассационное определение.
             if prefix == "adm" || prefix == "admj" { return "Постановление" }
             return "Определение суда кассационной инстанции"
+        case .vsCassation:
+            return "Определение Верховного Суда РФ"
         case .supervisory:
             return "Постановление Президиума"
         }
@@ -575,11 +614,107 @@ extension MovementService {
 
     static func levelOrder(_ level: CaseInstance.Level) -> Int {
         switch level {
-        case .first:       return 0
-        case .appeal:      return 1
-        case .cassation:   return 2
-        case .supervisory: return 3
+        case .first:        return 0
+        case .appeal:       return 1
+        case .cassation:    return 2   // первая кассация (КСОЮ)
+        case .vsCassation:  return 3   // вторая кассация (Судебные коллегии ВС РФ)
+        case .supervisory:  return 4   // надзор (Президиум ВС РФ)
         }
+    }
+
+    // MARK: Вторая кассация (ВС РФ)
+
+    /// Строит инстанции второй кассации (ВС РФ) для базового дела.
+    ///
+    /// Логика слияния «жалоба → дело»:
+    ///   • есть истребованное ДЕЛО (с УИД) → одна инстанция-дело; события
+    ///     истребовавшей жалобы («Истребовано дело») вливаются в её движение,
+    ///     сама жалоба отдельной записью НЕ дублируется;
+    ///   • «отказные»/«возвратные» жалобы, не приведшие к истребованию, — каждая
+    ///     отдельной инстанцией с пометкой «отказ/возврат» (решение пользователя);
+    ///   • дел нет вовсе → все жалобы идут отдельными инстанциями.
+    static func vsrfInstances(vsrf: any VSRFProviding, uid: String?,
+                              firstInstanceCourt: String, firstInstanceCaseNumber: String,
+                              partySurnames: Set<String>) async -> [CaseInstance] {
+        var prods: [VSRFProduction] = []
+
+        // 1) По УИД — истребованное дело (точный матч).
+        if let uid, !uid.isEmpty,
+           let r = try? await vsrf.search(uniqueNumber: uid, oldCaseNumber: nil, keywords: nil) {
+            prods += r.results.filter {
+                VSRFLinkKey.normUID($0.uid) != nil
+                    && VSRFLinkKey.normUID($0.uid) == VSRFLinkKey.normUID(uid)
+            }
+        }
+        // 2) По № дела 1-й инстанции — жалобы (в т. ч. отказные) любой из сторон.
+        //    Выдача мешает регионы, поэтому строго отбираем по тройке.
+        if let r = try? await vsrf.search(uniqueNumber: nil,
+                                          oldCaseNumber: firstInstanceCaseNumber, keywords: nil) {
+            let court = VSRFLinkKey.normCourt(firstInstanceCourt)
+            let caseNo = VSRFLinkKey.normCaseNo(firstInstanceCaseNumber)
+            for p in r.results {
+                guard VSRFLinkKey.normCourt(p.firstInstance.court) == court, court != nil,
+                      VSRFLinkKey.normCaseNo(p.firstInstance.caseNumber) == caseNo, caseNo != nil
+                else { continue }
+                if !partySurnames.isEmpty {
+                    guard let s = VSRFLinkKey.surname(p.applicant), partySurnames.contains(s)
+                    else { continue }
+                }
+                prods.append(p)
+            }
+        }
+
+        // Дедупликация по cardID (или номеру).
+        var seen = Set<String>()
+        let unique = prods.filter { seen.insert($0.cardID ?? ($0.number ?? UUID().uuidString)).inserted }
+
+        let cases = unique.filter { $0.kind == .caseFile }
+        let complaints = unique.filter { $0.kind == .complaint }
+
+        var out: [CaseInstance] = []
+        if !cases.isEmpty {
+            // События истребовавших жалоб (интейк дела) — вливаем в движение дела.
+            let intake = complaints.filter { $0.caseRequested }.flatMap { $0.events }
+            for d in cases { out.append(mapProduction(d, extraEvents: intake)) }
+            // Мёртвые жалобы (не привели к истребованию) — отдельными инстанциями.
+            for c in complaints where !c.caseRequested { out.append(mapProduction(c)) }
+        } else {
+            for c in complaints { out.append(mapProduction(c)) }
+        }
+        return out
+    }
+
+    /// Отображает производство ВС РФ в инстанцию второй кассации.
+    static func mapProduction(_ p: VSRFProduction, extraEvents: [VSRFEvent] = []) -> CaseInstance {
+        // Движение: события производства + (для дела) события истребовавшей жалобы,
+        // в хронологическом порядке.
+        let merged = (p.events + extraEvents)
+            .sorted { dateSortKey($0.date) < dateSortKey($1.date) }
+        var sessions = merged.map { CaseSession(date: $0.date ?? "—", event: $0.text) }
+        if sessions.isEmpty, let inc = p.incomingDate {
+            sessions = [CaseSession(date: inc, event: "Поступило в ВС РФ")]
+        }
+        let disposition = merged.last?.text ?? p.events.last?.text
+
+        // Пометка «отказ/возврат».
+        let joined = merged.map { $0.text.lowercased() }.joined(separator: " ")
+        let note: String?
+        if joined.contains("возврат") { note = "возврат без рассмотрения" }
+        else if joined.contains("отказ в передаче") { note = "отказ в передаче" }
+        else if p.kind == .complaint && p.uid == nil && !p.caseRequested { note = "жалоба отклонена" }
+        else { note = nil }
+
+        return CaseInstance(
+            level: .vsCassation,
+            court: "Верховный Суд РФ",
+            caseNumber: p.number ?? "—",
+            judge: p.rapporteur,
+            domain: VSRFEndpoint.host,
+            foundByUID: p.uid != nil,
+            result: disposition,
+            sessions: sessions,
+            actID: nil,
+            note: note)
     }
 
     /// Минимальное движение без сетевых запросов — когда у записи нет ID карточки.

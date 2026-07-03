@@ -85,6 +85,7 @@ final class SearchModel: ObservableObject {
 
     private let resolver = DistrictCourtResolver()
     private let client = SudrfClient()
+    private let vsrfClient = VSRFClient()
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
     /// подсудности в MovementContext (единственный источник правды, общий
@@ -94,7 +95,8 @@ final class SearchModel: ObservableObject {
                         higherCourtDomains: MovementContext.expandedHigherDomains(
                             branch: branch, courtLevel: court.level,
                             courtTitle: court.title, courtCode: court.code,
-                            region: region, displayDomain: court.domain))
+                            region: region, displayDomain: court.domain),
+                        vsrf: vsrfClient)
     }
 
     var busy: Bool { resolving || searching || loadingCard }

@@ -34,6 +34,7 @@ final class RefreshCenter: ObservableObject {
 
     private let store: TrackedStore
     private let client: SudrfClient
+    private let vsrfClient = VSRFClient()
     private var tasks: [String: Task<Void, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
@@ -122,7 +123,7 @@ final class RefreshCenter: ObservableObject {
             fail(key, "Не удалось восстановить параметры поиска по делу.")
             return
         }
-        let service = ctx.makeService(client: client)
+        let service = ctx.makeService(client: client, vsrf: vsrfClient)
         do {
             let mv = try await service.movement(for: ctx.baseResult,
                                                 court: ctx.searchCourt, cartoteka: cart)

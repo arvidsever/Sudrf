@@ -55,6 +55,10 @@ public struct PrivateComplaint: Sendable, Equatable, Identifiable, Codable {
 public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     public enum Level: String, Sendable, Codable {
         case first, appeal, cassation, vsCassation, supervisory
+        /// Производство по материалу (13-…, 3/12-…, 15-…) в рамках дела —
+        /// не инстанция пересмотра; в карточке показывается отдельной секцией
+        /// «Материалы» в конце, в стадию/шаги дела не входит.
+        case material
     }
     public var id: String { domain + "/" + caseNumber }
     public var level: Level
@@ -150,18 +154,49 @@ public protocol VSRFProviding: Sendable {
 
 extension VSRFClient: VSRFProviding {}
 
+/// Прямая ссылка на известную карточку дела/материала (например, из импорта
+/// выгрузки стороннего сервиса). Карточки открываются прямым GET без капчи,
+/// поэтому known card — гарантия данных там, где сквозной поиск по УИД
+/// упирается в капчу или невозможен (УИД в базовой карточке пуст).
+public struct KnownCard: Sendable, Equatable, Codable {
+    public var domain: String        // модульный («--») домен суда
+    public var courtTitle: String    // название суда для отображения
+    public var caseID: String
+    public var caseUID: String       // GUID ссылки (case_uid), не путать с УИД дела
+    public var deloID: String
+    public var new: String
+    public var caseNumber: String?   // № дела/материала, если известен
+    public var levelRaw: String      // CaseInstance.Level.rawValue
+    public var cartotekaID: String?  // id картотеки (для названия акта), напр. "g3"
+
+    public var level: CaseInstance.Level { CaseInstance.Level(rawValue: levelRaw) ?? .material }
+
+    public init(domain: String, courtTitle: String, caseID: String, caseUID: String,
+                deloID: String, new: String, caseNumber: String? = nil,
+                levelRaw: String, cartotekaID: String? = nil) {
+        self.domain = domain; self.courtTitle = courtTitle
+        self.caseID = caseID; self.caseUID = caseUID
+        self.deloID = deloID; self.new = new; self.caseNumber = caseNumber
+        self.levelRaw = levelRaw; self.cartotekaID = cartotekaID
+    }
+}
+
 public actor MovementService: MovementProviding {
 
     private let client: any CaseProviding
     /// Домены вышестоящих судов, на которых ищем дело по УИД.
     private let higherCourtDomains: [String]
+    /// Известные прямые ссылки на карточки этого дела (вышестоящие инстанции,
+    /// материалы) — фолбэк при капче и добор того, что поиск не нашёл.
+    private let knownCards: [KnownCard]
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
     private let vsrf: (any VSRFProviding)?
 
     public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
-                vsrf: (any VSRFProviding)? = nil) {
+                knownCards: [KnownCard] = [], vsrf: (any VSRFProviding)? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
+        self.knownCards = knownCards
         self.vsrf = vsrf
     }
 
@@ -251,6 +286,37 @@ public actor MovementService: MovementProviding {
             }
         }
 
+        // 1c. Материалы домашнего суда (13-…, 3/…, 15-…) под тем же УИД —
+        //     секция «Материалы» в конце карточки. Ошибки и капча глушатся
+        //     молча: материалы — дополнение, заглушку из-за них не ставим.
+        if let uid, court.level == .district, cartoteka.id != "m",
+           let mCart = CartotekaRegistry.find(level: .district, id: "m") {
+            let rows = (try? await client.search(court: court, cartoteka: mCart,
+                                                 field: .uid, value: uid)) ?? []
+            for r in rows {
+                guard let rID = r.caseID, let rUID = r.caseUID else { continue }
+                if instances.contains(where: { $0.domain == court.domain
+                                            && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
+                guard let card = try? await client.fetchCard(court: court, caseID: rID, caseUID: rUID,
+                                                             deloID: mCart.deloID,
+                                                             new: mCart.new) else { continue }
+                var matActID: String? = nil
+                if let actText = card.actText {
+                    let actID = "act_\(court.domain)#\(r.caseNumber)"
+                    let date = r.decisionDate ?? r.receiptDate ?? card.decisionDate ?? "—"
+                    acts.append(CaseAct(id: actID,
+                                        title: Self.materialActTitle(caseNumber: r.caseNumber),
+                                        date: date, courtShort: "Материал", instanceLevel: .material))
+                    actBodies[actID] = actText
+                    matActID = actID
+                }
+                instances.append(CaseInstance(
+                    level: .material, court: court.title, caseNumber: r.caseNumber,
+                    judge: r.judge ?? card.judge, domain: court.domain, foundByUID: true,
+                    result: r.result ?? card.result, sessions: card.sessions, actID: matActID))
+            }
+        }
+
         // 2. Вышестоящие суды: поиск по УИД → карточка → инстанция.
         //    Если в карточке УИД не указан, сквозной поиск невозможен — пропускаем.
         for domain in higherCourtDomains {
@@ -330,10 +396,21 @@ public actor MovementService: MovementProviding {
                     }
                     break   // записи апелляции найдены в этой картотеке — к следующему суду
                 } catch SudrfError.captchaRequired(let formURL) {
-                    // Форма этого суда под капчей — автопоиск невозможен. Добавляем
-                    // заглушку: пользователь введёт код во всплывающем окне (см. UI).
+                    // Форма этого суда под капчей — автопоиск невозможен. Если из
+                    // импорта известны прямые ссылки на карточки этого суда — берём
+                    // их (карточки капчой не закрыты); иначе заглушка: пользователь
+                    // введёт код во всплывающем окне (см. UI).
                     let instLevel = Self.instanceLevel(forCourtLevel: level)
-                    if !instances.contains(where: { $0.domain == domain }) {
+                    var rescued = false
+                    for kc in knownCards where kc.domain == domain && kc.level != .material {
+                        guard let entry = await instanceFromKnownCard(kc) else { continue }
+                        if let a = entry.act, let b = entry.body {
+                            acts.append(a); actBodies[a.id] = b
+                        }
+                        instances.append(entry.inst)
+                        rescued = true
+                    }
+                    if !rescued, !instances.contains(where: { $0.domain == domain }) {
                         instances.append(CaseInstance(
                             level: instLevel,
                             court: higherCourt.title,
@@ -350,6 +427,24 @@ public actor MovementService: MovementProviding {
                 }
                 catch { continue }
             }
+        }
+
+        // 2b. Добор по известным прямым ссылкам: карточки, которые сквозной поиск
+        //     не нашёл (УИД базовой карточки пуст, домен вне подсудности, материалы
+        //     любого звена), подтягиваются прямым GET. Поиск первичен — он находит
+        //     все круги; уже собранные инстанции не дублируем.
+        for kc in knownCards {
+            if let n = kc.caseNumber, instances.contains(where: {
+                $0.domain == kc.domain && Self.sameCaseNumber($0.caseNumber, n)
+            }) { continue }
+            guard let entry = await instanceFromKnownCard(kc) else { continue }
+            if instances.contains(where: {
+                $0.domain == kc.domain && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
+            }) { continue }
+            if let a = entry.act, let b = entry.body {
+                acts.append(a); actBodies[a.id] = b
+            }
+            instances.append(entry.inst)
         }
 
         // 3. Вторая кассация — Верховный Суд РФ (vsrf.ru, отдельная платформа).
@@ -386,6 +481,38 @@ public actor MovementService: MovementProviding {
                             instances: sortedInst, complaints: [:],
                             acts: sortedActs, actBodies: actBodies,
                             category: baseCard.category, parties: parties)
+    }
+
+    /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).
+    /// nil — карточка недоступна (ошибки не пробрасываются: known card — добор,
+    /// его отсутствие не должно ронять сборку движения).
+    private func instanceFromKnownCard(_ kc: KnownCard)
+        async -> (inst: CaseInstance, act: CaseAct?, body: String?)? {
+        // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
+        let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle, level: .district)
+        guard let card = try? await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
+                                                     caseUID: kc.caseUID, deloID: kc.deloID,
+                                                     new: kc.new) else { return nil }
+        let number = card.caseNumber ?? kc.caseNumber ?? "—"
+        var act: CaseAct? = nil
+        var body: String? = nil
+        if let actText = card.actText {
+            let actID = "act_\(kc.domain)#\(number)"
+            let title = kc.level == .material
+                ? Self.materialActTitle(caseNumber: number)
+                : Self.actTitle(cartotekaID: kc.cartotekaID ?? "", level: kc.level)
+            act = CaseAct(id: actID, title: title,
+                          date: card.decisionDate ?? card.receiptDate ?? "—",
+                          courtShort: kc.level == .material ? "Материал"
+                                                            : Self.shortCourtName(forDomain: kc.domain),
+                          instanceLevel: kc.level)
+            body = actText
+        }
+        let inst = CaseInstance(level: kc.level, court: kc.courtTitle, caseNumber: number,
+                                judge: card.judge, domain: kc.domain, foundByUID: false,
+                                result: card.result, sessions: card.sessions,
+                                actID: act?.id)
+        return (inst, act, body)
     }
 }
 
@@ -592,7 +719,17 @@ extension MovementService {
             return "Определение Верховного Суда РФ"
         case .supervisory:
             return "Постановление Президиума"
+        case .material:
+            return "Судебный акт по материалу"
         }
+    }
+
+    /// Название акта по материалу — по индексу номера: уголовно-процессуальные
+    /// материалы («3/…», «4/…») разрешаются постановлением, гражданские/КАС
+    /// («13-…», «13а-…») и КоАП-исполнение («15-…») — определением.
+    static func materialActTitle(caseNumber: String) -> String {
+        let n = CartotekaRegistry.normalizedNumber(caseNumber)
+        return (n.hasPrefix("3/") || n.hasPrefix("4/")) ? "Постановление" : "Определение"
     }
 
     /// Краткое/полное название суда из домена для отображения в интерфейсе.
@@ -619,6 +756,7 @@ extension MovementService {
         case .cassation:    return 2   // первая кассация (КСОЮ)
         case .vsCassation:  return 3   // вторая кассация (Судебные коллегии ВС РФ)
         case .supervisory:  return 4   // надзор (Президиум ВС РФ)
+        case .material:     return 5   // материалы — всегда в конце карточки
         }
     }
 

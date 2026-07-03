@@ -8,6 +8,7 @@
 
 import SwiftUI
 import SudrfKit
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @StateObject private var router = AppRouter()
@@ -47,6 +48,74 @@ struct RootView: View {
         .frame(minWidth: 1180, minHeight: 720)
         .animation(.easeOut(duration: 0.18), value: router.section)
         .animation(.easeOut(duration: 0.18), value: router.openedCase)
+        .onReceive(NotificationCenter.default.publisher(for: .sudrfImportCases)) { _ in
+            pickCSVAndImport()
+        }
+        .sheet(isPresented: Binding(
+            get: { router.importState != nil },
+            set: { shown in
+                if !shown {
+                    if case .running = router.importState { router.cancelImport() }
+                    else { router.dismissImportSummary() }
+                }
+            })) {
+            ImportSheet()
+                .environmentObject(router)
+        }
+    }
+
+    /// Меню «Файл → Импортировать дела из CSV…»: выбор файла и запуск импорта.
+    private func pickCSVAndImport() {
+        guard router.importState == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Импорт дел из CSV"
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        router.beginImport(csvText: text)
+    }
+}
+
+// MARK: - Шит импорта: прогресс сетевого этапа + итоговая сводка
+
+private struct ImportSheet: View {
+    @EnvironmentObject var router: AppRouter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            switch router.importState {
+            case .running(let done, let total):
+                Text("Импорт дел").font(.system(size: 15, weight: .bold))
+                Text("Карточка \(min(done + 1, max(total, 1))) из \(total) — открываю прямые ссылки, чтобы сшить инстанции и материалы по УИД.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                ProgressView(value: Double(done), total: Double(max(total, 1)))
+                HStack {
+                    Spacer()
+                    Button("Отменить импорт") { router.cancelImport() }
+                        .controlSize(.regular)
+                }
+            case .finished(let summary):
+                Text("Импорт завершён").font(.system(size: 15, weight: .bold))
+                Text(summary.text)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Движение дел загрузится фоном (обход каждые 10 минут); открытие дела подтягивает его сразу.")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Готово") { router.dismissImportSummary() }
+                        .buttonStyle(.borderedProminent).controlSize(.regular)
+                        .keyboardShortcut(.defaultAction)
+                }
+            case nil:
+                EmptyView()
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
     }
 }
 

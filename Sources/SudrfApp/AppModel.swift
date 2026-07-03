@@ -393,6 +393,85 @@ final class AppRouter: ObservableObject {
         rec.seenAt = Date(); store.save(); reload()
     }
 
+    // MARK: Импорт из CSV (Файл → «Импортировать дела из CSV…»)
+
+    enum ImportState {
+        case running(done: Int, total: Int)
+        case finished(ImportSummary)
+    }
+    @Published var importState: ImportState? = nil
+    private var importTask: Task<Void, Never>? = nil
+
+    /// Запуск импорта. Сетевой этап (карточка каждого дела — прямой GET без
+    /// капчи) идёт с троттлингом клиента ~1.5 с/запрос; записи создаются одним
+    /// батчем в конце, поэтому отмена ничего не оставляет за собой.
+    func beginImport(csvText: String) {
+        guard importTask == nil else { return }
+        let rows = CaseImporter.rows(fromCSV: csvText)
+        guard !rows.isEmpty else {
+            var s = ImportSummary()
+            s.skipped = [(CaseImporter.reasonBadURL, 0)]
+            importState = .finished(s)
+            return
+        }
+        importTask = Task { [weak self] in
+            await self?.runImport(rows: rows)
+            self?.importTask = nil
+        }
+    }
+
+    func cancelImport() {
+        importTask?.cancel()
+        importTask = nil
+        importState = nil
+    }
+
+    func dismissImportSummary() {
+        if case .finished = importState { importState = nil }
+    }
+
+    private func runImport(rows: [ImportedRow]) async {
+        var skipped: [String: Int] = [:]
+        var seeds: [ImportSeed] = []
+        for row in rows {
+            switch CaseImporter.classify(row) {
+            case .seed(let s):          seeds.append(s)
+            case .skipped(let reason):  skipped[reason, default: 0] += 1
+            }
+        }
+        importState = .running(done: 0, total: seeds.count)
+
+        var fetched: [CaseImporter.Fetched] = []
+        for (i, seed) in seeds.enumerated() {
+            let court = Court(domain: seed.searchDomain, title: seed.courtTitle, level: seed.level)
+            let card = try? await client.fetchCard(court: court, caseID: seed.caseID,
+                                                   caseUID: seed.caseUID,
+                                                   deloID: seed.deloID, new: seed.new)
+            if Task.isCancelled { return }
+            fetched.append(CaseImporter.Fetched(seed: seed, card: card))
+            importState = .running(done: i + 1, total: seeds.count)
+        }
+
+        let plan = CaseImporter.plan(fetched)
+        let df = DateFormatter()
+        df.dateFormat = "dd.MM.yyyy"
+        let collection = "Импорт " + df.string(from: Date())
+        for rec in plan.records {
+            store.upsert(context: rec.context, snapshot: nil, movement: nil,
+                         collections: [collection])
+        }
+        reload()
+
+        var summary = ImportSummary()
+        summary.total = rows.count
+        summary.cases = plan.records.filter { !$0.isMaterial }.count
+        summary.materials = plan.records.filter { $0.isMaterial }.count
+        summary.stitched = plan.stitched
+        summary.cold = plan.cold
+        summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
+        importState = .finished(summary)
+    }
+
     // MARK: Живая карточка
 
     /// Результат фонового обновления: снимок/кэш уже сохранены RefreshCenter,

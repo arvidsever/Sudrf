@@ -37,6 +37,12 @@ struct MovementContext: Codable, Equatable, Sendable {
     var legalForceDate: String?
     var cardURLString: String?
 
+    /// Известные прямые ссылки на карточки этого дела в других судах/картотеках
+    /// (вышестоящие инстанции, материалы) — из импорта выгрузки стороннего
+    /// сервиса. Опционально: старые сохранённые контексты декодируются без
+    /// миграции. См. `KnownCard` в SudrfKit.
+    var knownCards: [KnownCard]? = nil
+
     // MARK: Производные значения
 
     var branch: CourtBranch { CourtBranch(rawValue: branchRaw) ?? .general }
@@ -64,7 +70,8 @@ struct MovementContext: Codable, Equatable, Sendable {
     // MARK: Сервис движения (подбор доменов вышестоящих судов)
 
     func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil) -> MovementService {
-        MovementService(client: client, higherCourtDomains: expandedHigherDomains(), vsrf: vsrf)
+        MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
+                        knownCards: knownCards ?? [], vsrf: vsrf)
     }
 
     /// Домены вышестоящих судов с разворотом в оба синонима («vs--X» и «vs.X»):

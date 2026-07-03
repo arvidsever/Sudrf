@@ -6,6 +6,13 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    /// Команда меню «Файл → Импортировать дела из CSV…»: сцена команд не имеет
+    /// доступа к environment-роутеру окна, поэтому — через NotificationCenter;
+    /// слушает RootView (там живут роутер и панель выбора файла).
+    static let sudrfImportCases = Notification.Name("sudrfImportCases")
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -26,6 +33,14 @@ struct SudrfApp: App {
         // как в макете (FilterPane оставляет под него отступ сверху).
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
+        .commands {
+            CommandGroup(replacing: .importExport) {
+                Button("Импортировать дела из CSV…") {
+                    NotificationCenter.default.post(name: .sudrfImportCases, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
+        }
 
         // Отдельное окно «текст акта»: openWindow(value: ActWindowPayload(…)).
         // Повторный вызов с тем же payload поднимает уже открытое окно.

@@ -26,6 +26,7 @@ extension CaseInstance.Level {
         case .cassation:   return Color(red: 0.11, green: 0.56, blue: 0.62)  // бирюзовый
         case .vsCassation: return Color(red: 0.72, green: 0.20, blue: 0.30)  // тёмно-красный (ВС РФ)
         case .supervisory: return Color(red: 0.55, green: 0.40, blue: 0.20)
+        case .material:    return Color(red: 0.45, green: 0.45, blue: 0.50)  // серый — не инстанция пересмотра
         }
     }
 }
@@ -51,9 +52,25 @@ struct CaseMovementView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
-                ForEach(movement.instances) { inst in
+                // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
+                // отдельной секцией в конце: они идут в рамках дела, но инстанциями
+                // не являются.
+                ForEach(movement.instances.filter { $0.level != .material }) { inst in
                     InstanceBlock(instance: inst, complaints: movement.complaints,
                                   expanded: $expanded, onSolveCaptcha: onSolveCaptcha)
+                }
+                let materials = movement.instances.filter { $0.level == .material }
+                if !materials.isEmpty {
+                    Text("Материалы")
+                        .font(.system(size: 12.5, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                        .padding(.top, 6)
+                    ForEach(materials) { inst in
+                        InstanceBlock(instance: inst, complaints: movement.complaints,
+                                      expanded: $expanded, onSolveCaptcha: onSolveCaptcha)
+                    }
                 }
                 Text("Чип «обжаловано · ЧЖ» — частная жалоба на определение; "
                    + "клик раскрывает её движение на месте.")

@@ -242,6 +242,31 @@ public extension CourtDirectory {
         return subjectCourtDomainByCode.first { $0.value == host }?.key
     }
 
+    /// Региональный код по «региональному суффиксу» домена платформы sudrf —
+    /// сегменту между разделителем («--» или «.») и `.sudrf.ru`: у районных
+    /// судов он совпадает с суффиксом их суда субъекта (`syktsud--komi` ↔
+    /// `vs--komi` → «11»). Нужен импорту: у карточки из выгрузки известен
+    /// только домен, а подсудность вышестоящих судов строится по коду субъекта.
+    static func subjectCode(forRegionSuffix suffix: String) -> String? {
+        let s = suffix.lowercased()
+        guard !s.isEmpty else { return nil }
+        return subjectCourtDomainByCode.first { _, domain in
+            regionSuffix(ofDomain: domain) == s
+        }?.key
+    }
+
+    /// Региональный суффикс домена sudrf: `syktsud--komi.sudrf.ru` → «komi»,
+    /// `oblsud.kir.sudrf.ru` → «kir». nil — домен вне платформы или без
+    /// сегмента региона (`3kas.sudrf.ru`).
+    static func regionSuffix(ofDomain domain: String) -> String? {
+        let host = domain.lowercased()
+        guard host.hasSuffix(".sudrf.ru") else { return nil }
+        let label = String(host.dropLast(".sudrf.ru".count))
+        if let r = label.range(of: "--") { return String(label[r.upperBound...]) }
+        if let dot = label.lastIndex(of: ".") { return String(label[label.index(after: dot)...]) }
+        return nil
+    }
+
     internal static let cassationNumberBySubjectCode: [String: Int] = [
         "13": 1, "31": 1, "32": 1, "36": 1, "40": 1, "46": 1, "48": 1,
         "50": 1, "52": 1, "57": 1, "58": 1, "64": 1, "71": 1,

@@ -22,8 +22,13 @@ final class TrackedCaseRecord {
     var addedAt: Date
     /// Когда пользователь в последний раз открывал карточку (для бейджа «обновлено»).
     var seenAt: Date?
-    /// Папка-доверитель (для группировки в «Моих делах»).
+    /// Legacy-поле «папка-доверитель» (до v20). Оставлено в схеме; содержимое
+    /// один раз пересаживается в collectionNames (см. migrateFolders), после
+    /// чего обнуляется — иначе удаление дела из всех подборок воскрешало бы папку.
     var folderName: String
+    /// Подборки, в которых состоит дело (v20). Одно дело может лежать в
+    /// нескольких подборках. Значение по умолчанию — лёгкая миграция SwiftData.
+    var collectionNames: [String] = []
 
     // Денормализованные поля для быстрых списков и фолбэка без декодирования.
     var caseNumber: String
@@ -40,12 +45,13 @@ final class TrackedCaseRecord {
     /// Когда движение в последний раз получено с портала (TTL кэша).
     var movementFetchedAt: Date? = nil
 
-    init(key: String, folderName: String, caseNumber: String, courtTitle: String,
+    init(key: String, collections: [String], caseNumber: String, courtTitle: String,
          displayDomain: String, contextData: Data, snapshotData: Data?) {
         self.key = key
         self.addedAt = Date()
         self.seenAt = nil
-        self.folderName = folderName
+        self.folderName = ""
+        self.collectionNames = collections
         self.caseNumber = caseNumber
         self.courtTitle = courtTitle
         self.displayDomain = displayDomain
@@ -99,6 +105,21 @@ final class TrackedStore {
                 fatalError("SwiftData не смог создать даже in-memory хранилище: \(error)")
             }
         }
+        migrateFolders()
+    }
+
+    /// Одноразовый посев подборок из legacy-папок (до v20): непустая папка
+    /// «доверителя» становится подборкой, после чего поле очищается.
+    private func migrateFolders() {
+        var changed = false
+        for rec in all() where !rec.folderName.isEmpty {
+            if rec.folderName != "Без папки", rec.collectionNames.isEmpty {
+                rec.collectionNames = [rec.folderName]
+            }
+            rec.folderName = ""
+            changed = true
+        }
+        if changed { save() }
     }
 
     func all() -> [TrackedCaseRecord] {
@@ -116,7 +137,7 @@ final class TrackedStore {
 
     @discardableResult
     func upsert(context ctx: MovementContext, snapshot snap: CaseSnapshot?,
-                movement mv: CaseMovement? = nil, folder: String) -> TrackedCaseRecord {
+                movement mv: CaseMovement? = nil, collections: [String]) -> TrackedCaseRecord {
         let key = ctx.key
         let ctxData = (try? JSONEncoder().encode(ctx)) ?? Data()
         let snapData = snap.flatMap { try? JSONEncoder().encode($0) }
@@ -134,7 +155,7 @@ final class TrackedStore {
             save()
             return existing
         }
-        let rec = TrackedCaseRecord(key: key, folderName: folder, caseNumber: ctx.caseNumber,
+        let rec = TrackedCaseRecord(key: key, collections: collections, caseNumber: ctx.caseNumber,
                                     courtTitle: ctx.courtTitle, displayDomain: ctx.displayDomain,
                                     contextData: ctxData, snapshotData: snapData)
         if mvData != nil {

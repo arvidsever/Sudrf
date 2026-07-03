@@ -296,7 +296,7 @@ enum MovementDerivation {
         let left = p.plaintiffs.first
         let right = p.defendants.first
         switch (left, right) {
-        case let (l?, r?): return "\(l) → \(r)"
+        case let (l?, r?): return "\(l) ⚔ \(r)"
         case let (l?, nil): return l
         case let (nil, r?): return r
         default:

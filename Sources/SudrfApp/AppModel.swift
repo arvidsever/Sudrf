@@ -61,12 +61,86 @@ enum AppSection: String, CaseIterable, Hashable { case overview, cases, search, 
     }
 }
 
-enum MyCasesMode: String, CaseIterable { case clients, stages, list
+enum MyCasesMode: String, CaseIterable { case list, stages, prods, clients
     var title: String {
         switch self {
-        case .clients: return "По доверителям"
-        case .stages:  return "По стадиям"
         case .list:    return "Списком"
+        case .stages:  return "По стадиям"
+        case .prods:   return "По производствам"
+        case .clients: return "По подборкам"
+        }
+    }
+}
+
+// MARK: - Вид производства
+
+/// Определяется по префиксу номера дела: 1- уголовное · 5- дело об АП ·
+/// 2а-/3а-/8а-/33а- административное (КАС) · остальные — гражданское.
+enum ProductionType: String, CaseIterable {
+    case civil, kas, crim, koap
+
+    static func of(_ caseNumber: String) -> ProductionType {
+        let n = caseNumber.lowercased()   // на портале встречается заглавная «А»
+        if n.hasPrefix("1-") { return .crim }
+        if n.hasPrefix("5-") { return .koap }
+        if n.hasPrefix("2а-") || n.hasPrefix("3а-")
+            || n.hasPrefix("8а-") || n.hasPrefix("33а-") { return .kas }
+        return .civil
+    }
+
+    /// Название группы/фильтра (сайдбар, группировка «По производствам»).
+    var side: String {
+        switch self {
+        case .civil: return "Гражданские"
+        case .kas:   return "Административные (КАС)"
+        case .crim:  return "Уголовные"
+        case .koap:  return "Адм. правонарушения"
+        }
+    }
+    /// Подпись под номером дела в строке таблицы.
+    var row: String {
+        switch self {
+        case .civil: return "гражданское"
+        case .kas:   return "административное (КАС)"
+        case .crim:  return "уголовное"
+        case .koap:  return "адм. правонарушение"
+        }
+    }
+    /// Буква-бейдж в сайдбаре.
+    var abbr: String {
+        switch self {
+        case .civil: return "Г"; case .kas: return "А"
+        case .crim:  return "У"; case .koap: return "АП"
+        }
+    }
+    /// Палитра «шкала тяжести»: один тёплый градиент от нейтрального к
+    /// тёмно-красному — цвет кодирует серьёзность производства, а не «тип».
+    var color: Color {
+        switch self {
+        case .civil: return Color(red: 0.38, green: 0.47, blue: 0.56)  // #607890 — нейтральный
+        case .kas:   return Color(red: 0.64, green: 0.47, blue: 0.16)  // #a3782a — охра
+        case .crim:  return Color(red: 0.62, green: 0.17, blue: 0.17)  // #9e2b2b — тёмно-красный
+        case .koap:  return Color(red: 0.75, green: 0.36, blue: 0.16)  // #c05c2a — оранжевый
+        }
+    }
+}
+
+// MARK: - Сортировка таблицы «Списком»
+
+enum CaseSort: CaseIterable {
+    case activity, nextEvent, number
+    var label: String {
+        switch self {
+        case .activity:  return "по активности"
+        case .nextEvent: return "по ближайшему событию"
+        case .number:    return "по номеру дела"
+        }
+    }
+    var hint: String {
+        switch self {
+        case .activity:  return "свежие изменения в деле — сверху"
+        case .nextEvent: return "ближайшее заседание или срок — сверху"
+        case .number:    return "по возрастанию номера"
         }
     }
 }
@@ -130,7 +204,8 @@ struct TrackedCase: Identifiable {
     var id: String { recordKey }
     var recordKey: String
     var caseNumber: String
-    var client: String
+    /// Подборки, в которых состоит дело (доверитель, тема — что угодно).
+    var collections: [String]
     var stage: CaseStageKind
     var stageTag: String
     var subject: String
@@ -144,6 +219,10 @@ struct TrackedCase: Identifiable {
     var isNew: Bool
     var steps: [StepState]
     var newDot: Bool
+    /// Дата последнего состоявшегося события (для сортировки «по активности»).
+    var lastEventDate: Date?
+    /// Дата ближайшего будущего заседания/срока (для «по ближайшему событию»).
+    var nextEventDate: Date?
 }
 
 // MARK: - Роутер приложения (навигация + единое состояние мониторинга)
@@ -157,9 +236,14 @@ final class AppRouter: ObservableObject {
     @Published var expandedComplaints: Set<String> = []
 
     // Мои дела
-    @Published var myView: MyCasesMode = .clients
+    @Published var myView: MyCasesMode = .list
+    /// Выбранная подборка («Все дела» — без фильтра).
     @Published var folder: String = "Все дела"
     @Published var stageFilter: CaseStageKind? = nil
+    @Published var prodFilter: ProductionType? = nil
+    /// Живой фильтр таблицы: номер + стороны + подборки + суд.
+    @Published var query: String = ""
+    @Published var sortBy: CaseSort = .activity
 
     // Календарь (на реальных датах)
     @Published var calMode: CalMode = .month
@@ -171,9 +255,8 @@ final class AppRouter: ObservableObject {
     @Published var hearings: [TrackedHearing] = []
     @Published var feed: [FeedEntry] = []
     @Published var deadlines: [TrackedDeadline] = []
-    @Published var folders: [(String, Int)] = []
+    @Published var collections: [(String, Int)] = []   // «Все дела» + подборки со счётчиками
     @Published var stageCounts: [(CaseStageKind, Int)] = []
-    @Published var clientNames: [String] = []
 
     // Правка срока
     @Published var editingDeadline: String? = nil
@@ -287,12 +370,12 @@ final class AppRouter: ObservableObject {
 
     // MARK: Отслеживание
 
-    func track(context ctx: MovementContext, movement: CaseMovement?, folder: String = "Без папки") {
+    func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) {
         let snap = movement.map { MovementDerivation.snapshot(from: $0, context: ctx) }
         // Движение с экрана поиска сеет кэш — первое открытие из «Моих дел» мгновенно.
         store.upsert(context: ctx, snapshot: snap,
                      movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
-                     folder: folder)
+                     collections: collections)
         reload()
     }
     func untrack(_ number: String) {
@@ -463,29 +546,39 @@ final class AppRouter: ObservableObject {
         hearings = hs
         deadlines = dls
         feed = buildFeed(sessionsForFeed)
-        folders = buildFolders(cs)
-        clientNames = buildClients(cs)
+        collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
     }
 
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
                                  stage: CaseStageKind) -> TrackedCase {
         let isNew = rec.seenAt == nil
+        let today = DateUtil.today
         if let snap {
+            // Даты для сортировок: последнее состоявшееся событие и ближайшее
+            // будущее (заседание или срок).
+            let past = snap.sessions.compactMap(\.date).filter { $0 <= today }.max()
+            let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
+                .first.flatMap(\.date)
+            let nextDeadline = snap.deadlines.map(\.date).filter { $0 >= today }.min()
+            let next = [nextHearing, nextDeadline].compactMap { $0 }.min()
             return TrackedCase(
-                recordKey: rec.key, caseNumber: rec.caseNumber, client: rec.folderName,
+                recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
                 stage: stage, stageTag: snap.stageTag, subject: snap.category ?? "—",
-                court: rec.courtTitle, partiesShort: snap.partiesShort,
+                court: rec.courtTitle,
+                // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
+                partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 statusText: snap.statusText,
                 statusChip: Palette.Chip(rawValue: snap.statusChipRaw) ?? .gray,
                 last: snap.lastEvent, next: snap.nextEvent,
                 nextChip: Palette.Chip(rawValue: snap.nextChipRaw) ?? .gray,
-                isNew: isNew, steps: makeSteps(snap.steps), newDot: isNew)
+                isNew: isNew, steps: makeSteps(snap.steps), newDot: isNew,
+                lastEventDate: past ?? rec.addedAt, nextEventDate: next)
         }
         // Снимок ещё не собран (трек до загрузки движения).
         let ctx = rec.context
         return TrackedCase(
-            recordKey: rec.key, caseNumber: rec.caseNumber, client: rec.folderName,
+            recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
             court: rec.courtTitle,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
@@ -493,7 +586,8 @@ final class AppRouter: ObservableObject {
             statusText: "Откройте, чтобы загрузить", statusChip: .gray,
             last: "движение ещё не загружено", next: "—", nextChip: .gray,
             isNew: rec.seenAt == nil,
-            steps: makeSteps(["active", "todo", "todo"]), newDot: false)
+            steps: makeSteps(["active", "todo", "todo"]), newDot: false,
+            lastEventDate: rec.addedAt, nextEventDate: nil)
     }
 
     private func makeSteps(_ raw: [String]) -> [StepState] {
@@ -525,15 +619,30 @@ final class AppRouter: ObservableObject {
         return "\(DateUtil.weekday(d)), \(DateUtil.fmt(d))"
     }
 
-    private func buildFolders(_ cs: [TrackedCase]) -> [(String, Int)] {
+    /// «Все дела» + подборки со счётчиками. Порядок — как создавались; имена,
+    /// встреченные на делах, но неизвестные списку (миграция папок, другой
+    /// девайс), впитываются в него — пустая подборка не исчезает.
+    private func buildCollections(_ cs: [TrackedCase]) -> [(String, Int)] {
+        var known = knownCollections
+        var seen = Set(known)
+        for c in cs {
+            for name in c.collections where !seen.contains(name) {
+                seen.insert(name); known.append(name)
+            }
+        }
+        if known != knownCollections { knownCollections = known }
         var out: [(String, Int)] = [("Все дела", cs.count)]
-        for name in buildClients(cs) { out.append((name, cs.filter { $0.client == name }.count)) }
+        for name in known {
+            out.append((name, cs.filter { $0.collections.contains(name) }.count))
+        }
         return out
     }
-    private func buildClients(_ cs: [TrackedCase]) -> [String] {
-        var seen = Set<String>(); var order: [String] = []
-        for c in cs where !seen.contains(c.client) { seen.insert(c.client); order.append(c.client) }
-        return order
+
+    /// Подборки, созданные пользователем (включая пустые), в порядке создания.
+    private static let collectionsKey = "myCollections"
+    private var knownCollections: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Self.collectionsKey) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.collectionsKey) }
     }
     private func buildStageCounts(_ cs: [TrackedCase]) -> [(CaseStageKind, Int)] {
         let order: [CaseStageKind] = [.first, .appeal, .cassation, .done]
@@ -545,14 +654,74 @@ final class AppRouter: ObservableObject {
 
     // MARK: Фильтры «Моих дел»
 
+    /// Таблица «Списком»: подборка ∧ вид производства ∧ стадия ∧ живой запрос,
+    /// затем выбранная сортировка. Фильтры комбинируются (И).
     func filteredCases() -> [TrackedCase] {
-        cases.filter { c in
-            (folder == "Все дела" || c.client == folder)
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let rows = cases.filter { c in
+            (folder == "Все дела" || c.collections.contains(folder))
+            && (prodFilter == nil || ProductionType.of(c.caseNumber) == prodFilter)
             && (stageFilter == nil || c.stage == stageFilter)
+            && (q.isEmpty || Self.matches(c, query: q))
+        }
+        return Self.sorted(rows, by: sortBy)
+    }
+
+    /// Вхождение запроса в номер + стороны + подборки + суд (case-insensitive).
+    nonisolated static func matches(_ c: TrackedCase, query q: String) -> Bool {
+        (c.caseNumber + " " + c.partiesShort + " "
+         + c.collections.joined(separator: " ") + " " + c.court)
+            .lowercased().contains(q)
+    }
+
+    nonisolated static func sorted(_ rows: [TrackedCase], by sort: CaseSort) -> [TrackedCase] {
+        switch sort {
+        case .activity:
+            return rows.sorted { ($0.lastEventDate ?? .distantPast) > ($1.lastEventDate ?? .distantPast) }
+        case .nextEvent:
+            return rows.sorted { ($0.nextEventDate ?? .distantFuture) < ($1.nextEventDate ?? .distantFuture) }
+        case .number:
+            return rows.sorted { $0.caseNumber.compare($1.caseNumber, options: .numeric) == .orderedAscending }
         }
     }
-    func casesIn(client: String) -> [TrackedCase] { cases.filter { $0.client == client } }
+
+    func casesIn(collection name: String) -> [TrackedCase] {
+        cases.filter { $0.collections.contains(name) }
+    }
     func casesIn(stage: CaseStageKind) -> [TrackedCase] { cases.filter { $0.stage == stage } }
+    func count(prod p: ProductionType) -> Int {
+        cases.filter { ProductionType.of($0.caseNumber) == p }.count
+    }
+
+    // MARK: Подборки
+
+    /// Создаёт подборку; пустое имя и дубликат игнорируются.
+    @discardableResult
+    func createCollection(named raw: String) -> Bool {
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name != "Все дела",
+              !knownCollections.contains(name) else { return false }
+        knownCollections.append(name)
+        reload()
+        return true
+    }
+
+    /// Членство дела в подборке — по ключу записи (номер дела без суда
+    /// неоднозначен: одно «2-115/2026» может отслеживаться в двух судах).
+    func add(caseKey key: String, to name: String) {
+        guard name != "Все дела", let rec = store.record(forKey: key),
+              !rec.collectionNames.contains(name) else { return }
+        rec.collectionNames.append(name)
+        store.save()
+        reload()
+    }
+    func remove(caseKey key: String, from name: String) {
+        guard let rec = store.record(forKey: key),
+              rec.collectionNames.contains(name) else { return }
+        rec.collectionNames.removeAll { $0 == name }
+        store.save()
+        reload()
+    }
 
     private func recordFor(number: String) -> TrackedCaseRecord? {
         let all = store.all()

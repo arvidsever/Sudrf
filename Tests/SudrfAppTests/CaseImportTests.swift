@@ -133,7 +133,9 @@ final class CaseImportTests: XCTestCase {
         XCTAssertEqual(reason("https://zheshartsky.komi.msudrf.ru/modules.php?name=sud_delo&op=cs&case_id=141614450&delo_id=1540005"),
                        CaseImporter.reasonMagistrate)
         XCTAssertEqual(reason("https://mos-gorsud.ru/rs/cases/123"), CaseImporter.reasonMosgorsud)
-        XCTAssertEqual(reason("https://mirsud.spb.ru/cases/1"), CaseImporter.reasonPlatform)
+        XCTAssertEqual(reason("https://mirsud.spb.ru/cases/detail/20/?id=5-583%2F2025-20"),
+                       CaseImporter.reasonMagistrateSpb)
+        XCTAssertEqual(reason("https://example.org/case/1"), CaseImporter.reasonPlatform)
         XCTAssertEqual(reason("не ссылка"), CaseImporter.reasonBadURL)
         // sudrf без параметров карточки — тоже пропуск, а не падение.
         XCTAssertEqual(reason("https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo"),

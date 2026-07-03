@@ -158,10 +158,11 @@ struct ImportSummary {
 enum CaseImporter {
 
     // Причины пропуска (сгруппируются в сводке).
-    static let reasonMagistrate = "мировые судьи (msudrf.ru)"
-    static let reasonMosgorsud  = "Мосгорсуд (mos-gorsud.ru, другая платформа)"
-    static let reasonPlatform   = "не платформа sudrf.ru"
-    static let reasonBadURL     = "не разобрана ссылка на дело"
+    static let reasonMagistrate    = "мировые судьи (msudrf.ru)"
+    static let reasonMagistrateSpb = "мировые судьи СПб (mirsud.spb.ru)"
+    static let reasonMosgorsud     = "Мосгорсуд (mos-gorsud.ru, другая платформа)"
+    static let reasonPlatform      = "не платформа sudrf.ru"
+    static let reasonBadURL        = "не разобрана ссылка на дело"
 
     /// CSV → строки импорта. Порядок колонок фиксирован заголовком.
     static func rows(fromCSV text: String) -> [ImportedRow] {
@@ -183,6 +184,8 @@ enum CaseImporter {
             return .skipped(reason: reasonBadURL)
         }
         if host.hasSuffix("msudrf.ru") { return .skipped(reason: reasonMagistrate) }
+        // У петербургских мировых судей собственный портал (не msudrf.ru).
+        if host.hasSuffix("mirsud.spb.ru") { return .skipped(reason: reasonMagistrateSpb) }
         if host.contains("mos-gorsud") { return .skipped(reason: reasonMosgorsud) }
         guard host.hasSuffix("sudrf.ru") else { return .skipped(reason: reasonPlatform) }
 

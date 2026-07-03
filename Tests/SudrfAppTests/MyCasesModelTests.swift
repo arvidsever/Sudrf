@@ -18,11 +18,38 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(ProductionType.of("33а-9/2026"), .kas)
         XCTAssertEqual(ProductionType.of("2-115/2026"), .civil)
         XCTAssertEqual(ProductionType.of("33-4/2026"), .civil)
+        // Жалобы/кассация по КоАП и уголовная апелляция — раньше падали в civil.
+        XCTAssertEqual(ProductionType.of("12-466/2026"), .koap)  // жалоба по делу об АП
+        XCTAssertEqual(ProductionType.of("4а-321/2025"), .koap)  // кассация КоАП
+        XCTAssertEqual(ProductionType.of("22-77/2026"), .crim)   // уголовная апелляция
+        XCTAssertEqual(ProductionType.of("7у-15/2026"), .crim)   // кассация КСОЮ, не КоАП
     }
 
     func testProductionTypeUppercaseLetter() {
         // На портале встречается заглавная «А» в индексе.
         XCTAssertEqual(ProductionType.of("2А-77/2026"), .kas)
+    }
+
+    // MARK: Вид производства с учётом звена суда
+
+    func testProductionTypeByCourtLevel() {
+        // «2-…» неоднозначен без звена: район — гражданское, субъект — уголовное.
+        XCTAssertEqual(ProductionType.of("2-1/2026", level: .district), .civil)
+        XCTAssertEqual(ProductionType.of("2-1/2026", level: .subject), .crim)
+        // «12-…» на районном звене — жалоба по делу об АП.
+        XCTAssertEqual(ProductionType.of("12-5/2026", level: .district), .koap)
+        // «33-…» суда субъекта — гражданская апелляция.
+        XCTAssertEqual(ProductionType.of("33-9/2026", level: .subject), .civil)
+    }
+
+    func testProductionTypeFromCartotekaId() {
+        XCTAssertEqual(ProductionType(cartotekaId: "u1"), .crim)
+        XCTAssertEqual(ProductionType(cartotekaId: "u33"), .crim)
+        XCTAssertEqual(ProductionType(cartotekaId: "g33"), .civil)
+        XCTAssertEqual(ProductionType(cartotekaId: "m"), .civil)
+        XCTAssertEqual(ProductionType(cartotekaId: "p2"), .kas)
+        XCTAssertEqual(ProductionType(cartotekaId: "adm1"), .koap)
+        XCTAssertEqual(ProductionType(cartotekaId: "admj"), .koap)
     }
 
     // MARK: Стороны через «⚔»
@@ -37,6 +64,7 @@ final class MyCasesModelTests: XCTestCase {
     private func tracked(_ number: String, last: Date? = nil, next: Date? = nil) -> TrackedCase {
         TrackedCase(recordKey: "court/" + number, caseNumber: number, collections: [],
                     stage: .first, stageTag: "1-я инст.", subject: "—", court: "Сыктывкарский городской суд",
+                    production: ProductionType.of(number),
                     partiesShort: "Иванов А. А. ⚔ ООО «Ромашка»", statusText: "В производстве",
                     statusChip: .blue, last: "—", next: "—", nextChip: .gray,
                     isNew: false, steps: [], newDot: false,

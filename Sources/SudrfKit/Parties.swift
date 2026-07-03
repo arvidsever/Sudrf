@@ -377,9 +377,9 @@ public enum ProcessKind: String, Sendable, Equatable, Codable {
     }
 
     /// Вид процесса по номеру дела: КАС кодируется буквой «а» («2а-…»/«33а-…»),
-    /// уголовные — серии «1-…»/«22-…»/«10-…»/«44у-…», КоАП — «5-…»/«12-…»/«4а-…»
-    /// (для КоАП «4а» — кассация). Иначе — ГПК; особое производство по номеру не
-    /// отличить (та же серия «2-…»), оно распознаётся по ролям.
+    /// уголовные — серии «1-…»/«22-…»/«10-…»/«44у-…»/«7у-…» (кассация КСОЮ),
+    /// КоАП — «5-…»/«12-…»/«4а-…» (для КоАП «4а» — кассация). Иначе — ГПК; особое
+    /// производство по номеру не отличить (та же серия «2-…»), оно — по ролям.
     public static func detect(caseNumber: String, roles: [String] = []) -> ProcessKind {
         let n = caseNumber.lowercased()
         for r in roles {
@@ -388,16 +388,16 @@ public enum ProcessKind: String, Sendable, Equatable, Codable {
             if s.contains("в отношении которого") || s.contains("привлека") { return .koap }
             if s.contains("административн") || s.contains("заинтересован") { return .administrative }
         }
-        // Уголовные серии.
-        for prefix in ["1-", "22-", "10-", "44у-", "44у", "22к-"] {
+        // Уголовные серии («7у-»/«7y-» — кассация КСОЮ, не КоАП).
+        for prefix in ["1-", "22-", "10-", "44у-", "44у", "22к-", "7у-", "7y-"] {
             if n.hasPrefix(prefix) { return .upk }
         }
         // КоАП.
-        for prefix in ["5-", "12-", "4а-", "4a-", "7у-"] {
+        for prefix in ["5-", "12-", "4а-", "4a-"] {
             if n.hasPrefix(prefix) { return .koap }
         }
-        // КАС (кириллическая и латинская «а»).
-        for prefix in ["2а-", "2a-", "3а-", "3a-", "33а-", "33a-", "9а-", "9a-"] {
+        // КАС (кириллическая и латинская «а»; «8а-» — кассация КАС в КСОЮ).
+        for prefix in ["2а-", "2a-", "3а-", "3a-", "8а-", "8a-", "33а-", "33a-", "9а-", "9a-"] {
             if n.hasPrefix(prefix) { return .administrative }
         }
         return .civil

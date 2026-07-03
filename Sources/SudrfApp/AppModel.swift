@@ -74,18 +74,36 @@ enum MyCasesMode: String, CaseIterable { case list, stages, prods, clients
 
 // MARK: - Вид производства
 
-/// Определяется по префиксу номера дела: 1- уголовное · 5- дело об АП ·
-/// 2а-/3а-/8а-/33а- административное (КАС) · остальные — гражданское.
+/// Вид производства дела. Если известно звено суда — определяется ТОЧНО по
+/// картотеке (`CartotekaRegistry.matches`): один и тот же префикс на разных
+/// звеньях значит разное («2-…»: район — гражданское, суд субъекта — уголовное).
+/// Без звена — эвристика по номеру через канонический `ProcessKind.detect`.
 enum ProductionType: String, CaseIterable {
     case civil, kas, crim, koap
 
-    static func of(_ caseNumber: String) -> ProductionType {
-        let n = caseNumber.lowercased()   // на портале встречается заглавная «А»
-        if n.hasPrefix("1-") { return .crim }
-        if n.hasPrefix("5-") { return .koap }
-        if n.hasPrefix("2а-") || n.hasPrefix("3а-")
-            || n.hasPrefix("8а-") || n.hasPrefix("33а-") { return .kas }
-        return .civil
+    /// Категория по ключу картотеки (`Cartoteka.id`): `u*` — уголовное,
+    /// `p*` — КАС, `adm*` — КоАП, `g*`/`m`/прочее — гражданское/материалы.
+    init(cartotekaId id: String) {
+        if id.hasPrefix("adm")     { self = .koap }
+        else if id.hasPrefix("u")  { self = .crim }
+        else if id.hasPrefix("p")  { self = .kas }
+        else                       { self = .civil }
+    }
+
+    /// Вид производства по номеру и (если известно) звену суда. При заданном
+    /// `level` номер разбирается по картотекам этого звена — тогда «12-…» →
+    /// КоАП, а «2-…» суда субъекта → уголовное. Иначе — фолбэк по номеру.
+    static func of(_ caseNumber: String, level: CourtLevel? = nil) -> ProductionType {
+        if let level,
+           let cart = CartotekaRegistry.matches(caseNumber: caseNumber, level: level).first {
+            return ProductionType(cartotekaId: cart.id)
+        }
+        switch ProcessKind.detect(caseNumber: caseNumber) {
+        case .upk:             return .crim
+        case .koap:            return .koap
+        case .administrative:  return .kas
+        case .civil, .special: return .civil
+        }
     }
 
     /// Название группы/фильтра (сайдбар, группировка «По производствам»).
@@ -210,6 +228,9 @@ struct TrackedCase: Identifiable {
     var stageTag: String
     var subject: String
     var court: String
+    /// Вид производства, вычисленный при сборке строки с учётом звена суда
+    /// (см. `productionType(for:)`). Читатели фильтров/счётчиков берут готовое.
+    var production: ProductionType
     var partiesShort: String
     var statusText: String
     var statusChip: Palette.Chip
@@ -629,10 +650,26 @@ final class AppRouter: ObservableObject {
         stageCounts = buildStageCounts(cs)
     }
 
+    /// Вид производства строки. Приоритет: точная картотека из контекста
+    /// (разрешена при импорте) → разбор по номеру с учётом звена суда → фолбэк
+    /// по одному номеру. Домен для звена НЕ используем: эвристика по домену
+    /// (`MovementService.courtLevel`) по умолчанию даёт `.subject` и спутала бы
+    /// районные дела с делами суда субъекта.
+    private func productionType(for rec: TrackedCaseRecord) -> ProductionType {
+        if let cart = rec.context?.cartoteka {
+            return ProductionType(cartotekaId: cart.id)
+        }
+        if let level = rec.context?.courtLevel {
+            return ProductionType.of(rec.caseNumber, level: level)
+        }
+        return ProductionType.of(rec.caseNumber)
+    }
+
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
                                  stage: CaseStageKind) -> TrackedCase {
         let isNew = rec.seenAt == nil
         let today = DateUtil.today
+        let production = productionType(for: rec)
         if let snap {
             // Даты для сортировок: последнее состоявшееся событие и ближайшее
             // будущее (заседание или срок).
@@ -644,7 +681,7 @@ final class AppRouter: ObservableObject {
             return TrackedCase(
                 recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
                 stage: stage, stageTag: snap.stageTag, subject: snap.category ?? "—",
-                court: rec.courtTitle,
+                court: rec.courtTitle, production: production,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 statusText: snap.statusText,
@@ -659,7 +696,7 @@ final class AppRouter: ObservableObject {
         return TrackedCase(
             recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
-            court: rec.courtTitle,
+            court: rec.courtTitle, production: production,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
             statusText: "Откройте, чтобы загрузить", statusChip: .gray,
@@ -739,7 +776,7 @@ final class AppRouter: ObservableObject {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         let rows = cases.filter { c in
             (folder == "Все дела" || c.collections.contains(folder))
-            && (prodFilter == nil || ProductionType.of(c.caseNumber) == prodFilter)
+            && (prodFilter == nil || c.production == prodFilter)
             && (stageFilter == nil || c.stage == stageFilter)
             && (q.isEmpty || Self.matches(c, query: q))
         }
@@ -769,7 +806,7 @@ final class AppRouter: ObservableObject {
     }
     func casesIn(stage: CaseStageKind) -> [TrackedCase] { cases.filter { $0.stage == stage } }
     func count(prod p: ProductionType) -> Int {
-        cases.filter { ProductionType.of($0.caseNumber) == p }.count
+        cases.filter { $0.production == p }.count
     }
 
     // MARK: Подборки

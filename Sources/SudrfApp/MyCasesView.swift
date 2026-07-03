@@ -123,7 +123,7 @@ struct MyCasesView: View {
             }
         case .prods:
             return ProductionType.allCases.compactMap { p in
-                let cs = router.cases.filter { ProductionType.of($0.caseNumber) == p }
+                let cs = router.cases.filter { $0.production == p }
                 return cs.isEmpty ? nil : (p.side, cs)
             }
         default: // .clients → «По подборкам»
@@ -385,7 +385,7 @@ struct MyCasesView: View {
     }
 
     private func tableRow(_ c: TrackedCase) -> some View {
-        let prod = ProductionType.of(c.caseNumber)
+        let prod = c.production
         return Button { router.openCase(key: c.recordKey) } label: {
             HStack(alignment: .top, spacing: 8) {
                 Circle().fill(c.newDot ? Color.accentColor : .clear).frame(width: 7, height: 7)

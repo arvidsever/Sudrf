@@ -195,18 +195,17 @@ public struct CaseParties: Sendable, Equatable, Codable {
 
     // MARK: - Колонки для шапки (единый источник отрисовки)
 
+    /// Подсудимые/привлекаемые — участники со статьями (встречаются только на
+    /// стороне защиты). Для многострочной раскладки «Списком».
+    public var chargedMembers: [PartyMember] {
+        guard kind == .upk || kind == .koap else { return [] }
+        return displayColumns.flatMap { $0.members }.filter { !($0.articles?.isEmpty ?? true) }
+    }
+
     /// Перечень статей ведущего участника (подсудимого/привлекаемого) для
     /// уголовных/административных дел — для строки «Списком» (ФИО ⟨щит⟩ статьи).
     /// nil для остальных видов процесса и когда статей нет.
-    public var leadCharges: String? {
-        switch kind {
-        case .upk, .koap:
-            let arts = displayColumns.first?.members.first?.articles
-            return (arts?.isEmpty ?? true) ? nil : arts
-        case .civil, .administrative, .special:
-            return nil
-        }
-    }
+    public var leadCharges: String? { chargedMembers.first?.articles }
 
     /// Готовые колонки участников для шапки дела. Если задана явная раскладка
     /// (`columns`) — она и используется; иначе строится из вида процесса.

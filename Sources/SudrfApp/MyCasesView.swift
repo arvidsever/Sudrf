@@ -384,6 +384,18 @@ struct MyCasesView: View {
         Text(t).font(.system(size: 10, weight: .bold)).kerning(0.4).foregroundStyle(.tertiary)
     }
 
+    /// «ФИО ⟨щит⟩ статьи» для строки «Списком» (подсудимый/привлекаемый). Без
+    /// статей — просто ФИО (гражданские, где статей нет).
+    private func chargedLine(_ name: String, _ articles: String?) -> Text {
+        var t = Text(name)
+        if let a = articles, !a.isEmpty {
+            t = t + Text("  ")
+                  + Text(Image(systemName: "shield")).foregroundColor(.secondary)
+                  + Text("  \(a)").foregroundColor(.secondary)
+        }
+        return t
+    }
+
     private func tableRow(_ c: TrackedCase) -> some View {
         let prod = c.production
         return Button { router.openCase(key: c.recordKey) } label: {
@@ -400,15 +412,23 @@ struct MyCasesView: View {
                 // Стороны · суд — стороны через «⚔»; впитывает остаток ширины
                 VStack(alignment: .leading, spacing: 2) {
                     // У уголовных/КоАП — ФИО ⟨щит⟩ статьи (без слова-роли).
-                    (Text(c.partiesShort)
-                     + (c.leadCharges.map {
-                            Text("  ")
-                            + Text(Image(systemName: "shield")).foregroundColor(.secondary)
-                            + Text("  \($0)").foregroundColor(.secondary)
-                        } ?? Text("")))
+                    chargedLine(c.partiesShort, c.leadCharges)
                         .font(.system(size: 12.5, weight: c.newDot ? .semibold : .regular))
                         .foregroundStyle(.primary.opacity(0.8))
                         .fixedSize(horizontal: false, vertical: true)
+                    // Второй подсудимый / «и N других» — отдельной строкой.
+                    if let s = c.secondPartyLine {
+                        if let name = s.name {
+                            chargedLine(name, s.articles)
+                                .font(.system(size: 12.5, weight: c.newDot ? .semibold : .regular))
+                                .foregroundStyle(.primary.opacity(0.8))
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if let more = s.more {
+                            Text(more).font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                     Text(c.court).font(.system(size: 11.5)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

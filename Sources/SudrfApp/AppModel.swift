@@ -293,6 +293,8 @@ struct TrackedCase: Identifiable {
     var partiesShort: String
     /// Статьи подсудимого/привлекаемого — для строки «Списком» (ФИО ⟨щит⟩ статьи).
     var leadCharges: String?
+    /// Вторая строка ячейки «Списком» (второй подсудимый / «и N других»).
+    var secondPartyLine: PartiesSecondLine?
     var statusText: String
     var statusChip: Palette.Chip
     var last: String
@@ -853,6 +855,7 @@ final class AppRouter: ObservableObject {
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 leadCharges: snap.leadCharges,
+                secondPartyLine: snap.secondPartyLine,
                 statusText: snap.statusText,
                 statusChip: Palette.Chip(rawValue: snap.statusChipRaw) ?? .gray,
                 last: snap.lastEvent, next: snap.nextEvent,
@@ -869,6 +872,7 @@ final class AppRouter: ObservableObject {
             partiesShort: ctx.map { MovementDerivation.partiesShort(
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
             leadCharges: nil,
+            secondPartyLine: nil,
             statusText: "Откройте, чтобы загрузить", statusChip: .gray,
             last: "движение ещё не загружено", next: "—", nextChip: .gray,
             isNew: rec.seenAt == nil,

@@ -59,6 +59,53 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(MovementDerivation.partiesShort(p), "Новожилова Е. В. ⚔ ООО «Северлес»")
     }
 
+    func testPartiesShortListsTwoWithI() {
+        let p = CaseParties(plaintiffs: ["Иванов А.", "Петров Б."], defendants: ["Сидоров В."])
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "Иванов А. и Петров Б. ⚔ Сидоров В.")
+    }
+
+    func testPartiesShortCountsThreeOrMore() {
+        let p = CaseParties(plaintiffs: ["Иванов А.", "Петров Б.", "Сидоров В."],
+                            defendants: ["ООО «Ромашка»"])
+        XCTAssertEqual(MovementDerivation.partiesShort(p),
+                       "Иванов А. и 2 других ⚔ ООО «Ромашка»")
+    }
+
+    // MARK: Подсудимые — многострочная раскладка «Списком»
+
+    private func upkParties(_ defendants: [(String, String)]) -> CaseParties {
+        var p = CaseParties()
+        for (name, arts) in defendants { p.add(role: "Подсудимый", name: name, articles: arts) }
+        return p
+    }
+
+    func testTwoDefendantsSecondLineHasName() {
+        let p = upkParties([("Иванов И.", "ст.158 УК РФ"), ("Петров П.", "ст.159 УК РФ")])
+        XCTAssertEqual(p.chargedMembers.count, 2)
+        // Первая строка — ФИО первого, статьи — отдельно (щит).
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "Иванов И.")
+        XCTAssertEqual(p.leadCharges, "ст.158 УК РФ")
+        // Вторая строка — ФИО второго со своими статьями.
+        let second = MovementDerivation.partiesSecondLine(p)
+        XCTAssertEqual(second?.name, "Петров П.")
+        XCTAssertEqual(second?.articles, "ст.159 УК РФ")
+        XCTAssertNil(second?.more)
+    }
+
+    func testThreeDefendantsSecondLineCounts() {
+        let p = upkParties([("Иванов И.", "ст.158 УК РФ"),
+                            ("Петров П.", "ст.159 УК РФ"),
+                            ("Сидоров С.", "ст.160 УК РФ")])
+        let second = MovementDerivation.partiesSecondLine(p)
+        XCTAssertEqual(second?.more, "и 2 других")
+        XCTAssertNil(second?.name)
+    }
+
+    func testCivilHasNoSecondLine() {
+        let p = CaseParties(plaintiffs: ["Иванов А.", "Петров Б."], defendants: ["Сидоров В."])
+        XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+    }
+
     // MARK: Сортировка таблицы
 
     private func tracked(_ number: String, last: Date? = nil, next: Date? = nil) -> TrackedCase {

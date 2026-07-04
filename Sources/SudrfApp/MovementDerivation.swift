@@ -34,12 +34,21 @@ struct StoredDeadline: Codable, Equatable {
     var date: Date { Date(timeIntervalSinceReferenceDate: dateRef) }
 }
 
+/// Вторая строка ячейки «Списком» для УПК/КоАП: либо второй подсудимый
+/// (когда их ровно двое), либо счётчик «и N других» (когда трое и больше).
+struct PartiesSecondLine: Codable, Equatable {
+    var name: String?      // ФИО второго подсудимого
+    var articles: String?  // его статьи (для щита)
+    var more: String?      // «и N других»
+}
+
 struct CaseSnapshot: Codable, Equatable {
     var uid: String
     var inForce: Bool
     var category: String?
     var partiesShort: String
     var leadCharges: String?    // статьи подсудимого/привлекаемого (для «Списком»)
+    var secondPartyLine: PartiesSecondLine?   // вторая строка ячейки «Списком» (УПК/КоАП)
     var stageRaw: String        // CaseStageKind.rawValue
     var stageTag: String
     var statusText: String
@@ -88,9 +97,10 @@ enum MovementDerivation {
             : (hasCassation ? .cassation : hasAppeal ? .appeal : .first)
         let stageTag = self.stageTag(stage: stage, prefix: prefix)
 
-        // Стороны (короткая строка + статьи ведущего лица для «Списком»).
+        // Стороны (короткая строка + статьи ведущего лица + вторая строка «Списком»).
         let partiesShort = self.partiesShort(mv.parties)
         let leadCharges = mv.parties.leadCharges
+        let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
         let deadlines = self.deadlines(from: mv, sessions: sessions, prefix: prefix,
@@ -149,6 +159,7 @@ enum MovementDerivation {
         return CaseSnapshot(
             uid: mv.uid, inForce: mv.inForce, category: mv.category,
             partiesShort: partiesShort, leadCharges: leadCharges,
+            secondPartyLine: secondPartyLine,
             stageRaw: stage.rawValue, stageTag: stageTag,
             statusText: statusText, statusChipRaw: statusChip.rawValue,
             lastEvent: lastEvent, nextEvent: nextEvent, nextChipRaw: nextChip.rawValue,
@@ -299,8 +310,8 @@ enum MovementDerivation {
         case .civil, .administrative:
             break
         }
-        let left = p.plaintiffs.first
-        let right = p.defendants.first
+        let left = p.plaintiffs.isEmpty ? nil : namesShort(p.plaintiffs)
+        let right = p.defendants.isEmpty ? nil : namesShort(p.defendants)
         switch (left, right) {
         case let (l?, r?): return "\(l) ⚔ \(r)"
         case let (l?, nil): return l
@@ -308,6 +319,35 @@ enum MovementDerivation {
         default:
             if let col = p.displayColumns.first, let m = col.members.first { return m.name }
             return "стороны не опубликованы"
+        }
+    }
+
+    /// Перечисление стороны для «Списком»: «X» / «X и Y» / «X и N других».
+    private static func namesShort(_ names: [String]) -> String {
+        switch names.count {
+        case 0:  return ""
+        case 1:  return names[0]
+        case 2:  return "\(names[0]) и \(names[1])"
+        default:
+            let others = names.count - 1
+            return "\(names[0]) и \(others) "
+                + DateUtil.plural(others, "другой", "других", "других")
+        }
+    }
+
+    /// Вторая строка ячейки «Списком» для УПК/КоАП (второй подсудимый или «и N
+    /// других»); nil, когда подсудимый один или это не уголовное/административное.
+    static func partiesSecondLine(_ p: CaseParties) -> PartiesSecondLine? {
+        let charged = p.chargedMembers
+        switch charged.count {
+        case 0, 1: return nil
+        case 2:    return PartiesSecondLine(name: charged[1].name,
+                                            articles: charged[1].articles, more: nil)
+        default:
+            let others = charged.count - 1
+            return PartiesSecondLine(name: nil, articles: nil,
+                                     more: "и \(others) "
+                                        + DateUtil.plural(others, "другой", "других", "других"))
         }
     }
 

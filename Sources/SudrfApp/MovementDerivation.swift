@@ -39,6 +39,7 @@ struct CaseSnapshot: Codable, Equatable {
     var inForce: Bool
     var category: String?
     var partiesShort: String
+    var leadCharges: String?    // статьи подсудимого/привлекаемого (для «Списком»)
     var stageRaw: String        // CaseStageKind.rawValue
     var stageTag: String
     var statusText: String
@@ -87,8 +88,9 @@ enum MovementDerivation {
             : (hasCassation ? .cassation : hasAppeal ? .appeal : .first)
         let stageTag = self.stageTag(stage: stage, prefix: prefix)
 
-        // Стороны (короткая строка).
+        // Стороны (короткая строка + статьи ведущего лица для «Списком»).
         let partiesShort = self.partiesShort(mv.parties)
+        let leadCharges = mv.parties.leadCharges
 
         // Заседания (будущие, со временем) и сроки.
         let deadlines = self.deadlines(from: mv, sessions: sessions, prefix: prefix,
@@ -146,7 +148,8 @@ enum MovementDerivation {
 
         return CaseSnapshot(
             uid: mv.uid, inForce: mv.inForce, category: mv.category,
-            partiesShort: partiesShort, stageRaw: stage.rawValue, stageTag: stageTag,
+            partiesShort: partiesShort, leadCharges: leadCharges,
+            stageRaw: stage.rawValue, stageTag: stageTag,
             statusText: statusText, statusChipRaw: statusChip.rawValue,
             lastEvent: lastEvent, nextEvent: nextEvent, nextChipRaw: nextChip.rawValue,
             steps: steps, sessions: sessions, deadlines: deadlines)
@@ -288,6 +291,9 @@ enum MovementDerivation {
         switch p.kind {
         case .koap, .upk, .special:
             if let col = p.displayColumns.first, let m = col.members.first {
+                // Со статьями (подсудимый/привлекаемый) — только ФИО: статьи
+                // рисуются отдельно значком щита в строке «Списком» (leadCharges).
+                if !(m.articles?.isEmpty ?? true) { return m.name }
                 return m.name + (m.sub.map { " · \($0)" } ?? " · \(col.title)")
             }
         case .civil, .administrative:

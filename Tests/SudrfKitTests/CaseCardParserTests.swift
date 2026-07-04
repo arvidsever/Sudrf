@@ -110,6 +110,91 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertTrue(act.body.contains("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ"))
     }
 
+    // MARK: - Уголовное дело (вкладки «ЛИЦА» + «СТОРОНЫ»)
+
+    /// Живая карточка Ленинского р/с г. Уфы: уголовное дело публикует участников
+    /// в ДВУХ таблицах — «ЛИЦА» (подсудимый + перечень статей, колонка 0 это имя)
+    /// и «СТОРОНЫ» (защитник, прокурор — роль | имя). Раньше не совпадал ни один
+    /// заголовок `<th>` → «стороны не опубликованы».
+    func testCriminalCardParties() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("leninsky_ufa_criminal"))
+
+        XCTAssertEqual(card.parties.kind, .upk)
+        XCTAssertFalse(card.parties.isEmpty)
+
+        let cols = card.parties.displayColumns
+        let defense = try XCTUnwrap(cols.first { $0.icon == .shield }, "нет стороны защиты")
+        let prosecution = try XCTUnwrap(cols.first { $0.icon == .scales }, "нет стороны обвинения")
+
+        // Защита: подсудимая — слово-роль в `sub`, статьи отдельным полем
+        // (для карточки «Подсудимый · ст…», для «Списком» — щит+статьи).
+        let defendant = try XCTUnwrap(defense.members.first { $0.name.contains("Юсупова") })
+        XCTAssertEqual(defendant.sub, "Подсудимый")
+        XCTAssertTrue(defendant.articles?.contains("173.1") == true, "статья не попала в articles")
+        XCTAssertTrue(defense.members.contains { $0.name.contains("Низамова") }, "нет защитника")
+
+        // Обвинение: прокурор.
+        XCTAssertTrue(prosecution.members.contains { $0.name.contains("Сагадиев") }, "нет прокурора")
+
+        // «Списком»: статьи ведущего лица отдаются отдельно (для щита).
+        XCTAssertTrue(card.parties.leadCharges?.contains("173.1") == true)
+    }
+
+    // MARK: - Дело об АП (КоАП: «СТОРОНЫ ПО ДЕЛУ» с «ПРИВЛЕКАЕМОЕ ЛИЦО»)
+
+    /// Живая карточка Ленинского р/с г. Кирова (5-174/2026): у КоАП отдельной
+    /// вкладки «ЛИЦА» нет — привлекаемое лицо и представители лежат в одной
+    /// таблице «СТОРОНЫ ПО ДЕЛУ» (роль | имя + перечень статей). Привлекаемое —
+    /// на защите (со статьёй), представители — на стороне обвинения.
+    func testKoapCardParties() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("kirov_koap"))
+
+        XCTAssertEqual(card.parties.kind, .koap)
+        XCTAssertFalse(card.parties.isEmpty)
+
+        let defense = try XCTUnwrap(card.parties.displayColumns.first { $0.icon == .shield })
+        let person = try XCTUnwrap(defense.members.first { $0.name.contains("Ананьева") })
+        XCTAssertEqual(person.sub?.uppercased(), "ПРИВЛЕКАЕМОЕ ЛИЦО")
+        XCTAssertNotNil(person.articles, "статья привлекаемого не попала в articles")
+        XCTAssertNotNil(card.parties.leadCharges, "нет статей для щита в «Списком»")
+
+        // Представители КоАП — на стороне обвинения (обычно представитель потерпевшего).
+        let prosecution = try XCTUnwrap(card.parties.displayColumns.first { $0.icon == .scales },
+                                        "нет стороны обвинения с представителями")
+        XCTAssertTrue(prosecution.members.contains { $0.name.contains("Баева") })
+        XCTAssertTrue(prosecution.members.contains { $0.name.contains("Перова") })
+    }
+
+    /// Роль «Представитель учреждения (компетентного органа)» в УПК — отдельная
+    /// третья колонка «Иные лица» со значком лица (как у третьих лиц ГПК/КАС).
+    func testUpkInstitutionRepGoesToOther() {
+        var p = CaseParties()
+        p.add(role: "Подсудимый", name: "Иванов Иван Иванович", articles: "ст.158 ч.3 УК РФ")
+        p.add(role: "Представитель учреждения (компетентного органа)", name: "Петров Пётр")
+        XCTAssertEqual(p.kind, .upk)
+
+        let other = p.displayColumns.first { $0.id == "inye" }
+        XCTAssertNotNil(other, "нет колонки «Иные лица»")
+        XCTAssertEqual(other?.icon, .person)
+        XCTAssertEqual(other?.titleMany, "Иные лица")
+        XCTAssertTrue(other?.members.contains { $0.name.contains("Петров") } == true)
+        // Представитель учреждения не должен утечь в защиту/обвинение.
+        XCTAssertFalse(p.displayColumns.first { $0.icon == .shield }?.members
+            .contains { $0.name.contains("Петров") } ?? false)
+    }
+
+    /// `leadCharges` — статьи ведущего лица для строки «Списком» (только УПК/КоАП).
+    func testLeadCharges() {
+        var upk = CaseParties()
+        upk.add(role: "Подсудимый", name: "Иванов Иван Иванович", articles: "ст.158 ч.3 УК РФ")
+        upk.add(role: "Защитник (адвокат)", name: "Сидоров С. С.")
+        XCTAssertEqual(upk.leadCharges, "ст.158 ч.3 УК РФ")
+
+        // Гражданское дело — статей нет.
+        let civil = CaseParties(plaintiffs: ["Новожилова Е. В."], defendants: ["ООО «Северлес»"])
+        XCTAssertNil(civil.leadCharges)
+    }
+
     // MARK: - Кассация (3 КСОЮ)
 
     func testCassationCard() throws {

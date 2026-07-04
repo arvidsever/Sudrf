@@ -399,7 +399,14 @@ struct MyCasesView: View {
                 .frame(minWidth: 86, maxWidth: 150, alignment: .topLeading)
                 // Стороны · суд — стороны через «⚔»; впитывает остаток ширины
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(c.partiesShort).font(.system(size: 12.5, weight: c.newDot ? .semibold : .regular))
+                    // У уголовных/КоАП — ФИО ⟨щит⟩ статьи (без слова-роли).
+                    (Text(c.partiesShort)
+                     + (c.leadCharges.map {
+                            Text("  ")
+                            + Text(Image(systemName: "shield")).foregroundColor(.secondary)
+                            + Text("  \($0)").foregroundColor(.secondary)
+                        } ?? Text("")))
+                        .font(.system(size: 12.5, weight: c.newDot ? .semibold : .regular))
                         .foregroundStyle(.primary.opacity(0.8))
                         .fixedSize(horizontal: false, vertical: true)
                     Text(c.court).font(.system(size: 11.5)).foregroundStyle(.secondary)

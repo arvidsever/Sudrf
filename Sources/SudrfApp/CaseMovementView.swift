@@ -279,15 +279,19 @@ private struct PartiesCard: View {
     // переносятся по словам внутри колонки, а не обрезаются «…». Под именем —
     // процессуальная под-роль («защитник», «потерпевшая», «подсудимый · …»).
     private func memberText(_ m: PartyMember) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        // Под-роль: «Подсудимый · ст.158 ч.3 п.г УК РФ» (слово-роль + статьи).
+        // У защитника/прокурора статей нет — только роль.
+        let detail = [m.sub, m.articles].compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 1) {
             Text(m.name)
                 .font(.system(size: 12))
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let sub = m.sub, !sub.isEmpty {
-                Text(sub)
+            if !detail.isEmpty {
+                Text(detail)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .lineLimit(2)
@@ -307,6 +311,7 @@ private struct PartiesCard: View {
         return members.filter {
             $0.name.localizedCaseInsensitiveContains(q)
             || ($0.sub?.localizedCaseInsensitiveContains(q) ?? false)
+            || ($0.articles?.localizedCaseInsensitiveContains(q) ?? false)
         }
     }
 }

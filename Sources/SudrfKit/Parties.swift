@@ -22,11 +22,16 @@ public enum PartyIcon: String, Sendable, Equatable, Codable {
 }
 
 /// Один участник колонки. `sub` — уточнение процессуальной роли
-/// («защитник», «потерпевшая», «подсудимый · ч. 2 ст. 158 УК РФ»).
+/// («защитник», «потерпевшая»). `articles` — перечень статей подсудимого/
+/// привлекаемого лица; если задан, слово-роль в `sub` не пишется, а в шапке
+/// дела ФИО и статьи разделяются значком щита.
 public struct PartyMember: Sendable, Equatable, Codable {
     public var name: String
     public var sub: String?
-    public init(name: String, sub: String? = nil) { self.name = name; self.sub = sub }
+    public var articles: String?
+    public init(name: String, sub: String? = nil, articles: String? = nil) {
+        self.name = name; self.sub = sub; self.articles = articles
+    }
 }
 
 /// Колонка участников. Для КоАП/УПК это «Сторона защиты» / «Сторона обвинения»,
@@ -53,10 +58,14 @@ public struct PartyColumn: Sendable, Equatable, Identifiable, Codable {
 }
 
 /// Сырая пара «роль → имя» из карточки/выдачи (для пересборки сторон КоАП/УПК).
+/// `articles` — перечень статей (у подсудимого/привлекаемого лица), если есть.
 public struct RoleItem: Sendable, Equatable, Codable {
     public var role: String
     public var name: String
-    public init(role: String, name: String) { self.role = role; self.name = name }
+    public var articles: String?
+    public init(role: String, name: String, articles: String? = nil) {
+        self.role = role; self.name = name; self.articles = articles
+    }
 }
 
 public struct CaseParties: Sendable, Equatable, Codable {
@@ -85,9 +94,13 @@ public struct CaseParties: Sendable, Equatable, Codable {
         self.roleItems = roleItems
     }
 
+    /// Пусто, когда рисовать нечего. Опирается на `displayColumns` (единый
+    /// источник отрисовки), иначе УПК/КоАП — где стороны собираются из
+    /// `roleItems`, а не из корзин/`columns` — ложно считались бы пустыми и
+    /// карточка участников не показывалась бы.
     public var isEmpty: Bool {
         plaintiffs.isEmpty && defendants.isEmpty && thirdParties.isEmpty
-            && columns.allSatisfy { $0.isEmpty }
+            && displayColumns.allSatisfy { $0.isEmpty }
     }
 
     public var totalCount: Int {
@@ -114,7 +127,7 @@ public struct CaseParties: Sendable, Equatable, Codable {
         return nil
     }
 
-    public mutating func add(role: String, name: String) {
+    public mutating func add(role: String, name: String, articles: String? = nil) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard n.count > 1 else { return }
         let lower = role.lowercased()
@@ -125,9 +138,11 @@ public struct CaseParties: Sendable, Equatable, Codable {
         // Поднять вид процесса по характерным ролям (КАС / УПК / КоАП).
         upgradeKind(byRole: lower)
 
+        let arts = articles?.trimmingCharacters(in: .whitespacesAndNewlines)
         // Сырая пара — для пересборки сторон уголовных/административных дел.
         if !roleItems.contains(where: { $0.role == role && $0.name == n }) {
-            roleItems.append(RoleItem(role: role, name: n))
+            roleItems.append(RoleItem(role: role, name: n,
+                                      articles: (arts?.isEmpty ?? true) ? nil : arts))
         }
 
         // Корзины — для ГПК/КАС/особого (рендер по трём корзинам).
@@ -180,6 +195,19 @@ public struct CaseParties: Sendable, Equatable, Codable {
 
     // MARK: - Колонки для шапки (единый источник отрисовки)
 
+    /// Перечень статей ведущего участника (подсудимого/привлекаемого) для
+    /// уголовных/административных дел — для строки «Списком» (ФИО ⟨щит⟩ статьи).
+    /// nil для остальных видов процесса и когда статей нет.
+    public var leadCharges: String? {
+        switch kind {
+        case .upk, .koap:
+            let arts = displayColumns.first?.members.first?.articles
+            return (arts?.isEmpty ?? true) ? nil : arts
+        case .civil, .administrative, .special:
+            return nil
+        }
+    }
+
     /// Готовые колонки участников для шапки дела. Если задана явная раскладка
     /// (`columns`) — она и используется; иначе строится из вида процесса.
     public var displayColumns: [PartyColumn] {
@@ -220,32 +248,55 @@ public struct CaseParties: Sendable, Equatable, Codable {
         return cols
     }
 
-    /// КоАП/УПК: две стороны (защита / обвинение); под-роль каждого участника —
-    /// её исходный текст из карточки («защитник», «потерпевшая», «подсудимый …»).
+    /// Сторона участника КоАП/УПК.
+    enum Side { case defense, prosecution, other }
+
+    /// Куда отнести участника по тексту роли. Порядок проверок важен.
+    static func side(forRole role: String, kind: ProcessKind) -> Side {
+        let r = role.lowercased()
+        // 1. Представитель учреждения / компетентного органа — иные лица (УПК).
+        if (r.contains("представител") && r.contains("учрежд")) || r.contains("компетентн") {
+            return .other
+        }
+        // 2. Обвинение (ловит и «представитель потерпевшего» через «потерп»).
+        if r.contains("потерп") || r.contains("прокур") || r.contains("гособвин")
+            || (r.contains("государствен") && r.contains("обвинит"))
+            || r.contains("гражданский истец") || r.contains("гражданского истца")
+            || (r.contains("составив") && r.contains("протокол"))
+            || r.contains("административный орган") || r.contains("орган, состав") {
+            return .prosecution
+        }
+        // 3. Защита.
+        if r.contains("защит") || r.contains("адвокат")
+            || r.contains("подсудим") || r.contains("обвиняем")
+            || r.contains("в отношении которого") || r.contains("привлека")
+            || r.contains("гражданский ответчик") || r.contains("законный представит") {
+            return .defense
+        }
+        // 4. Голый «представитель» без уточнения: в КоАП — обычно представитель
+        //    потерпевшего (обвинение); в УПК роль неоднозначна — оставляем защите.
+        if r.contains("представител") { return kind == .koap ? .prosecution : .defense }
+        // 5. Неопознанное — к защите (обычно само лицо).
+        return .defense
+    }
+
+    /// КоАП/УПК: стороны защиты / обвинения + «иные лица». Для подсудимого/
+    /// привлекаемого лица слово-роль не пишем — вместо `sub` кладём `articles`
+    /// (перечень статей); для остальных `sub` = исходный текст роли.
     private static func buildSided(_ items: [RoleItem], kind: ProcessKind) -> [PartyColumn] {
         var defense: [PartyMember] = []
         var prosecution: [PartyMember] = []
+        var other: [PartyMember] = []
         for it in items {
-            let r = it.role.lowercased()
+            // `sub` — всегда текст роли («Подсудимый», «Защитник (адвокат)»…):
+            // в карточке дела рисуется «слово · статьи». `articles` — отдельно,
+            // для строки «Списком» (ФИО ⟨щит⟩ статьи, без слова).
             let sub = it.role.trimmingCharacters(in: CharacterSet(charactersIn: " :·—-"))
-            let isProsecution =
-                r.contains("потерп") || r.contains("прокур") || r.contains("гособвин")
-                || (r.contains("государствен") && r.contains("обвинит"))
-                || r.contains("гражданский истец") || r.contains("гражданского истца")
-                || (r.contains("составив") && r.contains("протокол"))
-                || r.contains("административный орган") || r.contains("орган, состав")
-            let isDefense =
-                r.contains("защит") || r.contains("адвокат")
-                || r.contains("подсудим") || r.contains("обвиняем")
-                || r.contains("в отношении которого") || r.contains("привлека")
-                || r.contains("гражданский ответчик") || r.contains("законный представит")
-            if isProsecution && !isDefense {
-                prosecution.append(PartyMember(name: it.name, sub: sub))
-            } else if isDefense {
-                defense.append(PartyMember(name: it.name, sub: sub))
-            } else {
-                // Неопознанная роль — к защите для КоАП/УПК (обычно само лицо).
-                defense.append(PartyMember(name: it.name, sub: sub))
+            let member = PartyMember(name: it.name, sub: sub, articles: it.articles)
+            switch side(forRole: it.role, kind: kind) {
+            case .prosecution: prosecution.append(member)
+            case .other:       other.append(member)
+            case .defense:     defense.append(member)   // и неопознанные (само лицо)
             }
         }
         var cols: [PartyColumn] = []
@@ -256,6 +307,10 @@ public struct CaseParties: Sendable, Equatable, Codable {
         if !prosecution.isEmpty {
             cols.append(PartyColumn(id: "obvinenie", title: "Сторона обвинения",
                                     titleMany: "Сторона обвинения", icon: .scales, members: prosecution))
+        }
+        if !other.isEmpty {
+            cols.append(PartyColumn(id: "inye", title: "Иное лицо",
+                                    titleMany: "Иные лица", icon: .person, members: other))
         }
         return cols
     }

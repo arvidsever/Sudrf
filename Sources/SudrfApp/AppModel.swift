@@ -291,6 +291,8 @@ struct TrackedCase: Identifiable {
     /// (см. `productionType(for:)`). Читатели фильтров/счётчиков берут готовое.
     var production: ProductionType
     var partiesShort: String
+    /// Статьи подсудимого/привлекаемого — для строки «Списком» (ФИО ⟨щит⟩ статьи).
+    var leadCharges: String?
     var statusText: String
     var statusChip: Palette.Chip
     var last: String
@@ -850,6 +852,7 @@ final class AppRouter: ObservableObject {
                 court: rec.courtTitle, production: production,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
+                leadCharges: snap.leadCharges,
                 statusText: snap.statusText,
                 statusChip: Palette.Chip(rawValue: snap.statusChipRaw) ?? .gray,
                 last: snap.lastEvent, next: snap.nextEvent,
@@ -865,6 +868,7 @@ final class AppRouter: ObservableObject {
             court: rec.courtTitle, production: production,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
+            leadCharges: nil,
             statusText: "Откройте, чтобы загрузить", statusChip: .gray,
             last: "движение ещё не загружено", next: "—", nextChip: .gray,
             isNew: rec.seenAt == nil,

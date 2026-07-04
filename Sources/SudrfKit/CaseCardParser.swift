@@ -203,13 +203,54 @@ public enum CaseCardParser {
         return nil
     }
 
-    // MARK: - Стороны по делу (вкладка «СТОРОНЫ ПО ДЕЛУ» / «ЛИЦА»)
+    // MARK: - Участники (вкладки «СТОРОНЫ [ПО ДЕЛУ]» / «УЧАСТНИКИ» / «ЛИЦА»)
+    //
+    //  Тип таблицы участников определяется по ЗАГОЛОВКАМ КОЛОНОК, а не по тексту
+    //  вкладки `<th>` — он варьируется по инстанциям и виду дела («СТОРОНЫ ПО
+    //  ДЕЛУ», «СТОРОНЫ ПО ДЕЛУ (ТРЕТЬИ ЛИЦА)», «УЧАСТНИКИ», «СТОРОНЫ», «ЛИЦА»):
+    //   • колонка «Вид лица…» → обычная таблица сторон «роль | имя»;
+    //   • иначе колонка «Перечень статей» → таблица ЛИЦ (уголовные подсудимые):
+    //     «Фамилия / наименование | Перечень статей | …» — колонка 0 это ИМЯ.
+    //  Порядок проверок КРИТИЧЕН: у КоАП таблица «СТОРОНЫ ПО ДЕЛУ» содержит ОБЕ
+    //  колонки — «Вид лица» И «Перечень статей», поэтому «Вид лица» проверяется
+    //  первым (иначе КоАП уехал бы в разбор ЛИЦ и стал бы «Подсудимым»).
+    //  Уголовное дело публикует ДВЕ таблицы (вкладки «ЛИЦА» + «СТОРОНЫ»); КоАП —
+    //  только «СТОРОНЫ ПО ДЕЛУ» с ролью «ПРИВЛЕКАЕМОЕ ЛИЦО» (таблицы ЛИЦ нет).
 
-    /// Таблица сторон: строки «Вид лица | ФИО (наименование)». Шапка колонок
-    /// («Вид лица…») пропускается; роль → корзина — через CaseParties.bucket.
     private static func parseParties(_ doc: Document) -> CaseParties {
         var parties = CaseParties()
-        guard let table = partiesTable(doc) else { return parties }
+        for table in (try? doc.select("table").array()) ?? [] {
+            let headers = columnHeaders(table)
+            if headers.contains(where: { $0.contains("вид лица") }) {
+                parsePartiesTable(table, into: &parties)          // «СТОРОНЫ» — роль | имя
+            } else if headers.contains(where: { $0.contains("перечень статей") }) {
+                parsePersonsTable(table, into: &parties)          // «ЛИЦА» — подсудимые
+            }
+        }
+        return parties
+    }
+
+    /// Тексты (в нижнем регистре) ячеек строки-шапки колонок таблицы участников —
+    /// первого `tr`, у которого есть `<td>` (строка с одним `<th>`-названием
+    /// вкладки пропускается, так как не содержит `<td>`).
+    private static func columnHeaders(_ table: Element) -> [String] {
+        for row in (try? table.select("tr").array()) ?? [] {
+            let cells = (try? row.select("td").array()) ?? []
+            guard !cells.isEmpty else { continue }
+            return cells.map {
+                (((try? $0.text()) ?? "")).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+        }
+        return []
+    }
+
+    /// Обычная таблица сторон: строки «Вид лица | ФИО (наименование)». Шапка
+    /// колонок («Вид лица…») пропускается; роль → корзина — через CaseParties.
+    /// У КоАП тут есть и колонка «Перечень статей» — цепляем её к привлекаемому
+    /// лицу (у защитника/представителя ячейка пуста).
+    private static func parsePartiesTable(_ table: Element, into parties: inout CaseParties) {
+        let headers = columnHeaders(table)
+        let articleCol = headers.firstIndex { $0.contains("перечень статей") }
         for row in (try? table.select("tr").array()) ?? [] {
             let cells = (try? row.select("td").array()) ?? []
             guard cells.count >= 2 else { continue }
@@ -217,23 +258,34 @@ public enum CaseCardParser {
             let name = ((try? cells[1].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !role.isEmpty, !name.isEmpty else { continue }
             if role.lowercased().contains("вид лица") { continue }   // шапка колонок
-            parties.add(role: role, name: name)
+            let articles = articleCol.flatMap { $0 < cells.count ? cells[$0] : nil }
+                .map { (((try? $0.text()) ?? "")).trimmingCharacters(in: .whitespacesAndNewlines) }
+            parties.add(role: role, name: name, articles: articles)
         }
-        return parties
     }
 
-    /// Таблица, заголовок (`<th>`) которой содержит «СТОРОНЫ ПО ДЕЛУ» или
-    /// «ЛИЦА» (варианты вёрстки по инстанциям различаются).
-    private static func partiesTable(_ doc: Document) -> Element? {
-        for table in (try? doc.select("table").array()) ?? [] {
-            for th in (try? table.select("th").array()) ?? [] {
-                let t = ((try? th.text()) ?? "").uppercased()
-                if t.contains("СТОРОНЫ ПО ДЕЛУ") || t.contains("ЛИЦА, УЧАСТВУЮЩИЕ") {
-                    return table
-                }
-            }
+    /// Таблица «ЛИЦА» уголовной карточки: «Фамилия / наименование | Перечень
+    /// статей | Дата… | Результат…». Роль в вёрстке не указана — синтезируем
+    /// «Подсудимый» (эта таблица есть только в УПК; у КоАП её нет), а перечень
+    /// статей кладём в под-роль: «Подсудимый · ст.158 ч.3 п.г УК РФ».
+    private static func parsePersonsTable(_ table: Element, into parties: inout CaseParties) {
+        // Индексы колонок «имя» и «статьи» — по шапке, с фолбэком 0/1.
+        let headers = columnHeaders(table)
+        let nameCol = headers.firstIndex { $0.contains("фамилия") || $0.contains("наименование") } ?? 0
+        let articleCol = headers.firstIndex { $0.contains("перечень статей") } ?? 1
+        for row in (try? table.select("tr").array()) ?? [] {
+            let cells = (try? row.select("td").array()) ?? []
+            guard cells.count >= 2, nameCol < cells.count else { continue }
+            let name = ((try? cells[nameCol].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !name.lowercased().contains("фамилия") else { continue }   // шапка
+            let articles = articleCol < cells.count
+                ? ((try? cells[articleCol].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            // Роль-ярлык нужен только для маршрутизации (→ УПК, сторона защиты);
+            // сам перечень статей идёт отдельным полем, чтобы в шапке рисоваться
+            // после ФИО через значок щита, без слова «Подсудимый».
+            parties.add(role: "Подсудимый", name: name, articles: articles)
         }
-        return nil
     }
 
     // MARK: - Вкладка «Обжалование»

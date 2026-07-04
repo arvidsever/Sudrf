@@ -8,9 +8,10 @@
 //   • точечный: refresh(key:) — при открытии дела (SWR) и кнопка «Обновить».
 //
 //  Дедупликация по ключу: повторный refresh того же дела возвращает уже
-//  идущую задачу. Обход строго последовательный — темп задаёт троттлинг
-//  SudrfClient (1.5 с/запрос). Ошибка одного дела не прерывает обход и
-//  НИКОГДА не трогает уже сохранённый кэш.
+//  идущую задачу. Обход ПАРАЛЛЕЛЕН ПО СУДАМ (до RefreshSettings.maxConcurrentCourts
+//  одновременно): у каждого суда СОЮ свой сервер. Внутри одного суда дела идут
+//  последовательно, темп внутри суда задаёт пер-хост троттл SudrfClient (1.5 с).
+//  Ошибка одного дела не прерывает обход и НИКОГДА не трогает уже сохранённый кэш.
 
 import Foundation
 import SudrfKit
@@ -84,6 +85,13 @@ final class RefreshCenter: ObservableObject {
         }.map(\.key)
         guard !keys.isEmpty else { return }
 
+        // Группируем дела по домашнему суду (displayDomain денормализован в записи —
+        // декодировать контекст не нужно). Порядок дел внутри суда сохраняется.
+        let groups = Dictionary(grouping: keys) { key in
+            store.record(forKey: key)?.displayDomain ?? key
+        }
+        let total = keys.count
+
         walkGeneration += 1
         let gen = walkGeneration
         walkTask = Task { [weak self] in
@@ -92,12 +100,43 @@ final class RefreshCenter: ObservableObject {
                     self.walkTask = nil; self.walkProgress = nil
                 }
             }
-            for (i, key) in keys.enumerated() {
-                guard !Task.isCancelled, let self else { return }
-                self.walkProgress = WalkProgress(done: i, total: keys.count)
-                await self.refresh(key: key)?.value
+            guard let self else { return }
+            self.walkProgress = WalkProgress(done: 0, total: total)
+
+            // Один последовательный воркер на суд; параллельно не более
+            // maxConcurrentCourts судов (seed N, затем добавляем следующий по мере
+            // освобождения). Дела разных судов бьют разные серверы одновременно,
+            // внутри суда пер-хост троттл держит 1.5 с.
+            let courts = Array(groups.values)
+            let limit = max(1, RefreshSettings.maxConcurrentCourts)
+            await withTaskGroup(of: Void.self) { group in
+                var next = 0
+                func addWorker() {
+                    guard next < courts.count else { return }
+                    let courtKeys = courts[next]
+                    next += 1
+                    group.addTask { [weak self] in
+                        for key in courtKeys {
+                            if Task.isCancelled { return }
+                            await self?.refresh(key: key)?.value
+                            await self?.bumpWalkProgress(total: total)
+                        }
+                    }
+                }
+                for _ in 0..<limit { addWorker() }
+                while await group.next() != nil {
+                    if Task.isCancelled { break }
+                    addWorker()
+                }
             }
         }
+    }
+
+    /// Инкремент счётчика завершённых дел обхода (вызывается воркерами по мере
+    /// готовности каждого дела). На @MainActor — гонок по walkProgress нет.
+    private func bumpWalkProgress(total: Int) {
+        let done = (walkProgress?.done ?? 0) + 1
+        walkProgress = WalkProgress(done: min(done, total), total: total)
     }
 
     // MARK: Обновление одного дела

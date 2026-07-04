@@ -33,4 +33,9 @@ enum RefreshSettings {
         return v > 0 ? v : 3
     }
     static var ttl: TimeInterval { TimeInterval(ttlHours) * 3600 }
+
+    /// Сколько судов обновлять параллельно при обходе. У каждого суда СОЮ свой
+    /// сервер, поэтому запросы к разным судам можно вести одновременно; внутри
+    /// одного суда порядок последовательный, темп задаёт пер-хост троттл SudrfClient.
+    static let maxConcurrentCourts = 8
 }

@@ -10,7 +10,10 @@ public actor SudrfClient {
     private let session: URLSession
     private let userAgent: String
     private let minInterval: TimeInterval
-    private var lastRequestAt: Date?
+    /// Троттл пер-хост: у каждого суда СОЮ свой сервер, поэтому пауза `minInterval`
+    /// держится ОТДЕЛЬНО для каждого хоста. Значение — момент, начиная с которого
+    /// хосту можно слать следующий запрос (см. `throttle(host:)`).
+    private var nextAllowedAt: [String: Date] = [:]
 
     private let variantStore: WorkingVariantStore
     private let captchaStore: CaptchaTokenStore
@@ -45,7 +48,7 @@ public actor SudrfClient {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
-            try await throttle()
+            try await throttle(host: url.host?.lowercased() ?? "")
             var req = URLRequest(url: url)
             req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
@@ -215,15 +218,20 @@ public actor SudrfClient {
 
     // MARK: - throttle
 
-    private func throttle() async throws {
-        if let last = lastRequestAt {
-            let elapsed = Date().timeIntervalSince(last)
-            if elapsed < minInterval {
-                let wait = minInterval - elapsed
-                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-            }
+    /// Пер-хост троттл: держит паузу не короче `minInterval` между запросами К ОДНОМУ
+    /// хосту, не мешая запросам к другим судам идти параллельно. Слот бронируется
+    /// АТОМАРНО (до `await` — внутри actor между чтением и записью словаря нет точки
+    /// приостановки), поэтому параллельные вызовы к одному хосту честно встают в очередь
+    /// с шагом `minInterval`, а не читают одно и то же «последнее время» и не проходят
+    /// вместе.
+    private func throttle(host: String) async throws {
+        let now = Date()
+        let slot = max(now, nextAllowedAt[host] ?? now)
+        nextAllowedAt[host] = slot.addingTimeInterval(minInterval)
+        let wait = slot.timeIntervalSince(now)
+        if wait > 0 {
+            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
         }
-        lastRequestAt = Date()
     }
 }
 

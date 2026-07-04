@@ -36,6 +36,12 @@ public enum CaseCardParser {
         let body: Element? = doc.body() ?? doc
         let rawText = body.map { normalize(blockText($0)) } ?? ""
 
+        // «Винтажная» версия модуля (VNKOD-суды: Воронеж, Ульяновск, Амур и др.)
+        // рисует карточку совсем иначе: вкладки tab_content_* вместо cont{N}.
+        if isVintage(doc) {
+            return parseVintage(doc, html: html, rawText: rawText)
+        }
+
         let meta = parseMeta(doc)
         let sessions = parseMovement(doc)
         let acts = parseActs(doc)
@@ -66,6 +72,135 @@ public enum CaseCardParser {
                         acts: acts,
                         appeals: appeals,
                         parties: parties)
+    }
+
+    // MARK: - Винтажная карточка (VNKOD-суды)
+    //
+    // Разметка выверена по живой карточке Заволжского районного суда
+    // г. Ульяновска (фикстура zavolgskiy_card.html):
+    //   • шапка: <div class="case-num">ДЕЛО № …</div>;
+    //   • вкладки #tab_content_Case (пары <td><b>метка</b></td><td>значение</td>),
+    //     #tab_content_ClaimList (Вид требования | Решение | Дата решения),
+    //     #tab_content_EventList (Наименование события | Результат события |
+    //     Основания | Дата события | Время события | Дата размещения),
+    //     #tab_content_PersonList (Процессуальный статус | ФИО | ИНН | КПП | ОГРН);
+    //   • у таблиц есть мобильные дубли в div.block-mobile — берётся только
+    //     настольная таблица (.non-list), иначе всё задваивается;
+    //   • вкладки актов в имеющейся фикстуре нет (акт не опубликован) —
+    //     распознавание отложено до фикстуры дела с опубликованным актом (TODO).
+
+    static func isVintage(_ doc: Document) -> Bool {
+        if (try? doc.select("#case_bookmarks").first()) ?? nil != nil { return true }
+        return !(((try? doc.select("div[id^=tab_content_]").array()) ?? []).isEmpty)
+    }
+
+    private static func parseVintage(_ doc: Document, html: String, rawText: String) -> CaseCard {
+        // Метаданные: вкладка «Дело». УИД может лежать внутри <a class="dashed">.
+        var meta: [String: String] = [:]
+        if let cont = vintageTab(doc, "Case") {
+            for row in (try? cont.select("tr").array()) ?? [] {
+                let cells = (try? row.select("td").array()) ?? []
+                guard cells.count >= 2 else { continue }
+                let key = ((try? cells[0].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let val = ((try? cells[1].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !key.isEmpty, !val.isEmpty, key.count <= 60 else { continue }
+                let k = key.lowercased()
+                if meta[k] == nil { meta[k] = val }
+            }
+        }
+
+        return CaseCard(rawText: rawText,
+                        actText: nil,   // акты винтажной карточки — TODO (нет фикстуры)
+                        sessions: vintageSessions(doc),
+                        judge: meta["председательствующий судья"] ?? meta["судья"],
+                        result: vintageResult(doc),
+                        uid: meta["уникальный идентификатор дела"],
+                        caseNumber: parseCaseNumber(html: html),
+                        category: meta["категория"] ?? meta["категория дела"],
+                        receiptDate: meta["дата поступления"],
+                        decisionDate: meta["дата рассмотрения"],
+                        acts: [],
+                        appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
+                        parties: vintageParties(doc))
+    }
+
+    /// Вкладка по имени: #tab_content_<name>.
+    private static func vintageTab(_ doc: Document, _ name: String) -> Element? {
+        (try? doc.select("#tab_content_\(name)").first()) ?? nil
+    }
+
+    /// Настольная таблица вкладки — с классом `none-mobile` (мобильный дубль в
+    /// div.block-mobile его лишён). Второй классовый маркер разнится по судам:
+    /// Ульяновск — «non-list», Благовещенск — «list», поэтому опора на него
+    /// ненадёжна.
+    private static func vintageDesktopRows(_ tab: Element) -> [Element] {
+        guard let table = (try? tab.select("table.none-mobile").first()) ?? nil else { return [] }
+        return (try? table.select("tbody tr").array()) ?? []
+    }
+
+    private static func vintageSessions(_ doc: Document) -> [CaseSession] {
+        guard let tab = vintageTab(doc, "EventList") else { return [] }
+        // Индексы колонок — по шапке (thead), чтобы пережить перестановки.
+        // Названия колонок разнятся по судам: Ульяновск — «Дата события» /
+        // «Время события», Благовещенск — «Дата» / «Время слушания».
+        var cols: [String: Int] = [:]
+        if let table = (try? tab.select("table.none-mobile").first()) ?? nil,
+           let head = (try? table.select("thead tr").first()) ?? nil {
+            let texts = ((try? head.select("td, th").array()) ?? [])
+                .map { (((try? $0.text()) ?? "")).trimmingCharacters(in: .whitespaces) }
+            for (j, t) in texts.enumerated() {
+                if t.contains("Наименование события")     { cols["event"] = j }
+                else if t.contains("Результат события")   { cols["result"] = j }
+                else if t.contains("Дата события") || t == "Дата" { cols["date"] = j }
+                else if t.hasPrefix("Время")              { cols["time"] = j }
+                else if t.contains("Место проведения")    { cols["room"] = j }
+            }
+        }
+        guard let eventCol = cols["event"] else { return [] }
+
+        var sessions: [CaseSession] = []
+        for row in vintageDesktopRows(tab) {
+            let texts = ((try? row.select("td").array()) ?? [])
+                .map { (((try? $0.text()) ?? "")).trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard eventCol < texts.count, !texts[eventCol].isEmpty else { continue }
+            func value(_ key: String) -> String? {
+                guard let j = cols[key], j < texts.count, !texts[j].isEmpty else { return nil }
+                return texts[j]
+            }
+            sessions.append(CaseSession(date: value("date") ?? "",
+                                        time: value("time"),
+                                        room: value("room"),
+                                        event: texts[eventCol],
+                                        result: value("result")))
+        }
+        return sessions
+    }
+
+    private static func vintageParties(_ doc: Document) -> CaseParties {
+        var parties = CaseParties()
+        guard let tab = vintageTab(doc, "PersonList") else { return parties }
+        for row in vintageDesktopRows(tab) {
+            let cells = (try? row.select("td").array()) ?? []
+            guard cells.count >= 2 else { continue }
+            let role = ((try? cells[0].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = ((try? cells[1].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !role.isEmpty, !name.isEmpty else { continue }
+            if role.lowercased().contains("статус лица") { continue }   // шапка колонок
+            parties.add(role: role, name: name)
+        }
+        return parties
+    }
+
+    /// Результат дела: колонка «Решение» вкладки «Требования» (если заполнена).
+    private static func vintageResult(_ doc: Document) -> String? {
+        guard let tab = vintageTab(doc, "ClaimList") else { return nil }
+        for row in vintageDesktopRows(tab) {
+            let texts = ((try? row.select("td").array()) ?? [])
+                .map { (((try? $0.text()) ?? "")).trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard texts.count >= 2 else { continue }
+            if !texts[1].isEmpty { return texts[1] }
+        }
+        return nil
     }
 
     // MARK: - Стороны по делу (вкладка «СТОРОНЫ ПО ДЕЛУ» / «ЛИЦА»)

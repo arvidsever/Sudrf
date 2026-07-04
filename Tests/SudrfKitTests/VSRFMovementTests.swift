@@ -105,6 +105,10 @@ private actor MockCase: CaseProviding {
     }
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult] { [] }
+    func fetchCard(url: URL) async throws -> CaseCard {
+        throw SudrfError.http(status: 404)   // в этих сценариях путь по ссылке не используется
+    }
+
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard { firstCard }
 }

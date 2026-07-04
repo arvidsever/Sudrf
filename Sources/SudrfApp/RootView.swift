@@ -142,8 +142,8 @@ private struct NavCapsule: View {
             HStack(spacing: 7) {
                 Text(s.title)
                     .font(.system(size: 13, weight: active ? .semibold : .medium))
-                if s == .cases, router.newBadge > 0 {
-                    Text("\(router.newBadge)")
+                if s == .cases, router.caseCount > 0 {
+                    Text("\(router.caseCount)")
                         .font(.system(size: 9.5, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(minWidth: 16, minHeight: 16)
@@ -176,6 +176,7 @@ private struct CaseCardHost: View {
         .sheet(item: $router.captcha) { ctx in
             CaptchaSheet(context: ctx,
                          onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
+                         onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
                          onCancel: { router.captcha = nil })
         }
     }

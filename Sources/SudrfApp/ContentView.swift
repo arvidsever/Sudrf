@@ -245,24 +245,34 @@ private struct ResultsPane: View {
         // Шапка «Выдача» над живым списком лежит в safe-area ПОВЕРХ него:
         // карточки уходят под шапку и мягко растворяются (scroll edge effect,
         // .soft) вместо жёсткого среза по нижней кромке.
-        if showsFloatingHeader {
-            resultsList
-                .safeAreaInset(edge: .top, spacing: 0) { header }
-                .scrollEdgeEffectStyle(.soft, for: .top)
+        Group {
+            if showsFloatingHeader {
+                resultsList
+                    .safeAreaInset(edge: .top, spacing: 0) { header }
+                    .scrollEdgeEffectStyle(.soft, for: .top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    stateContent
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            VStack(spacing: 0) {
-                header
-                stateContent
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // Лист капчи — на уровне всей панели: он нужен и базовому поиску
+        // (rerunSearch), и заглушкам инстанций в движении дела.
+        .sheet(item: $model.captcha) { ctx in
+            CaptchaSheet(
+                context: ctx,
+                onCardHTML: { html in Task { await model.ingestCaptchaCard(html: html) } },
+                onCaptchaPair: { host, token in model.storeCaptchaPair(host: host, token: token) },
+                onCancel: { model.captcha = nil })
         }
     }
 
     /// Плавающая шапка уместна только над списком карточек выдачи.
     private var showsFloatingHeader: Bool {
-        !model.isDrilled && model.captchaURL == nil && !model.searching
-            && !model.results.isEmpty
+        !model.isDrilled && !model.searching && !model.results.isEmpty
     }
 
     // Шапка контента (тулбара у окна нет — hiddenTitleBar).
@@ -324,19 +334,10 @@ private struct ResultsPane: View {
                                          router.track(context: ctx, movement: model.movement)
                                      }
                                  })
-                    .sheet(item: $model.captcha) { ctx in
-                        CaptchaSheet(
-                            context: ctx,
-                            onCardHTML: { html in Task { await model.ingestCaptchaCard(html: html) } },
-                            onCancel: { model.captcha = nil })
-                    }
             } else {
                 CenterNote(title: "Нет данных о движении дела",
                            caption: "Карточки вышестоящих инстанций по этому УИД не найдены либо дело не обжаловалось.")
             }
-        } else if let url = model.captchaURL {
-            CaptchaBanner(url: url)
-            Spacer()
         } else if model.searching {
             CenterNote(spinner: true, title: "Идёт поиск…")
         } else if !model.results.isEmpty {
@@ -448,28 +449,6 @@ private struct PartiesLine: View {
             return Text(head + tail)
         }
         return Text(head)
-    }
-}
-
-private struct CaptchaBanner: View {
-    let url: URL
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("На форме этого суда стоит капча")
-                .font(.caption.weight(.semibold))
-            Text("Решать её автоматически нельзя — откройте форму в браузере "
-               + "и введите код вручную.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Link("Открыть форму в браузере ↗", destination: url)
-                .font(.caption)
-        }
-        .padding(13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.yellow.opacity(0.14)))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.yellow.opacity(0.35)))
-        .padding(EdgeInsets(top: 14, leading: 16, bottom: 0, trailing: 16))
     }
 }
 

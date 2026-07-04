@@ -23,8 +23,9 @@ public enum ResultsParser {
             let number = ((try? a.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !number.isEmpty else { continue }
 
-            let caseID = queryValue("case_id", in: href)
-            let caseUID = queryValue("case_uid", in: href)
+            // Современный модуль: case_id/case_uid; винтажный (VNKOD-суды): _id/_uid.
+            let caseID = queryValue("case_id", in: href) ?? queryValue("_id", in: href)
+            let caseUID = queryValue("case_uid", in: href) ?? queryValue("_uid", in: href)
             let cardURL = absoluteURL(href, domain: court.domain)
 
             var cells: [String] = []

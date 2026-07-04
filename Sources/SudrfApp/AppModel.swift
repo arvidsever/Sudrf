@@ -165,6 +165,50 @@ enum CaseSort: CaseIterable {
 
 enum CalMode { case month, agenda }
 
+enum OverviewRoute { case dashboard, fullFeed }
+
+enum FeedEntryKind: String, CaseIterable, Hashable {
+    case hearing, act, movement
+
+    var title: String {
+        switch self {
+        case .hearing:  return "Заседания"
+        case .act:      return "Судебные акты"
+        case .movement: return "Движение дела"
+        }
+    }
+
+    var tag: String {
+        switch self {
+        case .hearing:  return "заседание"
+        case .act:      return "акт"
+        case .movement: return "движение"
+        }
+    }
+}
+
+enum FeedTypeFilter: CaseIterable, Hashable {
+    case all, hearing, act, movement
+
+    var title: String {
+        switch self {
+        case .all:      return "Все"
+        case .hearing:  return FeedEntryKind.hearing.title
+        case .act:      return FeedEntryKind.act.title
+        case .movement: return FeedEntryKind.movement.title
+        }
+    }
+
+    var kind: FeedEntryKind? {
+        switch self {
+        case .all:      return nil
+        case .hearing:  return .hearing
+        case .act:      return .act
+        case .movement: return .movement
+        }
+    }
+}
+
 enum CaseStageKind: String { case first, appeal, cassation, done
     var label: String {
         switch self {
@@ -188,6 +232,7 @@ enum DeadlineStatus: String { case proposed, confirmed }
 
 struct TrackedDeadline: Identifiable {
     let id: String            // «<ключ записи>#<kind>»
+    var recordKey: String
     var what: String
     var caseNumber: String
     var basis: String
@@ -197,7 +242,8 @@ struct TrackedDeadline: Identifiable {
 }
 
 struct TrackedHearing: Identifiable {
-    let id = UUID()
+    var id: String { "\(recordKey)#hearing#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(court)" }
+    var recordKey: String
     var date: Date
     var time: String
     var caseNumber: String
@@ -208,12 +254,25 @@ struct TrackedHearing: Identifiable {
 }
 
 struct FeedEntry: Identifiable {
-    let id = UUID()
+    var id: String
     var dayHead: String?
+    var date: Date
     var time: String
+    var recordKey: String
     var caseNumber: String
+    var client: String
+    var kind: FeedEntryKind
     var text: String
-    var hasAct: Bool
+    var actID: String?
+    var isUnread: Bool
+
+    var hasAct: Bool { actID != nil }
+}
+
+struct OverviewHearingBuckets {
+    var next7Days: [TrackedHearing]
+    var later: [TrackedHearing]
+    var firstLaterDays: Int?
 }
 
 struct StepState { let label: String; let kind: Kind; enum Kind { case done, active, todo } }
@@ -253,6 +312,7 @@ final class AppRouter: ObservableObject {
 
     // Навигация
     @Published var section: AppSection = .overview
+    @Published var overviewRoute: OverviewRoute = .dashboard
     @Published var openedCase: String? = nil
     @Published var expandedComplaints: Set<String> = []
 
@@ -266,6 +326,11 @@ final class AppRouter: ObservableObject {
     @Published var query: String = ""
     @Published var sortBy: CaseSort = .activity
 
+    // Вся лента внутри «Обзора»
+    @Published var feedFilter: FeedTypeFilter = .all
+    @Published var feedUnreadOnly = false
+    @Published var feedQuery: String = ""
+
     // Календарь (на реальных датах)
     @Published var calMode: CalMode = .month
     @Published var calMonth: Date = DateUtil.startOfMonth(DateUtil.today)
@@ -278,6 +343,7 @@ final class AppRouter: ObservableObject {
     @Published var deadlines: [TrackedDeadline] = []
     @Published var collections: [(String, Int)] = []   // «Все дела» + подборки со счётчиками
     @Published var stageCounts: [(CaseStageKind, Int)] = []
+    @Published var lastOverviewRefreshAt: Date? = nil
 
     // Правка срока
     @Published var editingDeadline: String? = nil
@@ -301,6 +367,8 @@ final class AppRouter: ObservableObject {
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
     private var refreshCenterSink: AnyCancellable? = nil
+    private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
+    private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
 
     var isRefreshingOpenCase: Bool {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
@@ -325,7 +393,16 @@ final class AppRouter: ObservableObject {
 
     // MARK: Навигация
 
-    func go(_ s: AppSection) { section = s; openedCase = nil; closeLiveCard() }
+    func go(_ s: AppSection) {
+        section = s
+        if s == .overview { overviewRoute = .dashboard }
+        else { overviewRoute = .dashboard }
+        openedCase = nil
+        closeLiveCard()
+    }
+
+    func openFullFeed() { overviewRoute = .fullFeed }
+    func closeFullFeed() { overviewRoute = .dashboard }
 
     /// Открытие по ключу записи — предпочтительный путь (номер дела без суда
     /// неоднозначен: «2-115/2026» может отслеживаться в двух судах сразу).
@@ -360,6 +437,15 @@ final class AppRouter: ObservableObject {
         refreshCenter.refresh(key: rec.key)   // SWR: перезапрос всегда
     }
 
+    func openFeedEntry(_ entry: FeedEntry, preferAct: Bool = false) {
+        markFeedEntryRead(entry.id)
+        guard let rec = store.record(forKey: entry.recordKey) else { return }
+        open(rec)
+        if preferAct, let actID = entry.actID {
+            selectedActID = actID
+        }
+    }
+
     func closeCase() { openedCase = nil; closeLiveCard() }
 
     /// Принудительное обновление открытой карточки (кнопка «Обновить»).
@@ -386,8 +472,24 @@ final class AppRouter: ObservableObject {
     func calStep(_ months: Int) { calMonth = DateUtil.startOfMonth(DateUtil.addMonths(calMonth, months)) }
 
     var isEmpty: Bool { cases.isEmpty }
+    var caseCount: Int { cases.count }
     var newBadge: Int { cases.filter { $0.isNew }.count }
     var waitingCount: Int { deadlines.filter { $0.status == .proposed }.count }
+    var overdueDeadlineCount: Int {
+        deadlines.filter { $0.status == .proposed && $0.date < DateUtil.today }.count
+    }
+    var monthlyHearingsCount: Int {
+        let month = DateUtil.startOfMonth(DateUtil.today)
+        return hearings.filter { DateUtil.startOfMonth($0.date) == month }.count
+    }
+    var unreadFeedCount: Int { feed.filter(\.isUnread).count }
+    var weekFeedEntries: [FeedEntry] {
+        Self.recentFeedEntries(feed, today: DateUtil.today, days: 7)
+    }
+    var fullFeedEntries: [FeedEntry] {
+        Self.filteredFeedEntries(feed, filter: feedFilter,
+                                 unreadOnly: feedUnreadOnly, query: feedQuery)
+    }
 
     // MARK: Отслеживание
 
@@ -412,6 +514,28 @@ final class AppRouter: ObservableObject {
 
     private func markSeen(_ rec: TrackedCaseRecord) {
         rec.seenAt = Date(); store.save(); reload()
+    }
+
+    func markAllFeedRead() {
+        let ids = Set(fullFeedEntries.map(\.id))
+        guard !ids.isEmpty else { return }
+        readFeedIDs.formUnion(ids)
+        saveReadFeedIDs()
+        for i in feed.indices where ids.contains(feed[i].id) {
+            feed[i].isUnread = false
+        }
+    }
+
+    private func markFeedEntryRead(_ id: String) {
+        guard readFeedIDs.insert(id).inserted else { return }
+        saveReadFeedIDs()
+        if let i = feed.firstIndex(where: { $0.id == id }) {
+            feed[i].isUnread = false
+        }
+    }
+
+    private func saveReadFeedIDs() {
+        UserDefaults.standard.set(Array(readFeedIDs), forKey: Self.readFeedIDsKey)
     }
 
     // MARK: Импорт из CSV (Файл → «Импортировать дела из CSV…»)
@@ -533,6 +657,16 @@ final class AppRouter: ObservableObject {
                                              courtTitle: inst.court)
     }
 
+    /// Сохранить решённую пользователем пару captcha/captchaid: последующие
+    /// запросы к этому суду пройдут без окна кода. После подхвата карточки
+    /// движение перезапрашивается — оставшиеся заглушки-инстанции этого суда
+    /// дозагрузятся уже с парой в URL.
+    func storeCaptchaPair(host: String, token: CaptchaToken) {
+        pendingCaptchaRefresh = true
+        Task { await CaptchaTokenStore.shared.store(token, domain: host) }
+    }
+    private var pendingCaptchaRefresh = false
+
     /// Принять HTML карточки из окна капчи и заменить заглушку реальной инстанцией
     /// (карточка капчей не защищена — разбирается как обычно).
     func ingestCaptchaCard(html: String) async {
@@ -556,6 +690,13 @@ final class AppRouter: ObservableObject {
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
             store.save()
             reload()
+        }
+
+        // Пара captcha/captchaid сохранена — перезапрашиваем движение: другие
+        // заглушки того же суда дозагрузятся без окон (пара уйдёт в URL поиска).
+        if pendingCaptchaRefresh {
+            pendingCaptchaRefresh = false
+            refreshOpenCase()
         }
     }
 
@@ -606,7 +747,8 @@ final class AppRouter: ObservableObject {
         var cs: [TrackedCase] = []
         var hs: [TrackedHearing] = []
         var dls: [TrackedDeadline] = []
-        var sessionsForFeed: [(date: Date, time: String, number: String, text: String)] = []
+        var feedItems: [FeedEntry] = []
+        let readIDs = readFeedIDs
 
         for rec in recs {
             let snap = rec.snapshot
@@ -618,23 +760,46 @@ final class AppRouter: ObservableObject {
             // Заседания (будущие).
             for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
                 guard let d = s.date else { continue }
-                hs.append(TrackedHearing(date: d, time: s.time ?? "",
+                hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
                     caseNumber: rec.caseNumber, parties: snap.partiesShort,
                     court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d)))
             }
             // Сроки.
             for dl in snap.deadlines {
-                dls.append(TrackedDeadline(id: rec.key + "#" + dl.kind, what: dl.what,
+                dls.append(TrackedDeadline(id: rec.key + "#" + dl.kind, recordKey: rec.key, what: dl.what,
                     caseNumber: rec.caseNumber, basis: dl.basis, calLabel: dl.calLabel,
                     date: dl.date, status: DeadlineStatus(rawValue: dl.statusRaw) ?? .proposed))
             }
-            // Лента: события движения за последний месяц + будущие назначения.
+            let client = clientName(rec: rec, snap: snap)
+            let unreadByCase = rec.seenAt == nil
+            // Лента: события движения за последние 45 дней.
             for s in snap.sessions {
                 guard let d = s.date else { continue }
                 let diff = DateUtil.daysBetween(d, today)   // d в прошлом → diff>0
                 if diff >= 0 && diff <= 45 {
-                    sessionsForFeed.append((d, s.time ?? "—", rec.caseNumber,
-                                            s.result ?? s.event))
+                    let text = s.result ?? s.event
+                    let kind = feedKind(for: s)
+                    let id = feedID(recordKey: rec.key, kind: kind, date: d,
+                                    time: s.time ?? "—", text: text)
+                    feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
+                        time: s.time ?? "—", recordKey: rec.key, caseNumber: rec.caseNumber,
+                        client: client, kind: kind, text: text, actID: nil,
+                        isUnread: unreadByCase && !readIDs.contains(id)))
+                }
+            }
+            // Опубликованные акты берём из полного кэша движения, когда он есть.
+            if let mv = rec.movement {
+                for act in mv.acts {
+                    guard let d = DateUtil.parse(act.date) else { continue }
+                    let diff = DateUtil.daysBetween(d, today)
+                    guard diff >= 0 && diff <= 45 else { continue }
+                    let text = "Опубликован судебный акт: \(act.title)"
+                    let id = feedID(recordKey: rec.key, kind: .act, date: d,
+                                    time: "—", text: act.id)
+                    feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
+                        time: "—", recordKey: rec.key, caseNumber: rec.caseNumber,
+                        client: client, kind: .act, text: text, actID: act.id,
+                        isUnread: unreadByCase && !readIDs.contains(id)))
                 }
             }
         }
@@ -645,9 +810,10 @@ final class AppRouter: ObservableObject {
         cases = cs
         hearings = hs
         deadlines = dls
-        feed = buildFeed(sessionsForFeed)
+        feed = buildFeed(feedItems)
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
+        lastOverviewRefreshAt = recs.compactMap(\.movementFetchedAt).max()
     }
 
     /// Вид производства строки. Приоритет: точная картотека из контекста
@@ -715,24 +881,104 @@ final class AppRouter: ObservableObject {
         }
     }
 
-    private func buildFeed(_ items: [(date: Date, time: String, number: String, text: String)]) -> [FeedEntry] {
-        let sorted = items.sorted { ($0.date, $0.time) > ($1.date, $1.time) }.prefix(14)
-        var out: [FeedEntry] = []
+    private func clientName(rec: TrackedCaseRecord, snap: CaseSnapshot) -> String {
+        if let first = rec.collectionNames.first, !first.isEmpty { return first }
+        let parties = snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ ")
+        return parties.components(separatedBy: " ⚔ ").first?.trimmingCharacters(in: .whitespaces)
+            .nilIfEmpty ?? rec.courtTitle
+    }
+
+    private func feedKind(for session: StoredSession) -> FeedEntryKind {
+        let text = (session.event + " " + (session.result ?? "")).lowercased()
+        if !(session.time ?? "").isEmpty
+            || text.contains("заседани")
+            || text.contains("слушани")
+            || text.contains("рассмотрени") {
+            return .hearing
+        }
+        return .movement
+    }
+
+    private func feedID(recordKey: String, kind: FeedEntryKind,
+                        date: Date, time: String, text: String) -> String {
+        "\(recordKey)#feed#\(kind.rawValue)#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(text)"
+    }
+
+    private func buildFeed(_ items: [FeedEntry]) -> [FeedEntry] {
+        var out = items.sorted {
+            if $0.date != $1.date { return $0.date > $1.date }
+            return $0.time > $1.time
+        }
         var lastHead: String? = nil
-        for it in sorted {
+        for i in out.indices {
+            let it = out[i]
             let head = feedDayHead(it.date)
             let show = head != lastHead
             lastHead = head
-            out.append(FeedEntry(dayHead: show ? head : nil, time: it.time,
-                                 caseNumber: it.number, text: it.text, hasAct: true))
+            out[i].dayHead = show ? head : nil
         }
         return out
     }
+
     private func feedDayHead(_ d: Date) -> String {
         let diff = DateUtil.daysBetween(d, DateUtil.today)
         if diff == 0 { return "Сегодня" }
         if diff == 1 { return "Вчера" }
         return "\(DateUtil.weekday(d)), \(DateUtil.fmt(d))"
+    }
+
+    nonisolated static func hearingBuckets(_ hearings: [TrackedHearing],
+                                           today: Date) -> OverviewHearingBuckets {
+        let sorted = hearings.sorted { ($0.date, $0.time) < ($1.date, $1.time) }
+        let next7 = sorted.filter { h in
+            let diff = DateUtil.daysBetween(today, h.date)
+            return diff >= 0 && diff <= 7
+        }
+        let later = sorted.filter { DateUtil.daysBetween(today, $0.date) > 7 }
+        return OverviewHearingBuckets(next7Days: next7, later: later,
+                                      firstLaterDays: later.first.map { DateUtil.daysBetween(today, $0.date) })
+    }
+
+    nonisolated static func pinnedDeadline(_ deadlines: [TrackedDeadline],
+                                           today: Date) -> TrackedDeadline? {
+        let pending = deadlines.filter { $0.status == .proposed }.sorted { $0.date < $1.date }
+        return pending.first { $0.date >= today } ?? pending.first
+    }
+
+    nonisolated static func overdueDeadlines(_ deadlines: [TrackedDeadline],
+                                             today: Date) -> [TrackedDeadline] {
+        deadlines.filter { $0.status == .proposed && $0.date < today }
+            .sorted { $0.date < $1.date }
+    }
+
+    nonisolated static func remainingPendingDeadlines(_ deadlines: [TrackedDeadline],
+                                                      pinned: TrackedDeadline?,
+                                                      today: Date) -> [TrackedDeadline] {
+        deadlines.filter {
+            $0.status == .proposed && $0.id != pinned?.id && $0.date >= today
+        }
+        .sorted { $0.date < $1.date }
+    }
+
+    nonisolated static func recentFeedEntries(_ entries: [FeedEntry],
+                                              today: Date, days: Int) -> [FeedEntry] {
+        entries.filter { entry in
+            let diff = DateUtil.daysBetween(entry.date, today)
+            return diff >= 0 && diff < days
+        }
+    }
+
+    nonisolated static func filteredFeedEntries(_ entries: [FeedEntry],
+                                                filter: FeedTypeFilter,
+                                                unreadOnly: Bool,
+                                                query: String) -> [FeedEntry] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return entries.filter { entry in
+            (filter.kind == nil || entry.kind == filter.kind)
+            && (!unreadOnly || entry.isUnread)
+            && (q.isEmpty || (entry.caseNumber + " " + entry.client + " " + entry.text)
+                .lowercased().contains(q))
+        }
     }
 
     /// «Все дела» + подборки со счётчиками. Порядок — как создавались; имена,
@@ -846,4 +1092,8 @@ final class AppRouter: ObservableObject {
         return all.first { $0.caseNumber == number }
             ?? all.first { $0.key.hasSuffix("/" + number) }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

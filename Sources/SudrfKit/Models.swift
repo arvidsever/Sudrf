@@ -124,6 +124,10 @@ public enum SudrfError: Error, CustomStringConvertible {
     case parsing(String)
     case invalidValue(String)
     case unknownCartoteka(String)
+    /// Ни один известный вариант поискового URL не дал ни выдачи, ни валидной
+    /// пустой страницы — суд отвечает в неизвестном формате (другая версия
+    /// интерфейса, JS-защита, заглушка). Пустоту в этом случае показывать нельзя.
+    case searchModuleUnavailable(domain: String)
 
     public var description: String {
         switch self {
@@ -140,6 +144,10 @@ public enum SudrfError: Error, CustomStringConvertible {
             return "Значение нельзя представить в cp1251: «\(v)»."
         case .unknownCartoteka(let id):
             return "Неизвестная картотека: «\(id)»."
+        case .searchModuleUnavailable(let domain):
+            return "Поисковый модуль суда \(domain) не отвечает в известных форматах "
+                 + "(возможно, JS-защита или нестандартный интерфейс). "
+                 + "Попробуйте открыть сайт суда в браузере."
         }
     }
 }

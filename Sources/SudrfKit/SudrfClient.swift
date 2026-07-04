@@ -12,9 +12,14 @@ public actor SudrfClient {
     private let minInterval: TimeInterval
     private var lastRequestAt: Date?
 
+    private let variantStore: WorkingVariantStore
+    private let captchaStore: CaptchaTokenStore
+
     public init(minInterval: TimeInterval = 1.5,
                 userAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-                trustCourtCertificates: Bool = true) {
+                trustCourtCertificates: Bool = true,
+                variantStore: WorkingVariantStore = .shared,
+                captchaStore: CaptchaTokenStore = .shared) {
         let cfg = URLSessionConfiguration.default
         cfg.httpCookieStorage = HTTPCookieStorage.shared
         cfg.httpShouldSetCookies = true
@@ -28,6 +33,8 @@ public actor SudrfClient {
         self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
         self.userAgent = userAgent
         self.minInterval = minInterval
+        self.variantStore = variantStore
+        self.captchaStore = captchaStore
     }
 
     /// Число повторов при временных ошибках (502/503/504, обрывы соединения).
@@ -96,20 +103,73 @@ public actor SudrfClient {
                             value: String) async throws -> [CaseSearchResult] {
         let builder = SudrfURLBuilder(court: court)
 
-        // 1) Проверяем форму на капчу.
-        let formURL = try builder.formURL(cartoteka)
-        let formHTML = try await fetchHTML(formURL)
-        if CaptchaDetector.hasCaptcha(in: formHTML) {
-            throw SudrfError.captchaRequired(formURL: formURL)
+        // 0) Решённая ранее капча этого суда: без предпроверки формы, сразу
+        // на выдачу с парой captcha/captchaid (минус запрос и минус окно).
+        // Отклонённая судом пара инвалидируется, поток идёт обычным путём.
+        if let token = await captchaStore.token(forDomain: court.domain) {
+            do {
+                return try await runVariants(builder: builder, court: court,
+                                             cartoteka: cartoteka, field: field,
+                                             value: value, captcha: token)
+            } catch SudrfError.captchaRequired {
+                await captchaStore.invalidate(domain: court.domain)
+            }
         }
 
-        // 2) Прямой GET выдачи.
-        let url = try builder.searchURL(cartoteka: cartoteka, field: field, value: value)
-        let html = try await fetchHTML(url)
-        if CaptchaDetector.hasCaptcha(in: html) {
-            throw SudrfError.captchaRequired(formURL: url)
+        // 1) Предпроверка формы на капчу — только у современного интерфейса.
+        // У винтажного (vnkod) форма своя, а капча равно видна на самой выдаче —
+        // её распознает классификатор, экономя запрос.
+        if builder.pattern == .primary {
+            let formURL = try builder.formURL(cartoteka)
+            let formHTML = try await fetchHTML(formURL)
+            if CaptchaDetector.hasCaptcha(in: formHTML) {
+                throw SudrfError.captchaRequired(formURL: formURL)
+            }
         }
-        return try ResultsParser.parse(html: html, court: court)
+
+        // 2) Перебор вариантов выдачи.
+        return try await runVariants(builder: builder, court: court,
+                                     cartoteka: cartoteka, field: field,
+                                     value: value, captcha: nil)
+    }
+
+    /// Перебор вариантов поискового URL. Рабочий вариант прошлых запросов —
+    /// первым. «Пустой» ответ не прерывает перебор: у винтажных судов запрос
+    /// не в ту таблицу (напр., КАС в гражданской) даёт валидную пустую выдачу,
+    /// хотя дело есть в соседней. Результаты выигрывают у пустоты; пустота — у ошибки.
+    private func runVariants(builder: SudrfURLBuilder,
+                             court: Court,
+                             cartoteka: Cartoteka,
+                             field: SearchField,
+                             value: String,
+                             captcha: CaptchaToken?) async throws -> [CaseSearchResult] {
+        var variants = try builder.searchURLVariants(cartoteka: cartoteka, field: field,
+                                                     value: value, captcha: captcha)
+        if let workingID = await variantStore.workingVariantID(domain: court.domain, cartoteka: cartoteka),
+           let i = variants.firstIndex(where: { $0.id == workingID }), i > 0 {
+            variants.insert(variants.remove(at: i), at: 0)
+        }
+
+        var sawEmpty = false
+        for v in variants {
+            let html = try await fetchHTML(v.url)
+            switch SearchPageClassifier.classify(html: html) {
+            case .captcha:
+                throw SudrfError.captchaRequired(formURL: try builder.formURL(cartoteka))
+            case .results:
+                await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
+                return try ResultsParser.parse(html: html, court: court)
+            case .empty:
+                sawEmpty = true
+            case .unrecognized:
+                continue
+            }
+        }
+        if sawEmpty { return [] }
+        // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
+        // в неизвестном формате (другой интерфейс, JS-защита, заглушка).
+        // Честная ошибка вместо тихого «ничего не найдено».
+        throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
 
     /// Загрузить карточку дела и извлечь метаданные, движение и тексты актов
@@ -125,6 +185,15 @@ public actor SudrfClient {
             let html = try await self.fetchHTML(url)
             return try CaseCardParser.parse(html: html)
         }
+    }
+
+    /// Карточка по ГОТОВОЙ ссылке из выдачи. Нужна, когда пары case_id/case_uid
+    /// в строке выдачи нет (винтажные суды вроде Благовещенского дают только
+    /// `_uid`) — ссылка выдачи всегда «родного» формата и самодостаточна.
+    /// Без host-фолбэка: URL пришёл с уже отвечавшего хоста.
+    public func fetchCard(url: URL) async throws -> CaseCard {
+        let html = try await fetchHTML(url)
+        return try CaseCardParser.parse(html: html)
     }
 
     /// Выполняет запрос на дефисной форме хоста; при сетевой/HTTP-ошибке повторяет
@@ -161,9 +230,15 @@ public actor SudrfClient {
 /// Делегат TLS для доменов судов: сайты используют сертификаты российских
 /// корней (Минцифры), которых нет в доверенном хранилище Apple. Корень и
 /// промежуточные сертификаты Минцифры (из ресурсов пакета) добавляются
-/// ЯКОРЯМИ к системным, после чего цепочка проверяется штатной оценкой
-/// SecTrust — самоподписанный или подменённый сертификат отклоняется.
-/// Для всех прочих хостов — стандартная системная проверка.
+/// ЯКОРЯМИ к системным, после чего цепочка проверяется штатной оценкой SecTrust.
+///
+/// Проверка для судов МЯГКАЯ: если цепочка не прошла даже с якорями Минцифры
+/// (у части «винтажных» судов — Воронеж и др. — она попросту кривая, из-за чего
+/// запросы падали с NSURLError -999 «отменено»), сертификат всё равно
+/// принимается — но ТОЛЬКО для доменов судов. Данные судов публичные, встроенное
+/// капча-окно (CaptchaWebView) ведёт себя так же, а альтернатива — уходить на
+/// голый http, как делает апстрим sudrfscraper. Для всех прочих хостов —
+/// стандартная системная проверка без послаблений.
 final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
 
     private let trustedSuffixes = ["sudrf.ru", "mos-gorsud.ru"]
@@ -195,10 +270,9 @@ final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
         // суды с сертификатами публичных ЦС тоже проходят.
         SecTrustSetAnchorCertificates(trust, Self.russianAnchors as CFArray)
         SecTrustSetAnchorCertificatesOnly(trust, false)
-        if SecTrustEvaluateWithError(trust, nil) {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-        }
+        _ = SecTrustEvaluateWithError(trust, nil)
+        // Провал оценки не отклоняет соединение (см. докстринг): сертификат
+        // суда принимается как есть.
+        completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }

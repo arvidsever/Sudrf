@@ -78,15 +78,19 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// Пометка к инстанции (напр. «отказ в передаче», «возврат без рассмотрения»
     /// для «отказных» производств ВС РФ). Отображается отдельным чипом.
     public var note: String?
+    /// Ссылка на текст акта-вложения (PDF/DOC) — mos-gorsud публикует акты
+    /// файлами, а не инлайном (в отличие от sud_delo, где текст идёт в actID).
+    /// Опционал: старые кэши декодируются без миграции.
+    public var actURL: URL?
 
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
                 sessions: [CaseSession], actID: String? = nil,
-                captchaFormURL: URL? = nil, note: String? = nil) {
+                captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
         self.result = result; self.sessions = sessions; self.actID = actID
-        self.captchaFormURL = captchaFormURL; self.note = note
+        self.captchaFormURL = captchaFormURL; self.note = note; self.actURL = actURL
     }
 }
 
@@ -140,6 +144,9 @@ public protocol CaseProviding: Sendable {
                 field: SearchField, value: String) async throws -> [CaseSearchResult]
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard
+    /// Карточка по готовой ссылке из выдачи — для строк без case_id/case_uid
+    /// (винтажные суды дают только `_uid`, ссылка самодостаточна).
+    func fetchCard(url: URL) async throws -> CaseCard
 }
 
 extension SudrfClient: CaseProviding {}
@@ -183,34 +190,54 @@ public struct KnownCard: Sendable, Equatable, Codable {
 
 public actor MovementService: MovementProviding {
 
-    private let client: any CaseProviding
+    // internal (не private): московская ветка движения живёт в расширении
+    // в MosGorSudMovement.swift и пользуется теми же зависимостями.
+    let client: any CaseProviding
     /// Домены вышестоящих судов, на которых ищем дело по УИД.
-    private let higherCourtDomains: [String]
+    let higherCourtDomains: [String]
     /// Известные прямые ссылки на карточки этого дела (вышестоящие инстанции,
     /// материалы) — фолбэк при капче и добор того, что поиск не нашёл.
-    private let knownCards: [KnownCard]
+    let knownCards: [KnownCard]
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
-    private let vsrf: (any VSRFProviding)?
+    let vsrf: (any VSRFProviding)?
+    /// Клиент портала судов Москвы (mos-gorsud.ru). nil — московская ветка
+    /// не обслуживается (движение по делу Москвы не собрать).
+    let mosgorsud: (any MosGorSudProviding)?
 
     public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
-                knownCards: [KnownCard] = [], vsrf: (any VSRFProviding)? = nil) {
+                knownCards: [KnownCard] = [], vsrf: (any VSRFProviding)? = nil,
+                mosgorsud: (any MosGorSudProviding)? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
         self.knownCards = knownCards
         self.vsrf = vsrf
+        self.mosgorsud = mosgorsud
     }
 
     public func movement(for base: CaseSearchResult,
                          court: Court,
                          cartoteka: Cartoteka) async throws -> CaseMovement {
-        guard let caseID = base.caseID, let caseUID = base.caseUID else {
+        // Суды Москвы — отдельный портал mos-gorsud.ru (см. MosGorSudMovement).
+        // Ветка нужна и живому поиску, и перезапросу отслеживаемого дела
+        // (RefreshCenter идёт через этот же метод по MovementProviding).
+        if MosGorSudRouting.isMosGorSud(domain: court.domain) {
+            return try await moscowMovement(
+                for: MosGorSudResult(caseNumber: base.caseNumber,
+                                     court: court.title,
+                                     judge: base.judge,
+                                     receiptDate: base.receiptDate,
+                                     participants: base.essence,
+                                     result: base.result,
+                                     cardURL: base.cardURL),
+                cartoteka: cartoteka)
+        }
+
+        guard Self.hasCardAccess(base) else {
             return Self.minimalMovement(base: base, court: court)
         }
 
         // 1. Карточка 1-й инстанции: сессии + текст акта
-        let baseCard = try await client.fetchCard(court: court, caseID: caseID,
-                                                   caseUID: caseUID, deloID: cartoteka.deloID,
-                                                   new: cartoteka.new)
+        let baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
 
         // УИД дела (вида 11RS0001-01-2025-011255-03) — из метаданных карточки.
         // НЕ путать с base.caseUID: это внутренний GUID ссылки на карточку
@@ -254,15 +281,14 @@ public actor MovementService: MovementProviding {
             let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
                                                           field: .uid, value: uid)) ?? []
             for r in sameCourtRows {
-                guard let rID = r.caseID, let rUID = r.caseUID else { continue }
+                guard Self.hasCardAccess(r) else { continue }
                 // Базовый круг и уже добавленные — пропускаем (№ может идти с
                 // дописками «… ~ М-…», поэтому сравнение префиксом).
                 if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
                 if instances.contains(where: { $0.domain == court.domain
                                             && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
-                guard let card = try? await client.fetchCard(court: court, caseID: rID, caseUID: rUID,
-                                                             deloID: cartoteka.deloID,
-                                                             new: cartoteka.new) else { continue }
+                guard let card = try? await fetchCard(row: r, court: court,
+                                                      cartoteka: cartoteka) else { continue }
                 var roundActID: String? = nil
                 if let actText = card.actText {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
@@ -294,12 +320,11 @@ public actor MovementService: MovementProviding {
             let rows = (try? await client.search(court: court, cartoteka: mCart,
                                                  field: .uid, value: uid)) ?? []
             for r in rows {
-                guard let rID = r.caseID, let rUID = r.caseUID else { continue }
+                guard Self.hasCardAccess(r) else { continue }
                 if instances.contains(where: { $0.domain == court.domain
                                             && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
-                guard let card = try? await client.fetchCard(court: court, caseID: rID, caseUID: rUID,
-                                                             deloID: mCart.deloID,
-                                                             new: mCart.new) else { continue }
+                guard let card = try? await fetchCard(row: r, court: court,
+                                                      cartoteka: mCart) else { continue }
                 var matActID: String? = nil
                 if let actText = card.actText {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
@@ -334,8 +359,8 @@ public actor MovementService: MovementProviding {
                     let results = try await client.search(court: higherCourt,
                                                           cartoteka: higherCart,
                                                           field: .uid, value: uid)
-                    // Строки без ID карточки бесполезны (по ним не открыть карточку).
-                    let usable = results.filter { $0.caseID != nil && $0.caseUID != nil }
+                    // Строки, по которым не открыть карточку (ни ID, ни ссылки), бесполезны.
+                    let usable = results.filter { Self.hasCardAccess($0) }
                     guard !usable.isEmpty else { continue }   // картотека пуста — пробуем следующую
 
                     let instLevel = Self.instanceLevel(forCourtLevel: level)
@@ -346,11 +371,8 @@ public actor MovementService: MovementProviding {
                     // инстанцией (а не только первый, как было раньше).
                     var rounds: [(inst: CaseInstance, act: CaseAct?, body: String?, sortKey: Int)] = []
                     for r in usable {
-                        guard let hID = r.caseID, let hUID = r.caseUID else { continue }
-                        let higherCard = try await client.fetchCard(court: higherCourt,
-                                                                    caseID: hID, caseUID: hUID,
-                                                                    deloID: higherCart.deloID,
-                                                                    new: higherCart.new)
+                        let higherCard = try await fetchCard(row: r, court: higherCourt,
+                                                             cartoteka: higherCart)
                         // Круг или нет — решает вкладка «Обжалование» (вид жалобы),
                         // с откатом к различителю по результату. Частные жалобы и
                         // прочее (замечания на протокол) кругом не считаем.
@@ -519,6 +541,27 @@ public actor MovementService: MovementProviding {
 // MARK: - Вспомогательные методы
 
 extension MovementService {
+
+    /// Можно ли открыть карточку по этой строке выдачи: либо пара
+    /// case_id/case_uid (канонический путь через билдер), либо готовая ссылка
+    /// (винтажные суды вроде Благовещенского дают в выдаче только `_uid` —
+    /// тогда самодостаточна сама ссылка).
+    static func hasCardAccess(_ row: CaseSearchResult) -> Bool {
+        (row.caseID != nil && row.caseUID != nil) || row.cardURL != nil
+    }
+
+    /// Карточка по строке выдачи: пара ID → канонический URL через билдер
+    /// (переживает смену формы хоста); иначе — готовая ссылка выдачи.
+    func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka) async throws -> CaseCard {
+        if let id = row.caseID, let uid = row.caseUID {
+            return try await client.fetchCard(court: court, caseID: id, caseUID: uid,
+                                              deloID: cartoteka.deloID, new: cartoteka.new)
+        }
+        guard let url = row.cardURL else {
+            throw SudrfError.parsing("у записи нет ни идентификаторов, ни ссылки на карточку")
+        }
+        return try await client.fetchCard(url: url)
+    }
 
     /// Определяет звено суда по домену (эвристика по структуре имени).
     static func courtLevel(forDomain domain: String) -> CourtLevel {

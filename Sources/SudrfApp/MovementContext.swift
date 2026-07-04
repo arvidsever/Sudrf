@@ -69,9 +69,10 @@ struct MovementContext: Codable, Equatable, Sendable {
 
     // MARK: Сервис движения (подбор доменов вышестоящих судов)
 
-    func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil) -> MovementService {
+    func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil,
+                     mosgorsud: (any MosGorSudProviding)? = nil) -> MovementService {
         MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
-                        knownCards: knownCards ?? [], vsrf: vsrf)
+                        knownCards: knownCards ?? [], vsrf: vsrf, mosgorsud: mosgorsud)
     }
 
     /// Домены вышестоящих судов с разворотом в оба синонима («vs--X» и «vs.X»):

@@ -1,0 +1,608 @@
+[
+ {
+  "domain": "anninsky--vrn.sudrf.ru",
+  "vnkod": "36RS0007",
+  "title": "Аннинский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "arharinskiy--amr.sudrf.ru",
+  "vnkod": "28RS0001",
+  "title": "Архаринский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "barishinskiy--uln.sudrf.ru",
+  "vnkod": "73RS0006",
+  "title": "Барышский городской суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "belgvs--amr.sudrf.ru",
+  "vnkod": "27GV0005",
+  "title": "Белогорский гарнизонный военный суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "belogorskiygs--amr.sudrf.ru",
+  "vnkod": "28RS0002",
+  "title": "Белогорский городской суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "bezhecky--twr.sudrf.ru",
+  "vnkod": "69RS0002",
+  "title": "Бежецкий межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "bgvs--amr.sudrf.ru",
+  "vnkod": "27GV0006",
+  "title": "Благовещенский гарнизонный военный суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "blag-gs--amr.sudrf.ru",
+  "vnkod": "28RS0004",
+  "title": "Благовещенский городской суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "blag-rs--amr.sudrf.ru",
+  "vnkod": "28RS0005",
+  "title": "Благовещенский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "bobrovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0008",
+  "title": "Бобровский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "bogucharsky--vrn.sudrf.ru",
+  "vnkod": "36RS0009",
+  "title": "Богучарский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "bologovsky--twr.sudrf.ru",
+  "vnkod": "69RS0004",
+  "title": "Бологовский городской суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "borisoglebsky--vrn.sudrf.ru",
+  "vnkod": "36RS0010",
+  "title": "Борисоглебский городской суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "bureiskiy--amr.sudrf.ru",
+  "vnkod": "28RS0006",
+  "title": "Бурейский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "buturlinovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0011",
+  "title": "Бутурлиновский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "centralny--twr.sudrf.ru",
+  "vnkod": "69RS0040",
+  "title": "Центральный районный суд города Твери",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "centralny--vrn.sudrf.ru",
+  "vnkod": "36RS0006",
+  "title": "Центральный районный суд города Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "cherdaklinskiy--uln.sudrf.ru",
+  "vnkod": "73RS0025",
+  "title": "Чердаклинский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "dimitrovgradskiy--uln.sudrf.ru",
+  "vnkod": "73RS0013",
+  "title": "Димитровградский городской суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "gribanovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0015",
+  "title": "Грибановский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "gvs--uln.sudrf.ru",
+  "vnkod": "63GV0007",
+  "title": "Ульяновский гарнизонный военный суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "gvs--vrn.sudrf.ru",
+  "vnkod": "77GV0012",
+  "title": "Воронежский гарнизонный военный суд",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "hoholsky--vrn.sudrf.ru",
+  "vnkod": "36RS0038",
+  "title": "Хохольский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "inzenskiy--uln.sudrf.ru",
+  "vnkod": "73RS0008",
+  "title": "Инзенский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "ivanovskiy--amr.sudrf.ru",
+  "vnkod": "28RS0009",
+  "title": "Ивановский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "kalacheevsky--vrn.sudrf.ru",
+  "vnkod": "36RS0016",
+  "title": "Калачеевский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kaliazinsky--twr.sudrf.ru",
+  "vnkod": "69RS0010",
+  "title": "Калязинский районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kalininsky--twr.sudrf.ru",
+  "vnkod": "69RS0037",
+  "title": "Калининский районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kantemirovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0019",
+  "title": "Кантемировский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "karsunskiy--uln.sudrf.ru",
+  "vnkod": "73RS0009",
+  "title": "Карсунский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "kashinsky--twr.sudrf.ru",
+  "vnkod": "69RS0011",
+  "title": "Кашинский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kashirsky--vrn.sudrf.ru",
+  "vnkod": "36RS0018",
+  "title": "Каширский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kimrsky--twr.sudrf.ru",
+  "vnkod": "69RS0013",
+  "title": "Кимрский городской суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "kominternovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0002",
+  "title": "Коминтерновский районный суд г. Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "konakovsky--twr.sudrf.ru",
+  "vnkod": "69RS0014",
+  "title": "Конаковский городской суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "konstantin--amr.sudrf.ru",
+  "vnkod": "28RS0010",
+  "title": "Константиновский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "kraevoi--krd.sudrf.ru",
+  "vnkod": "23OS0000",
+  "title": "Краснодарский краевой суд",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "leninskiy--uln.sudrf.ru",
+  "vnkod": "73RS0001",
+  "title": "Ленинский районный суд города Ульяновска",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "lensud--vrn.sudrf.ru",
+  "vnkod": "36RS0004",
+  "title": "Ленинский районный суд г. Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "levoberezhny--vrn.sudrf.ru",
+  "vnkod": "36RS0003",
+  "title": "Левобережный районный суд г. Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "lihoslavlsky--twr.sudrf.ru",
+  "vnkod": "69RS0018",
+  "title": "Лихославльский районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "liskinsky--vrn.sudrf.ru",
+  "vnkod": "36RS0020",
+  "title": "Лискинский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "magdagachinskiy--amr.sudrf.ru",
+  "vnkod": "28RS0012",
+  "title": "Магдагачинский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "mainskiy--uln.sudrf.ru",
+  "vnkod": "73RS0011",
+  "title": "Майнский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "maksatihinsky--twr.sudrf.ru",
+  "vnkod": "69RS0019",
+  "title": "Максатихинский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "mazanovskiy--amr.sudrf.ru",
+  "vnkod": "28RS0011",
+  "title": "Мазановский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "melekesskiy--uln.sudrf.ru",
+  "vnkod": "73RS0012",
+  "title": "Мелекесский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "mihailovskiy--amr.sudrf.ru",
+  "vnkod": "28RS0013",
+  "title": "Михайловский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "moskovsky--twr.sudrf.ru",
+  "vnkod": "69RS0038",
+  "title": "Московский районный суд г. Твери",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "nelidovsky--twr.sudrf.ru",
+  "vnkod": "69RS0021",
+  "title": "Нелидовский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "nikolaevskiy--uln.sudrf.ru",
+  "vnkod": "73RS0014",
+  "title": "Николаевский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "nizhnedevicky--vrn.sudrf.ru",
+  "vnkod": "36RS0021",
+  "title": "Нижнедевицкий районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "novohopersky--vrn.sudrf.ru",
+  "vnkod": "36RS0023",
+  "title": "Новохопёрский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "novospasskiy--uln.sudrf.ru",
+  "vnkod": "73RS0015",
+  "title": "Новоспасский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "novousmansky--vrn.sudrf.ru",
+  "vnkod": "36RS0022",
+  "title": "Новоусманский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "novovoronezhsky--vrn.sudrf.ru",
+  "vnkod": "36RS0024",
+  "title": "Нововоронежский городской суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "oblsud--amr.sudrf.ru",
+  "vnkod": "28OS0000",
+  "title": "Амурский областной суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "oblsud--orl.sudrf.ru",
+  "vnkod": "57OS0000",
+  "title": "Орловский областной суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "oblsud--sam.sudrf.ru",
+  "vnkod": "63OS0000",
+  "title": "Самарский областной суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "oblsud--uln.sudrf.ru",
+  "vnkod": "73OS0000",
+  "title": "Ульяновский областной суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "oktyabrsiy--amr.sudrf.ru",
+  "vnkod": "28RS0014",
+  "title": "Октябрьский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "ostashkovsky--twr.sudrf.ru",
+  "vnkod": "69RS0023",
+  "title": "Осташковский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "otstrogozhsky--vrn.sudrf.ru",
+  "vnkod": "36RS0026",
+  "title": "Острогожский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "paninsky--vrn.sudrf.ru",
+  "vnkod": "36RS0028",
+  "title": "Панинский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "pavlovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0027",
+  "title": "Павловский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "povorinsky--vrn.sudrf.ru",
+  "vnkod": "36RS0029",
+  "title": "Поворинский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "proletarsky--twr.sudrf.ru",
+  "vnkod": "69RS0039",
+  "title": "Пролетарский районный суд г. Твери",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "radishevskiy--uln.sudrf.ru",
+  "vnkod": "73RS0018",
+  "title": "Радищевский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "raichihinskiy--amr.sudrf.ru",
+  "vnkod": "28RS0015",
+  "title": "Райчихинский городской суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "rameshkovsky--twr.sudrf.ru",
+  "vnkod": "69RS0025",
+  "title": "Рамешковский районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "ramonsky--vrn.sudrf.ru",
+  "vnkod": "36RS0032",
+  "title": "Рамонский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "romnenskiy--amr.sudrf.ru",
+  "vnkod": "28RS0016",
+  "title": "Ромненский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "rossoshansky--vrn.sudrf.ru",
+  "vnkod": "36RS0034",
+  "title": "Россошанский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "rzhevsky--twr.sudrf.ru",
+  "vnkod": "69RS0026",
+  "title": "Ржевский городской суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "selemdginskiy--amr.sudrf.ru",
+  "vnkod": "28RS0020",
+  "title": "Селемджинский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "semiluksky--vrn.sudrf.ru",
+  "vnkod": "36RS0035",
+  "title": "Семилукский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "sengileevskiy--uln.sudrf.ru",
+  "vnkod": "73RS0021",
+  "title": "Сенгилеевский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "serishevskiy--amr.sudrf.ru",
+  "vnkod": "28RS0019",
+  "title": "Серышевский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "sgvs--amr.sudrf.ru",
+  "vnkod": "27GV0003",
+  "title": "Свободненский гарнизонный военный суд",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "shimanovskiy--amr.sudrf.ru",
+  "vnkod": "28RS0024",
+  "title": "Шимановский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "sovetsky--vrn.sudrf.ru",
+  "vnkod": "36RS0005",
+  "title": "Советский районный суд г. Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "staricky--twr.sudrf.ru",
+  "vnkod": "69RS0031",
+  "title": "Старицкий районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "svobodnenskgs--amr.sudrf.ru",
+  "vnkod": "28RS0017",
+  "title": "Свободненский городской суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "talovsky--vrn.sudrf.ru",
+  "vnkod": "36RS0036",
+  "title": "Таловский районный суд Воронежской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "tambovskiy--amr.sudrf.ru",
+  "vnkod": "28RS0022",
+  "title": "Тамбовский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "tindinskiy--amr.sudrf.ru",
+  "vnkod": "28RS0023",
+  "title": "Тындинский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "toropecky--twr.sudrf.ru",
+  "vnkod": "69RS0033",
+  "title": "Торопецкий районный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "torzhoksky--twr.sudrf.ru",
+  "vnkod": "69RS0032",
+  "title": "Торжокский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "tverskoy--twr.sudrf.ru",
+  "vnkod": "77GV0011",
+  "title": "Тверской гарнизонный военный суд",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "udomelsky--twr.sudrf.ru",
+  "vnkod": "69RS0034",
+  "title": "Удомельский городской суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "uljanovskiy--uln.sudrf.ru",
+  "vnkod": "73RS0024",
+  "title": "Ульяновский районный суд Ульяновской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "vyshnevolocky--twr.sudrf.ru",
+  "vnkod": "69RS0006",
+  "title": "Вышневолоцкий межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "zapadnodvinsky--twr.sudrf.ru",
+  "vnkod": "69RS0008",
+  "title": "Западнодвинский межрайонный суд Тверской области",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "zasvijajskiy--uln.sudrf.ru",
+  "vnkod": "73RS0002",
+  "title": "Засвияжский районный суд города Ульяновска",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "zavitnskiy--amr.sudrf.ru",
+  "vnkod": "28RS0007",
+  "title": "Завитинский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "zavolgskiy--uln.sudrf.ru",
+  "vnkod": "73RS0004",
+  "title": "Заволжский районный суд города Ульяновска",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "zavolzhsky--twr.sudrf.ru",
+  "vnkod": "69RS0036",
+  "title": "Заволжский районный суд г. Твери",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "zeiskiy--amr.sudrf.ru",
+  "vnkod": "28RS0008",
+  "title": "Зейский районный суд Амурской области",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "zheleznodorozhny--vrn.sudrf.ru",
+  "vnkod": "36RS0001",
+  "title": "Железнодорожный районный суд г. Воронежа",
+  "hasCaptcha": true
+ },
+ {
+  "domain": "zjeleznodorogniy--uln.sudrf.ru",
+  "vnkod": "73RS0003",
+  "title": "Железнодорожный районный суд города Ульяновска",
+  "hasCaptcha": false
+ },
+ {
+  "domain": "zubcovsky--twr.sudrf.ru",
+  "vnkod": "69RS0009",
+  "title": "Зубцовский районный суд Тверской области",
+  "hasCaptcha": true
+ }
+]

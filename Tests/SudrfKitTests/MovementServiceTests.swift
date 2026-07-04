@@ -471,6 +471,10 @@ private actor MockClient: CaseProviding {
         return court.domain == homeDomain ? sameCourtResults : higherResults
     }
 
+    func fetchCard(url: URL) async throws -> CaseCard {
+        throw SudrfError.http(status: 404)   // в этих сценариях путь по ссылке не используется
+    }
+
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard {
         if caseID == firstCardID { return firstCard }

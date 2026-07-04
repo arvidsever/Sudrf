@@ -44,4 +44,35 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertEqual(ResultsParser.queryValue("case_id", in: href), "42")
         XCTAssertEqual(ResultsParser.queryValue("case_uid", in: href), "XYZ")
     }
+
+    /// Часть винтажных судов даёт ссылку на карточку ТОЛЬКО с `_uid`, без `_id`
+    /// (живой пример — Благовещенский городской суд): идентификаторов для
+    /// канонического URL нет, но cardURL самодостаточен.
+    func testParsesVintageUIDOnlyLink() throws {
+        let html = """
+        <html><body><table>
+          <tr><td><a href="modules.php?name=sud_delo&amp;name_op=case&amp;_uid=526a6a50-2f9e-433b-bda4-f508936e9bf4&amp;_deloId=1540005&amp;_caseType=0&amp;_new=0&amp;srv_num=1&amp;_hideJudge=0">2-5/2026 ~ М-7523/2025</a></td></tr>
+        </table></body></html>
+        """
+        let results = try ResultsParser.parse(html: html, court: .syktyvkarskiy)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertNil(results[0].caseID)
+        XCTAssertEqual(results[0].caseUID, "526a6a50-2f9e-433b-bda4-f508936e9bf4")
+        let cardURL = try XCTUnwrap(results[0].cardURL)
+        XCTAssertTrue(cardURL.absoluteString.contains("_uid=526a6a50"))
+    }
+
+    /// Винтажный интерфейс (VNKOD-суды) даёт ссылки на карточку с параметрами
+    /// _id/_uid (живой пример — Заволжский районный суд г. Ульяновска).
+    func testParsesVintageCardLink() throws {
+        let html = """
+        <html><body><table>
+          <tr><td><a href="modules.php?name=sud_delo&amp;name_op=case&amp;_id=137806682&amp;_uid=f455716b-ca7a-448d-91cf-55a56d28fb5a&amp;_deloId=1540005&amp;_caseType=0&amp;_new=0&amp;srv_num=1">2-5/2026</a></td></tr>
+        </table></body></html>
+        """
+        let results = try ResultsParser.parse(html: html, court: .syktyvkarskiy)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].caseID, "137806682")
+        XCTAssertEqual(results[0].caseUID, "f455716b-ca7a-448d-91cf-55a56d28fb5a")
+    }
 }

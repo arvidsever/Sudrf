@@ -34,6 +34,9 @@ let package = Package(
                 .copy("Resources/RussianTrustedRootCA.cer"),
                 .copy("Resources/RussianTrustedSubCA.cer"),
                 .copy("Resources/RussianTrustedSubCA2024.cer"),
+                // Суды на «винтажной» версии модуля sud_delo (VNKOD-паттерн) —
+                // срез конфигурации tochno-st/sudrfscraper (Scripts/derive-vnkod.py).
+                .copy("Resources/VNKODCourts.json"),
             ]
         ),
         .executableTarget(

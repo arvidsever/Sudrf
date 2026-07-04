@@ -11,10 +11,14 @@
 
 import SwiftUI
 import WebKit
+import SudrfKit
 
 struct CaptchaSheet: View {
     let context: SearchModel.CaptchaContext
     var onCardHTML: (String) -> Void
+    /// Решённая пользователем пара captcha/captchaid (хост, токен) — форма
+    /// отправляется GET-ом, пара видна в URL выдачи и переиспользуется клиентом.
+    var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
     var onCancel: () -> Void
 
     var body: some View {
@@ -35,7 +39,9 @@ struct CaptchaSheet: View {
             }
             .padding(EdgeInsets(top: 12, leading: 16, bottom: 10, trailing: 14))
             Divider()
-            CaptchaWebView(url: context.formURL, uid: context.uid, onCardHTML: onCardHTML)
+            CaptchaWebView(url: context.formURL, uid: context.uid,
+                           caseNumber: context.caseNumber,
+                           onCardHTML: onCardHTML, onCaptchaPair: onCaptchaPair)
         }
         .frame(width: 900, height: 680)
     }
@@ -44,7 +50,9 @@ struct CaptchaSheet: View {
 struct CaptchaWebView: NSViewRepresentable {
     let url: URL
     let uid: String
+    var caseNumber: String? = nil
     var onCardHTML: (String) -> Void
+    var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -61,11 +69,39 @@ struct CaptchaWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         private let parent: CaptchaWebView
         private var didCapture = false
+        private var didCapturePair = false
 
         init(_ parent: CaptchaWebView) { self.parent = parent }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             let current = webView.url?.absoluteString ?? ""
+
+            // Пользователь отправил форму с кодом: пара captcha/captchaid видна
+            // в URL выдачи (форма отправляется GET-ом). Сохраняем её вместе с
+            // cookies сессии WebView — суд может проверять пару только в связке
+            // с сессией. Если код был неверный, суд отклонит пару при первом
+            // переиспользовании — клиент её инвалидирует сам.
+            if !didCapturePair, current.contains("name_op=r"),
+               let comps = URLComponents(string: current),
+               let cap = comps.queryItems?.first(where: { $0.name == "captcha" })?.value, !cap.isEmpty,
+               let capID = comps.queryItems?.first(where: { $0.name == "captchaid" })?.value, !capID.isEmpty,
+               let host = webView.url?.host {
+                didCapturePair = true
+                let token = CaptchaToken(value: cap, id: capID)
+                let store = webView.configuration.websiteDataStore.httpCookieStore
+                let lowerHost = host.lowercased()
+                store.getAllCookies { [weak self] cookies in
+                    for c in cookies {
+                        // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
+                        // родительским с точкой («.sudrf.ru») — берём оба вида.
+                        let d = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                        if lowerHost == d || lowerHost.hasSuffix("." + d) {
+                            HTTPCookieStorage.shared.setCookie(c)
+                        }
+                    }
+                    self?.parent.onCaptchaPair?(host, token)
+                }
+            }
 
             // На странице карточки — считываем HTML и завершаем.
             if current.contains("name_op=case"), !didCapture {
@@ -77,12 +113,17 @@ struct CaptchaWebView: NSViewRepresentable {
                 return
             }
 
-            // На форме поиска — подставляем УИД в соответствующее поле.
+            // На форме поиска — подставляем УИД и № дела. Регистронезависимо:
+            // современные поля ВЕРХНИМ регистром (<TABLE>__JUDICIAL_UIDSS),
+            // винтажные (VNKOD-суды) — нижним (case__judicial_uidss).
             if current.contains("name_op=sf") || current.contains("name=sud_delo") {
                 let safeUID = parent.uid.replacingOccurrences(of: "'", with: "")
+                let safeNum = (parent.caseNumber ?? "").replacingOccurrences(of: "'", with: "")
                 let js = """
                 (function(){var n=document.getElementsByTagName('input');for(var i=0;i<n.length;i++){\
-                if(n[i].name&&n[i].name.indexOf('JUDICIAL_UIDSS')>=0){n[i].value='\(safeUID)';}}})();
+                var nm=(n[i].name||'').toLowerCase();\
+                if('\(safeUID)'&&nm.indexOf('judicial_uidss')>=0){n[i].value='\(safeUID)';}\
+                if('\(safeNum)'&&nm.indexOf('case_numberss')>=0){n[i].value='\(safeNum)';}}})();
                 """
                 webView.evaluateJavaScript(js, completionHandler: nil)
             }

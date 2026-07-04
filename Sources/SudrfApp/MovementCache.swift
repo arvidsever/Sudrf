@@ -26,11 +26,11 @@ enum RefreshSettings {
     static let ttlKey = "movementRefreshTTLHours"
     static let ttlOptions = [1, 3, 6, 12, 24]
 
-    /// Интервал в часах; по умолчанию 6. Читается при каждом проходе
+    /// Интервал в часах; по умолчанию 3. Читается при каждом проходе
     /// обходчика — смена настройки действует без перезапуска.
     static var ttlHours: Int {
         let v = UserDefaults.standard.integer(forKey: ttlKey)
-        return v > 0 ? v : 6
+        return v > 0 ? v : 3
     }
     static var ttl: TimeInterval { TimeInterval(ttlHours) * 3600 }
 }

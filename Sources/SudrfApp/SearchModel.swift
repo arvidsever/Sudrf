@@ -1,7 +1,7 @@
 //  SearchModel.swift — Sudrf · v3 (фильтры · карточки · инспектор · движение)
 //  Изменения относительно вашей модели:
 //    1. Три независимых поля запроса (№ / ФИО / УИД), комбинация по «И».
-//    2. captchaURL / actMissing / hasSearched.
+//    2. actMissing / hasSearched (капча поиска — встроенный лист CaptchaContext).
 //    3. Движение дела («провал» по двойному клику): movement / openMovement /
 //       selectAct / exitMovement; сбор вышестоящих инстанций по УИД (MovementService).
 
@@ -46,7 +46,6 @@ final class SearchModel: ObservableObject {
     @Published var results: [CaseSearchResult] = []
     @Published var selectedResultIndex: Int?
     @Published var actText = ""
-    @Published var captchaURL: URL?
     @Published var actMissing = false
     @Published var hasSearched = false
 
@@ -72,6 +71,11 @@ final class SearchModel: ObservableObject {
         let instanceID: String
         let level: CaseInstance.Level
         let courtTitle: String
+        /// № дела для автоподстановки в форму (вместе с УИД).
+        var caseNumber: String? = nil
+        /// true — контекст БАЗОВОГО поиска (не заглушки инстанции): после
+        /// решения кода лист закрывается и runSearch перезапускается сам.
+        var rerunSearch: Bool = false
     }
 
     var isDrilled: Bool { movement != nil || loadingMovement }
@@ -86,6 +90,7 @@ final class SearchModel: ObservableObject {
     private let resolver = DistrictCourtResolver()
     private let client = SudrfClient()
     private let vsrfClient = VSRFClient()
+    private let mosGorSudClient = MosGorSudClient()
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
     /// подсудности в MovementContext (единственный источник правды, общий
@@ -96,7 +101,8 @@ final class SearchModel: ObservableObject {
                             branch: branch, courtLevel: court.level,
                             courtTitle: court.title, courtCode: court.code,
                             region: region, displayDomain: court.domain),
-                        vsrf: vsrfClient)
+                        vsrf: vsrfClient,
+                        mosgorsud: mosGorSudClient)
     }
 
     var busy: Bool { resolving || searching || loadingCard }
@@ -134,14 +140,31 @@ final class SearchModel: ObservableObject {
             let list: [CourtOption]
             switch (branch, tier) {
             case (.general, .district):
-                // Единственная ступень с пикером региона.
-                list = try await resolver.courts(forRegion: region)
-                    .map { CourtOption(domain: $0.domain, title: $0.title,
-                                       level: .district, code: $0.code) }
+                // Единственная ступень с пикером региона. Районные суды Москвы
+                // живут не на sudrf.ru, а на едином портале mos-gorsud.ru —
+                // добавляется общая опция портала (пустой courtAlias ищет по
+                // всем судам города сразу, суд виден в строке выдачи).
+                if region.localizedCaseInsensitiveContains("Москва") {
+                    // Для Москвы пустой ответ портального резолвера — норма.
+                    let resolved = ((try? await resolver.courts(forRegion: region)) ?? [])
+                        .filter { !MosGorSudRouting.isMosGorSud(domain: $0.domain) }
+                    list = [CourtOption(domain: MosGorSudEndpoint.host,
+                                        title: "Все районные суды Москвы (портал mos-gorsud.ru)",
+                                        level: .district)]
+                         + resolved.map { CourtOption(domain: $0.domain, title: $0.title,
+                                                      level: .district, code: $0.code) }
+                } else {
+                    list = try await resolver.courts(forRegion: region)
+                        .map { CourtOption(domain: $0.domain, title: $0.title,
+                                           level: .district, code: $0.code) }
+                }
             case (.general, .subject):
                 // Все суды субъектов из встроенного справочника, без региона.
+                // Мосгорсуд поддержан через портал mos-gorsud.ru; прочие суды
+                // вне платформы sudrf (Н.Новгород, Пенза, Ульяновск) — нет.
                 list = CourtDirectory.subjectCourts.map {
-                    let suffix = $0.isSudrfPlatform ? "" : " — вне платформы sudrf"
+                    let supported = $0.isSudrfPlatform || MosGorSudRouting.isMosGorSud(domain: $0.domain)
+                    let suffix = supported ? "" : " — вне платформы sudrf"
                     return CourtOption(domain: $0.domain, title: $0.title + suffix, level: .subject)
                 }
             case (.general, .appeal):
@@ -215,8 +238,44 @@ final class SearchModel: ObservableObject {
 
         searching = true; status = "Идёт поиск…"
         results = []; actText = ""; selectedResultIndex = nil
-        captchaURL = nil; hasSearched = false; actMissing = false
+        hasSearched = false; actMissing = false
         defer { searching = false }
+
+        // Суды Москвы — отдельный портал mos-gorsud.ru: свой /search (без капчи,
+        // все поля запроса можно передать разом), карточки — по ссылке из выдачи.
+        if MosGorSudRouting.isMosGorSud(domain: court.domain) {
+            let route = MosGorSudRouting.map(cartoteka: cart)
+            do {
+                let rows = try await mosGorSudClient.search(
+                    courtAlias: nil,
+                    uid: uid.isEmpty ? nil : uid,
+                    caseNumber: num.isEmpty ? nil : num,
+                    participant: name.isEmpty ? nil : name,
+                    instance: route.instance,
+                    processType: route.processType)
+                results = rows.map { r in
+                    CaseSearchResult(caseNumber: r.caseNumber,
+                                     receiptDate: r.receiptDate,
+                                     essence: r.participants ?? r.court,
+                                     judge: r.judge,
+                                     decisionDate: nil,
+                                     result: r.result,
+                                     legalForceDate: nil,
+                                     caseID: nil, caseUID: nil,
+                                     cardURL: r.cardURL)
+                }
+                hasSearched = true
+                status = results.isEmpty
+                    ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
+                    : "Найдено: \(results.count) (портал mos-gorsud.ru)"
+            } catch let e as SudrfError {
+                status = e.description
+            } catch {
+                status = "Ошибка поиска mos-gorsud: \(error)"
+            }
+            return
+        }
+
         do {
             // Самое селективное поле уходит в сетевой запрос; УИД уникален в
             // масштабах страны, поэтому он приоритетнее № дела. Локально по УИД
@@ -245,9 +304,18 @@ final class SearchModel: ObservableObject {
                 ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                 : "Найдено: \(res.count) (\(used))"
         } catch SudrfError.captchaRequired(let formURL) {
-            captchaURL = formURL
+            // Код вводится во ВСТРОЕННОМ окне (не в Safari): УИД/№ дела
+            // подставляются автоматически, решённая пара перехватывается
+            // (CaptchaTokenStore), после чего поиск перезапускается сам.
             hasSearched = true
-            status = "Поиск остановлен: требуется капча."
+            captcha = CaptchaContext(formURL: formURL,
+                                     uid: uid,
+                                     instanceID: "",
+                                     level: .first,
+                                     courtTitle: selectedCourt?.title ?? court.title,
+                                     caseNumber: num.isEmpty ? nil : num,
+                                     rerunSearch: true)
+            status = "Требуется код с картинки — введите его в окне, поиск продолжится сам."
         } catch let e as SudrfError {
             status = e.description
         } catch {
@@ -258,7 +326,7 @@ final class SearchModel: ObservableObject {
     func resetQueries() {
         queryCaseNumber = ""; queryName = ""; queryUID = ""
         results = []; actText = ""; selectedResultIndex = nil
-        captchaURL = nil; hasSearched = false; actMissing = false
+        hasSearched = false; actMissing = false
         status = courts.isEmpty ? "" : "Судов в списке: \(courts.count)"
     }
 
@@ -267,16 +335,45 @@ final class SearchModel: ObservableObject {
               let cart = cartoteka,
               let court = selectedCourt?.searchCourt else { return }
         let r = results[index]
-        guard let caseID = r.caseID, let caseUID = r.caseUID else {
-            status = "У записи нет идентификаторов карточки."; return
+
+        // Карточка портала mos-gorsud — по ссылке из выдачи (case_id/case_uid
+        // у портала нет); тексты актов публикуются вложениями, не инлайном.
+        if MosGorSudRouting.isMosGorSud(domain: court.domain) {
+            guard let url = r.cardURL else {
+                status = "У записи нет ссылки на карточку."; return
+            }
+            selectedResultIndex = index
+            loadingCard = true; actText = ""
+            defer { loadingCard = false }
+            do {
+                let card = try await mosGorSudClient.fetchCard(url: url)
+                actMissing = card.actLinks.isEmpty
+                actText = Self.mosGorSudCardText(card)
+            } catch let e as SudrfError {
+                actText = ""; status = e.description
+            } catch {
+                actText = ""; status = "Ошибка карточки mos-gorsud: \(error)"
+            }
+            return
         }
+
         selectedResultIndex = index
         loadingCard = true; actText = ""
         defer { loadingCard = false }
         do {
-            let card = try await client.fetchCard(court: court, caseID: caseID,
+            let card: CaseCard
+            if let caseID = r.caseID, let caseUID = r.caseUID {
+                card = try await client.fetchCard(court: court, caseID: caseID,
                                                   caseUID: caseUID, deloID: cart.deloID,
                                                   new: cart.new)
+            } else if let url = r.cardURL {
+                // Винтажные суды (напр., Благовещенский) дают в выдаче только
+                // `_uid` — карточка открывается по готовой ссылке выдачи.
+                card = try await client.fetchCard(url: url)
+            } else {
+                status = "У записи нет ни идентификаторов, ни ссылки на карточку."
+                return
+            }
             actMissing = card.actText == nil
             actText = card.actText ?? card.rawText
         } catch let e as SudrfError {
@@ -291,6 +388,35 @@ final class SearchModel: ObservableObject {
         actText = ""
         actMissing = false
         exitMovement()
+    }
+
+    /// Текстовое представление карточки mos-gorsud для инспектора: сводка полей
+    /// и ссылки на акты-вложения; если поля не распознаны — сырой текст страницы.
+    static func mosGorSudCardText(_ card: MosGorSudCard) -> String {
+        var lines: [String] = []
+        if let v = card.caseNumber { lines.append("Дело: \(v)") }
+        if let v = card.uid { lines.append("УИД: \(v)") }
+        if let v = card.court { lines.append("Суд: \(v)") }
+        if let v = card.judge { lines.append("Судья: \(v)") }
+        if let v = card.category { lines.append("Категория: \(v)") }
+        if let v = card.receiptDate { lines.append("Дата регистрации: \(v)") }
+        if let v = card.result { lines.append("Результат: \(v)") }
+        if !card.sessions.isEmpty {
+            lines.append("")
+            lines.append("Заседания:")
+            for s in card.sessions {
+                let time = s.time.map { " \($0)" } ?? ""
+                let res = s.result.map { " — \($0)" } ?? ""
+                lines.append("  \(s.date)\(time): \(s.event)\(res)")
+            }
+        }
+        if !card.actLinks.isEmpty {
+            lines.append("")
+            lines.append("Тексты актов (вложения портала):")
+            for u in card.actLinks { lines.append("  \(u.absoluteString)") }
+        }
+        let summary = lines.joined(separator: "\n")
+        return summary.isEmpty ? card.rawText : summary
     }
 
     // MARK: - Движение дела (двойной клик)
@@ -354,9 +480,31 @@ final class SearchModel: ObservableObject {
                                  courtTitle: inst.court)
     }
 
+    /// Сохранить решённую пользователем пару captcha/captchaid: суд принимает
+    /// её повторно GET-параметрами, так что последующие поиски по этому суду
+    /// пройдут без окна кода (пока суд не отклонит пару). Если окно открыто из
+    /// базового поиска (rerunSearch) — лист закрывается и поиск продолжается сам.
+    func storeCaptchaPair(host: String, token: CaptchaToken) {
+        let rerun = captcha?.rerunSearch == true
+        Task {
+            await CaptchaTokenStore.shared.store(token, domain: host)
+            if rerun {
+                captcha = nil
+                await runSearch()
+            }
+        }
+    }
+
     /// Принять HTML карточки, считанной из окна капчи, и заменить заглушку
     /// реальной инстанцией (карточка капчей не защищена — разбирается как обычно).
     func ingestCaptchaCard(html: String) async {
+        // Окно базового поиска: пользователь дошёл до карточки раньше, чем
+        // сработал перехват пары, — просто перезапускаем поиск.
+        if let ctx = captcha, ctx.rerunSearch {
+            captcha = nil
+            await runSearch()
+            return
+        }
         guard let ctx = captcha, let mv = movement else { return }
         defer { captcha = nil }
         let card: CaseCard

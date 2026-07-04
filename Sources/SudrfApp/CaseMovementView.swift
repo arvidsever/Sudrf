@@ -370,6 +370,12 @@ private struct InstanceBlock: View {
                 if let note = instance.note {
                     TinyChip(text: note, color: Color(red: 0.72, green: 0.20, blue: 0.30))
                 }
+                // Акт-вложение (mos-gorsud публикует тексты файлами, не инлайном).
+                if let actURL = instance.actURL {
+                    Link(destination: actURL) {
+                        TinyChip(text: "акт (файл)", color: instance.level.tint)
+                    }
+                }
                 Spacer(minLength: 4)
             }
             HStack(spacing: 8) {

@@ -15,6 +15,60 @@ final class CaseCardParserTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    // MARK: - Винтажная карточка (VNKOD-суды)
+
+    /// Живая карточка Заволжского районного суда г. Ульяновска (винтажный
+    /// интерфейс: вкладки tab_content_* вместо cont{N}).
+    func testVintageCard() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("zavolgskiy_card"))
+
+        XCTAssertEqual(card.uid, "73RS0004-01-2024-005087-98")
+        XCTAssertEqual(card.caseNumber, "2-5/2026 (2-13/2025; 2-2935/2024;) ~ М-2773/2024")
+        XCTAssertEqual(card.judge, "Савелова А. Л.")
+        XCTAssertEqual(card.category, "2.213 - Иски о взыскании сумм по договору займа")
+        XCTAssertEqual(card.receiptDate, "22.07.2024")
+        XCTAssertNil(card.actText, "акт по делу не опубликован")
+
+        // Движение: первая запись — регистрация иска; мобильные дубли таблиц
+        // не должны задваивать сессии (в фикстуре они есть).
+        let first = try XCTUnwrap(card.sessions.first)
+        XCTAssertTrue(first.event.contains("Регистрация иска"))
+        XCTAssertEqual(first.date, "22.07.2024")
+        XCTAssertEqual(first.time, "14:35")
+        let registrations = card.sessions.filter { $0.event.contains("Регистрация иска") }
+        XCTAssertEqual(registrations.count, 1, "мобильный дубль таблицы задвоил сессии")
+
+        // Стороны: ИСТЕЦ / ОТВЕТЧИК / ПРЕДСТАВИТЕЛЬ, без задвоения.
+        XCTAssertEqual(card.parties.plaintiffs, ["Головинская И.Ю."])
+        XCTAssertEqual(card.parties.defendants.filter { $0.contains("Глухов") }.count, 1)
+    }
+
+    /// Живая карточка Благовещенского городского суда Амурской области —
+    /// второй живой образец винтажной разметки: ключ судьи — «Судья» (не
+    /// «Председательствующий»), категория с переносами <br> и стрелками,
+    /// в «Движении дела» дополнительная колонка «Примечание», стороны скрыты
+    /// (семейный спор). Карточка открывалась по ссылке ТОЛЬКО с `_uid` —
+    /// сценарий cardURL-first.
+    func testVintageCardBlagoveshchensk() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("blag_card"))
+
+        XCTAssertEqual(card.uid, "28RS0004-01-2025-018120-67")
+        XCTAssertEqual(card.caseNumber, "2-5/2026 ~ М-7523/2025")
+        XCTAssertEqual(card.judge, "Приходько А.В.")
+        XCTAssertEqual(card.receiptDate, "15.12.2025")
+        XCTAssertTrue(card.category?.contains("семейных правоотношений") == true)
+        XCTAssertTrue(card.category?.contains("алиментов") == true)
+        XCTAssertNil(card.actText, "акт по делу не опубликован")
+
+        let first = try XCTUnwrap(card.sessions.first)
+        XCTAssertTrue(first.event.contains("Регистрация иска"))
+        XCTAssertFalse(first.date.isEmpty)
+
+        // Стороны семейного спора скрыты — но роли распознаны без задвоения.
+        XCTAssertEqual(card.parties.plaintiffs, ["Информация скрыта"])
+        XCTAssertEqual(card.parties.defendants, ["Информация скрыта"])
+    }
+
     // MARK: - 1-я инстанция (СГС)
 
     func testFirstInstanceCard() throws {

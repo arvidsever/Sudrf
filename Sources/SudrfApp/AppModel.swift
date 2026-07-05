@@ -14,6 +14,7 @@
 //  производные опубликованные массивы и навигацию.
 
 import SwiftUI
+import AppKit
 import Combine
 import SudrfKit
 
@@ -373,6 +374,10 @@ final class AppRouter: ObservableObject {
     private var refreshCenterSink: AnyCancellable? = nil
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
     private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
+    /// Уже виденные id ленты — чтобы уведомлять только о реально новых записях.
+    /// Отдельно от readFeedIDs: то — «пользователь прочёл», это — «система знала».
+    private static let knownFeedIDsKey = "notifiedFeedIDs.v1"
+    private var knownFeedIDs = Set(UserDefaults.standard.stringArray(forKey: knownFeedIDsKey) ?? [])
 
     var isRefreshingOpenCase: Bool {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
@@ -391,6 +396,11 @@ final class AppRouter: ObservableObject {
         // наблюдающие router, — пробрасываем его objectWillChange.
         refreshCenterSink = refreshCenter.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
+        // Клик по системному уведомлению — поднять окно и открыть дело.
+        FeedNotifier.shared.onOpen = { [weak self] key in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.openCase(key: key)
+        }
         refreshCenter.start()
         reload()
     }
@@ -627,7 +637,7 @@ final class AppRouter: ObservableObject {
     /// здесь — перестройка списков и (если это открытое дело) подмена карточки.
     /// reload() навигацию не трогает — открытая карточка не сбрасывается.
     private func applyRefreshed(key: String, movement mv: CaseMovement) {
-        reload()
+        reload(notifyNew: true)
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv
@@ -744,7 +754,7 @@ final class AppRouter: ObservableObject {
 
     // MARK: Сборка производных наборов из хранилища
 
-    func reload() {
+    func reload(notifyNew: Bool = false) {
         let recs = store.all()
         let today = DateUtil.today
 
@@ -818,6 +828,24 @@ final class AppRouter: ObservableObject {
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
         lastOverviewRefreshAt = recs.compactMap(\.movementFetchedAt).max()
+        reconcileFeed(notify: notifyNew)
+    }
+
+    /// Уведомления о новых записях ленты + бейдж дока. Уведомляем только на
+    /// фоновом обновлении (notify: true из applyRefreshed) и только о записях,
+    /// которых ещё не было в knownFeedIDs и которые непрочитаны. Бейдж —
+    /// число дел с обновлениями — обновляется всегда.
+    private func reconcileFeed(notify: Bool) {
+        if notify {
+            let fresh = feed.filter { $0.isUnread && !knownFeedIDs.contains($0.id) }
+            if !fresh.isEmpty { FeedNotifier.shared.notify(newEntries: fresh) }
+        }
+        let ids = Set(feed.map(\.id))
+        if ids != knownFeedIDs {
+            knownFeedIDs = ids
+            UserDefaults.standard.set(Array(ids), forKey: Self.knownFeedIDsKey)
+        }
+        FeedNotifier.shared.setBadge(newBadge)
     }
 
     /// Вид производства строки. Приоритет: точная картотека из контекста

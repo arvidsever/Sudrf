@@ -368,11 +368,15 @@ struct CalendarScreen: View {
         }
     }
 
+    // Индикация дня (вариант 1C): ряд тип-точек (≤ 3, одна на присутствующий тип)
+    // + хитмап-плитка под числом по количеству событий. Раньше рисовалась точка
+    // на каждое событие — при 10+ делах ряд перерастал ячейку и уползал в соседние.
     @ViewBuilder
     private func miniCell(_ day: Date?) -> some View {
         if let day {
             let isToday = DateUtil.isToday(day)
             let evs = events(on: day)
+            let count = evs.count
             Button { router.calMode = .month; router.calSelectedDate = day } label: {
                 VStack(spacing: 2) {
                     Text("\(DateUtil.cal.component(.day, from: day))")
@@ -380,18 +384,41 @@ struct CalendarScreen: View {
                         .foregroundStyle(isToday ? .white : .primary)
                         .frame(width: 21, height: 21)
                         .background(Circle().fill(isToday ? Color.accentColor : .clear))
-                    HStack(spacing: 2) {
-                        ForEach(evs) { ev in Circle().fill(ev.accent).frame(width: 4, height: 4) }
+                    HStack(spacing: 2.5) {
+                        ForEach(Array(miniDots(evs).enumerated()), id: \.offset) { _, c in
+                            Circle().fill(c).frame(width: 4, height: 4)
+                        }
                     }
                     .frame(height: 4)
                 }
                 .frame(maxWidth: .infinity).frame(height: 36)
+                .background(                                   // хитмап под числом
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(
+                            count == 0 ? 0 : min(0.055 + Double(count) / 15 * 0.185, 0.25)))
+                        .padding(2)                            // зазор между плитками (эффект gap)
+                )
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         } else {
             Color.clear.frame(height: 36).frame(maxWidth: .infinity)
         }
+    }
+
+    // ≤ 3 точки: одна на присутствующий тип, порядок заседание → расчётный → подтверждён.
+    private func miniDots(_ evs: [CalEvent]) -> [Color] {
+        var out: [Color] = []
+        if evs.contains(where: { $0.kind == .hearing }) {
+            out.append(.accentColor)                                   // #0a7aff
+        }
+        if evs.contains(where: { $0.kind == .deadlineProposed }) {
+            out.append(Color(red: 0.878, green: 0.576, blue: 0.165))   // #e0932a
+        }
+        if evs.contains(where: { $0.kind == .deadlineConfirmed }) {
+            out.append(Color(red: 0.839, green: 0.271, blue: 0.227))   // #d6453a
+        }
+        return out
     }
 
     private var waitingCard: some View {
@@ -415,45 +442,64 @@ struct CalendarScreen: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 10).fill(Palette.green.opacity(0.1)))
                         .padding(.horizontal, 14).padding(.bottom, 12)
-                }
-                ForEach(waiting) { d in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(DateUtil.fmt(d.date)) · \(d.what)").font(.system(size: 12, weight: .semibold))
-                        Text("дело № \(d.caseNumber)").font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                        DeadlineActions(id: d.id, compact: true)
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Divider(), alignment: .top)
-                }
-            }
-        }
-    }
-
-    private var agendaList: some View {
-        let byDay = Dictionary(grouping: events) { DateUtil.startOfDay($0.date) }
-        let days = byDay.keys.sorted()
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(days, id: \.self) { day in
-                    HStack(alignment: .top, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("\(DateUtil.weekday(day)), \(DateUtil.fmt(day))")
-                                .font(.system(size: 12.5, weight: .bold))
-                                .foregroundStyle(DateUtil.isToday(day) ? Color.accentColor : .primary)
-                            if DateUtil.isToday(day) { StatusChip(text: "сегодня", kind: .blue) }
-                        }
-                        .frame(width: 150, alignment: .leading).padding(.top, 9)
-                        VStack(spacing: 7) {
-                            ForEach((byDay[day] ?? []).sorted { $0.sortTime < $1.sortTime }) { ev in
-                                agendaRow(ev)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(waiting) { d in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(DateUtil.fmt(d.date)) · \(d.what)").font(.system(size: 12, weight: .semibold))
+                                    Text("дело № \(d.caseNumber)").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                                    DeadlineActions(id: d.id, compact: true)
+                                }
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .overlay(Divider(), alignment: .top)
                             }
                         }
                     }
                 }
             }
-            .padding(.top, 2)
         }
+        .frame(maxHeight: .infinity)
+    }
+
+    // Повестка · прокрутка со «липкими» днями. Дата дня — не боковая колонка,
+    // а закреплённый заголовок-разделитель (nativeный аналог position:sticky).
+    private var agendaList: some View {
+        let byDay = Dictionary(grouping: events) { DateUtil.startOfDay($0.date) }
+        let days = byDay.keys.sorted()
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 6, pinnedViews: [.sectionHeaders]) {
+                ForEach(days, id: \.self) { day in
+                    let items = (byDay[day] ?? []).sorted { $0.sortTime < $1.sortTime }
+                    Section(header: dayHeader(day, count: items.count)) {
+                        VStack(spacing: 7) {
+                            ForEach(items) { ev in agendaRow(ev) }
+                        }
+                    }
+                }
+            }
+            .padding(.trailing, 8)   // место под скроллбар
+        }
+    }
+
+    private func dayHeader(_ day: Date, count: Int) -> some View {
+        HStack(spacing: 9) {
+            Text("\(DateUtil.weekday(day)), \(DateUtil.fmt(day))")
+                .font(.system(size: 12.5, weight: .bold))
+                .foregroundStyle(DateUtil.isToday(day) ? Color.accentColor : .primary)
+            if DateUtil.isToday(day) { StatusChip(text: "сегодня", kind: .blue) }
+            Rectangle().fill(Color.black.opacity(0.08)).frame(height: 1)
+            Text("\(count) \(DateUtil.plural(count, "событие", "события", "событий"))")
+                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(                        // маскирует карточки под закреплённым заголовком
+            LinearGradient(
+                colors: [Color(nsColor: .sudrfContent), Color(nsColor: .sudrfContent).opacity(0)],
+                startPoint: .top, endPoint: .bottom)
+        )
     }
 
     private func agendaRow(_ ev: CalEvent) -> some View {

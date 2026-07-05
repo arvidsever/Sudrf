@@ -36,7 +36,7 @@ targets:
       properties:
         CFBundleName: Sudrf
         CFBundleDisplayName: Sudrf
-        # Версия следует номеру изменений (ИЗМЕНЕНИЯ-vNN.md); значения — в
+        # Версия следует номеру изменений (changelog/changelog-vNN.md); значения — в
         # MARKETING_VERSION/CURRENT_PROJECT_VERSION (единый источник, виден в General).
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
@@ -64,7 +64,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
         MACOSX_DEPLOYMENT_TARGET: "26.0"
-        # Версия и билд (следуют ИЗМЕНЕНИЯ-vNN.md); Info.plist ссылается на них.
+        # Версия и билд (следуют changelog/changelog-vNN.md); Info.plist ссылается на них.
         MARKETING_VERSION: "33.0"
         CURRENT_PROJECT_VERSION: "33"
         # Дублирует ключ Info.plist — чтобы General → App Category показывал «Productivity».

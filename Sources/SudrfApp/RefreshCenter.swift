@@ -16,6 +16,58 @@
 import Foundation
 import SudrfKit
 
+struct CaptchaPendingGroup: Equatable, Identifiable {
+    var host: String
+    var keys: [String]
+    var caseNumbers: [String]
+
+    var id: String { host }
+    var count: Int { keys.count }
+}
+
+struct CaptchaPendingQueue: Equatable {
+    private var groupsByHost: [String: CaptchaPendingGroup] = [:]
+
+    var groups: [CaptchaPendingGroup] {
+        groupsByHost.values.sorted { $0.host < $1.host }
+    }
+
+    static func normalizedHost(_ host: String) -> String {
+        SudrfHost.moduleHost(host.lowercased())
+    }
+
+    func group(forHost host: String?) -> CaptchaPendingGroup? {
+        guard let host else { return nil }
+        return groupsByHost[Self.normalizedHost(host)]
+    }
+
+    mutating func add(key: String, caseNumber: String, host rawHost: String) {
+        remove(key: key)
+        let host = Self.normalizedHost(rawHost)
+        var group = groupsByHost[host] ?? CaptchaPendingGroup(host: host, keys: [], caseNumbers: [])
+        group.keys.append(key)
+        group.caseNumbers.append(caseNumber)
+        groupsByHost[host] = group
+    }
+
+    mutating func remove(key: String) {
+        for host in groupsByHost.keys {
+            guard var group = groupsByHost[host],
+                  let index = group.keys.firstIndex(of: key) else { continue }
+            group.keys.remove(at: index)
+            if group.caseNumbers.indices.contains(index) {
+                group.caseNumbers.remove(at: index)
+            }
+            groupsByHost[host] = group.keys.isEmpty ? nil : group
+            return
+        }
+    }
+
+    mutating func drain(host rawHost: String) -> CaptchaPendingGroup? {
+        groupsByHost.removeValue(forKey: Self.normalizedHost(rawHost))
+    }
+}
+
 @MainActor
 final class RefreshCenter: ObservableObject {
 
@@ -24,6 +76,7 @@ final class RefreshCenter: ObservableObject {
     @Published private(set) var refreshing: Set<String> = []
     @Published private(set) var walkProgress: WalkProgress? = nil
     @Published private(set) var lastErrors: [String: String] = [:]
+    @Published private var captchaPending = CaptchaPendingQueue()
 
     /// После успешного обновления записи (ключ, слитая карточка для показа).
     var onRefreshed: ((String, CaseMovement) -> Void)?
@@ -50,6 +103,24 @@ final class RefreshCenter: ObservableObject {
     }
 
     func isRefreshing(_ key: String) -> Bool { refreshing.contains(key) }
+
+    var captchaPendingGroups: [CaptchaPendingGroup] { captchaPending.groups }
+
+    func captchaPendingCount(forHost host: String?) -> Int {
+        captchaPending.group(forHost: host)?.count ?? 0
+    }
+
+    func captchaPendingCaseNumbers(forHost host: String?, limit: Int = 4) -> [String] {
+        Array((captchaPending.group(forHost: host)?.caseNumbers ?? []).prefix(limit))
+    }
+
+    func retryPendingCaptcha(host: String) {
+        guard let group = captchaPending.drain(host: host) else { return }
+        for key in group.keys {
+            lastErrors[key] = nil
+            refresh(key: key)
+        }
+    }
 
     // MARK: Периодический цикл
 
@@ -181,15 +252,23 @@ final class RefreshCenter: ObservableObject {
             // кроме дела, открытого прямо сейчас (пользователь его и так видит).
             if changed && openedKey?() != key { rec.seenAt = nil }
             store.save()
+            captchaPending.remove(key: key)
             lastErrors[key] = nil
             onRefreshed?(key, merged)
         } catch SudrfError.captchaRequired(let url) {
-            fail(key, "Форма домашнего суда под капчей — откройте в браузере: \(url.absoluteString)")
+            queueCaptcha(key: key, formURL: url)
+            fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
         } catch let e as SudrfError {
             fail(key, e.description)
         } catch {
             fail(key, "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
+    }
+
+    private func queueCaptcha(key: String, formURL: URL) {
+        guard let host = formURL.host,
+              let rec = store.record(forKey: key) else { return }
+        captchaPending.add(key: key, caseNumber: rec.caseNumber, host: host)
     }
 
     private func fail(_ key: String, _ text: String) {

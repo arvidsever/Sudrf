@@ -174,10 +174,10 @@ private struct CaseCardHost: View {
         }
         .padding(.top, 26)   // чтобы кнопка «Назад» не налезала на светофор окна
         .sheet(item: $router.captcha) { ctx in
-            CaptchaSheet(context: ctx,
-                         onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
-                         onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
-                         onCancel: { router.captcha = nil })
+            CaptchaAssistSheet(context: ctx,
+                               onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
+                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
+                               onCancel: { router.captcha = nil })
         }
     }
 

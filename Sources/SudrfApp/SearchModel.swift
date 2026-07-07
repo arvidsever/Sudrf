@@ -76,6 +76,11 @@ final class SearchModel: ObservableObject {
         /// true — контекст БАЗОВОГО поиска (не заглушки инстанции): после
         /// решения кода лист закрывается и runSearch перезапускается сам.
         var rerunSearch: Bool = false
+        /// Сколько фоновых обновлений этого же суда сможет продолжить одна
+        /// введённая пользователем пара captcha/captchaid.
+        var pendingCaseCount: Int = 0
+        /// Несколько номеров дел из очереди — для подсказки в листе капчи.
+        var pendingCaseNumbers: [String] = []
     }
 
     var isDrilled: Bool { movement != nil || loadingMovement }

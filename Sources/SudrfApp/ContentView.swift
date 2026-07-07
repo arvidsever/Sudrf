@@ -262,7 +262,7 @@ private struct ResultsPane: View {
         // Лист капчи — на уровне всей панели: он нужен и базовому поиску
         // (rerunSearch), и заглушкам инстанций в движении дела.
         .sheet(item: $model.captcha) { ctx in
-            CaptchaSheet(
+            CaptchaAssistSheet(
                 context: ctx,
                 onCardHTML: { html in Task { await model.ingestCaptchaCard(html: html) } },
                 onCaptchaPair: { host, token in model.storeCaptchaPair(host: host, token: token) },

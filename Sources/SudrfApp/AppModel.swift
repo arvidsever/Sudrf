@@ -664,11 +664,14 @@ final class AppRouter: ObservableObject {
 
     func beginCaptcha(for inst: CaseInstance) {
         guard let url = inst.captchaFormURL else { return }
+        let host = url.host
         captcha = SearchModel.CaptchaContext(formURL: url,
                                              uid: liveMovement?.uid ?? "",
                                              instanceID: inst.id,
                                              level: inst.level,
-                                             courtTitle: inst.court)
+                                             courtTitle: inst.court,
+                                             pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
+                                             pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
     }
 
     /// Сохранить решённую пользователем пару captcha/captchaid: последующие
@@ -677,7 +680,12 @@ final class AppRouter: ObservableObject {
     /// дозагрузятся уже с парой в URL.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
         pendingCaptchaRefresh = true
-        Task { await CaptchaTokenStore.shared.store(token, domain: host) }
+        Task { [weak self] in
+            await CaptchaTokenStore.shared.store(token, domain: host)
+            await MainActor.run {
+                self?.refreshCenter.retryPendingCaptcha(host: host)
+            }
+        }
     }
     private var pendingCaptchaRefresh = false
 

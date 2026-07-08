@@ -15,6 +15,7 @@
 
 import Foundation
 import SudrfKit
+import CaptchaSolver
 
 struct CaptchaPendingGroup: Equatable, Identifiable {
     var host: String
@@ -90,6 +91,11 @@ final class RefreshCenter: ObservableObject {
     private let client: SudrfClient
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient = MosGorSudClient()
+    /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
+    /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
+    /// в init.
+    private let captchaSolver: CaptchaSolver?
+    private let captchaSettings: CaptchaSettings?
     private var tasks: [String: Task<Void, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
@@ -97,9 +103,13 @@ final class RefreshCenter: ObservableObject {
     private var walkGeneration = 0
     private var timerTask: Task<Void, Never>? = nil
 
-    init(store: TrackedStore, client: SudrfClient) {
+    init(store: TrackedStore, client: SudrfClient,
+         captchaSolver: CaptchaSolver? = nil,
+         captchaSettings: CaptchaSettings? = nil) {
         self.store = store
         self.client = client
+        self.captchaSolver = captchaSolver
+        self.captchaSettings = captchaSettings
     }
 
     func isRefreshing(_ key: String) -> Bool { refreshing.contains(key) }
@@ -259,8 +269,22 @@ final class RefreshCenter: ObservableObject {
             lastErrors[key] = nil
             onRefreshed?(key, merged)
         } catch SudrfError.captchaRequired(let url) {
-            queueCaptcha(key: key, formURL: url)
-            fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+            // Сначала пробуем авто-солвер. Если он вернёт уверенный
+            // ответ и токен попадёт в CaptchaTokenStore, повторный
+            // refresh в `captchaRetryTask` пройдёт без капчи и без
+            // ручного ввода. Если солвер выключен / не уверен /
+            // исчерпал попытки — ставим в `CaptchaPendingQueue` и
+            // ждём пользователя (как раньше).
+            if let solved = await tryAutoSolve(key: key, formURL: url),
+               let solver = captchaSolver {
+                solver.log.logAttempt(host: url.host ?? "?",
+                                      kind: kindFromURL(url),
+                                      attempt: solved)
+                retryAfterCaptcha(key: key, host: url.host)
+            } else {
+                queueCaptcha(key: key, formURL: url)
+                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+            }
         } catch let e as SudrfError {
             fail(key, e.description)
         } catch {
@@ -277,5 +301,65 @@ final class RefreshCenter: ObservableObject {
     private func fail(_ key: String, _ text: String) {
         lastErrors[key] = text
         onRefreshFailed?(key, text)
+    }
+
+    // MARK: - Auto-solver
+
+    /// Попытка авто-солвера на форме `formURL`. Возвращает `CaptchaAttempt`
+    /// с уверенным ответом, либо `nil` (солвер выключен / не уверен /
+    /// исчерпал попытки / ошибка в пайплайне). При успехе токен сразу
+    /// сохраняется в `CaptchaTokenStore` — следующий `refresh(key:)`
+    /// пройдёт без капчи.
+    private func tryAutoSolve(key: String, formURL: URL) async -> CaptchaAttempt? {
+        guard let solver = captchaSolver,
+              let settings = captchaSettings,
+              settings.isEffectivelyEnabled else { return nil }
+
+        let kind = kindFromURL(formURL)
+        let config = settings.solverConfiguration
+        let log = solver.log
+        for attempt in 0..<config.maxAttempts {
+            do {
+                let html = try await client.fetchForm(formURL)
+                guard let (png, captchaid) = try CaptchaImageExtractor.extract(html: html) else {
+                    log.logSkip(host: formURL.host ?? "?", kind: kind,
+                                reason: "no captcha image in form HTML")
+                    return nil
+                }
+                let result = try await solver.solve(pngData: png, kind: kind)
+                if result.confidence >= config.minConfidence {
+                    let token = CaptchaToken(value: result.value, id: captchaid)
+                    await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+                    return result
+                } else {
+                    log.logSkip(host: formURL.host ?? "?", kind: kind,
+                                reason: "low confidence \(String(format: "%.2f", result.confidence))")
+                }
+            } catch {
+                log.logError(host: formURL.host ?? "?", kind: kind, error: error)
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Запускает новый проход `refresh` после того, как солвер положил
+    /// токен в `CaptchaTokenStore` — внутри `SudrfClient.search`
+    /// токен подхватится автоматически.
+    private func retryAfterCaptcha(key: String, host: String?) {
+        lastErrors[key] = nil
+        captchaPending.remove(key: key)
+        refresh(key: key)
+    }
+
+    /// Вид капчи по URL — `msudrf.ru` → `.kcaptcha`, иначе `.sudrfToken`.
+    /// Совпадает с правилом, по которому `SearchModel.beginCaptcha` выбирал
+    /// `Kind` в UI-сценарии (см. SearchModel.swift:593 и MagistrateClient).
+    private func kindFromURL(_ url: URL) -> CaptchaKind {
+        guard let host = url.host?.lowercased() else { return .sudrfToken }
+        if host == "msudrf.ru" || host.hasSuffix(".msudrf.ru") {
+            return .kcaptcha
+        }
+        return .sudrfToken
     }
 }

@@ -27,14 +27,11 @@ enum CaptchaSubmissionState: Equatable {
 }
 
 enum CaptchaImagePayload {
+    /// Тонкая обёртка над `CaptchaImageExtractor` в SudrfKit — вынесено
+    /// туда, чтобы `RefreshCenter.tryAutoSolve` мог использовать ту же
+    /// логику без зависимости от SwiftUI.
     static func data(fromDataURL value: String) -> Data? {
-        guard let comma = value.firstIndex(of: ",") else { return nil }
-        let meta = value[..<comma].lowercased()
-        let body = String(value[value.index(after: comma)...])
-        if meta.contains(";base64") {
-            return Data(base64Encoded: body)
-        }
-        return body.removingPercentEncoding?.data(using: .utf8)
+        CaptchaImageExtractor.data(fromDataURL: value)
     }
 }
 

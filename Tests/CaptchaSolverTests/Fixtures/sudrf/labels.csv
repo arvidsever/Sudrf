@@ -1,0 +1,11 @@
+filename,expected,kind,notes
+sankt-peterburgsky--spb_sudrf_ru_1_v3ruvq66jtumpc886v4g0fp6o7.png,667,sudrfToken,Vision raw reads "667" with conf 1.00
+sankt-peterburgsky--spb_sudrf_ru_2_v3ruvq66jtumpc886v4g0fp6o7.png,667,sudrfToken,duplicate captchaid — same image
+sankt-peterburgsky--spb_sudrf_ru_3_v3ruvq66jtumpc886v4g0fp6o7.png,667,sudrfToken,duplicate
+sankt-peterburgsky--spb_sudrf_ru_4_1l2tq5qui7m1s78j0q2hevqbc4.png,1909,sudrfToken,Vision splits into "1909" and "G" — "G" is the border, ignore
+sankt-peterburgsky--spb_sudrf_ru_5_1l2tq5qui7m1s78j0q2hevqbc4.png,1909,sudrfToken,duplicate
+sovetsky--nsk_sudrf_ru_21_pr641ommin0kjkh9vbqn7q3qjk.png,UNREADABLE,sudrfToken,Vision returns empty — different style, falls back to manual
+sovetsky--nsk_sudrf_ru_22_pr641ommin0kjkh9vbqn7q3qjk.png,UNREADABLE,sudrfToken,unlabeled
+sovetsky--nsk_sudrf_ru_23_pr641ommin0kjkh9vbqn7q3qjk.png,UNREADABLE,sudrfToken,unlabeled
+sovetsky--nsk_sudrf_ru_24_pr641ommin0kjkh9vbqn7q3qjk.png,UNREADABLE,sudrfToken,unlabeled
+sovetsky--nsk_sudrf_ru_25_pr641ommin0kjkh9vbqn7q3qjk.png,UNREADABLE,sudrfToken,unlabeled

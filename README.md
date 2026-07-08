@@ -116,7 +116,7 @@ let known = CourtDirectory.court(forDomain: "https://2ap.sudrf.ru/")
 ## Версионирование
 
 Пока приложение в альфе, публичная версия пишется как `Alpha 0.N.P`.
-Текущий релиз `v37` считается `Alpha 0.37.0`: второе число — номер
+Текущий релиз `v38` считается `Alpha 0.37.1`: второе число — номер
 фича-релиза внутри ветки `0.x`, третье — патч без новой функциональности.
 
 - Новая пользовательская фича или заметное расширение поведения:
@@ -128,10 +128,10 @@ let known = CourtDirectory.court(forDomain: "https://2ap.sudrf.ru/")
   качества рядом с версией, а не отдельный сегмент номера.
 
 В app bundle `CFBundleShortVersionString` хранит публичную версию
-(`0.37.0`), а `CFBundleVersion` — внутренний монотонный билд (`37`, затем
-`38`, `39` и дальше). Changelog релизов называется в формате
-`changelog/changelog-v0.37.0.md`, архивы сборок — вроде
-`build/Sudrf-Alpha-0.37.0-build37.zip`.
+(`0.37.1`), а `CFBundleVersion` — внутренний монотонный билд (`38`, затем
+`39`, `40` и дальше). Changelog релизов называется в формате
+`changelog/changelog-v0.37.1.md`, архивы сборок — вроде
+`build/Sudrf-Alpha-0.37.1-build38.zip`.
 
 При каждой новой версии нужно обновить `MARKETING_VERSION` и
 `CURRENT_PROJECT_VERSION` в `project.yml`, затем заново сгенерировать

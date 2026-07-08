@@ -69,6 +69,32 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.parties.defendants, ["Информация скрыта"])
     }
 
+    /// Самарский областной суд: КАС-апелляция на старом VNKOD-интерфейсе живёт в
+    /// общей гражданско-административной картотеке, а карточка публикует
+    /// докладчика/решение и акт в `tab_content_DocumentN`.
+    func testVintageSamaraKASAppealCard() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("samara_kas_appeal_card"))
+
+        XCTAssertEqual(card.uid, "63RS0042-01-2025-002452-47")
+        XCTAssertEqual(card.caseNumber, "33а-647/2026 (33а-11786/2025;)")
+        XCTAssertEqual(card.judge, "Пудовкина Е. С.")
+        XCTAssertEqual(card.result, "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ")
+        XCTAssertEqual(card.receiptDate, "10.11.2025")
+        XCTAssertEqual(card.decisionDate, "13.01.2026")
+        XCTAssertTrue(card.category?.contains("Гл. 22 КАС РФ") == true)
+
+        XCTAssertEqual(card.sessions.count, 6)
+        let first = try XCTUnwrap(card.sessions.first)
+        XCTAssertEqual(first.date, "10.11.2025")
+        XCTAssertEqual(first.time, "18:24")
+        XCTAssertEqual(first.event, "Передача дела судье")
+
+        let act = try XCTUnwrap(card.acts.first)
+        XCTAssertEqual(act.kind, "Определение")
+        XCTAssertTrue(act.body.contains("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ"))
+        XCTAssertEqual(card.actText, act.body)
+    }
+
     // MARK: - 1-я инстанция (СГС)
 
     func testFirstInstanceCard() throws {

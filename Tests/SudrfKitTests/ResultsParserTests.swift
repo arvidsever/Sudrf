@@ -3,6 +3,14 @@ import XCTest
 
 final class ResultsParserTests: XCTestCase {
 
+    private func loadFixture(_ name: String) throws -> String {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "html",
+                                          subdirectory: "Fixtures") else {
+            throw XCTSkip("Фикстура \(name).html не найдена в бандле теста")
+        }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
     private let fixture = """
     <html><body>
     <div>Всего по запросу найдено: 1</div>
@@ -74,5 +82,24 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
         XCTAssertEqual(results[0].caseID, "137806682")
         XCTAssertEqual(results[0].caseUID, "f455716b-ca7a-448d-91cf-55a56d28fb5a")
+    }
+
+    func testParsesSamaraKASAppealUIDResults() throws {
+        let html = try loadFixture("samara_kas_appeal_uid_results")
+        let court = Court(domain: "oblsud--sam.sudrf.ru",
+                          title: "Самарский областной суд", level: .subject)
+        let results = try ResultsParser.parse(html: html, court: court)
+
+        XCTAssertEqual(results.count, 1)
+        let r = results[0]
+        XCTAssertEqual(r.caseNumber, "33а-647/2026 (33а-11786/2025;)")
+        XCTAssertEqual(r.receiptDate, "10.11.2025")
+        XCTAssertEqual(r.judge, "Пудовкина Е. С.")
+        XCTAssertEqual(r.decisionDate, "13.01.2026")
+        XCTAssertEqual(r.result, "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ")
+        XCTAssertEqual(r.caseID, "45090185")
+        XCTAssertEqual(r.caseUID, "70f25bb3-b647-4795-a592-61e457a42ea7")
+        XCTAssertTrue(r.cardURL?.absoluteString.contains("_deloId=1540005") == true)
+        XCTAssertTrue(r.cardURL?.absoluteString.contains("_new=5") == true)
     }
 }

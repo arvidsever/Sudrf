@@ -491,11 +491,22 @@ final class SearchModel: ObservableObject {
     /// базового поиска (rerunSearch) — лист закрывается и поиск продолжается сам.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
         let rerun = captcha?.rerunSearch == true
+        let movementIndex = rerun ? nil : selectedResultIndex
+        let movementCacheKey: String? = {
+            guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
+            return option.domain + "/" + mv.caseNumber
+        }()
         Task {
             await CaptchaTokenStore.shared.store(token, domain: host)
             if rerun {
                 captcha = nil
                 await runSearch()
+            } else {
+                if let key = movementCacheKey { MovementMemoryCache.shared.remove(key) }
+                captcha = nil
+                if let index = movementIndex {
+                    await openMovement(index)
+                }
             }
         }
     }

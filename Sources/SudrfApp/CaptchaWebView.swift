@@ -1,17 +1,53 @@
 //  CaptchaWebView.swift — SudrfApp
 //  Всплывающее окно для судов, чья форма поиска защищена кодом с картинки.
-//  Приложение НЕ решает капчу: оно открывает настоящую форму суда, код вводит
-//  пользователь (как в обычном браузере). Когда пользователь доходит до карточки
-//  дела (`name_op=case`), приложение считывает её HTML и передаёт в разбор.
+//  Приложение НЕ решает капчу: оно держит настоящую форму суда в скрытом
+//  WKWebView, а пользователь видит только картинку и сам вводит код.
 //
-//  Поток: открыть форму (УИД подставляется автоматически) → пользователь вводит
-//  код и жмёт «Найти» → в выдаче кликает по делу → открывается карточка →
-//  onCardHTML(html). Карточка капчей не защищена, поэтому шаг с кодом нужен только
-//  чтобы пройти поиск.
+//  Поток: открыть форму (УИД/№ дела подставляются автоматически) → показать
+//  картинку из той же web-сессии → пользователь вводит код → скрытая форма
+//  отправляется → приложение сохраняет captcha/captchaid и повторяет поиск.
 
+import AppKit
 import SwiftUI
 import WebKit
 import SudrfKit
+
+enum CaptchaSubmissionState: Equatable {
+    case loading
+    case ready
+    case submitting
+    case accepted
+    case rejected
+    case failed(String)
+
+    var isSubmitting: Bool {
+        if case .submitting = self { return true }
+        return false
+    }
+}
+
+enum CaptchaImagePayload {
+    static func data(fromDataURL value: String) -> Data? {
+        guard let comma = value.firstIndex(of: ",") else { return nil }
+        let meta = value[..<comma].lowercased()
+        let body = String(value[value.index(after: comma)...])
+        if meta.contains(";base64") {
+            return Data(base64Encoded: body)
+        }
+        return body.removingPercentEncoding?.data(using: .utf8)
+    }
+}
+
+enum CaptchaAssistPostSubmitDecision: Equatable {
+    case accept
+    case reject
+    case failMissingToken
+
+    static func decide(hasCaptchaMarkers: Bool, hasPendingToken: Bool) -> Self {
+        if hasCaptchaMarkers { return .reject }
+        return hasPendingToken ? .accept : .failMissingToken
+    }
+}
 
 struct CaptchaAssistSheet: View {
     let context: SearchModel.CaptchaContext
@@ -21,27 +57,41 @@ struct CaptchaAssistSheet: View {
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
     var onCancel: () -> Void
 
-    @State private var captchaImageURL: URL? = nil
-    @State private var assistStatus = "Открою форму, подставлю данные дела и поставлю курсор в поле кода."
+    @State private var captchaCode = ""
+    @State private var captchaImageData: Data? = nil
+    @State private var assistStatus = "Загружаю форму суда…"
     @State private var highContrast = false
+    @State private var submitRequestID = 0
+    @State private var submissionState: CaptchaSubmissionState = .loading
+    @FocusState private var codeFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            HStack(spacing: 0) {
-                CaptchaWebView(url: context.formURL, uid: context.uid,
-                               caseNumber: context.caseNumber,
-                               captchaImageURL: $captchaImageURL,
-                               onAssistStatus: { assistStatus = $0 },
-                               onCardHTML: onCardHTML, onCaptchaPair: onCaptchaPair)
-                    .frame(minWidth: 680)
+        ZStack {
+            CaptchaWebView(url: context.formURL,
+                           uid: context.uid,
+                           caseNumber: context.caseNumber,
+                           captchaImageData: $captchaImageData,
+                           captchaCode: captchaCode,
+                           submitRequestID: $submitRequestID,
+                           onCaptchaReady: {
+                               submissionState = .ready
+                               codeFocused = true
+                           },
+                           onSubmissionState: updateSubmissionState(_:),
+                           onCardHTML: onCardHTML,
+                           onCaptchaPair: onCaptchaPair)
+                .frame(width: 1, height: 1)
+                .clipped()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            VStack(spacing: 0) {
+                header
                 Divider()
                 assistPanel
-                    .frame(width: 260)
             }
         }
-        .frame(width: 1040, height: 700)
+        .frame(width: 460, height: 540)
     }
 
     private var header: some View {
@@ -51,7 +101,7 @@ struct CaptchaAssistSheet: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Код с картинки — \(context.courtTitle)")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Введите код и нажмите «Найти», затем откройте нужное дело — карточку приложение подхватит автоматически.")
+                Text("Введите код — поиск продолжится за кадром.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
@@ -62,62 +112,162 @@ struct CaptchaAssistSheet: View {
     }
 
     private var assistPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Помощник ввода", systemImage: "sparkle.magnifyingglass")
-                .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 14) {
             Text(assistStatus)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(statusColor)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Картинка")
+            captchaImageBox
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Код")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.tertiary)
-                if let captchaImageURL {
-                    CaptchaImagePreview(url: captchaImageURL, highContrast: highContrast)
-                        .frame(height: 112)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
-                } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.primary.opacity(0.045))
-                        .frame(height: 112)
-                        .overlay {
-                            Text("Появится после загрузки формы")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                }
+                TextField("5 цифр", text: $captchaCode)
+                    .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                    .focused($codeFocused)
+                    .disabled(!canSubmitInput)
+                    .onSubmit(submitCaptcha)
+                    .onChange(of: captchaCode) {
+                        normalizeCaptchaCode()
+                    }
+            }
+
+            HStack(spacing: 10) {
                 Toggle("Высокий контраст", isOn: $highContrast)
                     .font(.caption)
                     .toggleStyle(.checkbox)
+                Spacer()
+                Button {
+                    submitCaptcha()
+                } label: {
+                    Label("Найти", systemImage: "arrow.right.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSubmit)
+                .keyboardShortcut(.return, modifiers: [])
             }
 
             if context.pendingCaseCount > 0 {
                 Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("\(context.pendingCaseCount) в очереди", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Этот код продолжит фоновые обновления того же суда.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    ForEach(context.pendingCaseNumbers, id: \.self) { number in
-                        Text("№ \(number)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
+                pendingQueueView
             }
 
             Spacer()
+
             Text("Распознавание не выполняется автоматически: код читает и вводит пользователь.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
+        .padding(18)
+    }
+
+    private var captchaImageBox: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Картинка")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.tertiary)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.primary.opacity(0.045))
+                if let captchaImageData, let image = NSImage(data: captchaImageData) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.none)
+                        .scaledToFit()
+                        .contrast(highContrast ? 1.9 : 1.0)
+                        .saturation(highContrast ? 0 : 1)
+                        .padding(22)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 190)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
+        }
+    }
+
+    private var pendingQueueView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("\(context.pendingCaseCount) в очереди", systemImage: "arrow.triangle.2.circlepath")
+                .font(.system(size: 12, weight: .semibold))
+            Text("Этот код продолжит фоновые обновления того же суда.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ForEach(context.pendingCaseNumbers, id: \.self) { number in
+                Text("№ \(number)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var canSubmitInput: Bool {
+        switch submissionState {
+        case .ready, .rejected, .failed:
+            return true
+        case .loading, .submitting, .accepted:
+            return false
+        }
+    }
+
+    private var canSubmit: Bool {
+        canSubmitInput && !captchaCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var statusColor: Color {
+        switch submissionState {
+        case .rejected, .failed:
+            return .red
+        case .accepted:
+            return .green
+        default:
+            return .secondary
+        }
+    }
+
+    private func normalizeCaptchaCode() {
+        let filtered = String(captchaCode.filter(\.isNumber).prefix(8))
+        if filtered != captchaCode {
+            captchaCode = filtered
+        }
+    }
+
+    private func submitCaptcha() {
+        normalizeCaptchaCode()
+        guard canSubmit else { return }
+        submissionState = .submitting
+        assistStatus = "Отправляю код…"
+        submitRequestID += 1
+    }
+
+    private func updateSubmissionState(_ state: CaptchaSubmissionState) {
+        submissionState = state
+        switch state {
+        case .loading:
+            assistStatus = "Загружаю форму суда…"
+        case .ready:
+            assistStatus = "Картинка загружена. Введите код и нажмите Enter."
+            codeFocused = true
+        case .submitting:
+            assistStatus = "Отправляю код…"
+        case .accepted:
+            assistStatus = "Код принят. Продолжаю поиск…"
+        case .rejected:
+            captchaCode = ""
+            assistStatus = "Код не принят. Введите новый код с картинки."
+            codeFocused = true
+        case .failed(let message):
+            assistStatus = message
+            codeFocused = true
+        }
     }
 }
 
@@ -125,63 +275,61 @@ struct CaptchaWebView: NSViewRepresentable {
     let url: URL
     let uid: String
     var caseNumber: String? = nil
-    @Binding var captchaImageURL: URL?
-    var onAssistStatus: (String) -> Void = { _ in }
+    @Binding var captchaImageData: Data?
+    let captchaCode: String
+    @Binding var submitRequestID: Int
+    var onCaptchaReady: () -> Void = {}
+    var onSubmissionState: (CaptchaSubmissionState) -> Void = { _ in }
     var onCardHTML: (String) -> Void
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> WKWebView {
-        let cfg = WKWebViewConfiguration()
-        let web = WKWebView(frame: .zero, configuration: cfg)
-        web.navigationDelegate = context.coordinator
-        web.load(URLRequest(url: url))
-        return web
+    func makeNSView(context: Context) -> HiddenCaptchaWebViewHost {
+        let host = HiddenCaptchaWebViewHost(navigationDelegate: context.coordinator)
+        host.webView.load(URLRequest(url: url))
+        return host
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {
+    func updateNSView(_ nsView: HiddenCaptchaWebViewHost, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.submitIfNeeded(in: nsView.webView)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        enum WebState {
+            case loadingForm
+            case ready
+            case submitting
+            case accepted
+            case failed
+        }
+
         var parent: CaptchaWebView
         private var didCapture = false
         private var didCapturePair = false
+        private var lastSubmitRequestID = 0
+        private var pendingSubmittedToken: CaptchaToken?
+        private var state: WebState = .loadingForm
 
         init(_ parent: CaptchaWebView) { self.parent = parent }
+
+        func submitIfNeeded(in webView: WKWebView) {
+            guard parent.submitRequestID != lastSubmitRequestID else { return }
+            lastSubmitRequestID = parent.submitRequestID
+            guard state == .ready else { return }
+            state = .submitting
+            submitCaptcha(parent.captchaCode, in: webView)
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             let current = webView.url?.absoluteString ?? ""
 
-            // Пользователь отправил форму с кодом: пара captcha/captchaid видна
-            // в URL выдачи (форма отправляется GET-ом). Сохраняем её вместе с
-            // cookies сессии WebView — суд может проверять пару только в связке
-            // с сессией. Если код был неверный, суд отклонит пару при первом
-            // переиспользовании — клиент её инвалидирует сам.
-            if !didCapturePair, current.contains("name_op=r"),
-               let comps = URLComponents(string: current),
-               let cap = comps.queryItems?.first(where: { $0.name == "captcha" })?.value, !cap.isEmpty,
-               let capID = comps.queryItems?.first(where: { $0.name == "captchaid" })?.value, !capID.isEmpty,
-               let host = webView.url?.host {
-                didCapturePair = true
-                let token = CaptchaToken(value: cap, id: capID)
-                let store = webView.configuration.websiteDataStore.httpCookieStore
-                let lowerHost = host.lowercased()
-                store.getAllCookies { [weak self] cookies in
-                    for c in cookies {
-                        // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
-                        // родительским с точкой («.sudrf.ru») — берём оба вида.
-                        let d = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-                        if lowerHost == d || lowerHost.hasSuffix("." + d) {
-                            HTTPCookieStorage.shared.setCookie(c)
-                        }
-                    }
-                    self?.parent.onCaptchaPair?(host, token)
-                }
+            if state == .submitting {
+                inspectSubmittedResult(in: webView)
+                return
             }
 
-            // На странице карточки — считываем HTML и завершаем.
             if current.contains("name_op=case"), !didCapture {
                 webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
                     guard let self, let html = result as? String, !self.didCapture else { return }
@@ -191,71 +339,324 @@ struct CaptchaWebView: NSViewRepresentable {
                 return
             }
 
-            // На форме поиска — подставляем УИД и № дела. Регистронезависимо:
-            // современные поля ВЕРХНИМ регистром (<TABLE>__JUDICIAL_UIDSS),
-            // винтажные (VNKOD-суды) — нижним (case__judicial_uidss).
-            if current.contains("name_op=sf") || current.contains("name=sud_delo") || current.contains("name_op=r") {
-                applyAssist(to: webView)
+            guard state == .loadingForm || state == .ready else { return }
+
+            if current.contains("name_op=sf") || current.contains("name=sud_delo") {
+                applyAssist(to: webView, rejected: false)
             }
         }
 
-        private func applyAssist(to webView: WKWebView) {
+        private func inspectSubmittedResult(in webView: WKWebView) {
+            let js = """
+            const inputs = Array.prototype.slice.call(document.getElementsByTagName('input'));
+
+            function isVisible(el) {
+              const r = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            }
+
+            function isEditableInput(input) {
+              const type = ((input.type || 'text') + '').toLowerCase();
+              if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset' || type === 'checkbox' || type === 'radio') { return false; }
+              return !input.disabled && !input.readOnly && isVisible(input);
+            }
+
+            function isNamedCaptchaInput(input) {
+              if (!isEditableInput(input)) { return false; }
+              const nm = ((input.name || input.id || '') + '').toLowerCase();
+              return nm === 'captcha' || (nm.indexOf('captcha') >= 0 && nm.indexOf('captchaid') < 0);
+            }
+
+            function nearbyText(input) {
+              const row = input.closest('tr');
+              if (row) { return row.innerText || ''; }
+              const label = input.id ? Array.prototype.slice.call(document.getElementsByTagName('label')).find(function(label) {
+                return label.htmlFor === input.id;
+              }) : null;
+              const parent = input.parentElement;
+              return [(label && label.innerText) || '', (parent && parent.innerText) || ''].join(' ');
+            }
+
+            function hasCaptchaLabelNearEditableInput(input) {
+              if (!isEditableInput(input)) { return false; }
+              const text = nearbyText(input).toLowerCase();
+              return text.indexOf('проверочный код') >= 0 || text.indexOf('код с картинки') >= 0;
+            }
+
+            return inputs.some(isNamedCaptchaInput) || inputs.some(hasCaptchaLabelNearEditableInput);
+            """
+            webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { [weak self, weak webView] result in
+                guard let self, let webView else { return }
+                let value = try? result.get()
+                let hasCaptcha = (value as? Bool) ?? false
+                switch CaptchaAssistPostSubmitDecision.decide(hasCaptchaMarkers: hasCaptcha,
+                                                              hasPendingToken: self.resolvedCaptchaToken(from: webView) != nil) {
+                case .accept:
+                    self.captureCaptchaPair(from: webView)
+                case .reject:
+                    self.state = .loadingForm
+                    self.applyAssist(to: webView, rejected: true)
+                case .failMissingToken:
+                    self.state = .failed
+                    self.parent.onSubmissionState(.failed("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз."))
+                }
+            }
+        }
+
+        private func captureCaptchaPair(from webView: WKWebView) {
+            guard !didCapturePair, let host = webView.url?.host else {
+                parent.onSubmissionState(.failed("Код отправлен, но ответ суда не содержит токен. Попробуйте ещё раз."))
+                return
+            }
+
+            guard let token = resolvedCaptchaToken(from: webView) else {
+                state = .failed
+                parent.onSubmissionState(.failed("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз."))
+                return
+            }
+
+            didCapturePair = true
+            state = .accepted
+            parent.onSubmissionState(.accepted)
+            let store = webView.configuration.websiteDataStore.httpCookieStore
+            let lowerHost = host.lowercased()
+            store.getAllCookies { [weak self] cookies in
+                for c in cookies {
+                    // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
+                    // родительским с точкой («.sudrf.ru») — берём оба вида.
+                    let d = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    if lowerHost == d || lowerHost.hasSuffix("." + d) {
+                        HTTPCookieStorage.shared.setCookie(c)
+                    }
+                }
+                self?.parent.onCaptchaPair?(host, token)
+            }
+        }
+
+        private func resolvedCaptchaToken(from webView: WKWebView) -> CaptchaToken? {
+            let current = webView.url?.absoluteString ?? ""
+            let urlToken: CaptchaToken? = {
+                guard let comps = URLComponents(string: current),
+                      let cap = comps.queryItems?.first(where: { $0.name == "captcha" })?.value, !cap.isEmpty,
+                      let capID = comps.queryItems?.first(where: { $0.name == "captchaid" })?.value, !capID.isEmpty else {
+                    return nil
+                }
+                return CaptchaToken(value: cap, id: capID)
+            }()
+            return urlToken ?? pendingSubmittedToken
+        }
+
+        private func submitCaptcha(_ code: String, in webView: WKWebView) {
             let js = """
             (function(){
-              const uid = \(Self.jsStringLiteral(parent.uid));
-              const num = \(Self.jsStringLiteral(parent.caseNumber ?? ""));
+              const code = \(Self.jsStringLiteral(code));
               const inputs = Array.prototype.slice.call(document.getElementsByTagName('input'));
-              let captchaInput = null;
-              for (const input of inputs) {
+              const captchaInput = inputs.find(function(input) {
                 const nm = (input.name || '').toLowerCase();
-                if (uid && nm.indexOf('judicial_uidss') >= 0) { input.value = uid; }
-                if (num && nm.indexOf('case_numberss') >= 0) { input.value = num; }
-                if (nm === 'captcha' || (nm.indexOf('captcha') >= 0 && nm.indexOf('captchaid') < 0)) {
-                  captchaInput = input;
+                return nm === 'captcha' || (nm.indexOf('captcha') >= 0 && nm.indexOf('captchaid') < 0);
+              });
+              const captchaIDInput = inputs.find(function(input) {
+                const nm = ((input.name || input.id || '') + '').toLowerCase();
+                return nm === 'captchaid' || nm.indexOf('captchaid') >= 0;
+              });
+              if (!captchaInput) { return { ok: false, reason: 'captcha-input-missing' }; }
+              captchaInput.value = code;
+              captchaInput.dispatchEvent(new Event('input', { bubbles: true }));
+              captchaInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+              const form = captchaInput.form || captchaInput.closest('form');
+              const root = form || document;
+              const controls = Array.prototype.slice.call(root.querySelectorAll('input, button'));
+              const submit = controls.find(function(el) {
+                const type = (el.type || '').toLowerCase();
+                const value = ((el.value || el.textContent || '') + '').toLowerCase();
+                return type === 'submit' || value.indexOf('най') >= 0 || value.indexOf('find') >= 0;
+              });
+              if (submit && submit.click) {
+                setTimeout(function(){ submit.click(); }, 0);
+                return { ok: true, method: 'click', captchaid: captchaIDInput ? captchaIDInput.value : '' };
+              }
+              if (form && form.submit) {
+                setTimeout(function(){ form.submit(); }, 0);
+                return { ok: true, method: 'form-submit', captchaid: captchaIDInput ? captchaIDInput.value : '' };
+              }
+              return { ok: false, reason: 'submit-missing' };
+            })();
+            """
+            parent.onSubmissionState(.submitting)
+            webView.evaluateJavaScript(js) { [weak self] result, error in
+                guard let self else { return }
+                if let error {
+                    self.parent.onSubmissionState(.failed("Не удалось отправить код: \(error.localizedDescription)"))
+                    return
+                }
+                let dict = result as? [String: Any]
+                let ok = (dict?["ok"] as? Bool) ?? false
+                if !ok {
+                    self.state = .failed
+                    self.parent.onSubmissionState(.failed("Не нашёл кнопку отправки на форме суда. Обновите окно и попробуйте ещё раз."))
+                    return
+                }
+                if let captchaID = dict?["captchaid"] as? String, !captchaID.isEmpty {
+                    self.pendingSubmittedToken = CaptchaToken(value: code, id: captchaID)
+                }
+            }
+        }
+
+        private func applyAssist(to webView: WKWebView, rejected: Bool) {
+            let js = """
+            const uid = \(Self.jsStringLiteral(parent.uid));
+            const num = \(Self.jsStringLiteral(parent.caseNumber ?? ""));
+
+            function inputName(input) {
+              return (input.name || input.id || '').toLowerCase();
+            }
+
+            function isCaptchaInput(input) {
+              const nm = inputName(input);
+              return nm === 'captcha' || (nm.indexOf('captcha') >= 0 && nm.indexOf('captchaid') < 0);
+            }
+
+            function isVisible(el) {
+              const r = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            }
+
+            function scoreImage(img, captchaInput) {
+              const src = (img.currentSrc || img.src || '').toLowerCase();
+              const id = (img.id || '').toLowerCase();
+              const alt = (img.alt || '').toLowerCase();
+              if (src.indexOf('counter') >= 0 || src.indexOf('calendar') >= 0) { return Number.POSITIVE_INFINITY; }
+              let score = 1000;
+              if (src.indexOf('captcha') >= 0 || id.indexOf('captcha') >= 0 || alt.indexOf('captcha') >= 0) { score -= 800; }
+              if (!captchaInput) { return score; }
+              const inputRect = captchaInput.getBoundingClientRect();
+              const imgRect = img.getBoundingClientRect();
+              const ix = inputRect.left + inputRect.width / 2;
+              const iy = inputRect.top + inputRect.height / 2;
+              const cx = imgRect.left + imgRect.width / 2;
+              const cy = imgRect.top + imgRect.height / 2;
+              score += Math.abs(cx - ix) + Math.abs(cy - iy) * 1.6;
+              const row = captchaInput.closest('tr');
+              if (row && row.contains(img)) { score -= 350; }
+              const parent = captchaInput.parentElement;
+              if (parent && parent.contains(img)) { score -= 250; }
+              const form = captchaInput.form || captchaInput.closest('form');
+              if (form && form.contains(img)) { score -= 80; }
+              return score;
+            }
+
+            function findCaptchaImage(captchaInput) {
+              const images = Array.prototype.slice.call(document.images).filter(function(img) {
+                if (!isVisible(img)) { return false; }
+                const r = img.getBoundingClientRect();
+                return r.width >= 35 && r.height >= 15 && r.width <= 420 && r.height <= 220;
+              });
+              images.sort(function(a, b) { return scoreImage(a, captchaInput) - scoreImage(b, captchaInput); });
+              return images[0] || null;
+            }
+
+            function waitForImage(img) {
+              if (!img || (img.complete && (img.naturalWidth || img.width))) { return Promise.resolve(); }
+              return new Promise(function(resolve) {
+                const done = function() { resolve(); };
+                img.addEventListener('load', done, { once: true });
+                img.addEventListener('error', done, { once: true });
+                setTimeout(done, 1200);
+              });
+            }
+
+            async function imageDataURL(img) {
+              if (!img) { return ''; }
+              await waitForImage(img);
+              const w = Math.max(img.naturalWidth || img.width || img.clientWidth || 120, 1);
+              const h = Math.max(img.naturalHeight || img.height || img.clientHeight || 40, 1);
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                return canvas.toDataURL('image/png');
+              } catch (e) {
+                try {
+                  const response = await fetch(img.currentSrc || img.src, { credentials: 'include', cache: 'no-store' });
+                  const blob = await response.blob();
+                  return await new Promise(function(resolve) {
+                    const reader = new FileReader();
+                    reader.onloadend = function() { resolve(reader.result || ''); };
+                    reader.onerror = function() { resolve(''); };
+                    reader.readAsDataURL(blob);
+                  });
+                } catch (_) {
+                  return '';
                 }
               }
-              const images = Array.prototype.slice.call(document.images);
-              const captchaImage = images.find(function(img) {
-                const src = (img.currentSrc || img.src || '').toLowerCase();
-                const id = (img.id || '').toLowerCase();
-                const alt = (img.alt || '').toLowerCase();
-                return src.indexOf('captcha') >= 0 || id.indexOf('captcha') >= 0 || alt.indexOf('captcha') >= 0;
-              });
-              if (captchaImage) {
-                const width = Math.max(captchaImage.naturalWidth || captchaImage.width || 90, 90) * 2;
-                captchaImage.style.width = width + 'px';
-                captchaImage.style.height = 'auto';
-                captchaImage.style.imageRendering = 'pixelated';
-                captchaImage.style.border = '1px solid rgba(0,0,0,.22)';
-                captchaImage.style.borderRadius = '4px';
-                captchaImage.style.padding = '6px';
-                captchaImage.style.background = 'white';
-                captchaImage.scrollIntoView({block: 'center', inline: 'nearest'});
-              }
-              if (captchaInput) {
-                captchaInput.focus();
-                if (captchaInput.select) { captchaInput.select(); }
-              }
+            }
+
+            const inputs = Array.prototype.slice.call(document.getElementsByTagName('input'));
+            let captchaInput = null;
+            for (const input of inputs) {
+              const nm = inputName(input);
+              if (uid && nm.indexOf('judicial_uidss') >= 0) { input.value = uid; }
+              if (num && nm.indexOf('case_numberss') >= 0) { input.value = num; }
+              if (isCaptchaInput(input)) { captchaInput = input; }
+            }
+
+            if (!captchaInput) {
               return {
-                image: captchaImage ? (captchaImage.currentSrc || captchaImage.src || '') : '',
-                focused: !!captchaInput,
+                image: '',
+                foundInput: false,
+                foundImage: false,
                 prefilledUID: !!uid,
                 prefilledNumber: !!num
               };
-            })();
+            }
+
+            const captchaImage = findCaptchaImage(captchaInput);
+            captchaInput.value = '';
+            return {
+              image: await imageDataURL(captchaImage),
+              foundInput: !!captchaInput,
+              foundImage: !!captchaImage,
+              prefilledUID: !!uid,
+              prefilledNumber: !!num
+            };
             """
-            webView.evaluateJavaScript(js) { [weak self] result, _ in
+            parent.onSubmissionState(rejected ? .rejected : .loading)
+            webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { [weak self] result in
                 guard let self else { return }
-                let dict = result as? [String: Any]
-                let image = (dict?["image"] as? String) ?? ""
-                let focused = (dict?["focused"] as? Bool) ?? false
-                DispatchQueue.main.async {
-                    if let url = URL(string: image), !image.isEmpty {
-                        self.parent.captchaImageURL = url
+                switch result {
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        self.parent.captchaImageData = nil
+                        self.parent.onSubmissionState(.failed("Не удалось подготовить форму суда: \(error.localizedDescription)"))
                     }
-                    self.parent.onAssistStatus(focused
-                        ? "Поля дела подставлены, курсор стоит в поле кода."
-                        : "Поля дела подставлены. Если поле кода не видно, прокрутите форму чуть ниже.")
+                case .success(let value):
+                    let dict = value as? [String: Any]
+                    let dataURL = (dict?["image"] as? String) ?? ""
+                    let foundInput = (dict?["foundInput"] as? Bool) ?? false
+                    let foundImage = (dict?["foundImage"] as? Bool) ?? false
+                    DispatchQueue.main.async {
+                        if let data = CaptchaImagePayload.data(fromDataURL: dataURL) {
+                            self.parent.captchaImageData = data
+                        } else if !foundInput || !foundImage {
+                            self.parent.captchaImageData = nil
+                        }
+                        if foundInput && foundImage {
+                            self.state = .ready
+                            self.parent.onCaptchaReady()
+                            self.parent.onSubmissionState(rejected ? .rejected : .ready)
+                        } else if foundInput {
+                            self.state = .failed
+                            self.parent.onSubmissionState(.failed("Поле кода найдено, но картинка не обнаружена. Обновите окно."))
+                        } else {
+                            self.state = .failed
+                            self.parent.onSubmissionState(.failed("Не нашёл поле кода на форме суда. Обновите окно."))
+                        }
+                    }
                 }
             }
         }
@@ -269,64 +670,27 @@ struct CaptchaWebView: NSViewRepresentable {
     }
 }
 
-private struct CaptchaImagePreview: NSViewRepresentable {
-    let url: URL
-    var highContrast: Bool
+final class HiddenCaptchaWebViewHost: NSView {
+    let webView: WKWebView
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> WKWebView {
+    init(navigationDelegate: WKNavigationDelegate) {
         let cfg = WKWebViewConfiguration()
-        let web = WKWebView(frame: .zero, configuration: cfg)
-        web.navigationDelegate = context.coordinator
-        load(into: web)
-        return web
+        webView = WKWebView(frame: NSRect(x: -2000, y: -2000, width: 900, height: 700),
+                            configuration: cfg)
+        super.init(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
+        wantsLayer = true
+        layer?.masksToBounds = true
+        webView.navigationDelegate = navigationDelegate
+        addSubview(webView)
     }
 
-    func updateNSView(_ web: WKWebView, context: Context) {
-        load(into: web)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
-    private func load(into web: WKWebView) {
-        let src = htmlEscaped(url.absoluteString)
-        let filter = highContrast ? "contrast(180%) grayscale(100%)" : "none"
-        let html = """
-        <!doctype html>
-        <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>
-        html,body{margin:0;height:100%;background:transparent;}
-        body{display:flex;align-items:center;justify-content:center;}
-        img{max-width:100%;max-height:100%;image-rendering:pixelated;filter:\(filter);}
-        </style></head><body><img src="\(src)"></body></html>
-        """
-        web.loadHTMLString(html, baseURL: url)
-    }
-
-    private func htmlEscaped(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-    }
-
-    final class Coordinator: NSObject, WKNavigationDelegate {}
-}
-
-extension CaptchaImagePreview.Coordinator {
-    func webView(_ webView: WKWebView,
-                 didReceive challenge: URLAuthenticationChallenge,
-                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil); return
-        }
-        let host = challenge.protectionSpace.host.lowercased()
-        if host == "sudrf.ru" || host.hasSuffix(".sudrf.ru") {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+    override func layout() {
+        super.layout()
+        webView.frame = NSRect(x: -2000, y: -2000, width: 900, height: 700)
     }
 }
 

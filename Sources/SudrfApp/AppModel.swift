@@ -683,7 +683,11 @@ final class AppRouter: ObservableObject {
         Task { [weak self] in
             await CaptchaTokenStore.shared.store(token, domain: host)
             await MainActor.run {
-                self?.refreshCenter.retryPendingCaptcha(host: host)
+                guard let self else { return }
+                self.captcha = nil
+                self.refreshCenter.retryPendingCaptcha(host: host)
+                self.pendingCaptchaRefresh = false
+                self.refreshOpenCase()
             }
         }
     }

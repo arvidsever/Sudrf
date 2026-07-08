@@ -234,7 +234,10 @@ final class RefreshCenter: ObservableObject {
             fail(key, "Не удалось восстановить параметры поиска по делу.")
             return
         }
-        let service = ctx.makeService(client: client, vsrf: vsrfClient,
+        let provider: any CaseProviding = ctx.courtLevel == .magistrate
+            ? MagistrateClient(sudrfClient: client)
+            : client
+        let service = ctx.makeService(client: provider, vsrf: vsrfClient,
                                       mosgorsud: mosGorSudClient)
         do {
             let mv = try await service.movement(for: ctx.baseResult,

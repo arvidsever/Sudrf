@@ -107,6 +107,7 @@ struct ImportSeed {
             if id.hasSuffix("2") { return .appeal }
         }
         switch level {
+        case .magistrate:return .first
         case .district:  return .first
         case .subject:   return .appeal
         case .appeal:    return .appeal
@@ -120,6 +121,7 @@ struct ImportSeed {
         if isMaterial { return 100 }
         let levelRank: Int
         switch level {
+        case .magistrate:levelRank = -1
         case .district:  levelRank = 0
         case .subject:   levelRank = 1
         case .appeal:    levelRank = 2

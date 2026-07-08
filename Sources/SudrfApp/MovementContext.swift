@@ -42,6 +42,10 @@ struct MovementContext: Codable, Equatable, Sendable {
     /// сервиса. Опционально: старые сохранённые контексты декодируются без
     /// миграции. См. `KnownCard` в SudrfKit.
     var knownCards: [KnownCard]? = nil
+    /// Точные цели поиска вышестоящих/связанных производств. Нужны мировым
+    /// судьям: районная апелляция ищется по живому списку районных судов региона,
+    /// а первая кассация зависит от даты вступления в силу.
+    var higherCourtTargets: [MovementSearchTarget]? = nil
 
     // MARK: Производные значения
 
@@ -72,6 +76,7 @@ struct MovementContext: Codable, Equatable, Sendable {
     func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil,
                      mosgorsud: (any MosGorSudProviding)? = nil) -> MovementService {
         MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
+                        higherCourtTargets: higherCourtTargets,
                         knownCards: knownCards ?? [], vsrf: vsrf, mosgorsud: mosgorsud)
     }
 
@@ -123,6 +128,8 @@ struct MovementContext: Codable, Equatable, Sendable {
         }
         var domains: [String] = []
         switch courtLevel {
+        case .magistrate:
+            break
         case .district:
             let code = courtCode.map(CourtDirectory.normalizedSubjectCode)
                 ?? CourtDirectory.subjectNumericCode(forRegion: region)

@@ -177,6 +177,7 @@ private struct CaseCardHost: View {
             CaptchaAssistSheet(context: ctx,
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
                                onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
+                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
                                onCancel: { router.captcha = nil })
         }
     }

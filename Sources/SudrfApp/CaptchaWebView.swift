@@ -43,8 +43,10 @@ enum CaptchaAssistPostSubmitDecision: Equatable {
     case reject
     case failMissingToken
 
-    static func decide(hasCaptchaMarkers: Bool, hasPendingToken: Bool) -> Self {
+    static func decide(hasCaptchaMarkers: Bool, hasPendingToken: Bool,
+                       requiresToken: Bool = true) -> Self {
         if hasCaptchaMarkers { return .reject }
+        if !requiresToken { return .accept }
         return hasPendingToken ? .accept : .failMissingToken
     }
 }
@@ -55,6 +57,7 @@ struct CaptchaAssistSheet: View {
     /// Решённая пользователем пара captcha/captchaid (хост, токен) — форма
     /// отправляется GET-ом, пара видна в URL выдачи и переиспользуется клиентом.
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
+    var onSessionUnlocked: ((String) -> Void)? = nil
     var onCancel: () -> Void
 
     @State private var captchaCode = ""
@@ -70,6 +73,7 @@ struct CaptchaAssistSheet: View {
             CaptchaWebView(url: context.formURL,
                            uid: context.uid,
                            caseNumber: context.caseNumber,
+                           kind: context.kind,
                            captchaImageData: $captchaImageData,
                            captchaCode: captchaCode,
                            submitRequestID: $submitRequestID,
@@ -79,7 +83,8 @@ struct CaptchaAssistSheet: View {
                            },
                            onSubmissionState: updateSubmissionState(_:),
                            onCardHTML: onCardHTML,
-                           onCaptchaPair: onCaptchaPair)
+                           onCaptchaPair: onCaptchaPair,
+                           onSessionUnlocked: onSessionUnlocked)
                 .frame(width: 1, height: 1)
                 .clipped()
                 .allowsHitTesting(false)
@@ -124,7 +129,7 @@ struct CaptchaAssistSheet: View {
                 Text("Код")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.tertiary)
-                TextField("5 цифр", text: $captchaCode)
+                TextField(context.kind == .kcaptcha ? "буквы и цифры" : "5 цифр", text: $captchaCode)
                     .font(.system(size: 24, weight: .semibold, design: .monospaced))
                     .textFieldStyle(.roundedBorder)
                     .focused($codeFocused)
@@ -234,7 +239,13 @@ struct CaptchaAssistSheet: View {
     }
 
     private func normalizeCaptchaCode() {
-        let filtered = String(captchaCode.filter(\.isNumber).prefix(8))
+        let filtered: String
+        switch context.kind {
+        case .sudrfToken:
+            filtered = String(captchaCode.filter(\.isNumber).prefix(8))
+        case .kcaptcha:
+            filtered = String(captchaCode.filter { $0.isLetter || $0.isNumber }.prefix(12))
+        }
         if filtered != captchaCode {
             captchaCode = filtered
         }
@@ -275,6 +286,7 @@ struct CaptchaWebView: NSViewRepresentable {
     let url: URL
     let uid: String
     var caseNumber: String? = nil
+    var kind: SearchModel.CaptchaContext.Kind = .sudrfToken
     @Binding var captchaImageData: Data?
     let captchaCode: String
     @Binding var submitRequestID: Int
@@ -282,6 +294,9 @@ struct CaptchaWebView: NSViewRepresentable {
     var onSubmissionState: (CaptchaSubmissionState) -> Void = { _ in }
     var onCardHTML: (String) -> Void
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
+    var onSessionUnlocked: ((String) -> Void)? = nil
+
+    var contextKindRequiresToken: Bool { kind == .sudrfToken }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -293,7 +308,12 @@ struct CaptchaWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: HiddenCaptchaWebViewHost, context: Context) {
         context.coordinator.parent = self
-        context.coordinator.submitIfNeeded(in: nsView.webView)
+        let coordinator = context.coordinator
+        let webView = nsView.webView
+        DispatchQueue.main.async { [weak coordinator, weak webView] in
+            guard let webView else { return }
+            coordinator?.submitIfNeeded(in: webView)
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -313,6 +333,22 @@ struct CaptchaWebView: NSViewRepresentable {
         private var state: WebState = .loadingForm
 
         init(_ parent: CaptchaWebView) { self.parent = parent }
+
+        private func notifySwiftUI(_ body: @escaping (inout CaptchaWebView) -> Void) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                body(&self.parent)
+            }
+        }
+
+        private func sendSubmissionState(_ next: CaptchaSubmissionState) {
+            notifySwiftUI { $0.onSubmissionState(next) }
+        }
+
+        private func fail(_ message: String) {
+            state = .failed
+            sendSubmissionState(.failed(message))
+        }
 
         func submitIfNeeded(in webView: WKWebView) {
             guard parent.submitRequestID != lastSubmitRequestID else { return }
@@ -334,7 +370,7 @@ struct CaptchaWebView: NSViewRepresentable {
                 webView.evaluateJavaScript("document.documentElement.outerHTML") { [weak self] result, _ in
                     guard let self, let html = result as? String, !self.didCapture else { return }
                     self.didCapture = true
-                    self.parent.onCardHTML(html)
+                    self.notifySwiftUI { $0.onCardHTML(html) }
                 }
                 return
             }
@@ -391,37 +427,60 @@ struct CaptchaWebView: NSViewRepresentable {
                 let value = try? result.get()
                 let hasCaptcha = (value as? Bool) ?? false
                 switch CaptchaAssistPostSubmitDecision.decide(hasCaptchaMarkers: hasCaptcha,
-                                                              hasPendingToken: self.resolvedCaptchaToken(from: webView) != nil) {
+                                                              hasPendingToken: self.resolvedCaptchaToken(from: webView) != nil,
+                                                              requiresToken: self.parent.contextKindRequiresToken) {
                 case .accept:
-                    self.captureCaptchaPair(from: webView)
+                    if self.parent.contextKindRequiresToken {
+                        self.captureCaptchaPair(from: webView)
+                    } else {
+                        self.captureSession(from: webView)
+                    }
                 case .reject:
                     self.state = .loadingForm
                     self.applyAssist(to: webView, rejected: true)
                 case .failMissingToken:
-                    self.state = .failed
-                    self.parent.onSubmissionState(.failed("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз."))
+                    self.fail("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз.")
                 }
             }
         }
 
         private func captureCaptchaPair(from webView: WKWebView) {
             guard !didCapturePair, let host = webView.url?.host else {
-                parent.onSubmissionState(.failed("Код отправлен, но ответ суда не содержит токен. Попробуйте ещё раз."))
+                fail("Код отправлен, но ответ суда не содержит токен. Попробуйте ещё раз.")
                 return
             }
 
             guard let token = resolvedCaptchaToken(from: webView) else {
-                state = .failed
-                parent.onSubmissionState(.failed("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз."))
+                fail("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз.")
                 return
             }
 
             didCapturePair = true
             state = .accepted
-            parent.onSubmissionState(.accepted)
+            sendSubmissionState(.accepted)
             let store = webView.configuration.websiteDataStore.httpCookieStore
+            Self.copyCookies(from: store, host: host) { [weak self] in
+                self?.notifySwiftUI { $0.onCaptchaPair?(host, token) }
+            }
+        }
+
+        private func captureSession(from webView: WKWebView) {
+            guard let host = webView.url?.host else {
+                fail("Код отправлен, но сессия суда не определена. Попробуйте ещё раз.")
+                return
+            }
+            state = .accepted
+            sendSubmissionState(.accepted)
+            let store = webView.configuration.websiteDataStore.httpCookieStore
+            Self.copyCookies(from: store, host: host) { [weak self] in
+                self?.notifySwiftUI { $0.onSessionUnlocked?(host) }
+            }
+        }
+
+        private static func copyCookies(from store: WKHTTPCookieStore, host: String,
+                                        then completion: @escaping () -> Void) {
             let lowerHost = host.lowercased()
-            store.getAllCookies { [weak self] cookies in
+            store.getAllCookies { cookies in
                 for c in cookies {
                     // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
                     // родительским с точкой («.sudrf.ru») — берём оба вида.
@@ -430,7 +489,7 @@ struct CaptchaWebView: NSViewRepresentable {
                         HTTPCookieStorage.shared.setCookie(c)
                     }
                 }
-                self?.parent.onCaptchaPair?(host, token)
+                completion()
             }
         }
 
@@ -484,18 +543,17 @@ struct CaptchaWebView: NSViewRepresentable {
               return { ok: false, reason: 'submit-missing' };
             })();
             """
-            parent.onSubmissionState(.submitting)
+            sendSubmissionState(.submitting)
             webView.evaluateJavaScript(js) { [weak self] result, error in
                 guard let self else { return }
                 if let error {
-                    self.parent.onSubmissionState(.failed("Не удалось отправить код: \(error.localizedDescription)"))
+                    self.fail("Не удалось отправить код: \(error.localizedDescription)")
                     return
                 }
                 let dict = result as? [String: Any]
                 let ok = (dict?["ok"] as? Bool) ?? false
                 if !ok {
-                    self.state = .failed
-                    self.parent.onSubmissionState(.failed("Не нашёл кнопку отправки на форме суда. Обновите окно и попробуйте ещё раз."))
+                    self.fail("Не нашёл кнопку отправки на форме суда. Обновите окно и попробуйте ещё раз.")
                     return
                 }
                 if let captchaID = dict?["captchaid"] as? String, !captchaID.isEmpty {
@@ -625,36 +683,37 @@ struct CaptchaWebView: NSViewRepresentable {
               prefilledNumber: !!num
             };
             """
-            parent.onSubmissionState(rejected ? .rejected : .loading)
+            sendSubmissionState(rejected ? .rejected : .loading)
             webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .failure(let error):
-                    DispatchQueue.main.async {
-                        self.parent.captchaImageData = nil
-                        self.parent.onSubmissionState(.failed("Не удалось подготовить форму суда: \(error.localizedDescription)"))
+                    self.state = .failed
+                    self.notifySwiftUI { parent in
+                        parent.captchaImageData = nil
+                        parent.onSubmissionState(.failed("Не удалось подготовить форму суда: \(error.localizedDescription)"))
                     }
                 case .success(let value):
                     let dict = value as? [String: Any]
                     let dataURL = (dict?["image"] as? String) ?? ""
                     let foundInput = (dict?["foundInput"] as? Bool) ?? false
                     let foundImage = (dict?["foundImage"] as? Bool) ?? false
-                    DispatchQueue.main.async {
+                    self.notifySwiftUI { parent in
                         if let data = CaptchaImagePayload.data(fromDataURL: dataURL) {
-                            self.parent.captchaImageData = data
+                            parent.captchaImageData = data
                         } else if !foundInput || !foundImage {
-                            self.parent.captchaImageData = nil
+                            parent.captchaImageData = nil
                         }
                         if foundInput && foundImage {
                             self.state = .ready
-                            self.parent.onCaptchaReady()
-                            self.parent.onSubmissionState(rejected ? .rejected : .ready)
+                            parent.onCaptchaReady()
+                            parent.onSubmissionState(rejected ? .rejected : .ready)
                         } else if foundInput {
                             self.state = .failed
-                            self.parent.onSubmissionState(.failed("Поле кода найдено, но картинка не обнаружена. Обновите окно."))
+                            parent.onSubmissionState(.failed("Поле кода найдено, но картинка не обнаружена. Обновите окно."))
                         } else {
                             self.state = .failed
-                            self.parent.onSubmissionState(.failed("Не нашёл поле кода на форме суда. Обновите окно."))
+                            parent.onSubmissionState(.failed("Не нашёл поле кода на форме суда. Обновите окно."))
                         }
                     }
                 }
@@ -708,7 +767,8 @@ extension CaptchaWebView.Coordinator {
             completionHandler(.performDefaultHandling, nil); return
         }
         let host = challenge.protectionSpace.host.lowercased()
-        if host == "sudrf.ru" || host.hasSuffix(".sudrf.ru") {
+        if host == "sudrf.ru" || host.hasSuffix(".sudrf.ru")
+            || host == "msudrf.ru" || host.hasSuffix(".msudrf.ru") {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.performDefaultHandling, nil)

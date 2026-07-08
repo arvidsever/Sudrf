@@ -670,6 +670,7 @@ final class AppRouter: ObservableObject {
                                              instanceID: inst.id,
                                              level: inst.level,
                                              courtTitle: inst.court,
+                                             kind: url.host?.lowercased().hasSuffix("msudrf.ru") == true ? .kcaptcha : .sudrfToken,
                                              pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
                                              pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
     }
@@ -692,6 +693,14 @@ final class AppRouter: ObservableObject {
         }
     }
     private var pendingCaptchaRefresh = false
+
+    func captchaSessionUnlocked(host: String) {
+        pendingCaptchaRefresh = true
+        captcha = nil
+        refreshCenter.retryPendingCaptcha(host: host)
+        pendingCaptchaRefresh = false
+        refreshOpenCase()
+    }
 
     /// Принять HTML карточки из окна капчи и заменить заглушку реальной инстанцией
     /// (карточка капчей не защищена — разбирается как обычно).

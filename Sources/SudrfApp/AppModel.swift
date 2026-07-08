@@ -372,6 +372,14 @@ final class AppRouter: ObservableObject {
     private let store = TrackedStore()
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
+    /// Авто-солвер капчи для интерактивного пути `beginCaptcha(for:)`
+    /// (per-instance заглушки в `CaseMovementView`). Создаётся здесь,
+    /// чтобы `SearchModel` и `AppRouter` могли иметь разные инстансы
+    /// солвера — у каждого свой rate-limit и лог. `CaptchaSettings`
+    /// общий (singleton), так что toggle в системном меню действует
+    /// на оба пути.
+    private let captchaSolver: CaptchaSolver
+    private let captchaSettings: CaptchaSettings
     private var refreshCenterSink: AnyCancellable? = nil
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
     private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
@@ -384,10 +392,13 @@ final class AppRouter: ObservableObject {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
     }
 
-    init() {
+    init(captchaSolver: CaptchaSolver = CaptchaSolver(),
+         captchaSettings: CaptchaSettings = .shared) {
+        self.captchaSolver = captchaSolver
+        self.captchaSettings = captchaSettings
         refreshCenter = RefreshCenter(store: store, client: client,
-                                       captchaSolver: CaptchaSolver(),
-                                       captchaSettings: CaptchaSettings.shared)
+                                       captchaSolver: captchaSolver,
+                                       captchaSettings: captchaSettings)
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv in
             self?.applyRefreshed(key: key, movement: mv)
@@ -665,15 +676,54 @@ final class AppRouter: ObservableObject {
     func selectAct(_ id: String) { selectedActID = id }
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
 
+    /// Открыть окно ввода кода для инстанции-заглушки. Сначала пробует
+    /// авто-солвер (Vision, on-device). На успех токен сохраняется в
+    /// `CaptchaTokenStore`, и `refreshOpenCase` тихо пересобирает
+    /// движение — заглушка заменится на реальную инстанцию без
+    /// участия пользователя. На неуверенность / выключенный солвер —
+    /// открывается ручной `CaptchaAssistSheet` (как раньше).
+    ///
+    /// Сигнатура остаётся sync: async-работа внутри `Task`, чтобы
+    /// не менять места вызова в `CaseMovementView` (Button).
     func beginCaptcha(for inst: CaseInstance) {
         guard let url = inst.captchaFormURL else { return }
-        let host = url.host
+        let host = url.host ?? ""
+
+        if captchaSettings.isEffectivelyEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                let token = await AutoCaptchaSolver.solve(
+                    formURL: url,
+                    client: self.client,
+                    solver: self.captchaSolver,
+                    settings: .default
+                )
+                if let token {
+                    await CaptchaTokenStore.shared.store(token, domain: host)
+                    await MainActor.run {
+                        self.pendingCaptchaRefresh = true
+                        self.refreshCenter.retryPendingCaptcha(host: host)
+                        self.refreshOpenCase()
+                        self.pendingCaptchaRefresh = false
+                    }
+                    return
+                }
+                // Авто-солвер не справился — открываем ручной лист.
+                await MainActor.run { self.openManualCaptchaSheet(for: inst, url: url, host: host) }
+            }
+        } else {
+            openManualCaptchaSheet(for: inst, url: url, host: host)
+        }
+    }
+
+    /// Построить `CaptchaContext` и открыть ручной лист.
+    private func openManualCaptchaSheet(for inst: CaseInstance, url: URL, host: String) {
         captcha = SearchModel.CaptchaContext(formURL: url,
                                              uid: liveMovement?.uid ?? "",
                                              instanceID: inst.id,
                                              level: inst.level,
                                              courtTitle: inst.court,
-                                             kind: url.host?.lowercased().hasSuffix("msudrf.ru") == true ? .kcaptcha : .sudrfToken,
+                                             kind: host.lowercased().hasSuffix("msudrf.ru") ? .kcaptcha : .sudrfToken,
                                              pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
                                              pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
     }

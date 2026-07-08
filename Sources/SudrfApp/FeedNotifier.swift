@@ -57,6 +57,9 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Счётчик на иконке дока: число или снять бейдж при нуле.
     func setBadge(_ count: Int) {
+        // `NSApp` равен nil в SwiftPM-тестах (нет бандла приложения) —
+        // молча пропускаем, иначе force-unwrap упадёт.
+        guard available else { return }
         NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
     }
 

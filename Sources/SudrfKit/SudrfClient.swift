@@ -48,6 +48,13 @@ public actor SudrfClient {
         try await fetchHTML(url, allowHTTPFallback: true)
     }
 
+    /// Загрузить HTML формы поиска (страница с капчей). Семантически то
+    /// же, что `fetchHTML`, но имя сигнализирует о намерении — нужно
+    /// `RefreshCenter.tryAutoSolve` для авто-солвера.
+    public func fetchForm(_ url: URL) async throws -> String {
+        try await fetchHTML(url, allowHTTPFallback: true)
+    }
+
     private func fetchHTML(_ url: URL, allowHTTPFallback: Bool) async throws -> String {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)

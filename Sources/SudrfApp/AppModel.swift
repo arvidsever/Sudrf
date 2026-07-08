@@ -17,6 +17,7 @@ import SwiftUI
 import AppKit
 import Combine
 import SudrfKit
+import CaptchaSolver
 
 // MARK: - Палитра разделов
 
@@ -394,7 +395,9 @@ final class AppRouter: ObservableObject {
     }
 
     init() {
-        refreshCenter = RefreshCenter(store: store, client: client)
+        refreshCenter = RefreshCenter(store: store, client: client,
+                                       captchaSolver: CaptchaSolver(),
+                                       captchaSettings: CaptchaSettings.shared)
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv in
             self?.applyRefreshed(key: key, movement: mv)

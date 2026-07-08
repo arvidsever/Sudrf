@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SudrfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var captchaSettings = CaptchaSettings.shared
+    @State private var captchaStatusTick = Date()
 
     var body: some Scene {
         WindowGroup("СудРФ — поиск дел ОСЮ") {
@@ -42,6 +44,12 @@ struct SudrfApp: App {
                     NotificationCenter.default.post(name: .sudrfImportCases, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
+            // Отдельный блок «Captcha» в системном меню — toggle
+            // авто-солвера + статус. ⌃⌘A — стандарт для app-wide
+            // boolean toggles.
+            CommandMenu("Captcha") {
+                CaptchaMenuContent(settings: captchaSettings)
             }
         }
 

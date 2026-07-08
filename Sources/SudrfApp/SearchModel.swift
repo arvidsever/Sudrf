@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 import SudrfKit
+import CaptchaSolver
 
 @MainActor
 final class SearchModel: ObservableObject {
@@ -105,7 +106,21 @@ final class SearchModel: ObservableObject {
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient = MosGorSudClient()
+    /// Авто-солвер капчи. Опциональный — если `nil`, поведение прежнее
+    /// (только ручной ввод через CaptchaAssistSheet). Создаётся в init
+    /// или передаётся извне (для тестов и для общего инстанса с `RefreshCenter`).
+    private let captchaSolver: CaptchaSolver?
+    private let captchaSettings: CaptchaSettings?
     private var magistrateDistrictCourts: [DistrictCourt] = []
+
+    init(captchaSolver: CaptchaSolver? = nil, captchaSettings: CaptchaSettings? = nil) {
+        // По умолчанию — новый экземпляр солвера и общий `CaptchaSettings.shared`.
+        // Оба могут быть переданы извне (тесты, общий инстанс с `RefreshCenter`).
+        // Настройки — синглтон, так что toggle в системном меню «Captcha»
+        // действует на оба пути — интерактивный поиск и фоновый обход.
+        self.captchaSolver = captchaSolver ?? CaptchaSolver()
+        self.captchaSettings = captchaSettings ?? CaptchaSettings.shared
+    }
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
     /// подсудности в MovementContext (единственный источник правды, общий
@@ -340,8 +355,44 @@ final class SearchModel: ObservableObject {
         }
 
         do {
-            if court.level == .magistrate {
-                let primary: (SearchField, String) = !num.isEmpty ? (.caseNumber, num) : (.name, name)
+            try await executeSearch(allowAutoSolve: true)
+        } catch SudrfError.captchaRequired(let formURL) {
+            // Сюда попадаем, если auto-solver выключен / не уверен /
+            // исчерпал попытки / выдал неверный код и повторный поиск
+            // тоже упал на капче. Открываем ручное окно.
+            hasSearched = true
+            captcha = CaptchaContext(formURL: formURL,
+                                     uid: uid,
+                                     instanceID: "",
+                                     level: .first,
+                                     courtTitle: selectedCourt?.title ?? court.title,
+                                     kind: court.level == .magistrate ? .kcaptcha : .sudrfToken,
+                                     caseNumber: num.isEmpty ? nil : num,
+                                     rerunSearch: true)
+            status = "Требуется код с картинки — введите его в окне, поиск продолжится сам."
+        } catch let e as SudrfError {
+            status = e.description
+        } catch {
+            status = "Ошибка поиска: \(error)"
+        }
+    }
+
+    /// Делает собственно сетевой запрос + устанавливает `results` / `status`.
+    /// На `SudrfError.captchaRequired` — если включён auto-solver, пытается
+    /// решить; на успех повторяет запрос с `allowAutoSolve: false` (чтобы
+    /// не зациклиться, если авто-ответ неверный); на неудачу пробрасывает
+    /// ошибку наверх в `runSearch` для открытия ручного листа.
+    private func executeSearch(allowAutoSolve: Bool) async throws {
+        guard let selected = selectedCourt else { return }
+        let court = selected.searchCourt
+        let num = queryCaseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = queryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let uid = uidSearchEnabled ? queryUID.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        guard let cart = cartoteka else { return }
+
+        if court.level == .magistrate {
+            let primary: (SearchField, String) = !num.isEmpty ? (.caseNumber, num) : (.name, name)
+            do {
                 var res = try await magistrateClient.search(court: court, cartoteka: cart,
                                                             field: primary.0, value: primary.1)
                 if !num.isEmpty, primary.0 != .caseNumber {
@@ -357,21 +408,19 @@ final class SearchModel: ObservableObject {
                 status = res.isEmpty
                     ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                     : "Найдено: \(res.count) (\(used))"
-                return
+            } catch SudrfError.captchaRequired(let formURL) {
+                try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
             }
-            // Самое селективное поле уходит в сетевой запрос; УИД уникален в
-            // масштабах страны, поэтому он приоритетнее № дела. Локально по УИД
-            // дофильтровать нельзя: в строках выдачи официального УИД нет, а
-            // caseUID там — внутренний GUID ссылки на карточку, не УИД.
-            let primary: (SearchField, String) =
-                !uid.isEmpty ? (.uid, uid)
-                : !num.isEmpty ? (.caseNumber, num)
-                : (.name, name)
+            return
+        }
+
+        let primary: (SearchField, String) =
+            !uid.isEmpty ? (.uid, uid)
+            : !num.isEmpty ? (.caseNumber, num)
+            : (.name, name)
+        do {
             var res = try await client.search(court: court, cartoteka: cart,
                                               field: primary.0, value: primary.1)
-            // …остальные дофильтровывают выдачу локально (по «И»). № дела в
-            // выдаче может идти с дописками («2-7212/2025 ~ М-5922/2025»),
-            // поэтому сравнение по префиксу.
             if !num.isEmpty, primary.0 != .caseNumber {
                 res = res.filter { $0.caseNumber.hasPrefix(num) }
             }
@@ -386,23 +435,38 @@ final class SearchModel: ObservableObject {
                 ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                 : "Найдено: \(res.count) (\(used))"
         } catch SudrfError.captchaRequired(let formURL) {
-            // Код вводится во ВСТРОЕННОМ окне (не в Safari): УИД/№ дела
-            // подставляются автоматически, решённая пара перехватывается
-            // (CaptchaTokenStore), после чего поиск перезапускается сам.
-            hasSearched = true
-            captcha = CaptchaContext(formURL: formURL,
-                                     uid: uid,
-                                     instanceID: "",
-                                     level: .first,
-                                     courtTitle: selectedCourt?.title ?? court.title,
-                                     kind: court.level == .magistrate ? .kcaptcha : .sudrfToken,
-                                     caseNumber: num.isEmpty ? nil : num,
-                                     rerunSearch: true)
-            status = "Требуется код с картинки — введите его в окне, поиск продолжится сам."
-        } catch let e as SudrfError {
-            status = e.description
-        } catch {
-            status = "Ошибка поиска: \(error)"
+            try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
+        }
+    }
+
+    /// Хелпер для `executeSearch` — на `captchaRequired` пытается решить
+    /// авто-солвером, на успех рекурсивно повторяет с `allowAutoSolve: false`,
+    /// на провал пробрасывает ошибку дальше.
+    private func handleCaptcha(formURL: URL, allowAutoSolve: Bool, host: String?) async throws {
+        if allowAutoSolve,
+           let solver = captchaSolver,
+           let settings = captchaSettings,
+           settings.isEffectivelyEnabled,
+           let token = await AutoCaptchaSolver.solve(
+               formURL: formURL,
+               client: client,
+               solver: solver,
+               settings: .default
+           ) {
+            await CaptchaTokenStore.shared.store(token, domain: host ?? formURL.host ?? "")
+            // Повторный запрос: токен уже в хранилище, SudrfClient.search
+            // его подхватит. `allowAutoSolve: false` — чтобы при провале
+            // (сервер отклонил наш ответ) сразу открыть ручной лист, а не
+            // крутить солвер по кругу.
+            do {
+                try await executeSearch(allowAutoSolve: false)
+            } catch SudrfError.captchaRequired {
+                // Сервер отклонил авто-ответ — инвалидируем и пробрасываем.
+                await CaptchaTokenStore.shared.invalidate(domain: host ?? formURL.host ?? "")
+                throw SudrfError.captchaRequired(formURL: formURL)
+            }
+        } else {
+            throw SudrfError.captchaRequired(formURL: formURL)
         }
     }
 

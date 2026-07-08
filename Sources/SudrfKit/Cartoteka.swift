@@ -48,6 +48,7 @@ public enum CartotekaRegistry {
     /// g2 АСОЮ — апелляция на 1-инстанционные акты судов субъектов).
     public static func sets(for level: CourtLevel) -> [Cartoteka] {
         switch level {
+        case .magistrate:return magistrate
         case .district:  return district
         case .subject:   return subject
         case .appeal:    return appealSOYu
@@ -92,7 +93,7 @@ public enum CartotekaRegistry {
     /// Нормализация для сравнения индексов: первый токен (до пробела/«~»),
     /// без ведущего «№», нижний регистр, латинские двойники → кириллица
     /// (пользователи набирают «2a-», «8g-», «7y-» с латиницей).
-    static func normalizedNumber(_ s: String) -> String {
+    public static func normalizedNumber(_ s: String) -> String {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t.hasPrefix("№") { t = String(t.dropFirst()).trimmingCharacters(in: .whitespaces) }
         if let cut = t.firstIndex(where: { $0 == " " || $0 == "~" }) { t = String(t[..<cut]) }
@@ -100,6 +101,38 @@ public enum CartotekaRegistry {
                                              "m": "м", "y": "у", "u": "у"]
         return String(t.map { latin[$0] ?? $0 })
     }
+
+    // MARK: - Мировой судья / судебный участок
+
+    /// Сайты `*.msudrf.ru` используют собственный интерфейс `op=sf` без поля УИД.
+    /// Пары `delo_id` совпадают с первой инстанцией районного звена, но имена
+    /// полей в форме местами отличаются регистром.
+    public static let magistrate: [Cartoteka] = [
+        Cartoteka(id: "u1", title: "Уголовные дела",
+                  prefixes: ["1"],
+                  deloID: "1540006", deloTable: "u1_case",
+                  caseNumberField: "u1_case__CASE_NUMBERSS",
+                  uidField: "",
+                  nameField: "U1_DEFENDANT__NAMESS"),
+        Cartoteka(id: "g1", title: "Гражданские и административные",
+                  prefixes: ["2", "2а", "м", "9"],
+                  deloID: "1540005", deloTable: "g1_case",
+                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                  uidField: "",
+                  nameField: "G1_PARTS__NAMESS"),
+        Cartoteka(id: "adm", title: "Дела об административных правонарушениях",
+                  prefixes: ["5"],
+                  deloID: "1500001", deloTable: "adm_case",
+                  caseNumberField: "adm_case__CASE_NUMBERSS",
+                  uidField: "",
+                  nameField: "adm_parts__NAMESS"),
+        Cartoteka(id: "m", title: "Материалы",
+                  prefixes: ["3/", "4/", "13"],
+                  deloID: "1610001", deloTable: "m_case",
+                  caseNumberField: "m_case__CASE_NUMBERSS",
+                  uidField: "",
+                  nameField: "M_PARTS__NAMESS")
+    ]
 
     // MARK: - Районный / городской суд
 

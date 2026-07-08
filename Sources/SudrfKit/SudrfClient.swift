@@ -45,6 +45,10 @@ public actor SudrfClient {
 
     /// Загрузить страницу и декодировать как windows-1251.
     public func fetchHTML(_ url: URL) async throws -> String {
+        try await fetchHTML(url, allowHTTPFallback: true)
+    }
+
+    private func fetchHTML(_ url: URL, allowHTTPFallback: Bool) async throws -> String {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
@@ -74,6 +78,10 @@ public actor SudrfClient {
                 if let s = String(data: data, encoding: .utf8) { return s }
                 throw SudrfError.decodingFailed
             } catch let e as URLError {
+                if allowHTTPFallback, e.isTLSError,
+                   let httpURL = url.msudrfHTTPFallbackURL {
+                    return try await fetchHTML(httpURL, allowHTTPFallback: false)
+                }
                 lastError = e
                 guard attempt + 1 < attempts else { break }
                 try await backoff(attempt)
@@ -235,6 +243,36 @@ public actor SudrfClient {
     }
 }
 
+private extension URLError {
+    var isTLSError: Bool {
+        switch code {
+        case .secureConnectionFailed,
+             .serverCertificateHasBadDate,
+             .serverCertificateUntrusted,
+             .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid,
+             .clientCertificateRejected,
+             .clientCertificateRequired:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private extension URL {
+    var msudrfHTTPFallbackURL: URL? {
+        guard scheme?.lowercased() == "https",
+              let host = host?.lowercased(),
+              host == "msudrf.ru" || host.hasSuffix(".msudrf.ru"),
+              var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        components.scheme = "http"
+        return components.url
+    }
+}
+
 /// Делегат TLS для доменов судов: сайты используют сертификаты российских
 /// корней (Минцифры), которых нет в доверенном хранилище Apple. Корень и
 /// промежуточные сертификаты Минцифры (из ресурсов пакета) добавляются
@@ -249,7 +287,7 @@ public actor SudrfClient {
 /// стандартная системная проверка без послаблений.
 final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
 
-    private let trustedSuffixes = ["sudrf.ru", "mos-gorsud.ru"]
+    private let trustedSuffixes = ["sudrf.ru", "msudrf.ru", "mos-gorsud.ru"]
 
     /// «Russian Trusted Root CA» и промежуточные «Russian Trusted Sub CA»
     /// (2022 и 2024) — DER-файлы из ресурсов SudrfKit.

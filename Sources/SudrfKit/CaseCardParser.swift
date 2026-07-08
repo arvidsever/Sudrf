@@ -54,6 +54,7 @@ public enum CaseCardParser {
             ?? meta["результат кассационного рассмотрения"]
         let receipt = meta["дата поступления"]
         let decision = meta["дата рассмотрения"]
+        let legalForce = meta["дата вступления в законную силу"]
         let category = meta["категория дела"]
         let caseNumber = parseCaseNumber(html: html)
         let appeals = parseAppeals(doc)
@@ -69,6 +70,7 @@ public enum CaseCardParser {
                         category: category,
                         receiptDate: receipt,
                         decisionDate: decision,
+                        legalForceDate: legalForce,
                         acts: acts,
                         appeals: appeals,
                         parties: parties)
@@ -119,6 +121,7 @@ public enum CaseCardParser {
                         category: meta["категория"] ?? meta["категория дела"],
                         receiptDate: meta["дата поступления"],
                         decisionDate: meta["дата рассмотрения"],
+                        legalForceDate: meta["дата вступления в законную силу"],
                         acts: [],
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
                         parties: vintageParties(doc))

@@ -27,6 +27,11 @@ public enum SearchPageClassifier {
            anchors.size() > 0 {
             return .results
         }
+        if let doc = try? SwiftSoup.parse(html),
+           let anchors = try? doc.select("a[href*=op=cs][href*=case_id]"),
+           anchors.size() > 0 {
+            return .results
+        }
 
         if CaptchaDetector.hasCaptcha(in: html) { return .captcha }
 
@@ -46,6 +51,9 @@ public enum SearchPageClassifier {
         // считаем пустой: «Всего по запросу найдено — 0» встречается без
         // отдельной фразы об отсутствии данных.
         if html.contains("Всего по запросу найдено") { return .empty }
+        if html.contains("Найдено дел: 0") || html.contains("id=\"search_results\"") {
+            return .empty
+        }
 
         return .unrecognized
     }

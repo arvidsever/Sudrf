@@ -188,6 +188,50 @@ public struct KnownCard: Sendable, Equatable, Codable {
     }
 }
 
+public enum MovementDateRule: String, Sendable, Equatable, Codable {
+    case always
+    case before2026
+    case from2026
+
+    func matches(legalForceDate: String?) -> Bool {
+        switch self {
+        case .always:
+            return true
+        case .before2026, .from2026:
+            let key = MovementService.dateSortKey(legalForceDate)
+            if key == Int.max { return true }
+            return self == .before2026 ? key < 2026_01_01 : key >= 2026_01_01
+        }
+    }
+}
+
+/// Точная цель поиска вышестоящего/связанного производства. Старый режим
+/// `higherCourtDomains` разворачивается в такие цели автоматически; мировые
+/// судьи передают их явно, потому что районная апелляция и президиум суда
+/// субъекта не выводятся из одного только уровня суда.
+public struct MovementSearchTarget: Sendable, Equatable, Codable {
+    public var domain: String
+    public var courtTitle: String?
+    public var courtLevel: CourtLevel?
+    public var instanceLevel: CaseInstance.Level?
+    public var cartotekaIDs: [String]?
+    public var dateRule: MovementDateRule
+
+    public init(domain: String,
+                courtTitle: String? = nil,
+                courtLevel: CourtLevel? = nil,
+                instanceLevel: CaseInstance.Level? = nil,
+                cartotekaIDs: [String]? = nil,
+                dateRule: MovementDateRule = .always) {
+        self.domain = domain
+        self.courtTitle = courtTitle
+        self.courtLevel = courtLevel
+        self.instanceLevel = instanceLevel
+        self.cartotekaIDs = cartotekaIDs
+        self.dateRule = dateRule
+    }
+}
+
 public actor MovementService: MovementProviding {
 
     // internal (не private): московская ветка движения живёт в расширении
@@ -195,6 +239,7 @@ public actor MovementService: MovementProviding {
     let client: any CaseProviding
     /// Домены вышестоящих судов, на которых ищем дело по УИД.
     let higherCourtDomains: [String]
+    let higherCourtTargets: [MovementSearchTarget]
     /// Известные прямые ссылки на карточки этого дела (вышестоящие инстанции,
     /// материалы) — фолбэк при капче и добор того, что поиск не нашёл.
     let knownCards: [KnownCard]
@@ -205,10 +250,13 @@ public actor MovementService: MovementProviding {
     let mosgorsud: (any MosGorSudProviding)?
 
     public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
+                higherCourtTargets: [MovementSearchTarget]? = nil,
                 knownCards: [KnownCard] = [], vsrf: (any VSRFProviding)? = nil,
                 mosgorsud: (any MosGorSudProviding)? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
+        self.higherCourtTargets = higherCourtTargets
+            ?? higherCourtDomains.map { MovementSearchTarget(domain: $0) }
         self.knownCards = knownCards
         self.vsrf = vsrf
         self.mosgorsud = mosgorsud
@@ -277,7 +325,7 @@ public actor MovementService: MovementProviding {
         //     карточка (новый № дела) под тем же УИД. Прежде искались только
         //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
         //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
-        if let uid {
+        if let uid, court.level != .magistrate {
             let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
                                                           field: .uid, value: uid)) ?? []
             for r in sameCourtRows {
@@ -344,13 +392,15 @@ public actor MovementService: MovementProviding {
 
         // 2. Вышестоящие суды: поиск по УИД → карточка → инстанция.
         //    Если в карточке УИД не указан, сквозной поиск невозможен — пропускаем.
-        for domain in higherCourtDomains {
+        let legalForceDate = baseCard.legalForceDate ?? base.legalForceDate
+        for target in higherCourtTargets where target.dateRule.matches(legalForceDate: legalForceDate) {
             guard let uid else { break }
-            let level = Self.courtLevel(forDomain: domain)
+            let domain = target.domain
+            let level = target.courtLevel ?? Self.courtLevel(forDomain: domain)
             let higherCourt = Court(domain: domain,
-                                    title: Self.shortCourtName(forDomain: domain),
+                                    title: target.courtTitle ?? Self.shortCourtName(forDomain: domain),
                                     level: level)
-            let cartotekaIDs = Self.higherCartotekaIDs(baseID: cartoteka.id, level: level)
+            let cartotekaIDs = target.cartotekaIDs ?? Self.higherCartotekaIDs(baseID: cartoteka.id, level: level)
             let toTry = CartotekaRegistry.sets(for: level).filter { cartotekaIDs.contains($0.id) }
             guard !toTry.isEmpty else { continue }
 
@@ -363,7 +413,7 @@ public actor MovementService: MovementProviding {
                     let usable = results.filter { Self.hasCardAccess($0) }
                     guard !usable.isEmpty else { continue }   // картотека пуста — пробуем следующую
 
-                    let instLevel = Self.instanceLevel(forCourtLevel: level)
+                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
 
                     // По одному УИД суд может вернуть НЕСКОЛЬКО записей: например, два
                     // круга апелляции — исходный и новый, после возврата из кассации на
@@ -422,7 +472,7 @@ public actor MovementService: MovementProviding {
                     // импорта известны прямые ссылки на карточки этого суда — берём
                     // их (карточки капчой не закрыты); иначе заглушка: пользователь
                     // введёт код во всплывающем окне (см. UI).
-                    let instLevel = Self.instanceLevel(forCourtLevel: level)
+                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
                     var rescued = false
                     for kc in knownCards where kc.domain == domain && kc.level != .material {
                         guard let entry = await instanceFromKnownCard(kc) else { continue }
@@ -499,7 +549,7 @@ public actor MovementService: MovementProviding {
         parties.inferKindIfNeeded(caseNumber: base.caseNumber)
 
         return CaseMovement(uid: uid ?? "", caseNumber: base.caseNumber,
-                            inForce: base.legalForceDate != nil,
+                            inForce: base.legalForceDate != nil || baseCard.legalForceDate != nil,
                             instances: sortedInst, complaints: [:],
                             acts: sortedActs, actBodies: actBodies,
                             category: baseCard.category, parties: parties)
@@ -577,6 +627,7 @@ extension MovementService {
     /// Уровень инстанции относительно базового дела (районный суд).
     static func instanceLevel(forCourtLevel level: CourtLevel) -> CaseInstance.Level {
         switch level {
+        case .magistrate: return .first
         case .district:   return .first
         case .subject:    return .appeal
         case .appeal:     return .appeal
@@ -700,6 +751,8 @@ extension MovementService {
         // минуют суд субъекта и АСОЮ, кассация — сразу в КСОЮ.
         let isAppellateBase = baseID.hasSuffix("2")
         switch level {
+        case .magistrate:
+            return []
         case .district:
             return []
         case .subject:

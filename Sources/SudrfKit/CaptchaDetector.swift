@@ -76,7 +76,9 @@ public enum CaptchaDetector {
     }
 
     private static func hasCaptchaText(_ lower: String) -> Bool {
-        lower.contains("проверочный код") || lower.contains("код с картинки")
+        lower.contains("проверочный код")
+            || lower.contains("код с картинки")
+            || lower.contains("дополнительную проверку")
     }
 
     private static func hasEditableInputMarkup(_ lower: String) -> Bool {

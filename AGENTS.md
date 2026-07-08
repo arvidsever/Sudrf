@@ -17,4 +17,8 @@
 - Two captcha kinds: `.sudrfToken` (digits, *.sudrf.ru) and
   `.kcaptcha` (mixed letters+digits, *.msudrf.ru). Selection is
   host-based via `AutoCaptchaSolver.kindFromURL(_:)`.
-- See `changelog-v0.38.{0,1,2}.md` for the implementation notes.
+- See `changelog-v0.38.{0,1,2,3}.md` for the implementation notes.
+- При полном исчерпании попыток солвер сохраняет последний PNG в
+  `~/Library/Application Support/Sudrf/captcha-failures/` (≤ 50 файлов,
+  FIFO). Лог `captcha-solve.log` рядом содержит путь к сохранённой
+  картинке — открывайте её, чтобы понять, почему Vision выдаёт conf=0.00.

@@ -33,12 +33,19 @@ enum AutoCaptchaSolver {
     /// Попытаться решить капчу на форме `formURL`. Возвращает токен
     /// или `nil` после исчерпания попыток. На каждой итерации —
     /// свежий GET формы, поэтому `captchaid` уникален.
+    ///
+    /// При полном исчерпании попыток последний извлечённый PNG
+    /// (если был) сохраняется в `~/Library/Application Support/Sudrf/captcha-failures/`
+    /// для ручного изучения — типичный кейс: какой-то конкретный суд
+    /// даёт Vision-у conf=0.00, без скриншота картинки невозможно
+    /// понять, в чём дело.
     static func solve(formURL: URL,
                       client: SudrfClient,
                       solver: CaptchaSolver,
                       settings: Settings = .default) async -> CaptchaToken? {
         let kind = kindFromURL(formURL)
         let log = solver.log
+        var lastPNG: Data? = nil
         for attempt in 0..<settings.maxAttempts {
             do {
                 let html = try await client.fetchForm(formURL)
@@ -47,6 +54,7 @@ enum AutoCaptchaSolver {
                                 reason: "no captcha image in form HTML (attempt \(attempt + 1))")
                     return nil
                 }
+                lastPNG = png
                 let result = try await solver.solve(pngData: png, kind: kind)
                 if result.confidence >= settings.minConfidence {
                     let token = CaptchaToken(value: result.value, id: captchaid)
@@ -61,6 +69,14 @@ enum AutoCaptchaSolver {
                     log.logError(host: formURL.host ?? "?", kind: kind, error: error)
                     continue
                 }
+        }
+        // Полное исчерпание попыток — сохраняем последнюю картинку для
+        // отладки и помечаем в логе путь к ней.
+        if let png = lastPNG {
+            let path = log.logFailedImage(png: png, host: formURL.host ?? "?", kind: kind)
+            let pathStr = path?.path ?? "(save failed)"
+            log.logSkip(host: formURL.host ?? "?", kind: kind,
+                        reason: "all \(settings.maxAttempts) attempts failed; last image saved to \(pathStr)")
         }
         return nil
     }

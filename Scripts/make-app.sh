@@ -50,12 +50,37 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>                   <string>Sudrf</string>
     <key>CFBundleDisplayName</key>            <string>Sudrf</string>
     <key>CFBundlePackageType</key>            <string>APPL</string>
-    <key>CFBundleShortVersionString</key>     <string>10.0</string>
-    <key>CFBundleVersion</key>                <string>10</string>
+    <key>CFBundleShortVersionString</key>     <string>37.0</string>
+    <key>CFBundleVersion</key>                <string>37</string>
     <key>LSMinimumSystemVersion</key>         <string>26.0</string>
     <key>CFBundleIconFile</key>               <string>AppIcon</string>
     <key>NSPrincipalClass</key>               <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>        <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>sudrf.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.0</string>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+            <key>msudrf.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.2</string>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+            <key>mos-gorsud.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+            </dict>
+        </dict>
+    </dict>
 </dict>
 </plist>
 PLIST

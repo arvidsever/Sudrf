@@ -57,6 +57,11 @@ targets:
               NSExceptionMinimumTLSVersion: TLSv1.0
               NSExceptionRequiresForwardSecrecy: false
               NSExceptionAllowsInsecureHTTPLoads: true
+            msudrf.ru:
+              NSIncludesSubdomains: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+              NSExceptionRequiresForwardSecrecy: false
+              NSExceptionAllowsInsecureHTTPLoads: true
             mos-gorsud.ru:
               NSIncludesSubdomains: true
               NSExceptionRequiresForwardSecrecy: false
@@ -65,8 +70,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         # Версия и билд (следуют changelog/changelog-vNN.md); Info.plist ссылается на них.
-        MARKETING_VERSION: "36.0"
-        CURRENT_PROJECT_VERSION: "36"
+        MARKETING_VERSION: "37.0"
+        CURRENT_PROJECT_VERSION: "37"
         # Дублирует ключ Info.plist — чтобы General → App Category показывал «Productivity».
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

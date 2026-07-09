@@ -39,30 +39,35 @@ enum AutoCaptchaSolver {
     /// для ручного изучения — типичный кейс: какой-то конкретный суд
     /// даёт Vision-у conf=0.00, без скриншота картинки невозможно
     /// понять, в чём дело.
+    /// `solver` — настроенный `CaptchaSolver` (его `preprocessingEnabled`
+    /// и `preprocessorHosts` определяют, какие хосты проходят через
+    /// preprocess). Хост берётся из `formURL.host` и пробрасывается
+    /// в `solver.solve(pngData:kind:host:)` для per-host gating.
     static func solve(formURL: URL,
                       client: SudrfClient,
                       solver: CaptchaSolver,
                       settings: Settings = .default) async -> CaptchaToken? {
         let kind = kindFromURL(formURL)
+        let host = formURL.host
         let log = solver.log
         var lastPNG: Data? = nil
         for attempt in 0..<settings.maxAttempts {
             do {
                 let html = try await client.fetchForm(formURL)
                 guard let (png, captchaid) = try CaptchaImageExtractor.extract(html: html) else {
-                    log.logSkip(host: formURL.host ?? "?", kind: kind,
+                    log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "no captcha image in form HTML (attempt \(attempt + 1))")
                     return nil
                 }
                 lastPNG = png
-                let result = try await solver.solve(pngData: png, kind: kind)
+                let result = try await solver.solve(pngData: png, kind: kind, host: host)
                 if result.confidence >= settings.minConfidence {
                     let token = CaptchaToken(value: result.value, id: captchaid)
-                    log.logSkip(host: formURL.host ?? "?", kind: kind,
+                    log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "solved value=\(result.value) conf=\(String(format: "%.2f", result.confidence)) on attempt \(attempt + 1)")
                     return token
                 } else {
-                    log.logSkip(host: formURL.host ?? "?", kind: kind,
+                    log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "low confidence \(String(format: "%.2f", result.confidence)) on attempt \(attempt + 1)")
                 }
                 } catch {

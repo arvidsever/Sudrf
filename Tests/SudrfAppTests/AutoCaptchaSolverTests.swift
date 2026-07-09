@@ -16,7 +16,7 @@ final class AutoCaptchaSolverTests: XCTestCase {
         var results: [CaptchaAttempt]
         var callCount = 0
         init(results: [CaptchaAttempt]) { self.results = results }
-        func solve(pngData: Data, kind: CaptchaKind) async throws -> CaptchaAttempt {
+        func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
             let i = min(callCount, results.count - 1)
             callCount += 1
             return results[i]

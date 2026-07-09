@@ -402,12 +402,15 @@ final class AppRouter: ObservableObject {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
     }
 
-    init(captchaSolver: CaptchaSolver = CaptchaSolver(),
-         captchaSettings: CaptchaSettings = .shared) {
-        self.captchaSolver = captchaSolver
+    init(captchaSettings: CaptchaSettings = .shared) {
+        // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
+        // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
+        // определяют, какие хосты проходят через preprocess — см. v0.38.4.
+        let configuredSolver = CaptchaSolver(configuration: captchaSettings.solverConfiguration)
+        self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings
         refreshCenter = RefreshCenter(store: store, client: client,
-                                       captchaSolver: captchaSolver,
+                                       captchaSolver: configuredSolver,
                                        captchaSettings: captchaSettings)
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv in

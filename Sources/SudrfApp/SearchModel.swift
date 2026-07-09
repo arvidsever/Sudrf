@@ -114,12 +114,15 @@ final class SearchModel: ObservableObject {
     private var magistrateDistrictCourts: [DistrictCourt] = []
 
     init(captchaSolver: CaptchaSolver? = nil, captchaSettings: CaptchaSettings? = nil) {
-        // По умолчанию — новый экземпляр солвера и общий `CaptchaSettings.shared`.
-        // Оба могут быть переданы извне (тесты, общий инстанс с `RefreshCenter`).
-        // Настройки — синглтон, так что toggle в системном меню «Captcha»
-        // действует на оба пути — интерактивный поиск и фоновый обход.
-        self.captchaSolver = captchaSolver ?? CaptchaSolver()
-        self.captchaSettings = captchaSettings ?? CaptchaSettings.shared
+        // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
+        // сконфигурированный этой же настройкой. Так гарантируется,
+        // что `preprocessingEnabled` и `preprocessorHosts` действуют
+        // на оба пути — интерактивный поиск (`SearchModel`) и
+        // фоновый обход (`RefreshCenter`).
+        let settings = captchaSettings ?? CaptchaSettings.shared
+        self.captchaSettings = settings
+        self.captchaSolver = captchaSolver
+            ?? CaptchaSolver(configuration: settings.solverConfiguration)
     }
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы

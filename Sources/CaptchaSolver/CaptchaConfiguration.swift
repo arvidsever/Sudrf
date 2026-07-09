@@ -25,14 +25,37 @@ public struct CaptchaConfiguration: Sendable, Equatable {
     /// `.kcaptcha`. Можно отключить один из них для изоляции проблем.
     public var enabledKinds: Set<CaptchaKind>
 
+    /// Включает лёгкую предобработку (grayscale + contrast + 2x scale)
+    /// перед подачей в `VNRecognizeTextRequest`. По умолчанию **выключена**:
+    /// на captcha sudrf без сильных искажений Vision с прямым PNG
+    /// даёт conf=1.00, а предобработка может вносить артефакты
+    /// (например, читать «667» как «49»). Включать стоит только для
+    /// хостов с rotated/struck-through captcha, у которых Vision
+    /// возвращает conf=0.00 на сырых данных.
+    ///
+    /// Per-host gating: `preprocessorHosts: Set<String>` ниже
+    /// определяет, на каких хостах preprocess активен. Если множество
+    /// пустое — preprocess выключен глобально.
+    public var preprocessingEnabled: Bool
+
+    /// Хосты (например, `sankt-peterburgsky--spb.sudrf.ru`), на которых
+    /// предобработка применяется. Если пусто и `preprocessingEnabled = true`,
+    /// preprocess применяется ко всем. Если `preprocessingEnabled = false`,
+    /// preprocess выключен везде.
+    public var preprocessorHosts: Set<String>
+
     public init(maxAttempts: Int = 3,
                 minConfidence: Double = 0.55,
                 minIntervalMs: Int = 50,
-                enabledKinds: Set<CaptchaKind> = [.sudrfToken, .kcaptcha]) {
+                enabledKinds: Set<CaptchaKind> = [.sudrfToken, .kcaptcha],
+                preprocessingEnabled: Bool = false,
+                preprocessorHosts: Set<String> = []) {
         self.maxAttempts = maxAttempts
         self.minConfidence = minConfidence
         self.minIntervalMs = minIntervalMs
         self.enabledKinds = enabledKinds
+        self.preprocessingEnabled = preprocessingEnabled
+        self.preprocessorHosts = preprocessorHosts
     }
 
     public static let `default` = CaptchaConfiguration()

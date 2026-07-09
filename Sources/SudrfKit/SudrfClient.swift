@@ -143,6 +143,11 @@ public actor SudrfClient {
             if CaptchaDetector.hasCaptcha(in: formHTML) {
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
+            // Диагностика: форма у этого суда (captcha-включённого, раз
+            // мы здесь на .primary) не распознана как содержащая капчу.
+            // Скорее всего суд изменил маркер — сохраним форму, чтобы
+            // увидеть, как она выглядит сейчас.
+            SearchDiagnostics.dumpFormCheck(html: formHTML, host: court.domain)
         }
 
         // 2) Перебор вариантов выдачи.
@@ -169,6 +174,7 @@ public actor SudrfClient {
         }
 
         var sawEmpty = false
+        var lastHTML: String = ""
         for v in variants {
             let html = try await fetchHTML(v.url)
             switch SearchPageClassifier.classify(html: html) {
@@ -180,13 +186,19 @@ public actor SudrfClient {
             case .empty:
                 sawEmpty = true
             case .unrecognized:
+                lastHTML = html
                 continue
             }
         }
         if sawEmpty { return [] }
         // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
         // в неизвестном формате (другой интерфейс, JS-защита, заглушка).
-        // Честная ошибка вместо тихого «ничего не найдено».
+        // Сбрасываем последний HTML, чтобы пользователь мог посмотреть,
+        // что суд реально прислал — `SearchPageClassifier` не узнал ни
+        // одного маркера. Это и есть путь к `searchModuleUnavailable`.
+        if !lastHTML.isEmpty {
+            SearchDiagnostics.dumpVariant(html: lastHTML, host: court.domain)
+        }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
 

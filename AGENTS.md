@@ -1,5 +1,13 @@
 ## Imported Claude Cowork project instructions
 
+## Changelog convention
+
+- **Branch drafts:** новые изменения пишутся в `Docs/branch-changelogs/<branch-slug>/vX.Y.Z.md` (папка = имя ветки, файл = прогнозируемая версия). Прогноз может не совпасть с финалом — это нормально.
+- **Не трогаем** `changelog/changelog-v*.md`, `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в `project.yml` / `Scripts/make-app.sh` пока идёт работа в feature-ветке. Версия присваивается при merge/release.
+- **Перед merge/release:** выбираем финальный номер по фактическому порядку выхода, копируем содержимое черновика в `changelog/changelog-vX.Y.Z.md`, обновляем `project.yml` и `Scripts/make-app.sh` с новой версией и следующим номером билда.
+- **После merge:** черновик из `Docs/branch-changelogs/` удаляем (или оставляем, если он полезен как handoff-документ).
+- Применяется ко всем feature-веткам с этого момента. v0.38.0–v0.38.7 (на ветке `captcha-auto-solver` до rebase) были закоммичены по старому правилу — при следующем merge их release-ноты будут retro-fitted в `changelog/changelog-v0.38.{0..7}.md` из draft в `Docs/branch-changelogs/captcha-auto-solver/v0.38.8.md` (preamble).
+
 ## Captcha auto-solver
 
 - SwiftPM product `CaptchaSolver` (Sources/CaptchaSolver/) — Vision-based,
@@ -17,7 +25,8 @@
 - Two captcha kinds: `.sudrfToken` (digits, *.sudrf.ru) and
   `.kcaptcha` (mixed letters+digits, *.msudrf.ru). Selection is
   host-based via `AutoCaptchaSolver.kindFromURL(_:)`.
-- See `changelog-v0.38.{0,1,2,3,4,5,6,7}.md` for the implementation notes.
+- История изменений captcha-солвера: `Docs/branch-changelogs/captcha-auto-solver/`
+  (черновик) → `changelog/changelog-v*.md` (после merge).
 - При полном исчерпании попыток солвер сохраняет последний PNG в
   `~/Library/Application Support/Sudrf/captcha-failures/` (≤ 50 файлов,
   FIFO). Лог `captcha-solve.log` рядом содержит путь к сохранённой

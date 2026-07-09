@@ -387,13 +387,10 @@ struct MyCasesView: View {
     /// «ФИО ⟨щит⟩ статьи» для строки «Списком» (подсудимый/привлекаемый). Без
     /// статей — просто ФИО (гражданские, где статей нет).
     private func chargedLine(_ name: String, _ articles: String?) -> Text {
-        var t = Text(name)
-        if let a = articles, !a.isEmpty {
-            t = t + Text("  ")
-                  + Text(Image(systemName: "shield")).foregroundColor(.secondary)
-                  + Text("  \(a)").foregroundColor(.secondary)
+        guard let a = articles, !a.isEmpty else {
+            return Text(name)
         }
-        return t
+        return Text("\(Text(name))  \(Text(Image(systemName: "shield")).foregroundStyle(.secondary))  \(Text(a).foregroundStyle(.secondary))")
     }
 
     private func tableRow(_ c: TrackedCase) -> some View {

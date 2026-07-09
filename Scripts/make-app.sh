@@ -70,7 +70,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
             <key>sudrf.ru</key>
             <dict>
                 <key>NSIncludesSubdomains</key>              <true/>
-                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.0</string>
+                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.2</string>
                 <key>NSExceptionRequiresForwardSecrecy</key> <false/>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
             </dict>

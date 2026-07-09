@@ -37,12 +37,12 @@ final class VisionOCRStrategyTests: XCTestCase {
     func testPicksLongestMatchingCandidate() async throws {
         let strategy = VisionOCRStrategy()
         let tuples: [(text: String, confidence: Float)] = [
-            ("ab2", 0.9),
-            ("ab2X", 0.6),
-            ("abc", 0.99)
+            ("кот9", 0.9),
+            ("кот9а", 0.6),
+            ("кот", 0.99)
         ]
         let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
-        XCTAssertEqual(attempt.value, "ab2X")
+        XCTAssertEqual(attempt.value, "кот9а")
     }
 
     func testRejectsNonMatching() async throws {
@@ -54,33 +54,49 @@ final class VisionOCRStrategyTests: XCTestCase {
         XCTAssertEqual(attempt, CaptchaAttempt.empty)
     }
 
-    /// `.kcaptcha` стратегия — тот же код-путь, что и `.sudrfToken`, но
-    /// с другими языками распознавания и более широкой регуляркой.
-    /// Реальных фикстур с msudrf.ru из этого окружения не получить
-    /// (TLS-fallback на HTTP требует браузерного контекста), поэтому
-    /// проверяем чистую функцию `pick` на kcaptcha-кандидатах.
-    func testKcaptchaAllowsLetters() {
+    /// v0.38.9: kcaptcha — lowercase cyrillic + digits, 5-6 chars.
+    func testKcaptchaAllowsCyrillic() {
         let tuples: [(text: String, confidence: Float)] = [
-            ("aB3x9", 0.7)
+            ("кот9а", 0.7)
         ]
         let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
-        XCTAssertEqual(attempt.value, "aB3x9")
+        XCTAssertEqual(attempt.value, "кот9а")
     }
 
-    func testKcaptchaRejectsTooShort() {
+    /// v0.38.9: 6-char kcaptcha тоже валиден.
+    func testKcaptchaAllowsSixChars() {
         let tuples: [(text: String, confidence: Float)] = [
-            ("ab", 0.99)
+            ("слово9", 0.6)
+        ]
+        let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
+        XCTAssertEqual(attempt.value, "слово9")
+    }
+
+    /// v0.38.9: kcaptcha отвергает латиницу (только cyrillic + digits).
+    func testKcaptchaRejectsLatin() {
+        let tuples: [(text: String, confidence: Float)] = [
+            ("abcde", 0.99)
         ]
         let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
         XCTAssertEqual(attempt, CaptchaAttempt.empty)
     }
 
-    func testKcaptchaAllowsCyrillic() {
+    /// v0.38.9: kcaptcha отвергает uppercase cyrillic.
+    func testKcaptchaRejectsUppercase() {
         let tuples: [(text: String, confidence: Float)] = [
-            ("Кот9", 0.5)
+            ("Кот9а", 0.99)
         ]
         let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
-        XCTAssertEqual(attempt.value, "Кот9")
+        XCTAssertEqual(attempt, CaptchaAttempt.empty)
+    }
+
+    /// v0.38.9: kcaptcha отвергает < 5 chars (раньше было < 3).
+    func testKcaptchaRejectsTooShort() {
+        let tuples: [(text: String, confidence: Float)] = [
+            ("абвг", 0.99)
+        ]
+        let attempt = VisionOCRStrategy.pick(tuples: tuples, kind: .kcaptcha)
+        XCTAssertEqual(attempt, CaptchaAttempt.empty)
     }
 }
 

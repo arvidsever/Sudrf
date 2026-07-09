@@ -180,7 +180,10 @@ private extension CaptchaKind {
         case .sudrfToken:
             return try! NSRegularExpression(pattern: "^[0-9]{3,6}$")
         case .kcaptcha:
-            return try! NSRegularExpression(pattern: "^[0-9A-Za-zА-Яа-я]{3,6}$")
+            // v0.38.9: kcaptcha — 5-6 символов, только lowercase cyrillic
+            // и цифры. Бывший regex `^[0-9A-Za-zА-Яа-я]{3,6}$` был
+            // избыточно широк — практический алфавит kcaptcha у́же.
+            return try! NSRegularExpression(pattern: "^[а-я0-9]{5,6}$")
         }
     }
 }

@@ -1,10 +1,11 @@
 //  FeedNotifier.swift — Sudrf · v33
 //  Нативные уведомления macOS о новых событиях ленты + счётчик на иконке дока.
 //
-//  Кто вызывает: авторизацию поднимает AppDelegate (configure), новые записи ленты
-//  отдаёт AppRouter.reconcileFeed после ФОНОВОГО обновления, бейдж дока обновляется
-//  на каждом reload() (число дел с обновлениями). Клик по уведомлению открывает дело
-//  через onOpen (проставляет AppRouter).
+//  Кто вызывает: AppDelegate оставляет только lifecycle hook (configure);
+//  авторизация поднимается лениво, когда реально есть новое уведомление.
+//  Новые записи ленты отдаёт AppRouter.reconcileFeed после ФОНОВОГО обновления,
+//  бейдж дока обновляется на каждом reload() (число дел с обновлениями).
+//  Клик по уведомлению открывает дело через onOpen (проставляет AppRouter).
 
 import Foundation
 import AppKit
@@ -18,30 +19,64 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// на уведомление.
     var onOpen: ((String) -> Void)?
 
-    private var authorized = false
+    private enum AuthorizationState {
+        case unknown, requesting, granted, denied
+    }
+
+    private var authorizationState: AuthorizationState = .unknown
+    private var pendingBatches: [[FeedEntry]] = []
+    private var lastBadgeLabel: String? = nil
     /// Голый SwiftPM-бинарник запускается без бандла — UNUserNotificationCenter.current()
     /// там падает. Работаем только когда есть настоящий .app (bundle id ru.sudrf.app).
     private var available: Bool { Bundle.main.bundleIdentifier != nil }
 
     private override init() { super.init() }
 
-    /// Однократно при старте: делегат + запрос разрешения (первый запуск покажет
-    /// системный prompt).
+    /// Lifecycle hook из AppDelegate. Не трогаем UNUserNotificationCenter на
+    /// старте: macOS 26 иногда шумит в консоль системными donation/shortcut
+    /// сообщениями даже до первого реального уведомления.
     func configure() {
-        guard available else { return }
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, _ in
-            Task { @MainActor in self?.authorized = granted }
-        }
     }
 
     /// По одному уведомлению на новую запись ленты. Ограничиваем пачку, чтобы
     /// большой обход не завалил Центр уведомлений; хвост опускаем молча.
     func notify(newEntries entries: [FeedEntry]) {
-        guard available, authorized, !entries.isEmpty else { return }
+        guard available, !entries.isEmpty else { return }
+        let batch = Array(entries.prefix(10))
+        switch authorizationState {
+        case .granted:
+            deliver(batch)
+        case .denied:
+            return
+        case .requesting:
+            pendingBatches.append(batch)
+        case .unknown:
+            pendingBatches.append(batch)
+            requestAuthorization()
+        }
+    }
+
+    private func requestAuthorization() {
+        authorizationState = .requesting
         let center = UNUserNotificationCenter.current()
-        for entry in entries.prefix(10) {
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.authorizationState = granted ? .granted : .denied
+                let batches = self.pendingBatches
+                self.pendingBatches.removeAll()
+                guard granted else { return }
+                for batch in batches {
+                    self.deliver(batch)
+                }
+            }
+        }
+    }
+
+    private func deliver(_ entries: [FeedEntry]) {
+        let center = UNUserNotificationCenter.current()
+        for entry in entries {
             let content = UNMutableNotificationContent()
             content.title = entry.client.isEmpty ? "Дело \(entry.caseNumber)" : entry.client
             content.subtitle = entry.caseNumber
@@ -57,7 +92,10 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Счётчик на иконке дока: число или снять бейдж при нуле.
     func setBadge(_ count: Int) {
-        NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
+        let label = count > 0 ? String(count) : nil
+        guard label != lastBadgeLabel else { return }
+        lastBadgeLabel = label
+        NSApp.dockTile.badgeLabel = label
     }
 
     // MARK: UNUserNotificationCenterDelegate

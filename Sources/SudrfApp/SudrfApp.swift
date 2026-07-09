@@ -17,7 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        // Нативные уведомления о новых событиях ленты + бейдж дока.
+        // Нативные уведомления о новых событиях ленты настраиваются лениво,
+        // когда действительно есть что показать; бейдж дока обновляет роутер.
         FeedNotifier.shared.configure()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

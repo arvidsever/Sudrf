@@ -451,7 +451,6 @@ struct MyCasesView: View {
                 .frame(minWidth: 94, maxWidth: 130, alignment: .topLeading)
             }
             .padding(.horizontal, 16).padding(.vertical, 9)
-            .background(prod.color.opacity(0.06))   // подкраска «шкалой тяжести»
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

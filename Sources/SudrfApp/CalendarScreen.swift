@@ -22,6 +22,10 @@ private struct CalEvent: Identifiable {
     var sub: String
     var caseNumber: String?
     var deadlineId: String?
+    var parties: String = ""
+    var court: String = ""
+    var room: String = ""
+    var judge: String = ""
 
     var id: String {
         "\(Int(date.timeIntervalSinceReferenceDate))|\(heading)|\(caseNumber ?? deadlineId ?? title)"
@@ -44,6 +48,8 @@ struct CalendarScreen: View {
                 EmptyTrackingNote()
             } else if router.calMode == .month {
                 monthMode
+            } else if router.calMode == .week {
+                weekMode
             } else {
                 agendaMode
             }
@@ -62,7 +68,8 @@ struct CalendarScreen: View {
                 chip: "\(h.time) заседание · \(h.caseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
                 title: "№ \(h.caseNumber) — \(h.parties)",
                 sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
-                caseNumber: h.caseNumber, deadlineId: nil))
+                caseNumber: h.caseNumber, deadlineId: nil,
+                parties: h.parties, court: h.court, room: h.room, judge: h.judge))
         }
         for d in router.deadlines {
             let confirmed = d.status == .confirmed
@@ -87,6 +94,7 @@ struct CalendarScreen: View {
         while cells.count % 7 != 0 { cells.append(nil) }
         return stride(from: 0, to: cells.count, by: 7).map { Array(cells[$0..<$0+7]) }
     }
+    private var weekDays: [Date] { DateUtil.weekDays(containing: router.calWeekStart) }
 
     // MARK: Режим МЕСЯЦ (4A / 4B)
 
@@ -103,6 +111,7 @@ struct CalendarScreen: View {
                         Button { router.calStep(1) } label: { Image(systemName: "chevron.right") }
                         Button("Сегодня") {
                             router.calMonth = DateUtil.startOfMonth(DateUtil.today)
+                            router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
                             router.calSelectedDate = DateUtil.today
                         }
                     }
@@ -111,10 +120,7 @@ struct CalendarScreen: View {
                 }
                 Spacer()
                 legend
-                Button { router.calMode = .agenda } label: {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                }
-                .buttonStyle(.glass).controlSize(.small).help("Свернуть в повестку")
+                calendarModePicker
             }
             .padding(.horizontal, 2)
 
@@ -134,6 +140,14 @@ struct CalendarScreen: View {
             legendItem(Color.accentColor, "заседание", dashed: false)
             legendItem(Palette.confirmed, "срок · подтверждён", dashed: false)
             legendItem(Color(red: 0.79, green: 0.54, blue: 0.12), "срок · расчётный", dashed: true)
+            if router.calMode == .week {
+                HStack(spacing: 5) {
+                    Text("⚠").font(.system(size: 10, weight: .bold))
+                    Text("разные суды")
+                }
+                .foregroundStyle(Palette.confirmed)
+                .fontWeight(.semibold)
+            }
         }
         .font(.system(size: 11)).foregroundStyle(.secondary)
     }
@@ -147,6 +161,30 @@ struct CalendarScreen: View {
             }
             Text(t)
         }
+    }
+
+    private var calendarModePicker: some View {
+        HStack(spacing: 2) {
+            ForEach(CalMode.allCases, id: \.self) { mode in
+                let active = router.calMode == mode
+                Button { withAnimation(.easeOut(duration: 0.18)) { router.setCalMode(mode) } } label: {
+                    Text(mode.title)
+                        .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                        .foregroundStyle(active ? Color.accentColor : .secondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(active ? Color(nsColor: .textBackgroundColor).opacity(0.92) : .clear)
+                                .shadow(color: .black.opacity(active ? 0.14 : 0), radius: 2, y: 1))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .textBackgroundColor).opacity(0.7)))
+        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5))
     }
 
     private var monthGrid: some View {
@@ -311,6 +349,380 @@ struct CalendarScreen: View {
         return "\(a) · \(b)"
     }
 
+    // MARK: Режим НЕДЕЛЯ (4D)
+
+    private var weekMode: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text(DateUtil.weekTitle(starting: router.calWeekStart))
+                    .font(.system(size: 22, weight: .bold))
+                    .frame(minWidth: 150, alignment: .leading)
+                Button { router.calStepWeek(-1) } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+                Button { router.calStepWeek(1) } label: { Image(systemName: "chevron.right") }
+                    .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+                Button("Эта неделя") { router.calThisWeek() }
+                    .buttonStyle(.glass).controlSize(.small)
+                    .disabled(DateUtil.sameWeek(router.calWeekStart, DateUtil.today))
+                Spacer()
+                legend
+                calendarModePicker
+            }
+            .padding(.horizontal, 2)
+
+            weekGrid.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var weekGrid: some View {
+        CardBox {
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section(header: weekPinnedHeader) {
+                        weekHourGrid
+                    }
+                }
+            }
+        }
+    }
+
+    private var weekPinnedHeader: some View {
+        VStack(spacing: 0) {
+            weekHeader
+            weekDeadlineLane
+        }
+    }
+
+    private var weekHeader: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 56)
+            ForEach(Array(weekDays.enumerated()), id: \.offset) { idx, day in
+                weekHeaderCell(day, index: idx)
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(Rectangle().fill(Color.black.opacity(0.06)).frame(height: 1), alignment: .bottom)
+    }
+
+    private func weekHeaderCell(_ day: Date, index: Int) -> some View {
+        let isToday = DateUtil.isToday(day)
+        let isWeekend = index >= 5
+        let weekdayColor: Color = isToday ? .accentColor : (isWeekend ? Color.primary.opacity(0.34) : .secondary)
+        let numberColor: Color = isToday ? .white : (isWeekend ? Color.primary.opacity(0.38) : .primary)
+        let numberBackground: Color = isToday ? .accentColor : .clear
+        return VStack(spacing: 5) {
+            Text(DateUtil.weekdayShort[index])
+                .font(.system(size: 10, weight: .bold))
+                .kerning(0.4)
+                .foregroundStyle(weekdayColor)
+            Text("\(DateUtil.cal.component(.day, from: day))")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(numberColor)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(numberBackground))
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 58)
+        .background(weekColumnTint(day, index: index))
+        .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
+    }
+
+    private var weekDeadlineLane: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text("СРОКИ")
+                .font(.system(size: 8, weight: .bold))
+                .kerning(0.4)
+                .foregroundStyle(Color.primary.opacity(0.3))
+                .frame(width: 48, alignment: .trailing)
+                .padding(.top, 13)
+                .padding(.trailing, 8)
+            ForEach(Array(weekDays.enumerated()), id: \.offset) { idx, day in
+                let deadlines = events(on: day).filter { $0.kind != .hearing }
+                let laneHearings = events(on: day).filter {
+                    $0.kind == .hearing && !CalendarWeekLayout.isWithinWindow($0.time)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(deadlines) { ev in weekDeadlineChip(ev) }
+                    ForEach(laneHearings) { ev in weekNoTimeHearingChip(ev) }
+                }
+                .padding(.horizontal, 5)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+                .background(weekColumnTint(day, index: idx))
+                .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(Rectangle().fill(Color.black.opacity(0.05)).frame(height: 1), alignment: .bottom)
+    }
+
+    private var weekHourGrid: some View {
+        let blocksByDay = weekDays.map { CalendarWeekLayout.blocks(for: weekHearingInputs(on: $0)) }
+        let height = CGFloat(CalendarWeekLayout.gridHeight(for: blocksByDay))
+        return HStack(spacing: 0) {
+            weekTimeAxis(height: height).frame(width: 56, height: height)
+            ForEach(Array(weekDays.enumerated()), id: \.offset) { idx, day in
+                weekDayColumn(day, index: idx, blocks: blocksByDay[idx], height: height)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: height)
+            }
+        }
+        .frame(height: height)
+    }
+
+    private func weekTimeAxis(height: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
+            ForEach(CalendarWeekLayout.startHour...CalendarWeekLayout.endHour, id: \.self) { hour in
+                Text(String(format: "%02d:00", hour))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Color.primary.opacity(0.32))
+                    .offset(y: CGFloat(hour - CalendarWeekLayout.startHour) * CGFloat(CalendarWeekLayout.hourHeight) - 6)
+                    .padding(.trailing, 8)
+            }
+        }
+        .frame(height: height, alignment: .topTrailing)
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func weekDayColumn(_ day: Date, index: Int,
+                               blocks: [CalendarWeekBlock],
+                               height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            weekColumnBackground(day, index: index, height: height)
+            ForEach(blocks) { block in
+                weekBlockView(block)
+                    .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .offset(y: CGFloat(block.top))
+            }
+        }
+        .frame(height: height, alignment: .top)
+        .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
+    }
+
+    private func weekColumnBackground(_ day: Date, index: Int, height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            weekColumnTint(day, index: index)
+            ForEach(0...(CalendarWeekLayout.endHour - CalendarWeekLayout.startHour), id: \.self) { i in
+                Rectangle()
+                    .fill(Color.black.opacity(0.05))
+                    .frame(height: 1)
+                    .offset(y: CGFloat(i) * CGFloat(CalendarWeekLayout.hourHeight))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height, alignment: .topLeading)
+    }
+
+    private func weekColumnTint(_ day: Date, index: Int) -> Color {
+        if DateUtil.isToday(day) { return Color.accentColor.opacity(0.05) }
+        if index >= 5 { return Color.black.opacity(0.015) }
+        return .clear
+    }
+
+    private func weekHearingInputs(on day: Date) -> [CalendarWeekHearingLayoutInput] {
+        events(on: day).filter {
+            $0.kind == .hearing && CalendarWeekLayout.isWithinWindow($0.time)
+        }.map { ev in
+            CalendarWeekHearingLayoutInput(id: ev.id, caseNumber: ev.caseNumber ?? "",
+                                           parties: ev.parties, court: ev.court,
+                                           room: ev.room, judge: ev.judge, time: ev.time)
+        }
+    }
+
+    private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
+        let minHeight = CGFloat(block.height)
+        return Group {
+            if block.isSingle, let item = block.hearings.first {
+                Button { router.openCase(item.caseNumber) } label: {
+                    weekSingleCard(item, conflict: false, minHeight: minHeight)
+                }
+                .buttonStyle(.plain)
+            } else {
+                weekStackCard(block)
+            }
+        }
+    }
+
+    private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
+                                conflict: Bool,
+                                minHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("№ \(item.caseNumber)")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(item.parties)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.72))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
+        }
+        .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        .background(weekCardBackground(conflict: conflict))
+        .overlay(weekCardBorder(conflict: conflict))
+        .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
+            .frame(width: 3), alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func weekStackCard(_ block: CalendarWeekBlock) -> some View {
+        let conflict = block.isConflict
+        let first = block.hearings.first
+        return VStack(alignment: .leading, spacing: 7) {
+            if let badge = block.badge {
+                Text(badge)
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(conflict ? Palette.confirmed : Color(red: 0.04, green: 0.40, blue: 0.84))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill((conflict ? Palette.confirmed : Color.accentColor).opacity(0.14)))
+            }
+            ForEach(block.hearings) { item in
+                Button { router.openCase(item.caseNumber) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(timePrefix(item, in: block))№ \(item.caseNumber) · \(item.parties)")
+                            .font(.system(size: 10.2, weight: .semibold))
+                            .foregroundStyle(conflict ? Palette.confirmed : .primary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        let details = itemDetails(item, conflict: conflict, common: first)
+                        if !details.isEmpty {
+                            Text(details)
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.primary.opacity(0.42))
+                                .lineLimit(2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+            Divider().opacity(0.6)
+            if conflict {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Успеть лично нельзя")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(Palette.confirmed)
+                    Text("ходатайство об отложении или второй представитель")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Color.primary.opacity(0.45))
+                }
+            } else if let first {
+                weekCardFooter(court: first.court, room: first.room, judge: first.judge, conflict: false)
+            }
+        }
+        .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
+        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
+        .background(weekCardBackground(conflict: conflict))
+        .overlay(weekCardBorder(conflict: conflict))
+        .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
+            .frame(width: 3), alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
+    }
+
+    private func weekCardFooter(court: String, room: String, judge: String, conflict: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Divider().opacity(0.6)
+            Text(court)
+                .font(.system(size: 10.5, weight: .bold))
+                .foregroundStyle(Color.primary.opacity(conflict ? 0.76 : 0.82))
+                .lineLimit(2)
+            let details = [room.nilIfEmpty, judge.nilIfEmpty.map { "судья \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+            if !details.isEmpty {
+                Text(details)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Color.primary.opacity(0.45))
+                    .lineLimit(2)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func weekCardBackground(conflict: Bool) -> some ShapeStyle {
+        LinearGradient(
+            colors: conflict
+                ? [Palette.confirmed.opacity(0.10), Palette.confirmed.opacity(0.05)]
+                : [Color.accentColor.opacity(0.15), Color.accentColor.opacity(0.09)],
+            startPoint: .top,
+            endPoint: .bottom)
+    }
+
+    private func weekCardBorder(conflict: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 10)
+            .strokeBorder((conflict ? Palette.confirmed : Color.accentColor).opacity(conflict ? 0.30 : 0.22),
+                          lineWidth: 1)
+    }
+
+    private func timePrefix(_ item: CalendarWeekHearingLayoutInput, in block: CalendarWeekBlock) -> String {
+        let allSame = block.hearings.allSatisfy { $0.time == block.hearings[0].time }
+        return allSame ? "" : "\(item.time) · "
+    }
+
+    private func itemDetails(_ item: CalendarWeekHearingLayoutInput,
+                             conflict: Bool,
+                             common: CalendarWeekHearingLayoutInput?) -> String {
+        if conflict {
+            return [item.court.nilIfEmpty, item.room.nilIfEmpty,
+                    item.judge.nilIfEmpty.map { "судья \($0)" }]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+        guard let common else { return "" }
+        var parts: [String] = []
+        if item.room != common.room { parts.append(item.room) }
+        if item.judge != common.judge, !item.judge.isEmpty { parts.append("судья \(item.judge)") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func weekDeadlineChip(_ ev: CalEvent) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(ev.kind == .deadlineConfirmed
+                 ? "СРОК · № \(ev.caseNumber ?? "")"
+                 : "СРОК? · № \(ev.caseNumber ?? "")")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(ev.accent)
+                .lineLimit(1)
+            Text(ev.title.replacingOccurrences(of: " · № \(ev.caseNumber ?? "")", with: ""))
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.62))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(ev.accent.opacity(ev.kind == .deadlineConfirmed ? 0.08 : 0.10)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(ev.accent.opacity(ev.kind == .deadlineConfirmed ? 0.22 : 0.65),
+                              style: StrokeStyle(lineWidth: 1, dash: ev.kind == .deadlineProposed ? [3, 2] : [])))
+    }
+
+    private func weekNoTimeHearingChip(_ ev: CalEvent) -> some View {
+        let timePrefix = CalendarWeekLayout.parseTime(ev.time) == nil ? "" : "\(ev.time) · "
+        return Button {
+            if let num = ev.caseNumber { router.openCase(num) }
+        } label: {
+            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(ev.caseNumber ?? "")")
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.10)))
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: Режим ПОВЕСТКА (4C)
 
     private var agendaMode: some View {
@@ -320,10 +732,7 @@ struct CalendarScreen: View {
                 Text("\(DateUtil.monthTitle(router.calMonth)) · хронология заседаний и сроков")
                     .font(.system(size: 12.5)).foregroundStyle(.secondary)
                 Spacer()
-                Button { router.calMode = .month } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                }
-                .buttonStyle(.glass).controlSize(.small).help("Развернуть календарь")
+                calendarModePicker
             }
             .padding(.horizontal, 2)
 
@@ -377,7 +786,7 @@ struct CalendarScreen: View {
             let isToday = DateUtil.isToday(day)
             let evs = events(on: day)
             let count = evs.count
-            Button { router.calMode = .month; router.calSelectedDate = day } label: {
+            Button { router.calSelectedDate = day; router.setCalMode(.month) } label: {
                 VStack(spacing: 2) {
                     Text("\(DateUtil.cal.component(.day, from: day))")
                         .font(.system(size: 10.5, weight: isToday ? .bold : .regular))
@@ -524,4 +933,8 @@ struct CalendarScreen: View {
             if let num = ev.caseNumber, ev.kind == .hearing { router.openCase(num) }
         }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

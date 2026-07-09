@@ -19,6 +19,7 @@ struct StoredSession: Codable, Equatable {
     var event: String
     var result: String?
     var court: String
+    var judge: String? = nil
     var levelRaw: String       // CaseInstance.Level.rawValue
     var level: CaseInstance.Level { CaseInstance.Level(rawValue: levelRaw) ?? .first }
     var date: Date? { DateUtil.parse(dateRaw) }
@@ -76,10 +77,11 @@ enum MovementDerivation {
         var sessions: [StoredSession] = []
         for inst in mv.instances {
             for s in inst.sessions {
+                // CaseSession does not carry a per-session judge; use the instance judge as the closest source.
                 sessions.append(StoredSession(
                     dateRaw: s.date, time: s.time, room: s.room,
                     event: s.event, result: s.result,
-                    court: inst.court, levelRaw: inst.level.rawValue))
+                    court: inst.court, judge: inst.judge, levelRaw: inst.level.rawValue))
             }
         }
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)

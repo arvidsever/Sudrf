@@ -164,7 +164,15 @@ enum CaseSort: CaseIterable {
     }
 }
 
-enum CalMode { case month, agenda }
+enum CalMode: CaseIterable { case month, week, agenda
+    var title: String {
+        switch self {
+        case .month:  return "Месяц"
+        case .week:   return "Неделя"
+        case .agenda: return "Повестка"
+        }
+    }
+}
 
 enum OverviewRoute { case dashboard, fullFeed }
 
@@ -252,6 +260,7 @@ struct TrackedHearing: Identifiable {
     var court: String
     var room: String
     var dateLabel: String
+    var judge: String = ""
 }
 
 struct FeedEntry: Identifiable {
@@ -339,6 +348,7 @@ final class AppRouter: ObservableObject {
     // Календарь (на реальных датах)
     @Published var calMode: CalMode = .month
     @Published var calMonth: Date = DateUtil.startOfMonth(DateUtil.today)
+    @Published var calWeekStart: Date = DateUtil.startOfWeek(DateUtil.today)
     @Published var calSelectedDate: Date? = nil
 
     // Производные наборы (перестраиваются из хранилища в reload())
@@ -478,12 +488,41 @@ final class AppRouter: ObservableObject {
 
     func openCalendar(date: Date?) {
         section = .calendar; calMode = .month
-        if let date { calMonth = DateUtil.startOfMonth(date) }
+        if let date {
+            calMonth = DateUtil.startOfMonth(date)
+            calWeekStart = DateUtil.startOfWeek(date)
+        }
         calSelectedDate = date.map(DateUtil.startOfDay)
         openedCase = nil; closeLiveCard()
     }
 
     func calStep(_ months: Int) { calMonth = DateUtil.startOfMonth(DateUtil.addMonths(calMonth, months)) }
+    func setCalMode(_ mode: CalMode) {
+        switch mode {
+        case .month:
+            calMonth = DateUtil.startOfMonth(calSelectedDate ?? calWeekStart)
+        case .week:
+            let anchor = calSelectedDate
+                ?? (DateUtil.sameMonth(calMonth, DateUtil.today) ? DateUtil.today : calMonth)
+            calWeekStart = DateUtil.startOfWeek(anchor)
+            calMonth = DateUtil.startOfMonth(anchor)
+        case .agenda:
+            calMonth = DateUtil.startOfMonth(calSelectedDate ?? calMonth)
+        }
+        calMode = mode
+    }
+    func calStepWeek(_ weeks: Int) {
+        calWeekStart = DateUtil.addDays(calWeekStart, weeks * 7)
+        calMonth = DateUtil.startOfMonth(calWeekStart)
+        if let selected = calSelectedDate, !DateUtil.sameWeek(selected, calWeekStart) {
+            calSelectedDate = nil
+        }
+    }
+    func calThisWeek() {
+        calWeekStart = DateUtil.startOfWeek(DateUtil.today)
+        calMonth = DateUtil.startOfMonth(DateUtil.today)
+        calSelectedDate = DateUtil.today
+    }
 
     var isEmpty: Bool { cases.isEmpty }
     var caseCount: Int { cases.count }
@@ -797,7 +836,8 @@ final class AppRouter: ObservableObject {
                 guard let d = s.date else { continue }
                 hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
                     caseNumber: rec.caseNumber, parties: snap.partiesShort,
-                    court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d)))
+                    court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
+                    judge: s.judge ?? ""))
             }
             // Сроки.
             for dl in snap.deadlines {

@@ -664,11 +664,15 @@ final class AppRouter: ObservableObject {
 
     func beginCaptcha(for inst: CaseInstance) {
         guard let url = inst.captchaFormURL else { return }
+        let host = url.host
         captcha = SearchModel.CaptchaContext(formURL: url,
                                              uid: liveMovement?.uid ?? "",
                                              instanceID: inst.id,
                                              level: inst.level,
-                                             courtTitle: inst.court)
+                                             courtTitle: inst.court,
+                                             kind: url.host.map(SudrfHost.isMSudrfHost) == true ? .kcaptcha : .sudrfToken,
+                                             pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
+                                             pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
     }
 
     /// Сохранить решённую пользователем пару captcha/captchaid: последующие
@@ -677,9 +681,26 @@ final class AppRouter: ObservableObject {
     /// дозагрузятся уже с парой в URL.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
         pendingCaptchaRefresh = true
-        Task { await CaptchaTokenStore.shared.store(token, domain: host) }
+        Task { [weak self] in
+            await CaptchaTokenStore.shared.store(token, domain: host)
+            await MainActor.run {
+                guard let self else { return }
+                self.captcha = nil
+                self.refreshCenter.retryPendingCaptcha(host: host)
+                self.pendingCaptchaRefresh = false
+                self.refreshOpenCase()
+            }
+        }
     }
     private var pendingCaptchaRefresh = false
+
+    func captchaSessionUnlocked(host: String) {
+        pendingCaptchaRefresh = true
+        captcha = nil
+        refreshCenter.retryPendingCaptcha(host: host)
+        pendingCaptchaRefresh = false
+        refreshOpenCase()
+    }
 
     /// Принять HTML карточки из окна капчи и заменить заглушку реальной инстанцией
     /// (карточка капчей не защищена — разбирается как обычно).

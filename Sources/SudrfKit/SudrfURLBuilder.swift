@@ -105,12 +105,12 @@ public struct SudrfURLBuilder {
             let head = "\(base)&name_op=r&_page=1&vnkod=\(Self.escape(vnkod))&srv_num=1"
                      + "&_deloId=\(Self.escape(deloID))&case__case_type=0&_new=\(Self.escape(new))"
                      + "&case__vnkod=\(Self.escape(vnkod))&case__num_build=1"
-            // process-type встречается только у форм первой инстанции; для
-            // апелляции у части судов он текстовый в cp1251 — надёжнее без него.
+            // process-type нужен не только первой инстанции: часть VNKOD-судов
+            // (например, Самарский облсуд) ждёт его и в апелляции.
             // Для ФИО часть судов ждёт поле part__namess вместо parts__namess —
             // один запасной вариант без process-type, чтобы не раздувать перебор.
             var combos: [(fieldName: String, processType: String?)]
-            let pts: [String?] = (new == "0") ? ["\(deloID)_0_0", nil] : [nil]
+            let pts: [String?] = ["\(deloID)_0_\(new)", nil]
             switch field {
             case .caseNumber: combos = pts.map { ("case__case_numberss", $0) }
             case .uid:        combos = pts.map { ("case__judicial_uidss", $0) }
@@ -152,7 +152,10 @@ public struct SudrfURLBuilder {
         case ("41", "0"):      return [("41", "0"), ("1540005", "0")]
             // КАС, 1-я инстанция: на части винтажных судов КАС-дела живут
             // в гражданской таблице (_deloId=1540005) — пробуются обе.
-        case ("42", "0"):      return [("42", "0")]        // КАС, апелляция
+        case ("42", "0"):      return [("1540005", "5"), ("42", "0")]
+            // КАС, апелляция: на старой форме ряда судов субъектов (проверено
+            // на Самарском облсуде) 33а-дела лежат в общей гражданско-
+            // административной апелляционной картотеке.
         case ("1500001", "0"): return [("1500001", "0")]   // дела об АП
         case ("1502001", "0"): return [("1502001", "0")]   // жалобы по делам об АП
         case ("1610001", "0"): return [("1610001", "0")]   // материалы

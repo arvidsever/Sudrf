@@ -16,6 +16,7 @@ final class MovementMemoryCache {
     private var storage: [String: (movement: CaseMovement, fetchedAt: Date)] = [:]
 
     func get(_ key: String) -> (movement: CaseMovement, fetchedAt: Date)? { storage[key] }
+    func remove(_ key: String) { storage.removeValue(forKey: key) }
     func put(_ key: String, _ movement: CaseMovement) {
         storage[key] = (movement, Date())
     }

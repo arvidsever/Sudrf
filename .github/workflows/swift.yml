@@ -1,0 +1,22 @@
+name: Swift
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex-captcha-assist
+
+jobs:
+  build-test:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build app product
+        run: swift build --product SudrfApp
+
+      - name: Run tests
+        run: swift test

@@ -34,6 +34,12 @@ final class CourtDirectoryTests: XCTestCase {
         XCTAssertEqual(c?.domain, "3kas.sudrf.ru")
     }
 
+    func testMSudrfHostPredicateRequiresExactOrDottedHost() {
+        XCTAssertTrue(SudrfHost.isMSudrfHost("msudrf.ru"))
+        XCTAssertTrue(SudrfHost.isMSudrfHost("pervomaysky.komi.msudrf.ru"))
+        XCTAssertFalse(SudrfHost.isMSudrfHost("xmsudrf.ru"))
+    }
+
     func testTerritorialCourtToCourt() {
         let k = CourtDirectory.cassationCourts.first { $0.number == 3 }!
         XCTAssertEqual(k.court.level, .cassation)
@@ -60,9 +66,11 @@ extension CourtDirectoryTests {
         XCTAssertEqual(CourtTier.appeal.level, .appeal)
         XCTAssertEqual(CourtTier.subject.level, .subject)
         XCTAssertEqual(CourtTier.district.level, .district)
-        // Порядок в пикере — сверху вниз, от ВС РФ к районным.
+        XCTAssertEqual(CourtTier.magistrate.level, .magistrate)
+        // Порядок в пикере — сверху вниз, от ВС РФ к мировым.
         XCTAssertEqual(CourtTier.allCases.first, .supreme)
-        XCTAssertEqual(CourtTier.allCases.last, .district)
+        XCTAssertEqual(CourtTier.allCases.last, .magistrate)
+        XCTAssertFalse(CourtTier.cases(for: .military).contains(.magistrate))
     }
 
     func testDistrictCourtCodeLetters() {

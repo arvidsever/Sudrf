@@ -7,11 +7,18 @@
 #  с прямоугольными кнопками. Обёртка в .app включает новый дизайн.
 #
 #  Запуск:  bash Scripts/make-app.sh
-#  Результат: build/SudrfApp.app (и сразу открывается) + build/Sudrf.zip —
-#  универсальная сборка (Apple Silicon + Intel), можно пересылать.
+#  Результат: build/SudrfApp.app (и сразу открывается) +
+#  build/Sudrf-Alpha-0.37.1-build38.zip — универсальная сборка
+#  (Apple Silicon + Intel), можно пересылать.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+APP_NAME="Sudrf"
+RELEASE_CHANNEL="Alpha"
+MARKETING_VERSION="0.37.1"
+CURRENT_PROJECT_VERSION="38"
+ARCHIVE="build/${APP_NAME}-${RELEASE_CHANNEL}-${MARKETING_VERSION}-build${CURRENT_PROJECT_VERSION}.zip"
 
 ARCHES=(--arch arm64 --arch x86_64)
 swift build -c release --product SudrfApp "${ARCHES[@]}"
@@ -39,7 +46,7 @@ cp "$SRC/icon_512.png"    "$ICONSET/icon_512x512.png"
 cp "$SRC/icon_512-2x.png" "$ICONSET/icon_512x512@2x.png"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -47,15 +54,40 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDevelopmentRegion</key>      <string>ru</string>
     <key>CFBundleExecutable</key>             <string>SudrfApp</string>
     <key>CFBundleIdentifier</key>             <string>ru.sudrf.kit.app</string>
-    <key>CFBundleName</key>                   <string>Sudrf</string>
-    <key>CFBundleDisplayName</key>            <string>Sudrf</string>
+    <key>CFBundleName</key>                   <string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key>            <string>${APP_NAME}</string>
     <key>CFBundlePackageType</key>            <string>APPL</string>
-    <key>CFBundleShortVersionString</key>     <string>10.0</string>
-    <key>CFBundleVersion</key>                <string>10</string>
+    <key>CFBundleShortVersionString</key>     <string>${MARKETING_VERSION}</string>
+    <key>CFBundleVersion</key>                <string>${CURRENT_PROJECT_VERSION}</string>
     <key>LSMinimumSystemVersion</key>         <string>26.0</string>
     <key>CFBundleIconFile</key>               <string>AppIcon</string>
     <key>NSPrincipalClass</key>               <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>        <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>sudrf.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.0</string>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+            <key>msudrf.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionMinimumTLSVersion</key>      <string>TLSv1.2</string>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+            </dict>
+            <key>mos-gorsud.ru</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>              <true/>
+                <key>NSExceptionRequiresForwardSecrecy</key> <false/>
+            </dict>
+        </dict>
+    </dict>
 </dict>
 </plist>
 PLIST
@@ -63,8 +95,8 @@ PLIST
 codesign --force --sign - "$APP"
 
 # Архив для передачи (ditto сохраняет подпись и атрибуты бандла).
-ditto -c -k --keepParent "$APP" "build/Sudrf.zip"
+ditto -c -k --keepParent "$APP" "$ARCHIVE"
 
 echo "Готово: $APP"
-echo "Для передачи: build/Sudrf.zip (получателю: macOS 26+, при первом запуске — xattr -cr SudrfApp.app или ПКМ → Открыть)"
+echo "Для передачи: $ARCHIVE (получателю: macOS 26+, при первом запуске — xattr -cr SudrfApp.app или ПКМ → Открыть)"
 open "$APP"

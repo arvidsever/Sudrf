@@ -83,11 +83,11 @@ final class SearchPatternTests: XCTestCase {
         let u2 = CartotekaRegistry.find(level: .district, id: "u2")!
         let variants = try SudrfURLBuilder(court: vnkodCourt)
             .searchURLVariants(cartoteka: u2, field: .caseNumber, value: "10-1/2026")
-        XCTAssertEqual(variants.map(\.id), ["vnkod:1540006:4", "primary"])
+        XCTAssertEqual(variants.map(\.id), ["vnkod:1540006:4:pt", "vnkod:1540006:4", "primary"])
         let s = variants[0].url.absoluteString
         XCTAssertTrue(s.contains("&_deloId=1540006"))
         XCTAssertTrue(s.contains("&_new=4"))
-        XCTAssertFalse(s.contains("process-type"))
+        XCTAssertTrue(s.contains("&process-type=1540006_0_4"))
     }
 
     func testVNKODKASTriesBothTables() throws {
@@ -97,6 +97,26 @@ final class SearchPatternTests: XCTestCase {
             .searchURLVariants(cartoteka: p1, field: .caseNumber, value: "2а-1/2026")
         XCTAssertEqual(variants.map(\.id),
                        ["vnkod:41:0:pt", "vnkod:41:0", "vnkod:1540005:0:pt", "vnkod:1540005:0", "primary"])
+    }
+
+    func testVNKODKASAppealUsesCombinedCivilAdministrativeCartotekaFirst() throws {
+        let samara = Court(domain: "oblsud--sam.sudrf.ru",
+                           title: "Самарский областной суд", level: .subject)
+        let p2 = CartotekaRegistry.find(level: .subject, id: "p2")!
+        let uid = "63RS0042-01-2025-002452-47"
+        let variants = try SudrfURLBuilder(court: samara)
+            .searchURLVariants(cartoteka: p2, field: .uid, value: uid)
+
+        XCTAssertEqual(variants.map(\.id), [
+            "vnkod:1540005:5:pt", "vnkod:1540005:5",
+            "vnkod:42:0:pt", "vnkod:42:0",
+            "primary"
+        ])
+        let s = variants[0].url.absoluteString
+        XCTAssertTrue(s.contains("&_deloId=1540005"))
+        XCTAssertTrue(s.contains("&_new=5"))
+        XCTAssertTrue(s.contains("&process-type=1540005_0_5"))
+        XCTAssertTrue(s.contains("&case__judicial_uidss=\(uid)"))
     }
 
     func testVNKODCassationFallsBackToPrimary() throws {
@@ -149,6 +169,15 @@ final class SearchPatternTests: XCTestCase {
         let s = url.absoluteString
         XCTAssertTrue(s.contains("&_deloId=1540006"))
         XCTAssertTrue(s.contains("&_new=4"))
+    }
+
+    func testVNKODCardURLMapsKASAppealToCombinedCartoteka() throws {
+        let url = try SudrfURLBuilder(court: vnkodCourt).cardURL(
+            caseID: "45090185", caseUID: "70f25bb3-b647-4795-a592-61e457a42ea7",
+            deloID: "42", new: "0")
+        let s = url.absoluteString
+        XCTAssertTrue(s.contains("&_deloId=1540005"))
+        XCTAssertTrue(s.contains("&_new=5"))
     }
 
     func testPrimaryCardURLUnchanged() throws {

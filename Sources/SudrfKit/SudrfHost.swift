@@ -9,6 +9,13 @@ public enum SudrfHost {
 
     private static let suffix = ".sudrf.ru"
 
+    /// Хост платформы мировых судей: сам `msudrf.ru` или его поддомен.
+    /// Голый suffix-check опасен: `xmsudrf.ru` не должен считаться мировым судом.
+    public static func isMSudrfHost(_ host: String) -> Bool {
+        let host = host.lowercased()
+        return host == "msudrf.ru" || host.hasSuffix(".msudrf.ru")
+    }
+
     /// Канонический хост для модульных страниц: первый разделитель «точка» в части
     /// до `.sudrf.ru` заменяется на «--». Уже дефисные и бессегментные (`3kas`) — без изменений.
     public static func moduleHost(_ host: String) -> String {

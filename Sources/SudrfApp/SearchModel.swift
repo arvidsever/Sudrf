@@ -28,6 +28,8 @@ final class SearchModel: ObservableObject {
         let level: CourtLevel
         /// Классификационный код (11RS0001) — есть у судов из резолвера.
         var code: String? = nil
+        var supportsSearch: Bool = true
+        var unsupportedReason: String? = nil
         var id: String { domain }
         var court: Court { Court(domain: domain, title: title, level: level) }
         /// Суд для сетевых запросов: модуль sud_delo работает на синонимичном
@@ -44,7 +46,7 @@ final class SearchModel: ObservableObject {
 
     // Вывод
     @Published var results: [CaseSearchResult] = []
-    @Published var selectedResultIndex: Int?
+    @Published var selectedResultID: String?
     @Published var actText = ""
     @Published var actMissing = false
     @Published var hasSearched = false
@@ -65,17 +67,27 @@ final class SearchModel: ObservableObject {
     @Published var captcha: CaptchaContext?
 
     struct CaptchaContext: Identifiable {
+        enum Kind: Sendable {
+            case sudrfToken
+            case kcaptcha
+        }
         let id = UUID()
         let formURL: URL
         let uid: String
         let instanceID: String
         let level: CaseInstance.Level
         let courtTitle: String
+        var kind: Kind = .sudrfToken
         /// № дела для автоподстановки в форму (вместе с УИД).
         var caseNumber: String? = nil
         /// true — контекст БАЗОВОГО поиска (не заглушки инстанции): после
         /// решения кода лист закрывается и runSearch перезапускается сам.
         var rerunSearch: Bool = false
+        /// Сколько фоновых обновлений этого же суда сможет продолжить одна
+        /// введённая пользователем пара captcha/captchaid.
+        var pendingCaseCount: Int = 0
+        /// Несколько номеров дел из очереди — для подсказки в листе капчи.
+        var pendingCaseNumbers: [String] = []
     }
 
     var isDrilled: Bool { movement != nil || loadingMovement }
@@ -88,25 +100,43 @@ final class SearchModel: ObservableObject {
     }
 
     private let resolver = DistrictCourtResolver()
+    private let magistrateResolver = MagistrateCourtResolver()
     private let client = SudrfClient()
+    private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient = MosGorSudClient()
+    private var magistrateDistrictCourts: [DistrictCourt] = []
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
     /// подсудности в MovementContext (единственный источник правды, общий
     /// с перезапросом из мониторинга).
-    private func makeMovementService(for court: CourtOption) -> MovementService {
-        MovementService(client: client,
-                        higherCourtDomains: MovementContext.expandedHigherDomains(
-                            branch: branch, courtLevel: court.level,
-                            courtTitle: court.title, courtCode: court.code,
-                            region: region, displayDomain: court.domain),
-                        vsrf: vsrfClient,
-                        mosgorsud: mosGorSudClient)
+    private func makeMovementService(for court: CourtOption, base: CaseSearchResult? = nil) -> MovementService {
+        let provider: any CaseProviding = court.level == .magistrate ? magistrateClient : client
+        return MovementService(client: provider,
+                               higherCourtDomains: MovementContext.expandedHigherDomains(
+                                branch: branch, courtLevel: court.level,
+                                courtTitle: court.title, courtCode: court.code,
+                                region: region, displayDomain: court.domain),
+                               higherCourtTargets: movementTargets(for: court, base: base),
+                               vsrf: vsrfClient,
+                               mosgorsud: mosGorSudClient)
     }
 
     var busy: Bool { resolving || searching || loadingCard }
     var selectedCourt: CourtOption? { courts.first { $0.domain == selectedDomain } }
+    var selectedResultIndex: Int? {
+        get {
+            guard let id = selectedResultID else { return nil }
+            return results.firstIndex { $0.stableID == id }
+        }
+        set {
+            guard let newValue, results.indices.contains(newValue) else {
+                selectedResultID = nil
+                return
+            }
+            selectedResultID = results[newValue].stableID
+        }
+    }
     var cartoteka: Cartoteka? {
         guard let level = tier.level else { return nil }
         return CartotekaRegistry.find(level: level, id: cartotekaId)
@@ -115,16 +145,22 @@ final class SearchModel: ObservableObject {
     /// Регион нужен только районным/городским судам — у всех остальных
     /// ступеней список судов выдаётся сразу целиком (для военных — после
     /// однократного общероссийского скана портала с кэшем).
-    var regionPickerEnabled: Bool { branch == .general && tier == .district }
+    var regionPickerEnabled: Bool { branch == .general && (tier == .district || tier == .magistrate) }
+    var uidSearchEnabled: Bool { tier != .magistrate }
 
     /// Вызывается при смене ветви/звена: чинит картотеку и перечитывает суды.
     func branchOrTierChanged() {
+        if branch == .military && tier == .magistrate { tier = .district }
         if cartoteka == nil { cartotekaId = cartoteki.first?.id ?? "" }
         Task { await resolveCourts() }
     }
     var selectedResult: CaseSearchResult? {
-        guard let i = selectedResultIndex, results.indices.contains(i) else { return nil }
-        return results[i]
+        guard let id = selectedResultID else { return nil }
+        return results.first { $0.stableID == id }
+    }
+
+    private func currentIndex(for result: CaseSearchResult) -> Int? {
+        results.firstIndex { $0.stableID == result.stableID }
     }
 
     func resolveCourts() async {
@@ -139,7 +175,19 @@ final class SearchModel: ObservableObject {
         do {
             let list: [CourtOption]
             switch (branch, tier) {
+            case (.general, .magistrate):
+                let magistrates = try await magistrateResolver.courts(forRegion: region)
+                magistrateDistrictCourts = ((try? await resolver.courts(forRegion: region)) ?? [])
+                list = magistrates.map { m in
+                    CourtOption(domain: m.domain,
+                                title: m.isSupported ? m.title : m.title + " — портал не подключён",
+                                level: .magistrate,
+                                code: m.code,
+                                supportsSearch: m.isSupported,
+                                unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.")
+                }
             case (.general, .district):
+                magistrateDistrictCourts = []
                 // Единственная ступень с пикером региона. Районные суды Москвы
                 // живут не на sudrf.ru, а на едином портале mos-gorsud.ru —
                 // добавляется общая опция портала (пустой courtAlias ищет по
@@ -159,6 +207,7 @@ final class SearchModel: ObservableObject {
                                            level: .district, code: $0.code) }
                 }
             case (.general, .subject):
+                magistrateDistrictCourts = []
                 // Все суды субъектов из встроенного справочника, без региона.
                 // Мосгорсуд поддержан через портал mos-gorsud.ru; прочие суды
                 // вне платформы sudrf (Н.Новгород, Пенза, Ульяновск) — нет.
@@ -168,26 +217,35 @@ final class SearchModel: ObservableObject {
                     return CourtOption(domain: $0.domain, title: $0.title + suffix, level: .subject)
                 }
             case (.general, .appeal):
+                magistrateDistrictCourts = []
                 list = CourtDirectory.appealCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .appeal) }
             case (.general, .cassation):
+                magistrateDistrictCourts = []
                 list = CourtDirectory.cassationCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .cassation) }
             case (.military, .district):
+                magistrateDistrictCourts = []
                 // Все гарнизонные суды страны (включая зарубежные, код 95) —
                 // один типовой запрос портала (court_type=GV&court_subj=0).
                 list = try await resolver.garrisonCourts()
                     .map { CourtOption(domain: $0.domain, title: $0.title,
                                        level: .district, code: $0.code) }
             case (.military, .subject):
+                magistrateDistrictCourts = []
                 list = CourtDirectory.okrugMilitaryCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .subject) }
             case (.military, .appeal):
+                magistrateDistrictCourts = []
                 let c = CourtDirectory.appellateMilitaryCourt
                 list = [CourtOption(domain: c.domain, title: c.title, level: .appeal)]
             case (.military, .cassation):
+                magistrateDistrictCourts = []
                 let c = CourtDirectory.cassationMilitaryCourt
                 list = [CourtOption(domain: c.domain, title: c.title, level: .cassation)]
+            case (.military, .magistrate):
+                magistrateDistrictCourts = []
+                list = []
             case (_, .supreme):
                 list = []   // недостижимо: отсечено guard'ом выше
             }
@@ -206,8 +264,8 @@ final class SearchModel: ObservableObject {
                 status = "Гарнизонные суды не загрузились — портал мог не ответить; "
                        + "повторите выбор звена."
             case (true, .general):
-                status = tier == .district ? "Суды не найдены — проверьте регион."
-                                           : "Суды не найдены."
+                status = (tier == .district || tier == .magistrate) ? "Суды не найдены — проверьте регион."
+                                                                    : "Суды не найдены."
             }
         } catch {
             status = "Ошибка загрузки судов: \(error)"
@@ -215,9 +273,14 @@ final class SearchModel: ObservableObject {
     }
 
     func runSearch() async {
-        guard let court = selectedCourt?.searchCourt else {
+        guard let selected = selectedCourt else {
             status = "Сначала выберите суд."; return
         }
+        guard selected.supportsSearch else {
+            status = selected.unsupportedReason ?? "Поиск по этому сайту мирового судьи пока не подключён."
+            return
+        }
+        let court = selected.searchCourt
         let num = queryCaseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         // Авто-выбор картотеки по индексу номера дела: «2а-…» → КАС, «10-…» →
         // апелляция на мировых, «3/…» → материалы и т.п. Срабатывает, только если
@@ -231,7 +294,7 @@ final class SearchModel: ObservableObject {
             status = "Сначала выберите картотеку."; return
         }
         let name = queryName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let uid = queryUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let uid = uidSearchEnabled ? queryUID.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         guard !(num.isEmpty && name.isEmpty && uid.isEmpty) else {
             status = "Заполните хотя бы одно поле запроса."; return
         }
@@ -277,6 +340,25 @@ final class SearchModel: ObservableObject {
         }
 
         do {
+            if court.level == .magistrate {
+                let primary: (SearchField, String) = !num.isEmpty ? (.caseNumber, num) : (.name, name)
+                var res = try await magistrateClient.search(court: court, cartoteka: cart,
+                                                            field: primary.0, value: primary.1)
+                if !num.isEmpty, primary.0 != .caseNumber {
+                    res = res.filter { $0.caseNumber.hasPrefix(num) }
+                }
+                if !name.isEmpty, primary.0 != .name {
+                    res = res.filter { ($0.essence ?? "").localizedCaseInsensitiveContains(name) }
+                }
+                results = res
+                hasSearched = true
+                let used = [(num, "№ дела"), (name, "ФИО")]
+                    .filter { !$0.0.isEmpty }.map(\.1).joined(separator: " + ")
+                status = res.isEmpty
+                    ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
+                    : "Найдено: \(res.count) (\(used))"
+                return
+            }
             // Самое селективное поле уходит в сетевой запрос; УИД уникален в
             // масштабах страны, поэтому он приоритетнее № дела. Локально по УИД
             // дофильтровать нельзя: в строках выдачи официального УИД нет, а
@@ -313,6 +395,7 @@ final class SearchModel: ObservableObject {
                                      instanceID: "",
                                      level: .first,
                                      courtTitle: selectedCourt?.title ?? court.title,
+                                     kind: court.level == .magistrate ? .kcaptcha : .sudrfToken,
                                      caseNumber: num.isEmpty ? nil : num,
                                      rerunSearch: true)
             status = "Требуется код с картинки — введите его в окне, поиск продолжится сам."
@@ -331,7 +414,12 @@ final class SearchModel: ObservableObject {
     }
 
     func openCard(_ index: Int) async {
-        guard results.indices.contains(index),
+        guard results.indices.contains(index) else { return }
+        await openCard(results[index])
+    }
+
+    func openCard(_ result: CaseSearchResult) async {
+        guard let index = currentIndex(for: result),
               let cart = cartoteka,
               let court = selectedCourt?.searchCourt else { return }
         let r = results[index]
@@ -342,7 +430,7 @@ final class SearchModel: ObservableObject {
             guard let url = r.cardURL else {
                 status = "У записи нет ссылки на карточку."; return
             }
-            selectedResultIndex = index
+            selectedResultID = r.stableID
             loadingCard = true; actText = ""
             defer { loadingCard = false }
             do {
@@ -357,7 +445,26 @@ final class SearchModel: ObservableObject {
             return
         }
 
-        selectedResultIndex = index
+        if court.level == .magistrate {
+            guard let url = r.cardURL else {
+                status = "У записи нет ссылки на карточку."; return
+            }
+            selectedResultID = r.stableID
+            loadingCard = true; actText = ""
+            defer { loadingCard = false }
+            do {
+                let card = try await magistrateClient.fetchCard(url: url)
+                actMissing = card.actText == nil
+                actText = card.actText ?? card.rawText
+            } catch let e as SudrfError {
+                actText = ""; status = e.description
+            } catch {
+                actText = ""; status = "Ошибка карточки мирового участка: \(error)"
+            }
+            return
+        }
+
+        selectedResultID = r.stableID
         loadingCard = true; actText = ""
         defer { loadingCard = false }
         do {
@@ -424,11 +531,16 @@ final class SearchModel: ObservableObject {
     /// «Провал» в дело: собирает движение по инстанциям (вышестоящие — по УИД).
     /// Уже открывавшиеся в этой сессии дела берутся из кэша в памяти — без сети.
     func openMovement(_ index: Int) async {
-        guard results.indices.contains(index),
+        guard results.indices.contains(index) else { return }
+        await openMovement(results[index])
+    }
+
+    func openMovement(_ result: CaseSearchResult) async {
+        guard let index = currentIndex(for: result),
               let cart = cartoteka, let option = selectedCourt else { return }
         let court = option.searchCourt
         let base = results[index]
-        selectedResultIndex = index
+        selectedResultID = base.stableID
 
         let cacheKey = option.domain + "/" + base.caseNumber   // = MovementContext.key
         if let hit = MovementMemoryCache.shared.get(cacheKey) {
@@ -443,7 +555,7 @@ final class SearchModel: ObservableObject {
         loadingMovement = true; movement = nil; expandedComplaints = []
         defer { loadingMovement = false }
         do {
-            let service = makeMovementService(for: option)
+            let service = makeMovementService(for: option, base: base)
             let mv = try await service.movement(for: base, court: court, cartoteka: cart)
             movement = mv
             selectedActID = mv.acts.first(where: { $0.instanceLevel == .first })?.id ?? mv.acts.first?.id
@@ -477,7 +589,8 @@ final class SearchModel: ObservableObject {
                                  uid: movement?.uid ?? queryUID,
                                  instanceID: inst.id,
                                  level: inst.level,
-                                 courtTitle: inst.court)
+                                 courtTitle: inst.court,
+                                 kind: url.host.map(SudrfHost.isMSudrfHost) == true ? .kcaptcha : .sudrfToken)
     }
 
     /// Сохранить решённую пользователем пару captcha/captchaid: суд принимает
@@ -486,11 +599,43 @@ final class SearchModel: ObservableObject {
     /// базового поиска (rerunSearch) — лист закрывается и поиск продолжается сам.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
         let rerun = captcha?.rerunSearch == true
+        let movementResult = rerun ? nil : selectedResult
+        let movementCacheKey: String? = {
+            guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
+            return option.domain + "/" + mv.caseNumber
+        }()
         Task {
             await CaptchaTokenStore.shared.store(token, domain: host)
             if rerun {
                 captcha = nil
                 await runSearch()
+            } else {
+                if let key = movementCacheKey { MovementMemoryCache.shared.remove(key) }
+                captcha = nil
+                if let result = movementResult {
+                    await openMovement(result)
+                }
+            }
+        }
+    }
+
+    func captchaSessionUnlocked(host: String) {
+        let rerun = captcha?.rerunSearch == true
+        let movementResult = rerun ? nil : selectedResult
+        let movementCacheKey: String? = {
+            guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
+            return option.domain + "/" + mv.caseNumber
+        }()
+        Task {
+            if rerun {
+                captcha = nil
+                await runSearch()
+            } else {
+                if let key = movementCacheKey { MovementMemoryCache.shared.remove(key) }
+                captcha = nil
+                if let result = movementResult {
+                    await openMovement(result)
+                }
             }
         }
     }
@@ -522,6 +667,82 @@ final class SearchModel: ObservableObject {
         status = "Инстанция добавлена: \(title)."
     }
 
+    // MARK: - Маршрут движения мировых судей
+
+    private func movementTargets(for option: CourtOption, base: CaseSearchResult?) -> [MovementSearchTarget]? {
+        guard option.level == .magistrate,
+              let cart = cartoteka ?? CartotekaRegistry.find(level: .magistrate, id: cartotekaId) else {
+            return nil
+        }
+        let number = base?.caseNumber ?? queryCaseNumber
+        let appealIDs = magistrateAppealCartotekaIDs(baseID: cart.id, caseNumber: number)
+        let ksoyIDs = magistrateCassationCartotekaIDs(baseID: cart.id, caseNumber: number, target: .ksoy)
+        let presidiumIDs = magistrateCassationCartotekaIDs(baseID: cart.id, caseNumber: number, target: .presidium)
+        let subjectCode = option.code.map(CourtDirectory.normalizedSubjectCode)
+            ?? CourtDirectory.subjectNumericCode(forRegion: region)
+
+        var targets: [MovementSearchTarget] = []
+        if !appealIDs.isEmpty {
+            for d in magistrateDistrictCourts {
+                targets.append(MovementSearchTarget(
+                    domain: CourtDirectory.dashVariant(of: d.domain) ?? d.domain,
+                    courtTitle: d.title,
+                    courtLevel: .district,
+                    instanceLevel: cart.id == "m" ? .material : .appeal,
+                    cartotekaIDs: appealIDs))
+            }
+        }
+
+        if let subjectCode, !ksoyIDs.isEmpty,
+           let ksoy = CourtDirectory.cassationCourt(forSubjectCode: subjectCode) {
+            targets.append(MovementSearchTarget(
+                domain: ksoy.domain,
+                courtTitle: ksoy.title,
+                courtLevel: .cassation,
+                instanceLevel: .cassation,
+                cartotekaIDs: ksoyIDs,
+                dateRule: .before2026))
+        }
+        if let subjectCode, !presidiumIDs.isEmpty,
+           let subject = CourtDirectory.subjectCourt(forSubjectCode: subjectCode), subject.isSudrfPlatform {
+            targets.append(MovementSearchTarget(
+                domain: CourtDirectory.dashVariant(of: subject.domain) ?? subject.domain,
+                courtTitle: subject.title,
+                courtLevel: .subject,
+                instanceLevel: .cassation,
+                cartotekaIDs: presidiumIDs,
+                dateRule: .from2026))
+        }
+        return targets.isEmpty ? nil : targets
+    }
+
+    private enum MagistrateCassationTarget { case ksoy, presidium }
+
+    private func magistrateAppealCartotekaIDs(baseID: String, caseNumber: String) -> [String] {
+        switch baseID {
+        case "u1": return ["u2"]
+        case "g1":
+            return CartotekaRegistry.normalizedNumber(caseNumber).hasPrefix("2а") ? ["p2"] : ["g2"]
+        case "adm": return ["admj"]
+        case "m": return ["m"]
+        default: return []
+        }
+    }
+
+    private func magistrateCassationCartotekaIDs(baseID: String, caseNumber: String,
+                                                 target: MagistrateCassationTarget) -> [String] {
+        let isKAS = CartotekaRegistry.normalizedNumber(caseNumber).hasPrefix("2а")
+        switch (baseID, target) {
+        case ("u1", .ksoy): return ["u3"]
+        case ("u1", .presidium): return ["u33"]
+        case ("g1", .ksoy): return [isKAS ? "p3" : "g3"]
+        case ("g1", .presidium): return [isKAS ? "p33" : "g33"]
+        case ("adm", .ksoy): return ["adm3"]
+        case ("adm", .presidium): return ["adm33"]
+        default: return []
+        }
+    }
+
     // MARK: - Контекст для отслеживания
 
     /// Снимок текущего поискового контекста выбранного дела — чтобы взять дело в
@@ -530,7 +751,7 @@ final class SearchModel: ObservableObject {
     func currentContext() -> MovementContext? {
         guard let option = selectedCourt, let cart = cartoteka,
               let level = tier.level, let base = selectedResult else { return nil }
-        return MovementContext(
+        var ctx = MovementContext(
             branchRaw: branch.rawValue,
             region: region,
             searchDomain: option.searchCourt.domain,
@@ -550,5 +771,7 @@ final class SearchModel: ObservableObject {
             resultText: base.result,
             legalForceDate: base.legalForceDate,
             cardURLString: base.cardURL?.absoluteString)
+        ctx.higherCourtTargets = movementTargets(for: option, base: base)
+        return ctx
     }
 }

@@ -107,6 +107,7 @@ struct ImportSeed {
             if id.hasSuffix("2") { return .appeal }
         }
         switch level {
+        case .magistrate:return .first
         case .district:  return .first
         case .subject:   return .appeal
         case .appeal:    return .appeal
@@ -120,6 +121,7 @@ struct ImportSeed {
         if isMaterial { return 100 }
         let levelRank: Int
         switch level {
+        case .magistrate:levelRank = -1
         case .district:  levelRank = 0
         case .subject:   levelRank = 1
         case .appeal:    levelRank = 2
@@ -183,7 +185,7 @@ enum CaseImporter {
         guard let url = URL(string: row.urlString), let host = url.host?.lowercased() else {
             return .skipped(reason: reasonBadURL)
         }
-        if host.hasSuffix("msudrf.ru") { return .skipped(reason: reasonMagistrate) }
+        if SudrfHost.isMSudrfHost(host) { return .skipped(reason: reasonMagistrate) }
         // У петербургских мировых судей собственный портал (не msudrf.ru).
         if host.hasSuffix("mirsud.spb.ru") { return .skipped(reason: reasonMagistrateSpb) }
         if host.contains("mos-gorsud") { return .skipped(reason: reasonMosgorsud) }

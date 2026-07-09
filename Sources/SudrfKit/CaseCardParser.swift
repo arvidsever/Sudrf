@@ -54,6 +54,7 @@ public enum CaseCardParser {
             ?? meta["результат кассационного рассмотрения"]
         let receipt = meta["дата поступления"]
         let decision = meta["дата рассмотрения"]
+        let legalForce = meta["дата вступления в законную силу"]
         let category = meta["категория дела"]
         let caseNumber = parseCaseNumber(html: html)
         let appeals = parseAppeals(doc)
@@ -69,6 +70,7 @@ public enum CaseCardParser {
                         category: category,
                         receiptDate: receipt,
                         decisionDate: decision,
+                        legalForceDate: legalForce,
                         acts: acts,
                         appeals: appeals,
                         parties: parties)
@@ -86,8 +88,7 @@ public enum CaseCardParser {
     //     #tab_content_PersonList (Процессуальный статус | ФИО | ИНН | КПП | ОГРН);
     //   • у таблиц есть мобильные дубли в div.block-mobile — берётся только
     //     настольная таблица (.non-list), иначе всё задваивается;
-    //   • вкладки актов в имеющейся фикстуре нет (акт не опубликован) —
-    //     распознавание отложено до фикстуры дела с опубликованным актом (TODO).
+    //   • акты: #tab_id_DocumentN + #tab_content_DocumentN (Самарский облсуд).
 
     static func isVintage(_ doc: Document) -> Bool {
         if (try? doc.select("#case_bookmarks").first()) ?? nil != nil { return true }
@@ -109,17 +110,24 @@ public enum CaseCardParser {
             }
         }
 
+        let acts = vintageActs(doc)
+
         return CaseCard(rawText: rawText,
-                        actText: nil,   // акты винтажной карточки — TODO (нет фикстуры)
+                        actText: acts.first?.body,
                         sessions: vintageSessions(doc),
-                        judge: meta["председательствующий судья"] ?? meta["судья"],
-                        result: vintageResult(doc),
+                        judge: meta["председательствующий судья"]
+                            ?? meta["судья"]
+                            ?? meta["докладчик"],
+                        result: meta["результат рассмотрения"]
+                            ?? meta["решение"]
+                            ?? vintageResult(doc),
                         uid: meta["уникальный идентификатор дела"],
                         caseNumber: parseCaseNumber(html: html),
                         category: meta["категория"] ?? meta["категория дела"],
                         receiptDate: meta["дата поступления"],
                         decisionDate: meta["дата рассмотрения"],
-                        acts: [],
+                        legalForceDate: meta["дата вступления в законную силу"],
+                        acts: acts,
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
                         parties: vintageParties(doc))
     }
@@ -201,6 +209,36 @@ public enum CaseCardParser {
             if !texts[1].isEmpty { return texts[1] }
         }
         return nil
+    }
+
+    /// Тексты актов старой VNKOD-карточки: ярлык `tab_id_DocumentN`, тело —
+    /// `tab_content_DocumentN`.
+    private static func vintageActs(_ doc: Document) -> [CaseActText] {
+        var labels: [Int: String] = [:]
+        for li in (try? doc.select("li[id^=tab_id_Document]").array()) ?? [] {
+            guard let n = number(in: (try? li.attr("id")) ?? "") else { continue }
+            let label = ((try? li.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty { labels[n] = label }
+        }
+
+        var bodies: [(Int, Element)] = []
+        for div in (try? doc.select("div[id^=tab_content_Document]").array()) ?? [] {
+            guard let n = number(in: (try? div.attr("id")) ?? "") else { continue }
+            bodies.append((n, div))
+        }
+        bodies.sort { $0.0 < $1.0 }
+
+        var acts: [CaseActText] = []
+        for (n, div) in bodies {
+            let body = normalize(blockText(div))
+            guard !body.isEmpty else { continue }
+            let label = labels[n] ?? "Судебный акт #\(n)"
+            acts.append(CaseActText(id: "doc\(n)",
+                                    kind: actKind(from: label),
+                                    label: label,
+                                    body: body))
+        }
+        return acts
     }
 
     // MARK: - Участники (вкладки «СТОРОНЫ [ПО ДЕЛУ]» / «УЧАСТНИКИ» / «ЛИЦА»)

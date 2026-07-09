@@ -31,6 +31,59 @@ final class SearchPageClassifierTests: XCTestCase {
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .captcha)
     }
 
+    func testKSOYUInlineCaptchaFormIsCaptcha() {
+        let html = """
+        <html><body><form>
+        <table><tr>
+        <td>Проверочный код</td>
+        <td>
+          <input name="captcha" autocomplete="off" id="captcha" type="text">
+          <img src="data: image/png;base64,iVBORw0KGgo=">
+          <input name="captchaid" type="hidden" value="7q82qmq5gannfo1f03b69bigk7">
+        </td>
+        </tr></table>
+        </form></body></html>
+        """
+
+        XCTAssertEqual(SearchPageClassifier.classify(html: html), .captcha)
+    }
+
+    func testKSOYUCounterWithEncodedCaptchaParamsDoesNotForceCaptcha() {
+        let html = """
+        <html><body>
+        <div>Данных по запросу не обнаружено</div>
+        <div class="counter">
+          <img src="//counter.sudrf.ru/cnt.php?ssid=78KJ0003&amp;show=1&amp;ref=https%3A%2F%2F3kas.sudrf.ru%2Fmodules.php%3Fname%3Dsud_delo%26name_op%3Dr%26captcha%3D38957%26captchaid%3Dlcl5smco99g7sbpeoggtm15345&amp;pg=https%3A%2F%2F3kas.sudrf.ru%2Fmodules.php%3Fname%3Dsud_delo%26name_op%3Dcase">
+        </div>
+        </body></html>
+        """
+
+        XCTAssertEqual(SearchPageClassifier.classify(html: html), .empty)
+    }
+
+    func testCaptchaTextFallbackAllowsHiddenStateBesideEditableInput() {
+        let html = """
+        <html><body>
+        <h2>Проверочный код</h2>
+        <div><input type="hidden" name="session" value="abc"></div>
+        <div><input type="text" name="answer"></div>
+        </body></html>
+        """
+
+        XCTAssertTrue(CaptchaDetector.hasCaptcha(in: html))
+    }
+
+    func testCaptchaTextFallbackIgnoresHiddenOnlyInput() {
+        let html = """
+        <html><body>
+        <h2>Проверочный код</h2>
+        <div><input type="hidden" name="session" value="abc"></div>
+        </body></html>
+        """
+
+        XCTAssertFalse(CaptchaDetector.hasCaptcha(in: html))
+    }
+
     func testExpiredSessionIsCaptcha() {
         let html = "<html><body>Время жизни сессии закончилось</body></html>"
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .captcha)

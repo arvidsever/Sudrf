@@ -101,7 +101,7 @@ private struct FilterPane: View {
                 GridRow {
                     FormLabel("Звено")
                     Picker("", selection: $model.tier) {
-                        ForEach(CourtTier.allCases) { t in
+                        ForEach(CourtTier.cases(for: model.branch)) { t in
                             Text(t.title(branch: model.branch)).tag(t)
                         }
                     }
@@ -160,6 +160,7 @@ private struct FilterPane: View {
                     FormLabel("УИД")
                     TextField("11RS0001-01-…", text: $model.queryUID)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(!model.uidSearchEnabled)
                         .onSubmit { Task { await model.runSearch() } }
                 }
             }
@@ -262,10 +263,11 @@ private struct ResultsPane: View {
         // Лист капчи — на уровне всей панели: он нужен и базовому поиску
         // (rerunSearch), и заглушкам инстанций в движении дела.
         .sheet(item: $model.captcha) { ctx in
-            CaptchaSheet(
+            CaptchaAssistSheet(
                 context: ctx,
                 onCardHTML: { html in Task { await model.ingestCaptchaCard(html: html) } },
                 onCaptchaPair: { host, token in model.storeCaptchaPair(host: host, token: token) },
+                onSessionUnlocked: { host in model.captchaSessionUnlocked(host: host) },
                 onCancel: { model.captcha = nil })
         }
     }
@@ -300,13 +302,14 @@ private struct ResultsPane: View {
     }
 
     private var resultsList: some View {
-        ScrollView {
+        let rows = model.results
+        return ScrollView {
             LazyVStack(spacing: 10) {
-                ForEach(model.results.indices, id: \.self) { i in
-                    ResultCard(result: model.results[i],
-                               selected: model.selectedResultIndex == i)
-                        .onTapGesture(count: 2) { Task { await model.openMovement(i) } }
-                        .onTapGesture { Task { await model.openCard(i) } }
+                ForEach(rows) { result in
+                    ResultCard(result: result,
+                               selected: model.selectedResultID == result.stableID)
+                        .onTapGesture(count: 2) { Task { await model.openMovement(result) } }
+                        .onTapGesture { Task { await model.openCard(result) } }
                 }
                 Text("Двойной клик по карточке — движение дела по инстанциям.")
                     .font(.caption2)

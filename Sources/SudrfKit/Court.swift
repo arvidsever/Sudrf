@@ -2,6 +2,7 @@ import Foundation
 
 /// Звено судебной системы — определяет, какой набор картотек применять.
 public enum CourtLevel: String, Sendable, CaseIterable, Codable {
+    case magistrate // мировой судья / судебный участок
     case district   // районный / городской суд
     case subject    // суд субъекта РФ (областной / верховный респ. / краевой)
     case appeal     // апелляционный суд ОСЮ (АСОЮ)
@@ -26,6 +27,7 @@ public enum CourtTier: String, Sendable, CaseIterable, Codable, Hashable, Identi
     case appeal      // АСОЮ / Апелляционный военный суд
     case subject     // областные и приравненные / окружные (флотские) военные
     case district    // районные и городские / гарнизонные военные
+    case magistrate  // мировые судьи (только общие суды)
 
     public var id: String { rawValue }
 
@@ -37,7 +39,12 @@ public enum CourtTier: String, Sendable, CaseIterable, Codable, Hashable, Identi
         case .appeal:    return .appeal
         case .subject:   return .subject
         case .district:  return .district
+        case .magistrate:return .magistrate
         }
+    }
+
+    public static func cases(for branch: CourtBranch) -> [CourtTier] {
+        branch == .general ? allCases : allCases.filter { $0 != .magistrate }
     }
 
     /// Название ступени для выбранной ветви.
@@ -48,10 +55,12 @@ public enum CourtTier: String, Sendable, CaseIterable, Codable, Hashable, Identi
         case (.appeal, .general):     return "Апелляционные суды ОЮ"
         case (.subject, .general):    return "Областные и приравненные"
         case (.district, .general):   return "Районные и городские"
+        case (.magistrate, .general): return "Мировые судьи"
         case (.cassation, .military): return "Кассационный военный суд"
         case (.appeal, .military):    return "Апелляционный военный суд"
         case (.subject, .military):   return "Окружные (флотские)"
         case (.district, .military):  return "Гарнизонные"
+        case (.magistrate, .military):return "Мировые судьи"
         }
     }
 }

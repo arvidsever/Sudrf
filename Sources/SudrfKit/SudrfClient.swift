@@ -40,6 +40,22 @@ public actor SudrfClient {
         self.captchaStore = captchaStore
     }
 
+    /// Внутренний init для тестов: позволяет подсунуть свой `URLSession`,
+    /// сконфигурированный с `URLProtocol` stub'ом (URLSessionConfiguration.default
+    /// НЕ подхватывает глобально зарегистрированные protocol classes —
+    /// только тот configuration, на котором они указаны явно).
+    internal init(session: URLSession,
+                   minInterval: TimeInterval = 1.5,
+                   userAgent: String = "SudrfKitTests",
+                   variantStore: WorkingVariantStore = .shared,
+                   captchaStore: CaptchaTokenStore = .shared) {
+        self.session = session
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+        self.variantStore = variantStore
+        self.captchaStore = captchaStore
+    }
+
     /// Число повторов при временных ошибках (502/503/504, обрывы соединения).
     public var maxAttempts = 3
 
@@ -192,6 +208,7 @@ public actor SudrfClient {
 
         var sawEmpty = false
         var lastData: Data? = nil
+        var lastWasCaptchaRejected = false
         for v in variants {
             let (data, html) = try await fetchHTMLData(v.url, allowHTTPFallback: true)
             switch SearchPageClassifier.classify(html: html) {
@@ -200,12 +217,20 @@ public actor SudrfClient {
             case .captchaRejected:
                 // Сервер отверг наш проверочный код (v0.38.9). Это не
                 // форма captcha — это та же страница результатов, на
-                // которой сервер сообщил «неверный код». Для вызывающего
-                // равносильно `searchModuleUnavailable` (v0.38.6):
-                // модуль не вернул ни выдачи, ни валидной пустоты, ни
-                // формы captcha. Сохраняем последний ответ в дамп
-                // и пробрасываем наверх.
+                // которой сервер сообщил «неверный код». Наш токен в
+                // `CaptchaTokenStore` больше не валиден — следующий
+                // search с ним даст тот же ответ. Инвалидируем сейчас,
+                // чтобы вызывающая сторона не зацикливалась на плохом
+                // токене (v0.38.10).
+                if captcha != nil {
+                    await captchaStore.invalidate(domain: court.domain)
+                }
+                // Дамп — отдельно от variant_, чтобы при разборе было
+                // видно «суд отверг токен» vs «суд вернул неизвестный
+                // формат». Дальше ведём себя как unrecognized: пробрасываем
+                // `searchModuleUnavailable` наверх.
                 lastData = data
+                lastWasCaptchaRejected = true
                 continue
             case .results:
                 await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
@@ -214,6 +239,7 @@ public actor SudrfClient {
                 sawEmpty = true
             case .unrecognized:
                 lastData = data
+                lastWasCaptchaRejected = false
                 continue
             }
         }
@@ -226,7 +252,11 @@ public actor SudrfClient {
         // путь к `searchModuleUnavailable`. Байты нужны без перекодирования,
         // иначе файл в браузере показывает mojibake (как в v0.38.5).
         if let lastData {
-            SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
+            if lastWasCaptchaRejected {
+                SearchDiagnostics.dumpCaptchaRejected(data: lastData, host: court.domain)
+            } else {
+                SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
+            }
         }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }

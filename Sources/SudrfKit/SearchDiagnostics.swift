@@ -20,6 +20,12 @@ import Foundation
 ///      на retry). Это значит, солвер промахнулся — нужна
 ///      `logFailedImage(...)` (v0.38.3) + dump ответа, чтобы
 ///      понять, как выглядела «правильная» капча глазами сервера.
+///   4. `dumpCaptchaRejected(...)` — суд вернул страницу результатов
+///      с маркером «неверный проверочный код» (v0.38.9 добавил
+///      `SearchPageKind.captchaRejected`). Это значит, наш токен в
+///      `CaptchaTokenStore` больше не валиден. Дамп — для
+///      диагностики, что суд реально прислал; основной фикс —
+///      инвалидация токена в `SudrfClient.runVariants` (v0.38.10).
 public enum SearchDiagnostics {
 
     public static var enabled: Bool {
@@ -85,6 +91,20 @@ public enum SearchDiagnostics {
 
     public static func dumpFormCheck(html: String, host: String) {
         save(data: Data(html.utf8), kind: "form", host: host, suffix: nil)
+    }
+
+    /// Сохранить HTML-ответ с маркером «неверный проверочный код»
+    /// (v0.38.9: `SearchPageKind.captchaRejected`). Префикс `rejected_`
+    /// отличает этот дамп от «суд вернул неизвестный формат»
+    /// (`variant_`) — это два разных диагноза. Дамп — для разбора;
+    /// основной фикс (инвалидация токена) — в `SudrfClient.runVariants`.
+    public static func dumpCaptchaRejected(data: Data, host: String) {
+        save(data: data, kind: "rejected", host: host, suffix: nil)
+    }
+
+    /// String-overload для тестов и редких случаев.
+    public static func dumpCaptchaRejected(html: String, host: String) {
+        save(data: Data(html.utf8), kind: "rejected", host: host, suffix: nil)
     }
 
     /// Сохранить HTML ответа и PNG капчи, на которой авто-солвер

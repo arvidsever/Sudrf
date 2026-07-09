@@ -44,18 +44,28 @@ public struct CaptchaConfiguration: Sendable, Equatable {
     /// preprocess выключен везде.
     public var preprocessorHosts: Set<String>
 
+    /// Путь к скомпилированной CoreML-модели (`*.mlmodelc`). Если задан —
+    /// `AppModel`/`SearchModel` оборачивают солвер в `CoreMLCaptchaStrategy`
+    /// для указанного `kind`; nil — fallback на `VisionOCRStrategy`.
+    /// Модель обучена на корпусе captcha-изображений (см.
+    /// `Scripts/train-coreml-captcha.swift`) и заменяет Vision на captcha
+    /// с rotated/struck-through цифрами, где Vision даёт conf=0.00.
+    public var modelURL: URL?
+
     public init(maxAttempts: Int = 3,
                 minConfidence: Double = 0.55,
                 minIntervalMs: Int = 50,
                 enabledKinds: Set<CaptchaKind> = [.sudrfToken, .kcaptcha],
                 preprocessingEnabled: Bool = false,
-                preprocessorHosts: Set<String> = []) {
+                preprocessorHosts: Set<String> = [],
+                modelURL: URL? = nil) {
         self.maxAttempts = maxAttempts
         self.minConfidence = minConfidence
         self.minIntervalMs = minIntervalMs
         self.enabledKinds = enabledKinds
         self.preprocessingEnabled = preprocessingEnabled
         self.preprocessorHosts = preprocessorHosts
+        self.modelURL = modelURL
     }
 
     public static let `default` = CaptchaConfiguration()

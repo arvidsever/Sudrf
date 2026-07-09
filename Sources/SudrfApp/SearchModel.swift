@@ -123,17 +123,28 @@ final class SearchModel: ObservableObject {
         // `preprocessingProvider` — live-источник флага: тоггл в меню
         // применяется к следующему вызову `solver.solve` без пересоздания
         // солвера. Без provider флаг фиксировался бы в момент init.
+        //
+        // `CoreMLCaptchaStrategy` (v0.38.8) — для `.sudrfToken`. Если
+        // модель найдена на диске, оборачивает Vision через
+        // `KindDispatchingStrategy` (см. AppModel).
         let settings = captchaSettings ?? CaptchaSettings.shared
         self.captchaSettings = settings
         if let captchaSolver {
             self.captchaSolver = captchaSolver
         } else {
-            var strategy = VisionOCRStrategy()
-            strategy.preprocessingProvider = { [weak settings] in
+            var vision = VisionOCRStrategy()
+            vision.preprocessingProvider = { [weak settings] in
                 settings?.preprocessorEnabled ?? false
             }
+            let provider: any CaptchaSolvingProvider
+            if let modelURL = CoreMLModelDiscovery.discoverURL(),
+               let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
+                provider = KindDispatchingStrategy(primary: coreML, fallback: vision)
+            } else {
+                provider = vision
+            }
             self.captchaSolver = CaptchaSolver(
-                provider: strategy,
+                provider: provider,
                 configuration: settings.solverConfiguration
             )
         }

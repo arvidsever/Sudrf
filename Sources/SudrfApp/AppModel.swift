@@ -412,12 +412,24 @@ final class AppRouter: ObservableObject {
         // и следующий вызов `solver.solve` сразу видит новое значение.
         // Без provider флаг был бы зафиксирован на момент конструирования
         // солвера, и тоггл в меню не действовал бы до перезапуска.
-        var strategy = VisionOCRStrategy()
-        strategy.preprocessingProvider = { [weak captchaSettings] in
+        //
+        // `CoreMLCaptchaStrategy` (v0.38.8) — для `.sudrfToken`. Если
+        // модель найдена на диске, она оборачивает Vision-стратегию
+        // через `KindDispatchingStrategy`: числовые captcha идут через
+        // CoreML, текстовые (`.kcaptcha`) — через Vision.
+        var vision = VisionOCRStrategy()
+        vision.preprocessingProvider = { [weak captchaSettings] in
             captchaSettings?.preprocessorEnabled ?? false
         }
+        let provider: any CaptchaSolvingProvider
+        if let modelURL = CoreMLModelDiscovery.discoverURL(),
+           let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
+            provider = KindDispatchingStrategy(primary: coreML, fallback: vision)
+        } else {
+            provider = vision
+        }
         let configuredSolver = CaptchaSolver(
-            provider: strategy,
+            provider: provider,
             configuration: captchaSettings.solverConfiguration
         )
         self.captchaSolver = configuredSolver

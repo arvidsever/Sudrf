@@ -7,3 +7,15 @@ Generated/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+
+# Python (Scripts/train-coreml-captcha-helper.py)
+__pycache__/
+*.pyc
+*.pyo
+
+# CoreML model artifacts. Артефакты большие и бинарные, не в git:
+# генерируются `Scripts/train-coreml-captcha-helper.py` и кладутся
+# в `Tests/CaptchaSolverTests/Fixtures/` + `~/Library/Application
+# Support/Sudrf/`. Каждый разработчик пересоздаёт локально.
+*.mlpackage/
+*.mlmodelc/

@@ -88,6 +88,96 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         let r2 = try await dispatch.solve(pngData: Data(), kind: .kcaptcha, host: nil)
         XCTAssertEqual(r2.value, "fallback")
     }
+
+    // MARK: - Real model tests (требуют наличия .mlmodelc)
+
+    /// `CoreMLCaptchaStrategy` успешно загружает `.mlmodelc/` из
+    /// тестового бандла. `XCTSkip`, если модель отсутствует (чистый
+    /// клон без артефактов).
+    func testModelLoadsFromBundle() throws {
+        // `.mlmodelc` — это **директория**, а не файл, поэтому
+        // `Bundle.module.url(forResource:withExtension:)` не находит
+        // её как одиночный ресурс. Используем `url(forResource:withExtension:subdirectory:)`
+        // чтобы заглянуть внутрь `Fixtures/`.
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: "model-captcha-numeric",
+                              withExtension: "mlmodelc",
+                              subdirectory: "Fixtures"),
+            "model-captcha-numeric.mlmodelc not in Fixtures/ — run train-coreml-captcha-helper.py"
+        )
+        let _ = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
+    }
+
+    /// Реальный inference на 1 реальной captcha. XCTSkip если
+    /// модель не в bundle ИЛИ captcha-failures/ пуста.
+    func testInferenceOnRealCaptcha() async throws {
+        guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
+                                          withExtension: "mlmodelc",
+                                          subdirectory: "Fixtures") else {
+            throw XCTSkip("model not in bundle")
+        }
+        guard let item = RealCaptchaFixture.loadAll().first else {
+            throw XCTSkip("no real captcha PNG in captcha-failures/")
+        }
+        let strategy = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
+        let attempt = try await strategy.solve(pngData: item.png, kind: .sudrfToken, host: nil)
+        // 5-digit captcha, model trained to read it. Не проверяем
+        // равенство (test set 90.4% per-digit, not 100%) — только
+        // что attempt валидный (5 символов, confidence > 0).
+        XCTAssertEqual(attempt.value.count, 5, "5-digit captcha, got '\(attempt.value)'")
+        XCTAssertTrue(attempt.value.allSatisfy { $0.isNumber }, "all digits, got '\(attempt.value)'")
+        XCTAssertGreaterThan(attempt.confidence, 0)
+    }
+
+    /// Per-digit accuracy на маленькой held-out выборке из
+    /// `Tests/CaptchaSolverTests/Fixtures/sudrf/labels.csv` —
+    /// наши локальные captcha fixtures (10 captcha, 5 размечены
+    /// «667» / «1909» / дубли, 5 — `UNREADABLE` sovetsky--nsk).
+    ///
+    /// 5 captcha — регрессионный тест: убеждаемся, что модель
+    /// **загружается и возвращает 5-значный ответ** на нашем
+    /// out-of-distribution стиле (spb rotated/struck-through). Не
+    /// проверяем равенство: эти captcha **out-of-distribution** для
+    /// модели, обученной на корпусе друга (90.4% per-digit на
+    /// его held-out, не 100%). Цель теста — поймать регрессию в
+    /// «модель падает» / «возвращает не 5 цифр», а не промахи в
+    /// самих цифрах.
+    func testLocalSudrfFixturesAccuracy() async throws {
+        guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
+                                          withExtension: "mlmodelc",
+                                          subdirectory: "Fixtures") else {
+            throw XCTSkip("model not in bundle")
+        }
+        // Грузим labels.csv (filename,expected,kind,notes) — наши 10 captcha.
+        guard let labelsURL = Bundle.module.url(forResource: "Fixtures/sudrf/labels", withExtension: "csv"),
+              let csv = try? String(contentsOf: labelsURL, encoding: .utf8) else {
+            throw XCTSkip("labels.csv not in bundle")
+        }
+        let lines = csv.split(separator: "\n").dropFirst()
+        let strategy = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
+        var total = 0
+        var allReturnedValid5 = true
+        for line in lines {
+            let cols = line.split(separator: ",", omittingEmptySubsequences: false)
+            guard cols.count >= 2 else { continue }
+            let filename = String(cols[0])
+            let expected = String(cols[1])
+            if expected == "UNREADABLE" || expected == "?" { continue }
+            guard let imgURL = Bundle.module.url(forResource: "Fixtures/sudrf/\(filename)", withExtension: nil),
+                  let png = try? Data(contentsOf: imgURL) else { continue }
+            let attempt = try await strategy.solve(pngData: png, kind: .sudrfToken, host: nil)
+            total += 1
+            if attempt.value.count != 5 || !attempt.value.allSatisfy({ $0.isNumber }) {
+                print("invalid: \(filename) got '\(attempt.value)'")
+                allReturnedValid5 = false
+            } else {
+                let ok = attempt.value == expected ? "ok" : "miss"
+                print("\(ok): \(filename) expected=\(expected) got=\(attempt.value) conf=\(String(format: "%.3f", attempt.confidence))")
+            }
+        }
+        XCTAssertEqual(total, 5, "expected 5 readable captcha, 5 unreadable")
+        XCTAssertTrue(allReturnedValid5, "all 5 attempts must return valid 5-digit strings")
+    }
 }
 
 /// Стаб для теста диспетчеризации. Возвращает фиксированный `label`

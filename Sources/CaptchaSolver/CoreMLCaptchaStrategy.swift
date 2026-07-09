@@ -9,13 +9,13 @@ import Vision
 /// conf=0.00 (rotated/struck-through digits у `1kas`,
 /// `oblsud--mo.sudrf.ru`, `sankt-peterburgsky--spb.sudrf.ru`).
 ///
-/// Архитектура (по описанию друга в
-/// `Docs/branch-changelogs/captcha-auto-solver/v0.38.8.md`):
+/// Архитектура (см. `Scripts/train-coreml-captcha-helper.py`):
 ///   вход 100×30 RGB → бинарная маска «чернил» (порог по цвету
 ///   ~(2, 103, 154)) → downsample 100×30 → 64×20 (box-averaging)
-///   → `MLMultiArray` формы `[1, 64, 20]`
+///   → `MLMultiArray` формы `[1, 1, 20, 64]` (NCHW)
 ///   → 5 softmax-голов по 10 цифр каждая
-///   → argmax по каждой голове → 5 цифр
+///   → единственный выход `digits` формы `[1, 5, 10]`
+///   → argmax по последней оси → 5 цифр
 ///
 /// Контракт:
 ///   - `init(modelURL:kind:)` загружает `compiledMLModel`. Если
@@ -27,30 +27,24 @@ import Vision
 ///     value = 5 цифр, confidence = min(softmax по 5 головам).
 ///   - `topCandidates(...)` возвращает топ-N 5-значных строк по
 ///     уверенности, для diagnostics.
-///
-/// **Эта реализация — каркас (v0.38.8).** Реальный `.mlmodelc`
-/// должен быть обучен и положен в
-/// `Tests/CaptchaSolverTests/Fixtures/model-captcha-numeric.mlmodelc/`
-/// (для тестов) или в `~/Library/Application Support/Sudrf/`
-/// (для рантайма). Обучение — `Scripts/train-coreml-captcha.swift`.
 public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
 
     public let modelURL: URL
     public let kind: CaptchaKind
     private let compiledModel: MLModel
     private let inputName: String
-    private let outputNames: [String]
+    private let outputName: String
 
     /// Загружает модель из `modelURL`. Бросает
     /// `CoreMLCaptchaStrategyError.modelLoadFailed` при ошибке.
     public init(modelURL: URL,
                 kind: CaptchaKind,
                 inputName: String = "inkMask",
-                outputNames: [String] = ["digit0", "digit1", "digit2", "digit3", "digit4"]) throws {
+                outputName: String = "digits") throws {
         self.modelURL = modelURL
         self.kind = kind
         self.inputName = inputName
-        self.outputNames = outputNames
+        self.outputName = outputName
         do {
             let cfg = MLModelConfiguration()
             cfg.computeUnits = .all
@@ -73,8 +67,8 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
         } catch {
             throw CaptchaSolverError.visionFailed("coreml prediction: \(error.localizedDescription)")
         }
-        let (digits, minProb) = try Self.decodeFiveHeads(
-            output: output, outputNames: outputNames
+        let (digits, minProb) = try Self.decodeDigits(
+            output: output, outputName: outputName
         )
         return CaptchaAttempt(
             value: digits,
@@ -91,7 +85,7 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
         let mask = try Self.binarizeAndDownsample(pngData: pngData)
         let input = try Self.makeInput(name: inputName, mask: mask)
         let output = try await compiledModel.prediction(from: input)
-        let all = try Self.allFiveDigitStrings(output: output, outputNames: outputNames, n: n * 4)
+        let all = try Self.allFiveDigitStrings(output: output, outputName: outputName, n: n * 4)
         let sorted = all.sorted { $0.confidence > $1.confidence }
         let picked = Array(sorted.prefix(n))
         return (picked, false)
@@ -143,9 +137,7 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
             mask100[i] = distSq < thresholdSq ? 1.0 : 0.0
         }
 
-        // 3) Downsample 100×30 → 64×20 by box-averaging. Each output
-        //    cell covers a region of (100/64) × (30/20) = 1.5625 × 1.5
-        //    input pixels. Use simple area-weighted averaging.
+        // 3) Downsample 100×30 → 64×20 by box-averaging.
         let outW = 64, outH = 20
         var mask64 = [Float](repeating: 0, count: outW * outH)
         for oy in 0..<outH {
@@ -168,31 +160,42 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
         return mask64
     }
 
-    /// Собирает `MLFeatureProvider` для входа модели. По умолчанию
-    /// модель ожидает 1-D `MLMultiArray` длины 1280 (= 64×20).
+    /// Собирает `MLFeatureProvider` для входа модели. Модель
+    /// (см. `train-coreml-captcha-helper.py`) ожидает
+    /// `MLMultiArray` формы `[1, 1, 20, 64]` (NCHW, channel=1).
     static func makeInput(name: String, mask: [Float]) throws -> MLFeatureProvider {
-        let arr = try MLMultiArray(shape: [1, 20, 64], dataType: .float32)
-        // Note: CoreML conv layers typically expect `[1, H, W, C]` for
-        // image-style inputs. We use `[1, 20, 64]` (channel-first) as a
-        // default; specific models may override inputName + shape.
+        let arr = try MLMultiArray(shape: [1, 1, 20, 64], dataType: .float32)
         for i in 0..<mask.count {
+            // Layout в `[1, 1, 20, 64]`: индекс = c*1*20*64 + h*64 + w
+            // = h * 64 + w (c=0). В mask[i] i = h*64 + w. Прямое
+            // соответствие.
             arr[i] = NSNumber(value: mask[i])
         }
         return try MLDictionaryFeatureProvider(dictionary: [name: arr])
     }
 
-    /// Декодирует выход модели: 5 softmax-голов по 10 классов каждая
-    /// → argmax → 5 цифр. Возвращает (digits, minProb) где minProb —
-    /// минимум из 5 вероятностей argmax (мера уверенности).
-    static func decodeFiveHeads(output: MLFeatureProvider, outputNames: [String]) throws -> (String, Float) {
+    /// Декодирует выход модели: один тензор `digits` формы
+    /// `[1, 5, 10]` → argmax по последней оси → 5 цифр.
+    /// Возвращает (digits, minProb) где minProb — минимум из 5
+    /// softmax-вероятностей argmax (мера уверенности).
+    static func decodeDigits(output: MLFeatureProvider, outputName: String) throws -> (String, Float) {
+        guard let feature = output.featureValue(for: outputName),
+              let arr = feature.multiArrayValue else {
+            throw CaptchaSolverError.visionFailed("coreml output missing: \(outputName)")
+        }
+        // Ожидаемая форма: [1, 5, 10]. PyTorch stack склеил головы
+        // по оси 1, классы — по оси 2. CoreML в Swift видит
+        // `MLMultiArray` с shape [1, 5, 10].
+        let shape = arr.shape.map { $0.intValue }
+        guard shape.count == 3, shape[0] == 1, shape[1] == 5, shape[2] == 10 else {
+            throw CaptchaSolverError.visionFailed(
+                "expected digits shape [1, 5, 10], got \(shape)"
+            )
+        }
         var digits: [String] = []
         var minProb: Float = 1.0
-        for name in outputNames {
-            guard let feature = output.featureValue(for: name),
-                  let arr = feature.multiArrayValue else {
-                throw CaptchaSolverError.visionFailed("coreml output missing: \(name)")
-            }
-            let (d, p) = try argmax(arr)
+        for k in 0..<5 {
+            let (d, p) = softmaxArgmax(arr: arr, headIdx: k)
             digits.append(String(d))
             minProb = min(minProb, p)
         }
@@ -203,16 +206,16 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
     /// softmax-вероятности. Перебирает все комбинации топ-3 цифр
     /// в каждой голове (3^5 = 243 вариантов) и возвращает лучшие.
     static func allFiveDigitStrings(output: MLFeatureProvider,
-                                    outputNames: [String],
+                                    outputName: String,
                                     n: Int) throws -> [(text: String, confidence: Double)] {
+        guard let feature = output.featureValue(for: outputName),
+              let arr = feature.multiArrayValue else {
+            throw CaptchaSolverError.visionFailed("coreml output missing: \(outputName)")
+        }
         // Get top-3 per head.
         var perHead: [[(digit: Int, prob: Float)]] = []
-        for name in outputNames {
-            guard let feature = output.featureValue(for: name),
-                  let arr = feature.multiArrayValue else {
-                throw CaptchaSolverError.visionFailed("coreml output missing: \(name)")
-            }
-            perHead.append(try topK(arr, k: 3))
+        for k in 0..<5 {
+            perHead.append(softmaxTopK(arr: arr, headIdx: k, k: 3))
         }
         // Generate all 3^5 = 243 combinations.
         var candidates: [(text: String, minProb: Float)] = []
@@ -229,7 +232,6 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
                 }
             }
         }
-        // Sort by minProb descending, return top N.
         let sorted = candidates.sorted { $0.minProb > $1.minProb }
         return sorted.prefix(n).map { ($0.text, Double($0.minProb)) }
     }
@@ -243,45 +245,41 @@ public enum CoreMLCaptchaStrategyError: Error, Sendable {
     case modelLoadFailed(url: URL, underlying: Error)
 }
 
-// MARK: - Argmax helpers
+// MARK: - Head helpers
 
-/// Argmax по 1-D `MLMultiArray`. Возвращает (digit, probability).
-private func argmax(_ arr: MLMultiArray) throws -> (Int, Float) {
-    guard arr.shape.count == 1 else {
-        throw CaptchaSolverError.visionFailed("expected 1-D logits, got shape \(arr.shape)")
-    }
-    let count = arr.shape[0].intValue
+/// В тензоре [1, 5, 10], при `headIdx = k`, классы 0..9 лежат по
+/// смещению `k * 10 + j` (row-major C-order). Возвращает
+/// (argmaxDigit, softmaxProbability).
+private func softmaxArgmax(arr: MLMultiArray, headIdx: Int) -> (Int, Float) {
+    let base = headIdx * 10
     var bestIdx = 0
     var bestVal: Float = -.infinity
-    for i in 0..<count {
-        let v = arr[i].floatValue
-        if v > bestVal { bestVal = v; bestIdx = i }
+    for j in 0..<10 {
+        let v = arr[base + j].floatValue
+        if v > bestVal { bestVal = v; bestIdx = j }
     }
-    // Softmax the result for the best class only (rough).
     var sumExp: Float = 0
-    for i in 0..<count {
-        sumExp += exp(arr[i].floatValue - bestVal)
+    for j in 0..<10 {
+        sumExp += exp(arr[base + j].floatValue - bestVal)
     }
-    let prob = 1.0 / sumExp
-    return (bestIdx, prob)
+    return (bestIdx, 1.0 / sumExp)
 }
 
-/// Топ-K (digit, prob) по 1-D `MLMultiArray` (softmax-нормализованные
-/// вероятности). Используется для candidates diagnostic.
-private func topK(_ arr: MLMultiArray, k: Int) throws -> [(Int, Float)] {
-    let count = arr.shape[0].intValue
-    // Softmax over the full array first.
+/// Top-K (digit, softmaxProb) для одной головы в тензоре [1, 5, 10].
+private func softmaxTopK(arr: MLMultiArray, headIdx: Int, k: Int) -> [(Int, Float)] {
+    let base = headIdx * 10
+    var probs = [Float](repeating: 0, count: 10)
     var maxVal: Float = -.infinity
-    for i in 0..<count { maxVal = max(maxVal, arr[i].floatValue) }
-    var probs = [Float](repeating: 0, count: count)
+    for j in 0..<10 {
+        maxVal = max(maxVal, arr[base + j].floatValue)
+    }
     var sumExp: Float = 0
-    for i in 0..<count {
-        let e = exp(arr[i].floatValue - maxVal)
-        probs[i] = e
+    for j in 0..<10 {
+        let e = exp(arr[base + j].floatValue - maxVal)
+        probs[j] = e
         sumExp += e
     }
-    for i in 0..<count { probs[i] /= sumExp }
-    // Top-K by sorting indices.
+    for j in 0..<10 { probs[j] /= sumExp }
     let indexed = probs.enumerated().sorted { $0.element > $1.element }
     return Array(indexed.prefix(k))
 }

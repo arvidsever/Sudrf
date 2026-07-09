@@ -197,6 +197,16 @@ public actor SudrfClient {
             switch SearchPageClassifier.classify(html: html) {
             case .captcha:
                 throw SudrfError.captchaRequired(formURL: try builder.formURL(cartoteka))
+            case .captchaRejected:
+                // Сервер отверг наш проверочный код (v0.38.9). Это не
+                // форма captcha — это та же страница результатов, на
+                // которой сервер сообщил «неверный код». Для вызывающего
+                // равносильно `searchModuleUnavailable` (v0.38.6):
+                // модуль не вернул ни выдачи, ни валидной пустоты, ни
+                // формы captcha. Сохраняем последний ответ в дамп
+                // и пробрасываем наверх.
+                lastData = data
+                continue
             case .results:
                 await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
                 return try ResultsParser.parse(html: html, court: court)

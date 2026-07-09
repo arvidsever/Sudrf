@@ -40,20 +40,32 @@ final class AutoCaptchaSolverTests: XCTestCase {
         ]))
         // Без клиента и формы — даже уверенный солвер не поможет, потому
         // что client.fetchForm вернёт ошибку. Этот тест проверяет, что
-        // путь «solver есть, settings нет» возвращает nil.
-        let token = await AutoCaptchaSolver.solve(
+        // путь «solver есть, settings нет» возвращает nil-токен.
+        let result = await AutoCaptchaSolver.solve(
             formURL: URL(string: "https://example.test/")!,
             client: SudrfClient(),
             solver: solver,
             settings: .default
         )
-        // Сеть недоступна в тестах → form fetch упадёт → nil.
+        // Сеть недоступна в тестах → form fetch упадёт → token=nil.
         // Если вдруг сеть есть, токен будет — это нормально.
-        if token == nil {
-            // OK
-        } else {
-            XCTAssertFalse(token!.value.isEmpty)
+        if let token = result.token {
+            XCTAssertFalse(token.value.isEmpty)
         }
+    }
+
+    /// SolveResult.token и .png оба не nil при успешном solve.
+    /// Это критично для bootstrap-хука (v0.38.9): без PNG мы не
+    /// можем добавить captcha в `CorpusStore` даже если токен валидный.
+    func testSolveResultExposesPNG() {
+        // Compile-time проверка: SolveResult имеет оба поля.
+        let r = AutoCaptchaSolver.SolveResult(
+            token: CaptchaToken(value: "12345", id: "abc"),
+            png: Data([0x00])
+        )
+        XCTAssertNotNil(r.token)
+        XCTAssertNotNil(r.png)
+        XCTAssertEqual(r.token?.value, "12345")
     }
 
     func testKindFromURL() {

@@ -15,10 +15,29 @@ public enum SearchPageKind: Sendable {
     case results        // есть ссылки на карточки дел
     case empty          // валидная выдача, дел не найдено
     case captcha        // страница требует проверочный код
+    /// Страница с сообщением о неверно введённом проверочном коде
+    /// (например, «Неверно указан проверочный код с картинки»).
+    /// Это **не** форма captcha — это сервер сообщает, что
+    /// ранее отправленный код был отвергнут. Используется в
+    /// `AutoCaptchaSolver` как сигнал «не добавлять этот
+    /// captcha PNG в bootstrap-корпус» (v0.38.9).
+    case captchaRejected
     case unrecognized   // модуль не понял запрос / другой интерфейс / заглушка
 }
 
 public enum SearchPageClassifier {
+
+    /// Маркеры страницы «captcha отвергнута сервером». Это
+    /// появляется на странице результатов после submit'а с
+    /// неверным кодом. Маркеры собраны из handoff v0.38.7
+    /// (1kas variant diag файл) и опроса `captcha-failures/`.
+    public static let captchaRejectedMarkers: [String] = [
+        "Неверно указан проверочный код с картинки",
+        "Неверный проверочный код",
+        "Неверно введен проверочный код",
+        "Invalid security code",
+        "Invalid captcha"
+    ]
 
     public static func classify(html: String) -> SearchPageKind {
         // 1) Ссылки на карточки — самый надёжный признак настоящей выдачи.
@@ -31,6 +50,14 @@ public enum SearchPageClassifier {
            let anchors = try? doc.select("a[href*=op=cs][href*=case_id]"),
            anchors.size() > 0 {
             return .results
+        }
+
+        // 1a) Captcha-rejected: страница результатов с сообщением
+        // «неверный код». Проверяем ДО общего captcha-детектора,
+        // чтобы различать «форму с картинкой» (`.captcha`) и
+        // «отказ после submit'а» (`.captchaRejected`).
+        if captchaRejectedMarkers.contains(where: html.contains) {
+            return .captchaRejected
         }
 
         if CaptchaDetector.hasCaptcha(in: html) { return .captcha }

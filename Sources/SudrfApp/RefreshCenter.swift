@@ -276,15 +276,24 @@ final class RefreshCenter: ObservableObject {
             // в `CaptchaPendingQueue` и ждём пользователя.
             if let solver = captchaSolver,
                let settings = captchaSettings,
-               settings.isEffectivelyEnabled,
-               let token = await AutoCaptchaSolver.solve(
-                   formURL: url,
-                   client: client,
-                   solver: solver,
-                   settings: .default
-               ) {
-                await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
-                retryAfterCaptcha(key: key, host: url.host)
+               settings.isEffectivelyEnabled {
+                let result = await AutoCaptchaSolver.solve(
+                    formURL: url,
+                    client: client,
+                    solver: solver,
+                    settings: .default
+                )
+                if let token = result.token {
+                    await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
+                    // v0.38.9: bootstrap в CorpusStore НЕ делаем здесь
+                    // (нет гарантии, что retry с токеном прошёл; это
+                    // шумный сигнал, лучше перебдеть). Bootstrap живёт
+                    // в `SearchModel.executeSearch`.
+                    retryAfterCaptcha(key: key, host: url.host)
+                } else {
+                    queueCaptcha(key: key, formURL: url)
+                    fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                }
             } else {
                 queueCaptcha(key: key, formURL: url)
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")

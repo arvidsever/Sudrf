@@ -30,6 +30,15 @@ enum AutoCaptchaSolver {
         static let `default` = Settings(maxAttempts: 3, minConfidence: 0.55)
     }
 
+    /// Результат одной попытки авто-решения капчи. `png` — байты
+    /// изображения, на котором солвер выдал `token` (если `token`
+    /// не nil). Используется в bootstrap-хуке (v0.38.9) для
+    /// добавления PNG в `CorpusStore` после успешного search.
+    struct SolveResult: Sendable {
+        let token: CaptchaToken?
+        let png: Data?
+    }
+
     /// Попытаться решить капчу на форме `formURL`. Возвращает токен
     /// или `nil` после исчерпания попыток. На каждой итерации —
     /// свежий GET формы, поэтому `captchaid` уникален.
@@ -53,7 +62,7 @@ enum AutoCaptchaSolver {
     static func solve(formURL: URL,
                       client: SudrfClient,
                       solver: CaptchaSolver,
-                      settings: Settings = .default) async -> CaptchaToken? {
+                      settings: Settings = .default) async -> SolveResult {
         let kind = kindFromURL(formURL)
         let host = formURL.host
         let log = solver.log
@@ -64,7 +73,7 @@ enum AutoCaptchaSolver {
                 guard let (png, captchaid) = try CaptchaImageExtractor.extract(html: html) else {
                     log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "no captcha image in form HTML (attempt \(attempt + 1))")
-                    return nil
+                    return SolveResult(token: nil, png: nil)
                 }
                 lastPNG = png
                 let result = try await solver.solve(pngData: png, kind: kind, host: host)
@@ -87,7 +96,7 @@ enum AutoCaptchaSolver {
                     let token = CaptchaToken(value: result.value, id: captchaid)
                     log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "solved value=\(result.value) conf=\(String(format: "%.2f", result.confidence)) on attempt \(attempt + 1)")
-                    return token
+                    return SolveResult(token: token, png: png)
                 } else {
                     log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "low confidence \(String(format: "%.2f", result.confidence)) on attempt \(attempt + 1)")
@@ -105,7 +114,7 @@ enum AutoCaptchaSolver {
             log.logSkip(host: formURL.host ?? "?", kind: kind,
                         reason: "all \(settings.maxAttempts) attempts failed; last image saved to \(pathStr)")
         }
-        return nil
+        return SolveResult(token: nil, png: lastPNG)
     }
 
     /// Вид капчи по URL — `msudrf.ru` → `.kcaptcha`, иначе `.sudrfToken`.

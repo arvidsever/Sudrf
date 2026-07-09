@@ -111,6 +111,12 @@ final class SearchModel: ObservableObject {
     /// или передаётся извне (для тестов и для общего инстанса с `RefreshCenter`).
     private let captchaSolver: CaptchaSolver?
     private let captchaSettings: CaptchaSettings?
+    /// PNG captcha, на которой авто-солвер выдал токен для **текущего**
+    /// search. После успешного `executeSearch(allowAutoSolve: false)`
+    /// (т.е. сервер принял токен) — используется в bootstrap-хуке для
+    /// добавления PNG в `CorpusStore` (v0.38.9). Сбрасывается на `nil`
+    /// при провале search или при следующем вызове `handleCaptcha`.
+    private var lastSubmittedCaptchaPNG: Data?
     private var magistrateDistrictCourts: [DistrictCourt] = []
 
     init(captchaSolver: CaptchaSolver? = nil, captchaSettings: CaptchaSettings? = nil) {
@@ -436,6 +442,7 @@ final class SearchModel: ObservableObject {
                 status = res.isEmpty
                     ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                     : "Найдено: \(res.count) (\(used))"
+                await bootstrapCaptchaToCorpus(host: court.domain, results: res)
             } catch SudrfError.captchaRequired(let formURL) {
                 try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
             }
@@ -462,6 +469,7 @@ final class SearchModel: ObservableObject {
             status = res.isEmpty
                 ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                 : "Найдено: \(res.count) (\(used))"
+            await bootstrapCaptchaToCorpus(host: court.domain, results: res)
         } catch SudrfError.captchaRequired(let formURL) {
             try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
         }
@@ -474,14 +482,21 @@ final class SearchModel: ObservableObject {
         if allowAutoSolve,
            let solver = captchaSolver,
            let settings = captchaSettings,
-           settings.isEffectivelyEnabled,
-           let token = await AutoCaptchaSolver.solve(
-               formURL: formURL,
-               client: client,
-               solver: solver,
-               settings: .default
-           ) {
+           settings.isEffectivelyEnabled {
+            let result = await AutoCaptchaSolver.solve(
+                formURL: formURL,
+                client: client,
+                solver: solver,
+                settings: .default
+            )
+            guard let token = result.token else {
+                throw SudrfError.captchaRequired(formURL: formURL)
+            }
             await CaptchaTokenStore.shared.store(token, domain: host ?? formURL.host ?? "")
+            // Запоминаем PNG, на котором солвер выдал этот токен, для
+            // bootstrap в `CorpusStore` (v0.38.9). Сохраняем после
+            // успешного search (см. конец `executeSearch`).
+            lastSubmittedCaptchaPNG = result.png
             // Повторный запрос: токен уже в хранилище, SudrfClient.search
             // его подхватит. `allowAutoSolve: false` — чтобы при провале
             // (сервер отклонил наш ответ) сразу открыть ручной лист, а не
@@ -491,6 +506,7 @@ final class SearchModel: ObservableObject {
             } catch SudrfError.captchaRequired {
                 // Сервер отклонил авто-ответ — инвалидируем и пробрасываем.
                 await CaptchaTokenStore.shared.invalidate(domain: host ?? formURL.host ?? "")
+                lastSubmittedCaptchaPNG = nil
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
         } else {
@@ -865,5 +881,43 @@ final class SearchModel: ObservableObject {
             cardURLString: base.cardURL?.absoluteString)
         ctx.higherCourtTargets = movementTargets(for: option, base: base)
         return ctx
+    }
+
+    /// Bootstrap-хуk (v0.38.9): если у нас есть PNG недавно
+    /// отправленной captcha и search вернул ≥ 1 результата (т.е.
+    /// сервер **принял** наш ответ) — добавляем PNG в
+    /// `CorpusStore` с разметкой из `CaptchaTokenStore`.
+    ///
+    /// Защиты от ложных срабатываний:
+    ///   - Только если `lastSubmittedCaptchaPNG != nil` (иначе
+    ///     captcha не было, добавлять нечего).
+    ///   - Только если `results.count > 0` (empty results могут
+    ///     означать captcha-rejection без явного throw).
+    ///   - Токен ищем через `CaptchaTokenStore.shared.token(forDomain:)`
+    ///     — это гарантирует, что token всё ещё актуален (30 мин TTL).
+    ///   - После добавления `lastSubmittedCaptchaPNG` сбрасываем
+    ///     (один captcha → одна запись в корпусе).
+    private func bootstrapCaptchaToCorpus(host: String?, results: [CaseSearchResult]) async {
+        guard !results.isEmpty,
+              let png = lastSubmittedCaptchaPNG,
+              let host = host else { return }
+        guard let token = await CaptchaTokenStore.shared.token(forDomain: host) else {
+            // Токен протух или его нет — не добавляем (нет ground truth).
+            lastSubmittedCaptchaPNG = nil
+            return
+        }
+        // kind определяется по хосту — должен совпадать с тем, что
+        // использовал AutoCaptchaSolver.kindFromURL.
+        let kind: CaptchaKind
+        let lcHost = host.lowercased()
+        if lcHost == "msudrf.ru" || lcHost.hasSuffix(".msudrf.ru") {
+            kind = .kcaptcha
+        } else {
+            kind = .sudrfToken
+        }
+        _ = await CorpusStore.shared.add(
+            png: png, code: token.value, host: host, kind: kind
+        )
+        lastSubmittedCaptchaPNG = nil
     }
 }

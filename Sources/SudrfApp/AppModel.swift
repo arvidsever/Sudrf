@@ -759,14 +759,19 @@ final class AppRouter: ObservableObject {
         if captchaSettings.isEffectivelyEnabled {
             Task { [weak self] in
                 guard let self else { return }
-                let token = await AutoCaptchaSolver.solve(
+                let result = await AutoCaptchaSolver.solve(
                     formURL: url,
                     client: self.client,
                     solver: self.captchaSolver,
                     settings: .default
                 )
-                if let token {
+                if let token = result.token {
                     await CaptchaTokenStore.shared.store(token, domain: host)
+                    // NOTE: bootstrap в CorpusStore не делаем здесь —
+                    // мы не имеем гарантии, что retry с этим токеном
+                    // прошёл (сервер мог отклонить). Bootstrap живёт
+                    // в `SearchModel.executeSearch`, где есть явный
+                    // сигнал «search вернул ≥ 1 результата».
                     await MainActor.run {
                         self.pendingCaptchaRefresh = true
                         self.refreshCenter.retryPendingCaptcha(host: host)

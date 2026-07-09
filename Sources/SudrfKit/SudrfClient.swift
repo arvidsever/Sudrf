@@ -56,6 +56,17 @@ public actor SudrfClient {
     }
 
     private func fetchHTML(_ url: URL, allowHTTPFallback: Bool) async throws -> String {
+        let (_, html) = try await fetchHTMLData(url, allowHTTPFallback: allowHTTPFallback)
+        return html
+    }
+
+    /// Внутренний helper, возвращающий и сырые байты, и декодированную
+    /// строку. Используется там, где нужно сбросить HTML-ответ на диск
+    /// в его исходной кодировке (например, `SearchDiagnostics.dumpVariant`):
+    /// `String`-перегрузка `fetchHTML` теряет исходные байты при
+    /// перекодировании, а пользователю нужны именно байты — иначе
+    /// файл в браузере показывает mojibake.
+    private func fetchHTMLData(_ url: URL, allowHTTPFallback: Bool) async throws -> (Data, String) {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
@@ -80,9 +91,9 @@ public actor SudrfClient {
                 }
                 // Суды отдают windows-1251, единый портал — тоже cp1251; UTF-8 как запасной.
                 let ctype = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-                if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) { return s }
-                if let s = Cyrillic1251.decode(data) { return s }
-                if let s = String(data: data, encoding: .utf8) { return s }
+                if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) { return (data, s) }
+                if let s = Cyrillic1251.decode(data) { return (data, s) }
+                if let s = String(data: data, encoding: .utf8) { return (data, s) }
                 throw SudrfError.decodingFailed
             } catch let e as URLError {
                 if allowHTTPFallback, e.isTLSError,
@@ -91,7 +102,7 @@ public actor SudrfClient {
                     // data in query parameters. Plain HTTP is allowed only for
                     // msudrf hosts, only after TLS fails, and only for this one
                     // retry so broken government TLS does not silently broaden.
-                    return try await fetchHTML(httpURL, allowHTTPFallback: false)
+                    return try await fetchHTMLData(httpURL, allowHTTPFallback: false)
                 }
                 lastError = e
                 guard attempt + 1 < attempts else { break }
@@ -143,15 +154,17 @@ public actor SudrfClient {
         // её распознает классификатор, экономя запрос.
         if builder.pattern == .primary {
             let formURL = try builder.formURL(cartoteka)
-            let formHTML = try await fetchHTML(formURL)
+            let (formData, formHTML) = try await fetchHTMLData(formURL, allowHTTPFallback: true)
             if CaptchaDetector.hasCaptcha(in: formHTML) {
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
             // Диагностика: форма у этого суда (captcha-включённого, раз
             // мы здесь на .primary) не распознана как содержащая капчу.
             // Скорее всего суд изменил маркер — сохраним форму, чтобы
-            // увидеть, как она выглядит сейчас.
-            SearchDiagnostics.dumpFormCheck(html: formHTML, host: court.domain)
+            // увидеть, как она выглядит сейчас. Сохраняем СЫРЫЕ байты,
+            // чтобы файл можно было открыть в браузере (тот прочитает
+            // `<meta charset=...>` из самого HTML и применит его).
+            SearchDiagnostics.dumpFormCheck(data: formData, host: court.domain)
         }
 
         // 2) Перебор вариантов выдачи.
@@ -178,9 +191,9 @@ public actor SudrfClient {
         }
 
         var sawEmpty = false
-        var lastHTML: String = ""
+        var lastData: Data? = nil
         for v in variants {
-            let html = try await fetchHTML(v.url)
+            let (data, html) = try await fetchHTMLData(v.url, allowHTTPFallback: true)
             switch SearchPageClassifier.classify(html: html) {
             case .captcha:
                 throw SudrfError.captchaRequired(formURL: try builder.formURL(cartoteka))
@@ -190,18 +203,20 @@ public actor SudrfClient {
             case .empty:
                 sawEmpty = true
             case .unrecognized:
-                lastHTML = html
+                lastData = data
                 continue
             }
         }
         if sawEmpty { return [] }
         // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
         // в неизвестном формате (другой интерфейс, JS-защита, заглушка).
-        // Сбрасываем последний HTML, чтобы пользователь мог посмотреть,
-        // что суд реально прислал — `SearchPageClassifier` не узнал ни
-        // одного маркера. Это и есть путь к `searchModuleUnavailable`.
-        if !lastHTML.isEmpty {
-            SearchDiagnostics.dumpVariant(html: lastHTML, host: court.domain)
+        // Сбрасываем последний ответ (сырые байты + декодированную строку),
+        // чтобы пользователь мог посмотреть, что суд реально прислал —
+        // `SearchPageClassifier` не узнал ни одного маркера. Это и есть
+        // путь к `searchModuleUnavailable`. Байты нужны без перекодирования,
+        // иначе файл в браузере показывает mojibake (как в v0.38.5).
+        if let lastData {
+            SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
         }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }

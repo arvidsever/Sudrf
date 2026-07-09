@@ -44,6 +44,51 @@ final class SearchDiagnosticsTests: XCTestCase {
         XCTAssertEqual(saved, html)
     }
 
+    /// Главный тест для v0.38.6: сырые байты пишутся в файл
+    /// **verbatim** (без перекодирования). Берем настоящий cp1251
+    /// байт-секвенс для «Россия» (`D0 CF E0 E2 E5 F0`), и проверяем
+    /// что в файле лежат ровно эти байты. Если бы код декодировал
+    /// строку и записывал её как UTF-8, мы бы получили другую
+    /// последовательность (cp1251 «Р» = `D0` интерпретируется как
+    /// первый байт UTF-8 multi-byte sequence и порождает разный
+    /// результат).
+    func testDumpVariantPreservesRawBytes() {
+        // "Россия" в windows-1251: D0 CF E0 E2 E5 F0
+        let cp1251Russia: [UInt8] = [0xD0, 0xCF, 0xE0, 0xE2, 0xE5, 0xF0]
+        let data = Data(cp1251Russia)
+        SearchDiagnostics.dumpVariant(data: data, host: "test.cp1251.sudrf.ru")
+
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: tmpDir, includingPropertiesForKeys: nil
+        )) ?? []
+        XCTAssertEqual(files.count, 1)
+        let savedData = (try? Data(contentsOf: files[0])) ?? Data()
+        XCTAssertEqual(savedData, data,
+                       "file should contain EXACTLY the bytes we passed — no re-encoding")
+    }
+
+    /// Аналогично для dumpFormCheck — сырые байты формы сохраняются
+    /// без изменений. Это и есть основной фикс v0.38.6: раньше код
+    /// декодировал в String и писал как UTF-8 → браузер показывал
+    /// mojibake. Теперь байты лежат в исходной кодировке.
+    func testDumpFormCheckPreservesRawBytes() {
+        // «Форма поиска» в windows-1251: реальные байты.
+        let cp1251Form: [UInt8] = [
+            0x3C, 0x68, 0x74, 0x6D, 0x6C, 0x3E,  // <html>
+            0xD4, 0xEE, 0xF0, 0xEC, 0xE0, 0x20, 0xEF, 0xEE, 0xE8, 0xF1, 0xEA, 0xE0,  // Форма поиска
+            0x3C, 0x2F, 0x68, 0x74, 0x6D, 0x6C, 0x3E  // </html>
+        ]
+        let data = Data(cp1251Form)
+        SearchDiagnostics.dumpFormCheck(data: data, host: "spbkirov.sudrf.ru")
+
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: tmpDir, includingPropertiesForKeys: nil
+        )) ?? []
+        XCTAssertEqual(files.count, 1)
+        let savedData = (try? Data(contentsOf: files[0])) ?? Data()
+        XCTAssertEqual(savedData, data)
+    }
+
     func testDumpFormCheckWritesFile() {
         let html = "<html><body>Form with no captcha marker we recognize.</body></html>"
         SearchDiagnostics.dumpFormCheck(html: html, host: "msk--sudrf.ru")
@@ -58,8 +103,12 @@ final class SearchDiagnosticsTests: XCTestCase {
 
     func testDumpSolverMismatchWritesBothFiles() {
         let png: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-        let html = "<html><body>Server rejected our captcha answer.</body></html>"
-        SearchDiagnostics.dumpSolverMismatch(png: Data(png), html: html, host: "fail.sudrf.ru")
+        let responseBytes: [UInt8] = [0x3C, 0x68, 0x74, 0x6D, 0x6C, 0x3E, 0xD1, 0xEE, 0xE1, 0xE2, 0x3C, 0x2F, 0x68, 0x74, 0x6D, 0x6C, 0x3E]  // <html>Нет</html> in cp1251
+        SearchDiagnostics.dumpSolverMismatch(
+            png: Data(png),
+            responseData: Data(responseBytes),
+            host: "fail.sudrf.ru"
+        )
 
         let files = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil
@@ -73,7 +122,8 @@ final class SearchDiagnosticsTests: XCTestCase {
 
     func testToggleDisables() {
         SearchDiagnostics.enabled = false
-        SearchDiagnostics.dumpVariant(html: "<html>x</html>", host: "x.sudrf.ru")
+        SearchDiagnostics.dumpVariant(data: Data([0x3C, 0x68, 0x74, 0x6D, 0x6C, 0x3E]),
+                                 host: "x.sudrf.ru")
         let files = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil
         )) ?? []
@@ -92,7 +142,8 @@ final class SearchDiagnosticsTests: XCTestCase {
                 ofItemAtPath: url.path
             )
         }
-        SearchDiagnostics.dumpVariant(html: "<html>51st</html>", host: "evict.sudrf.ru")
+        SearchDiagnostics.dumpVariant(data: Data("<html>51st</html>".utf8),
+                                 host: "evict.sudrf.ru")
 
         let entries = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil

@@ -58,16 +58,33 @@ public enum SearchDiagnostics {
     /// `.unrecognized` для всех вариантов выдачи. Это путь, который
     /// сейчас приводит к `SudrfError.searchModuleUnavailable` —
     /// диагностика нужна, чтобы понять, что суд прислал.
-    public static func dumpVariant(html: String, host: String) {
-        save(html: html, kind: "variant", host: host, suffix: nil)
+    ///
+    /// `data` — сырые байты ответа (в кодировке, заявленной сервером).
+    /// Записываются в файл **verbatim** — без перекодирования, чтобы
+    /// файл можно было открыть в браузере (который прочитает `<meta
+    /// charset=...>` из самого HTML и применит его) и в `iconv` / `xxd`
+    /// без потерь.
+    public static func dumpVariant(data: Data, host: String) {
+        save(data: data, kind: "variant", host: host, suffix: nil)
     }
 
     /// Сохранить HTML формы поиска, на которой `CaptchaDetector`
     /// сказал «нет капчи». Это значит, что у captcha-включённого
     /// суда детектор не узнал маркер капчи — нужно посмотреть,
     /// как выглядит форма.
+    public static func dumpFormCheck(data: Data, host: String) {
+        save(data: data, kind: "form", host: host, suffix: nil)
+    }
+
+    /// String-overload для тестов и редких случаев, когда сырых
+    /// байт нет (например, ошибочные пути в юнит-тестах). В продакшене
+    /// предпочитайте `data:`-версию — она не искажает кодировку.
+    public static func dumpVariant(html: String, host: String) {
+        save(data: Data(html.utf8), kind: "variant", host: host, suffix: nil)
+    }
+
     public static func dumpFormCheck(html: String, host: String) {
-        save(html: html, kind: "form", host: host, suffix: nil)
+        save(data: Data(html.utf8), kind: "form", host: host, suffix: nil)
     }
 
     /// Сохранить HTML ответа и PNG капчи, на которой авто-солвер
@@ -75,8 +92,8 @@ public enum SearchDiagnostics {
     /// означает, что солвер промахнулся — нужно сравнить его ответ
     /// с «правильным» (который мы не знаем, но видим последствия
     /// в ответе сервера).
-    public static func dumpSolverMismatch(png: Data, html: String, host: String) {
-        save(html: html, kind: "solver-mismatch", host: host, suffix: nil)
+    public static func dumpSolverMismatch(png: Data, responseData: Data, host: String) {
+        save(data: responseData, kind: "solver-mismatch", host: host, suffix: nil)
         // Дополнительно — сохраняем PNG, чтобы можно было посмотреть
         // глазами на ту капчу, которую солвер не угадал.
         let dir = self.dir
@@ -92,7 +109,7 @@ public enum SearchDiagnostics {
     /// Внутренний writer. `kind` определяет префикс имени файла,
     /// `suffix` — необязательный тег (сейчас не используется,
     /// зарезервировано под будущее).
-    private static func save(html: String, kind: String, host: String, suffix: String?) {
+    private static func save(data: Data, kind: String, host: String, suffix: String?) {
         guard enabled else { return }
         let dir = self.dir
         let safeHost = host.replacingOccurrences(of: "/", with: "_")
@@ -102,7 +119,7 @@ public enum SearchDiagnostics {
             "\(safeHost)_\(timestampSafe())_\(kind)\(tag).html"
         )
         do {
-            try html.data(using: .utf8)?.write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
         } catch {
             // best-effort: ошибка записи не должна ломать основной поток
         }

@@ -54,7 +54,7 @@ targets:
           NSExceptionDomains:
             sudrf.ru:
               NSIncludesSubdomains: true
-              NSExceptionMinimumTLSVersion: TLSv1.0
+              NSExceptionMinimumTLSVersion: TLSv1.2
               NSExceptionRequiresForwardSecrecy: false
               NSExceptionAllowsInsecureHTTPLoads: true
             msudrf.ru:

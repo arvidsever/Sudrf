@@ -12,6 +12,7 @@ import SudrfKit
 private enum CalEventKind { case hearing, deadlineProposed, deadlineConfirmed }
 
 private struct CalEvent: Identifiable {
+    var id: String
     var date: Date
     var sortTime: String
     var kind: CalEventKind
@@ -27,9 +28,6 @@ private struct CalEvent: Identifiable {
     var room: String = ""
     var judge: String = ""
 
-    var id: String {
-        "\(Int(date.timeIntervalSinceReferenceDate))|\(heading)|\(caseNumber ?? deadlineId ?? title)"
-    }
     var accent: Color {
         switch kind {
         case .hearing:           return Color.accentColor
@@ -63,8 +61,15 @@ struct CalendarScreen: View {
 
     private var events: [CalEvent] {
         var out: [CalEvent] = []
+        var seenIDs: [String: Int] = [:]
+        func uniqueID(_ base: String) -> String {
+            let seen = seenIDs[base, default: 0]
+            seenIDs[base] = seen + 1
+            return seen == 0 ? base : "\(base)#\(seen + 1)"
+        }
         for h in router.hearings {
-            out.append(CalEvent(date: h.date, sortTime: h.time, kind: .hearing,
+            out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
+                date: h.date, sortTime: h.time, kind: .hearing,
                 chip: "\(h.time) заседание · \(h.caseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
                 title: "№ \(h.caseNumber) — \(h.parties)",
                 sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
@@ -73,7 +78,8 @@ struct CalendarScreen: View {
         }
         for d in router.deadlines {
             let confirmed = d.status == .confirmed
-            out.append(CalEvent(date: d.date, sortTime: "99:99",
+            out.append(CalEvent(id: uniqueID("deadline#\(d.id)"),
+                date: d.date, sortTime: "99:99",
                 kind: confirmed ? .deadlineConfirmed : .deadlineProposed,
                 chip: (confirmed ? "срок · " : "срок? ") + d.calLabel,
                 time: "срок", heading: confirmed ? "ДЕДЛАЙН · ПОДТВЕРЖДЁН" : "ДЕДЛАЙН · РАСЧЁТНЫЙ",

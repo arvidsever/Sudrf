@@ -8,7 +8,7 @@
 #
 #  Запуск:  bash Scripts/make-app.sh
 #  Результат: build/SudrfApp.app (и сразу открывается) +
-#  build/Sudrf-Alpha-0.37.1-build38.zip — универсальная сборка
+#  build/Sudrf-Alpha-0.38.9-build48.zip — универсальная сборка
 #  (Apple Silicon + Intel), можно пересылать.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 APP_NAME="Sudrf"
 RELEASE_CHANNEL="Alpha"
 MARKETING_VERSION="0.39.10"
-CURRENT_PROJECT_VERSION="52"
+CURRENT_PROJECT_VERSION="53"
 ARCHIVE="build/${APP_NAME}-${RELEASE_CHANNEL}-${MARKETING_VERSION}-build${CURRENT_PROJECT_VERSION}.zip"
 
 ARCHES=(--arch arm64 --arch x86_64)

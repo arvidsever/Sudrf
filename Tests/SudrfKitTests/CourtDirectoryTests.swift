@@ -34,6 +34,12 @@ final class CourtDirectoryTests: XCTestCase {
         XCTAssertEqual(c?.domain, "3kas.sudrf.ru")
     }
 
+    func testMSudrfHostPredicateRequiresExactOrDottedHost() {
+        XCTAssertTrue(SudrfHost.isMSudrfHost("msudrf.ru"))
+        XCTAssertTrue(SudrfHost.isMSudrfHost("pervomaysky.komi.msudrf.ru"))
+        XCTAssertFalse(SudrfHost.isMSudrfHost("xmsudrf.ru"))
+    }
+
     func testTerritorialCourtToCourt() {
         let k = CourtDirectory.cassationCourts.first { $0.number == 3 }!
         XCTAssertEqual(k.court.level, .cassation)

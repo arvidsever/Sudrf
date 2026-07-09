@@ -185,7 +185,7 @@ enum CaseImporter {
         guard let url = URL(string: row.urlString), let host = url.host?.lowercased() else {
             return .skipped(reason: reasonBadURL)
         }
-        if host.hasSuffix("msudrf.ru") { return .skipped(reason: reasonMagistrate) }
+        if SudrfHost.isMSudrfHost(host) { return .skipped(reason: reasonMagistrate) }
         // У петербургских мировых судей собственный портал (не msudrf.ru).
         if host.hasSuffix("mirsud.spb.ru") { return .skipped(reason: reasonMagistrateSpb) }
         if host.contains("mos-gorsud") { return .skipped(reason: reasonMosgorsud) }

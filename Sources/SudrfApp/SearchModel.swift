@@ -590,7 +590,7 @@ final class SearchModel: ObservableObject {
                                  instanceID: inst.id,
                                  level: inst.level,
                                  courtTitle: inst.court,
-                                 kind: url.host?.lowercased().hasSuffix("msudrf.ru") == true ? .kcaptcha : .sudrfToken)
+                                 kind: url.host.map(SudrfHost.isMSudrfHost) == true ? .kcaptcha : .sudrfToken)
     }
 
     /// Сохранить решённую пользователем пару captcha/captchaid: суд принимает

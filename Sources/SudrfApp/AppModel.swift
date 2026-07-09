@@ -670,7 +670,7 @@ final class AppRouter: ObservableObject {
                                              instanceID: inst.id,
                                              level: inst.level,
                                              courtTitle: inst.court,
-                                             kind: url.host?.lowercased().hasSuffix("msudrf.ru") == true ? .kcaptcha : .sudrfToken,
+                                             kind: url.host.map(SudrfHost.isMSudrfHost) == true ? .kcaptcha : .sudrfToken,
                                              pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
                                              pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
     }

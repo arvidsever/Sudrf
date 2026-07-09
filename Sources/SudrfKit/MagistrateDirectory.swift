@@ -10,7 +10,7 @@ public struct MagistrateCourt: Sendable, Equatable, Codable {
 
     public var isSupported: Bool {
         let host = domain.lowercased()
-        return host.hasSuffix("msudrf.ru") || host.hasSuffix(".msudrf.ru")
+        return SudrfHost.isMSudrfHost(host)
     }
 
     public var court: Court {

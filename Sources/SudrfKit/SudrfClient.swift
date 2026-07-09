@@ -80,6 +80,10 @@ public actor SudrfClient {
             } catch let e as URLError {
                 if allowHTTPFallback, e.isTLSError,
                    let httpURL = url.msudrfHTTPFallbackURL {
+                    // Privacy tradeoff: magistrate searches may carry personal
+                    // data in query parameters. Plain HTTP is allowed only for
+                    // msudrf hosts, only after TLS fails, and only for this one
+                    // retry so broken government TLS does not silently broaden.
                     return try await fetchHTML(httpURL, allowHTTPFallback: false)
                 }
                 lastError = e
@@ -264,7 +268,7 @@ private extension URL {
     var msudrfHTTPFallbackURL: URL? {
         guard scheme?.lowercased() == "https",
               let host = host?.lowercased(),
-              host == "msudrf.ru" || host.hasSuffix(".msudrf.ru"),
+              SudrfHost.isMSudrfHost(host),
               var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
             return nil
         }

@@ -375,7 +375,7 @@ public actor MagistrateClient: CaseProviding {
     }
 
     public func fetchCard(url: URL) async throws -> CaseCard {
-        if url.host?.lowercased().hasSuffix("msudrf.ru") == true {
+        if url.host.map(SudrfHost.isMSudrfHost) == true {
             let html = try await client.fetchHTML(url)
             if CaptchaDetector.hasCaptcha(in: html) {
                 throw SudrfError.captchaRequired(formURL: url)
@@ -386,7 +386,7 @@ public actor MagistrateClient: CaseProviding {
     }
 
     private func isMagistrate(_ court: Court) -> Bool {
-        court.level == .magistrate || court.domain.lowercased().hasSuffix("msudrf.ru")
+        court.level == .magistrate || SudrfHost.isMSudrfHost(court.domain)
     }
 
     private func dedupe(_ items: [CaseSearchResult]) -> [CaseSearchResult] {

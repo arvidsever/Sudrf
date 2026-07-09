@@ -768,7 +768,7 @@ extension CaptchaWebView.Coordinator {
         }
         let host = challenge.protectionSpace.host.lowercased()
         if host == "sudrf.ru" || host.hasSuffix(".sudrf.ru")
-            || host == "msudrf.ru" || host.hasSuffix(".msudrf.ru") {
+            || SudrfHost.isMSudrfHost(host) {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.performDefaultHandling, nil)

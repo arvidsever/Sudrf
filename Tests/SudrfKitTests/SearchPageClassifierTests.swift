@@ -61,6 +61,29 @@ final class SearchPageClassifierTests: XCTestCase {
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .empty)
     }
 
+    func testCaptchaTextFallbackAllowsHiddenStateBesideEditableInput() {
+        let html = """
+        <html><body>
+        <h2>Проверочный код</h2>
+        <div><input type="hidden" name="session" value="abc"></div>
+        <div><input type="text" name="answer"></div>
+        </body></html>
+        """
+
+        XCTAssertTrue(CaptchaDetector.hasCaptcha(in: html))
+    }
+
+    func testCaptchaTextFallbackIgnoresHiddenOnlyInput() {
+        let html = """
+        <html><body>
+        <h2>Проверочный код</h2>
+        <div><input type="hidden" name="session" value="abc"></div>
+        </body></html>
+        """
+
+        XCTAssertFalse(CaptchaDetector.hasCaptcha(in: html))
+    }
+
     func testExpiredSessionIsCaptcha() {
         let html = "<html><body>Время жизни сессии закончилось</body></html>"
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .captcha)

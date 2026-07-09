@@ -82,6 +82,36 @@ public enum CaptchaDetector {
     }
 
     private static func hasEditableInputMarkup(_ lower: String) -> Bool {
-        lower.contains("<input") && !lower.contains("type=\"hidden\"")
+        guard let re = try? NSRegularExpression(pattern: #"<input\b[^>]*>"#) else { return false }
+        let ns = lower as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        return re.matches(in: lower, range: range).contains { match in
+            isEditableInputMarkup(ns.substring(with: match.range))
+        }
+    }
+
+    private static func isEditableInputMarkup(_ tag: String) -> Bool {
+        let type = attribute("type", in: tag) ?? "text"
+        let ignoredTypes: Set<String> = ["hidden", "submit", "button", "reset", "checkbox", "radio"]
+        guard !ignoredTypes.contains(type) else { return false }
+        if tag.contains("disabled") || tag.contains("readonly") { return false }
+        let style = attribute("style", in: tag) ?? ""
+        return !style.contains("display:none")
+            && !style.contains("display: none")
+            && !style.contains("visibility:hidden")
+            && !style.contains("visibility: hidden")
+    }
+
+    private static func attribute(_ name: String, in tag: String) -> String? {
+        let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: name)
+            + #"\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = tag as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = re.firstMatch(in: tag, range: range) else { return nil }
+        for i in 1..<match.numberOfRanges where match.range(at: i).location != NSNotFound {
+            return ns.substring(with: match.range(at: i))
+        }
+        return nil
     }
 }

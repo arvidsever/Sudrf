@@ -23,6 +23,19 @@ struct CaptchaMenuContent: View {
 
         Divider()
 
+        // Глобальный тоггл preprocess. v0.38.7: пользователь явно
+        // включает preprocess для всех хостов, а не добавляет хосты
+        // вручную. Под капотом — `VisionOCRStrategy.preprocessingProvider`,
+        // который читает флаг при каждом вызове солвера. На суды без
+        // rotated/struck-through капчи preprocess РЕГРЕССИРУЕТ (Vision
+        // читает «667» как «49»), поэтому по умолчанию выключен.
+        Toggle(isOn: $settings.preprocessorEnabled) {
+            Text("Предобработка капчи (для rotated/struck-through)")
+        }
+        .help("Включает grayscale + 2x scale перед распознаванием. На простых captcha sudrf может РЕГРЕССИРОВАТЬ. Включайте, если авто-солвер возвращает неверный код.")
+
+        Divider()
+
         Text("Решено сегодня: \(solvedToday())")
         Text("Порог уверенности: \(percent(settings.minConfidence))")
         Text("Версия солвера: Vision (on-device)")
@@ -32,6 +45,7 @@ struct CaptchaMenuContent: View {
         Button("Сбросить настройки") {
             settings.autoSolveEnabled = true
             settings.minConfidence = 0.55
+            settings.preprocessorEnabled = false
         }
     }
 

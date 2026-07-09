@@ -20,10 +20,45 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
     public var preprocessingEnabled: Bool
     public var preprocessorHosts: Set<String>
 
+    /// Опциональный live-источник флага preprocess. Если задан, читается
+    /// при каждом вызове `solve` — позволяет пользователю переключать
+    /// preprocess в меню без пересоздания солвера. Если `nil`,
+    /// используется фиксированное `preprocessingEnabled` из инициализатора.
+    public var preprocessingProvider: (() -> Bool)?
+
+    /// Возвращает топ-N кандидатов, прошедших регулярку `kind.regex`,
+    /// отсортированных по (длина ↓, уверенность ↓). Используется для
+    /// диагностики: `AutoCaptchaSolver` логирует эти данные в файл,
+    /// чтобы при ручной разборке видеть «что ещё увидел Vision».
+    /// Второй элемент кортежа — был ли применён preprocess.
+    public func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int = 3) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
+        let (effectiveData, preprocessed) = resolveEffectiveData(pngData: pngData, host: host)
+        let observations = try await performVision(data: effectiveData, kind: kind)
+        let tuples = observations.flatMap { obs -> [(String, Float)] in
+            obs.topCandidates(n).map { ($0.string, $0.confidence) }
+        }
+        let regex = kind.regex
+        let matches = tuples.compactMap { t -> (String, Double)? in
+            let cleaned = t.0.replacingOccurrences(of: " ", with: "")
+            let nsRange = NSRange(location: 0, length: cleaned.utf16.count)
+            guard regex.firstMatch(in: cleaned, options: [], range: nsRange) != nil else {
+                return nil
+            }
+            return (cleaned, Double(t.1))
+        }
+        let sorted = matches.sorted { lhs, rhs in
+            if lhs.0.count != rhs.0.count { return lhs.0.count > rhs.0.count }
+            return lhs.1 > rhs.1
+        }
+        return (Array(sorted.prefix(n)), preprocessed)
+    }
+
     public init(preprocessingEnabled: Bool = false,
-                preprocessorHosts: Set<String> = []) {
+                preprocessorHosts: Set<String> = [],
+                preprocessingProvider: (() -> Bool)? = nil) {
         self.preprocessingEnabled = preprocessingEnabled
         self.preprocessorHosts = preprocessorHosts
+        self.preprocessingProvider = preprocessingProvider
     }
 
     public func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
@@ -35,13 +70,15 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         // Vision возвращает conf=0.00 на сырых данных.
         //
         // Логика:
-        //   - preprocessingEnabled = false  → preprocess выключен глобально.
-        //   - preprocessingEnabled = true + preprocessorHosts = ∅
-        //                                      → preprocess для всех.
-        //   - preprocessingEnabled = true + preprocessorHosts = {...}
-        //                                      → preprocess только для этих хостов.
+        //   - live provider (если задан) → читаем `preprocessorEnabled`
+        //     из `CaptchaSettings` на каждом вызове (для тоггла в меню).
+        //   - иначе фиксированный `preprocessingEnabled`:
+        //       - false  → preprocess выключен глобально.
+        //       - true + preprocessorHosts = ∅   → preprocess для всех.
+        //       - true + preprocessorHosts = {...} → только эти хосты.
+        let liveFlag = preprocessingProvider?() ?? preprocessingEnabled
         let shouldPreprocess: Bool = {
-            guard preprocessingEnabled else { return false }
+            guard liveFlag else { return false }
             guard !preprocessorHosts.isEmpty else { return true }
             guard let host = host?.lowercased() else { return false }
             return preprocessorHosts.contains { $0.lowercased() == host }
@@ -54,6 +91,34 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
             effectiveData = pngData
         }
 
+        let observations = try await performVision(data: effectiveData, kind: kind)
+        let candidates = observations.compactMap { $0.topCandidates(1).first }
+        return Self.pick(tuples: candidates.map { ($0.string, $0.confidence) }, kind: kind)
+    }
+
+    /// Применяет preprocess по тем же правилам, что и `solve`, и
+    /// возвращает (effectiveData, didPreprocess). Используется
+    /// `topCandidates` для диагностики, чтобы файл-лог отражал то же
+    /// изображение, что и распознавание.
+    func resolveEffectiveData(pngData: Data, host: String?) -> (Data, Bool) {
+        let liveFlag = preprocessingProvider?() ?? preprocessingEnabled
+        let shouldPreprocess: Bool = {
+            guard liveFlag else { return false }
+            guard !preprocessorHosts.isEmpty else { return true }
+            guard let host = host?.lowercased() else { return false }
+            return preprocessorHosts.contains { $0.lowercased() == host }
+        }()
+        if shouldPreprocess, let preprocessed = Preprocessor.process(pngData: pngData) {
+            return (preprocessed, true)
+        }
+        return (pngData, false)
+    }
+
+    /// Прогоняет PNG через `VNRecognizeTextRequest` с настройками под
+    /// `kind`. Возвращает массив observations для последующего извлечения
+    /// кандидатов. Бросает `CaptchaSolverError.visionFailed` при сбое
+    /// инициализации/перформанса. Используется и `solve`, и `topCandidates`.
+    func performVision(data: Data, kind: CaptchaKind) async throws -> [VNRecognizedTextObservation] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
@@ -68,10 +133,9 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         case .kcaptcha:
             request.recognitionLanguages = ["ru-RU", "en-US"]
         }
-
         let handler: VNImageRequestHandler
         do {
-            handler = try VNImageRequestHandler(data: effectiveData, options: [:])
+            handler = try VNImageRequestHandler(data: data, options: [:])
         } catch {
             throw CaptchaSolverError.visionFailed("handler init: \(error.localizedDescription)")
         }
@@ -80,10 +144,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         } catch {
             throw CaptchaSolverError.visionFailed("perform: \(error.localizedDescription)")
         }
-
-        let observations = request.results ?? []
-        let candidates = observations.compactMap { $0.topCandidates(1).first }
-        return Self.pick(tuples: candidates.map { ($0.string, $0.confidence) }, kind: kind)
+        return request.results ?? []
     }
 
     /// Выбирает лучшего кандидата: применяет регулярку, специфичную для

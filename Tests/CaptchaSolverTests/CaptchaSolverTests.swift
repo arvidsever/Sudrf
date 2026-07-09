@@ -51,4 +51,100 @@ final class CaptchaSolverTests: XCTestCase {
         XCTAssertEqual(CaptchaKind.sudrfToken.label, "sudrfToken")
         XCTAssertEqual(CaptchaKind.kcaptcha.label, "kcaptcha")
     }
+
+    // MARK: - Live preprocess provider (v0.38.7)
+
+    /// Live-флаг preprocess меняется между вызовами: один и тот же
+    /// PNG обрабатывается и как raw, и как preprocessed без
+    /// пересоздания солвера. Это основной контракт тоггла в меню.
+    func testPreprocessLiveProviderToggle() async throws {
+        let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
+        var strategy = VisionOCRStrategy()
+        var preprocessorOn = false
+        strategy.preprocessingProvider = { preprocessorOn }
+        let solver = CaptchaSolver(provider: strategy)
+        // raw
+        let (_, offPre) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
+        XCTAssertFalse(offPre)
+        // переключаем
+        preprocessorOn = true
+        let (_, onPre) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
+        XCTAssertTrue(onPre)
+        // обратно
+        preprocessorOn = false
+        let (_, offPre2) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
+        XCTAssertFalse(offPre2)
+    }
+
+    /// Если `preprocessingProvider = nil`, стратегия использует
+    /// фиксированный флаг `preprocessingEnabled`. Backward compat.
+    func testPreprocessWithoutProviderFallsBackToFixedFlag() async throws {
+        let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
+        let strategy = VisionOCRStrategy(preprocessingEnabled: false)
+        let solver = CaptchaSolver(provider: strategy)
+        let (_, pre0) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
+        XCTAssertFalse(pre0)
+        let onStrategy = VisionOCRStrategy(preprocessingEnabled: true, preprocessorHosts: [])
+        let onSolver = CaptchaSolver(provider: onStrategy)
+        let (_, pre1) = await onSolver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
+        XCTAssertTrue(pre1)
+    }
+
+    // MARK: - Real captcha PNGs (v0.38.7)
+
+    /// `CaptchaSolverLog.logCandidates` пишет диагностический файл
+    /// с топ-3 кандидатами Vision и пометкой, был ли применён
+    /// preprocess. Тест грузит реальный PNG из `captcha-failures/`
+    /// (если есть) и проверяет структуру файла. Делаем XCTSkip, если
+    /// папка пуста.
+    func testCandidatesDiagnosticForRealPNG() async throws {
+        guard let item = RealCaptchaFixture.loadAll().first else {
+            throw XCTSkip("no real captcha PNG in captcha-failures/")
+        }
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("CandidatesDiag-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let logFile = tmpDir.appendingPathComponent("captcha-solve.log")
+        let failures = tmpDir.appendingPathComponent("captcha-failures")
+        let diagnostics = tmpDir.appendingPathComponent("diagnostics")
+        try FileManager.default.createDirectory(at: failures, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        let log = CaptchaSolverLog(fileURL: logFile, failuresDir: failures, diagnosticsDir: diagnostics)
+
+        var strategy = VisionOCRStrategy()
+        var preprocessorOn = false
+        strategy.preprocessingProvider = { preprocessorOn }
+        let solver = CaptchaSolver(provider: strategy)
+        let host = item.host
+
+        let (off, offPre) = await solver.topCandidates(
+            pngData: item.png, kind: .sudrfToken, host: host, n: 3
+        )
+        XCTAssertFalse(offPre, "preprocess should be off when provider returns false")
+
+        preprocessorOn = true
+        let (on, onPre) = await solver.topCandidates(
+            pngData: item.png, kind: .sudrfToken, host: host, n: 3
+        )
+        XCTAssertTrue(onPre, "preprocess should be on when provider returns true")
+
+        let url = log.logCandidates(
+            host: host,
+            kind: .sudrfToken,
+            submitted: off.first?.text ?? "",
+            confidence: off.first?.confidence ?? 0,
+            alternatives: Array(off.dropFirst()),
+            preprocessed: false
+        )
+        let written = try XCTUnwrap(url, "logCandidates must return a URL")
+        let content = try String(contentsOf: written, encoding: .utf8)
+        XCTAssertTrue(content.contains("host=\(host)"),
+            "diagnostic must include host")
+        XCTAssertTrue(content.contains("kind=sudrfToken"),
+            "diagnostic must include kind")
+        XCTAssertTrue(content.contains("preprocessed=no"),
+            "diagnostic must mark preprocessed=no")
+        _ = on
+    }
 }

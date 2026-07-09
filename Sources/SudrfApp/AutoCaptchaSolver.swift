@@ -43,6 +43,13 @@ enum AutoCaptchaSolver {
     /// и `preprocessorHosts` определяют, какие хосты проходят через
     /// preprocess). Хост берётся из `formURL.host` и пробрасывается
     /// в `solver.solve(pngData:kind:host:)` для per-host gating.
+    ///
+    /// Дополнительно на каждой попытке пишется диагностический файл
+    /// `~/Library/Application Support/Sudrf/diagnostics/<host>_<ts>_candidates.txt`
+    /// с топ-3 кандидатами Vision и пометкой, был ли применён preprocess.
+    /// Это помогает в офлайне понять, почему солвер выбрал именно этот
+    /// текст (или почему conf=0.00) — обычно достаточно открыть файл и
+    /// сравнить candidates с PNG из `captcha-failures/`.
     static func solve(formURL: URL,
                       client: SudrfClient,
                       solver: CaptchaSolver,
@@ -61,6 +68,21 @@ enum AutoCaptchaSolver {
                 }
                 lastPNG = png
                 let result = try await solver.solve(pngData: png, kind: kind, host: host)
+                let (candidates, preprocessed) = await solver.topCandidates(
+                    pngData: png, kind: kind, host: host, n: 3
+                )
+                let trimmed: [(text: String, confidence: Double)] = candidates
+                    .filter { $0.text != result.value }
+                    .prefix(2)
+                    .map { ($0.text, $0.confidence) }
+                _ = log.logCandidates(
+                    host: host ?? "?",
+                    kind: kind,
+                    submitted: result.value,
+                    confidence: result.confidence,
+                    alternatives: trimmed,
+                    preprocessed: preprocessed
+                )
                 if result.confidence >= settings.minConfidence {
                     let token = CaptchaToken(value: result.value, id: captchaid)
                     log.logSkip(host: host ?? "?", kind: kind,

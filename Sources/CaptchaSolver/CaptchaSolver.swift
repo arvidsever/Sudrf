@@ -55,6 +55,21 @@ public actor CaptchaSolver {
         }
     }
 
+    /// Возвращает топ-N кандидатов от `VisionOCRStrategy` для
+    /// диагностики. Доступно только если провайдер — `VisionOCRStrategy`
+    /// (для других провайдеров возвращает пустой массив). Применяет те
+    /// же preprocess-правила, что и `solve`, чтобы диагностика
+    /// соответствовала фактическому распознаванию. Второй элемент
+    /// кортежа — был ли применён preprocess.
+    public func topCandidates(pngData: Data, kind: CaptchaKind, host: String? = nil, n: Int = 3) async -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
+        guard let vision = provider as? VisionOCRStrategy else { return ([], false) }
+        do {
+            return try await vision.topCandidates(pngData: pngData, kind: kind, host: host, n: n)
+        } catch {
+            return ([], false)
+        }
+    }
+
     private func throttleIfNeeded() async {
         let now = Date()
         let elapsedMs = Int(now.timeIntervalSince(lastInvocationAt) * 1000)

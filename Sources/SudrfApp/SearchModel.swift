@@ -119,10 +119,24 @@ final class SearchModel: ObservableObject {
         // что `preprocessingEnabled` и `preprocessorHosts` действуют
         // на оба пути — интерактивный поиск (`SearchModel`) и
         // фоновый обход (`RefreshCenter`).
+        //
+        // `preprocessingProvider` — live-источник флага: тоггл в меню
+        // применяется к следующему вызову `solver.solve` без пересоздания
+        // солвера. Без provider флаг фиксировался бы в момент init.
         let settings = captchaSettings ?? CaptchaSettings.shared
         self.captchaSettings = settings
-        self.captchaSolver = captchaSolver
-            ?? CaptchaSolver(configuration: settings.solverConfiguration)
+        if let captchaSolver {
+            self.captchaSolver = captchaSolver
+        } else {
+            var strategy = VisionOCRStrategy()
+            strategy.preprocessingProvider = { [weak settings] in
+                settings?.preprocessorEnabled ?? false
+            }
+            self.captchaSolver = CaptchaSolver(
+                provider: strategy,
+                configuration: settings.solverConfiguration
+            )
+        }
     }
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы

@@ -52,4 +52,45 @@ final class PreprocessorTests: XCTestCase {
         let preAttempt = try await pre.solve(pngData: png, kind: .sudrfToken)
         XCTAssertNotNil(preAttempt, "preprocessed Vision must return a CaptchaAttempt, not throw")
     }
+
+    // MARK: - Real captcha PNGs (v0.38.7)
+
+    /// Реальная captcha из `~/Library/Application Support/Sudrf/captcha-failures/`
+    /// проходит через preprocess без падения. `XCTSkip`, если фикстуры
+    /// нет (чистый клон, CI) — мы не хотим ронять билд из-за пустой
+    /// папки.
+    func testPreprocessOnRealCaptchaPNG() throws {
+        guard let item = RealCaptchaFixture.latest(host: "sankt-peterburgsky--spb.sudrf.ru")
+            ?? RealCaptchaFixture.latest(host: "oblsud--mo.sudrf.ru")
+            ?? RealCaptchaFixture.latest(host: "1kas--ao--sudrf--ru")
+            ?? RealCaptchaFixture.loadAll().first else {
+            throw XCTSkip("no real captcha PNG in captcha-failures/ — run app once to capture")
+        }
+        let out = try XCTUnwrap(Preprocessor.process(pngData: item.png),
+            "preprocess must succeed on real captcha \(item.filename)")
+        let img = try XCTUnwrap(NSImage(data: out))
+        // 2x scale → ширина и высота ровно в 2 раза больше.
+        XCTAssertGreaterThan(img.size.width, 0)
+        XCTAssertGreaterThan(img.size.height, 0)
+        XCTAssertNotEqual(out, item.png,
+            "preprocessed PNG must differ from input")
+    }
+
+    /// Vision не падает на реальной captcha из captcha-failures/ ни
+    /// с preprocess, ни без. Сравнение результатов (без vs с preprocess)
+    /// позволяет заметить регрессию «Vision перестал видеть digits на
+    /// spb-капчах» в CI, где сама папка фикстур может быть
+    /// смонтирована из бэкапа.
+    func testVisionDoesNotCrashOnRealCaptchaPNG() async throws {
+        let items = RealCaptchaFixture.loadAll()
+        guard let item = items.first else {
+            throw XCTSkip("no real captcha PNG in captcha-failures/ — run app once to capture")
+        }
+        let raw = VisionOCRStrategy(preprocessingEnabled: false)
+        let rawAttempt = try await raw.solve(pngData: item.png, kind: .sudrfToken, host: item.host)
+        XCTAssertNotNil(rawAttempt, "raw Vision must not throw on real captcha")
+        let pre = VisionOCRStrategy(preprocessingEnabled: true, preprocessorHosts: [])
+        let preAttempt = try await pre.solve(pngData: item.png, kind: .sudrfToken, host: item.host)
+        XCTAssertNotNil(preAttempt, "preprocessed Vision must not throw on real captcha")
+    }
 }

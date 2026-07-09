@@ -406,7 +406,20 @@ final class AppRouter: ObservableObject {
         // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
         // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
         // определяют, какие хосты проходят через preprocess — см. v0.38.4.
-        let configuredSolver = CaptchaSolver(configuration: captchaSettings.solverConfiguration)
+        //
+        // `preprocessingProvider` пробрасывает live-источник флага из
+        // `CaptchaSettings`: пользователь переключает preprocess в меню,
+        // и следующий вызов `solver.solve` сразу видит новое значение.
+        // Без provider флаг был бы зафиксирован на момент конструирования
+        // солвера, и тоггл в меню не действовал бы до перезапуска.
+        var strategy = VisionOCRStrategy()
+        strategy.preprocessingProvider = { [weak captchaSettings] in
+            captchaSettings?.preprocessorEnabled ?? false
+        }
+        let configuredSolver = CaptchaSolver(
+            provider: strategy,
+            configuration: captchaSettings.solverConfiguration
+        )
         self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings
         refreshCenter = RefreshCenter(store: store, client: client,

@@ -22,6 +22,7 @@ public final class CaptchaSolverLog: @unchecked Sendable {
     private let queue = DispatchQueue(label: "ru.sudrf.app.CaptchaSolverLog", qos: .utility)
     private let fileURL: URL?
     private let failuresDir: URL?
+    private let diagnosticsDir: URL?
     private let maxBytes: Int = 1_048_576   // 1 MB
     private let maxRotations: Int = 3
     private let maxFailureImages: Int = 50
@@ -35,17 +36,22 @@ public final class CaptchaSolverLog: @unchecked Sendable {
             let failures = dir.appendingPathComponent("captcha-failures", isDirectory: true)
             try? fm.createDirectory(at: failures, withIntermediateDirectories: true)
             self.failuresDir = failures
+            let diagnostics = dir.appendingPathComponent("diagnostics", isDirectory: true)
+            try? fm.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+            self.diagnosticsDir = diagnostics
         } else {
             self.fileURL = nil
             self.failuresDir = nil
+            self.diagnosticsDir = nil
         }
     }
 
     /// Инициализатор для тестов: позволяет писать в произвольный каталог
     /// вместо `~/Library/Application Support/Sudrf/`.
-    init(fileURL: URL?, failuresDir: URL?) {
+    init(fileURL: URL?, failuresDir: URL?, diagnosticsDir: URL? = nil) {
         self.fileURL = fileURL
         self.failuresDir = failuresDir
+        self.diagnosticsDir = diagnosticsDir
     }
 
     public func logAttempt(host: String, kind: CaptchaKind, attempt: CaptchaAttempt) {
@@ -80,6 +86,45 @@ public final class CaptchaSolverLog: @unchecked Sendable {
             return url
         } catch {
             osLog.error("failed to write failure image: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Записать диагностический файл с топ-N кандидатами Vision для
+    /// одной попытки распознавания. Файл пишется в `diagnosticsDir`
+    /// (рядом с `failuresDir`). Используется `AutoCaptchaSolver` для
+    /// офлайн-разбора: «почему солвер выбрал именно этот текст» и
+    /// «что ещё увидел Vision». Не подлежит FIFO-вытеснению —
+    /// кандидаты это десятки байт, а пользователь сам смотрит папку.
+    @discardableResult
+    public func logCandidates(host: String,
+                              kind: CaptchaKind,
+                              submitted: String,
+                              confidence: Double,
+                              alternatives: [(text: String, confidence: Double)],
+                              preprocessed: Bool) -> URL? {
+        guard let dir = diagnosticsDir else { return nil }
+        let safeHost = host.replacingOccurrences(of: "/", with: "_")
+                          .replacingOccurrences(of: ":", with: "")
+        let name = "\(safeHost)_\(timestampFileSafe())_\(kind.label)_candidates.txt"
+        let url = dir.appendingPathComponent(name)
+        var lines: [String] = []
+        lines.append("host=\(host)")
+        lines.append("kind=\(kind.label)")
+        lines.append("preprocessed=\(preprocessed ? "yes" : "no")")
+        lines.append("submitted=\(submitted)")
+        lines.append(String(format: "confidence=%.4f", confidence))
+        lines.append("alternatives:")
+        for (i, alt) in alternatives.enumerated() {
+            lines.append(String(format: "  %d. \"%@\" conf=%.4f",
+                                i + 1, alt.text, alt.confidence))
+        }
+        let payload = (lines.joined(separator: "\n") + "\n").data(using: .utf8) ?? Data()
+        do {
+            try payload.write(to: url, options: .atomic)
+            return url
+        } catch {
+            osLog.error("failed to write candidates diagnostic: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

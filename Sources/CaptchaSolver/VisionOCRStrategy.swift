@@ -4,28 +4,64 @@ import Vision
 
 /// Стратегия распознавания на основе Vision framework (`VNRecognizeTextRequest`).
 ///
-/// Поток: `pngData` → `ImagePreprocessor.process` (Оцу, бордер, паддинг) →
-/// `VNRecognizeTextRequest` с `usesLanguageCorrection = false` →
-/// пост-фильтр по регулярному выражению, специфичному для `CaptchaKind`.
+/// Поток: `pngData` → опционально `Preprocessor.process` (grayscale +
+/// 2x scale, см. `CaptchaConfiguration.preprocessingEnabled`) →
+/// `VNRecognizeTextRequest` с `usesLanguageCorrection = false`,
+/// `minimumTextHeight = 0.2` (понижен с 0.3 в v0.38.4 — на 100×30
+/// PNG текст может быть 20–25% высоты, и 0.3 не даёт Vision даже
+/// пытаться) → пост-фильтр по регулярному выражению, специфичному
+/// для `CaptchaKind`.
 ///
-/// Возвращает `CaptchaAttempt.empty` (нулевая уверенность), если ни один
-/// кандидат не прошёл фильтр. Это нормальный исход — вызывающая сторона
-/// решает, что делать дальше.
+/// Возвращает `CaptchaAttempt.empty` (нулевая уверенность), если ни
+/// один кандидат не прошёл фильтр. Это нормальный исход — вызывающая
+/// сторона решает, что делать дальше.
 public struct VisionOCRStrategy: CaptchaSolvingProvider {
 
-    public init() {}
+    public var preprocessingEnabled: Bool
+    public var preprocessorHosts: Set<String>
 
-    public func solve(pngData: Data, kind: CaptchaKind) async throws -> CaptchaAttempt {
-        // Без предобработки: прямой PNG → Vision. Предобработка (Оцу,
-        // паддинг) ухудшала точность из-за особенностей CIImage-координат
-        // (bottom-up) — Vision на сырой картинке sudrf уверенно читает
-        // цифры (например, '667' с conf=1.00). Если точность на
-        // сложных капчах (nsk, msudrf) окажется ниже порога, добавим
-        // точечные стратегии с другой нормализацией.
+    public init(preprocessingEnabled: Bool = false,
+                preprocessorHosts: Set<String> = []) {
+        self.preprocessingEnabled = preprocessingEnabled
+        self.preprocessorHosts = preprocessorHosts
+    }
+
+    public func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
+        // Предобработка решает per-host. По умолчанию выключена —
+        // на captcha sudrf без сильных искажений Vision с прямым PNG
+        // даёт conf=1.00, а предобработка вносит артефакты
+        // (например, читает «667» как «49»). Включать стоит только
+        // для хостов с rotated/struck-through captcha, на которых
+        // Vision возвращает conf=0.00 на сырых данных.
+        //
+        // Логика:
+        //   - preprocessingEnabled = false  → preprocess выключен глобально.
+        //   - preprocessingEnabled = true + preprocessorHosts = ∅
+        //                                      → preprocess для всех.
+        //   - preprocessingEnabled = true + preprocessorHosts = {...}
+        //                                      → preprocess только для этих хостов.
+        let shouldPreprocess: Bool = {
+            guard preprocessingEnabled else { return false }
+            guard !preprocessorHosts.isEmpty else { return true }
+            guard let host = host?.lowercased() else { return false }
+            return preprocessorHosts.contains { $0.lowercased() == host }
+        }()
+
+        let effectiveData: Data
+        if shouldPreprocess, let preprocessed = Preprocessor.process(pngData: pngData) {
+            effectiveData = preprocessed
+        } else {
+            effectiveData = pngData
+        }
+
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
-        request.minimumTextHeight = 0.3
+        // 0.2 — проходит нижнюю границу для 100×30 captcha, где
+        // высота символов ~20% от изображения. 0.3 (предыдущее
+        // значение) не давал Vision даже пытаться для таких случаев
+        // → conf=0.00 на spb-капчах с rotated digits.
+        request.minimumTextHeight = 0.2
         switch kind {
         case .sudrfToken:
             request.recognitionLanguages = ["en-US"]
@@ -35,7 +71,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
 
         let handler: VNImageRequestHandler
         do {
-            handler = try VNImageRequestHandler(data: pngData, options: [:])
+            handler = try VNImageRequestHandler(data: effectiveData, options: [:])
         } catch {
             throw CaptchaSolverError.visionFailed("handler init: \(error.localizedDescription)")
         }

@@ -22,21 +22,25 @@ public actor CaptchaSolver {
 
     /// Распознать капчу. Метод идемпотентен относительно `pngData + kind` —
     /// внутри нет глобального состояния, только rate limit.
-    public func solve(pngData: Data, kind: CaptchaKind) async throws -> CaptchaAttempt {
+    ///
+    /// `host` — опциональный домен формы (например,
+    /// `sankt-peterburgsky--spb.sudrf.ru`). Пробрасывается в провайдер
+    /// для per-host решений (например, preprocessor hosts).
+    public func solve(pngData: Data, kind: CaptchaKind, host: String? = nil) async throws -> CaptchaAttempt {
         guard configuration.enabledKinds.contains(kind) else {
             return .empty
         }
         await throttleIfNeeded()
         let started = Date()
         do {
-            let attempt = try await provider.solve(pngData: pngData, kind: kind)
+            let attempt = try await provider.solve(pngData: pngData, kind: kind, host: host)
             let elapsed = Date().timeIntervalSince(started)
             let measured = CaptchaAttempt(
                 value: attempt.value,
                 confidence: attempt.confidence,
                 duration: elapsed
             )
-            log.logAttempt(host: "(solver)", kind: kind, attempt: measured)
+            log.logAttempt(host: host ?? "(solver)", kind: kind, attempt: measured)
             return measured
         } catch {
             // Внутренние сбои провайдера (CIImage декод, Vision с пустой
@@ -46,7 +50,7 @@ public actor CaptchaSolver {
             if error is CancellationError {
                 throw error
             }
-            log.logError(host: "(solver)", kind: kind, error: error)
+            log.logError(host: host ?? "(solver)", kind: kind, error: error)
             return .empty
         }
     }

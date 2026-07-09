@@ -1,7 +1,7 @@
 import XCTest
 @testable import SudrfApp
+@testable import CaptchaSolver
 import SudrfKit
-import CaptchaSolver
 
 /// Тесты для `AutoCaptchaSolver` — общего хелпера, который вызывается
 /// из `SearchModel.runSearch` и `RefreshCenter.performRefresh`. Логика
@@ -9,6 +9,36 @@ import CaptchaSolver
 /// `nil` после `maxAttempts` попыток. Здесь мы подменяем солвер на
 /// стаб, чтобы не зависеть от Vision и сети.
 final class AutoCaptchaSolverTests: XCTestCase {
+
+    /// Подменяем `CaptchaSolverLog.shared` на tmp-dir логгер, чтобы
+    /// тесты не засоряли реальный `~/Library/Application Support/Sudrf/captcha-solve.log`
+    /// (235+ example.test строк до фикса). Иначе пользовательский
+    /// лог показывал сотни строк тестового шума при анализе.
+    /// Pattern из `CaptchaSolverLogTests` (Tests/CaptchaSolverTests/).
+    private var tmpDir: URL!
+    private var logFile: URL!
+    private var failuresDir: URL!
+    private var log: CaptchaSolverLog!
+    private var originalShared: CaptchaSolverLog!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("AutoCaptchaSolverTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        logFile = tmpDir.appendingPathComponent("captcha-solve.log")
+        failuresDir = tmpDir.appendingPathComponent("captcha-failures")
+        try FileManager.default.createDirectory(at: failuresDir, withIntermediateDirectories: true)
+        log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir)
+        originalShared = CaptchaSolverLog.shared
+        CaptchaSolverLog.shared = log
+    }
+
+    override func tearDownWithError() throws {
+        CaptchaSolverLog.shared = originalShared
+        try? FileManager.default.removeItem(at: tmpDir)
+        try super.tearDownWithError()
+    }
 
     /// Стаб, который возвращает заранее заданные `CaptchaAttempt` по
     /// индексу вызова.

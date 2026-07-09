@@ -35,6 +35,21 @@ enum DateUtil {
         cal.isDate(a, inSameDayAs: b)
     }
     static func isToday(_ d: Date) -> Bool { sameDay(d, today) }
+    static func sameMonth(_ a: Date, _ b: Date) -> Bool {
+        startOfMonth(a) == startOfMonth(b)
+    }
+    static func startOfWeek(_ d: Date) -> Date {
+        let start = startOfDay(d)
+        let offset = (cal.component(.weekday, from: start) + 5) % 7
+        return addDays(start, -offset)
+    }
+    static func sameWeek(_ a: Date, _ b: Date) -> Bool {
+        startOfWeek(a) == startOfWeek(b)
+    }
+    static func weekDays(containing d: Date) -> [Date] {
+        let start = startOfWeek(d)
+        return (0..<7).map { addDays(start, $0) }
+    }
 
     /// Разница в КАЛЕНДАРНЫХ днях (b − a). Положительная — b позже a.
     static func daysBetween(_ a: Date, _ b: Date) -> Int {
@@ -91,6 +106,24 @@ enum DateUtil {
     /// «Июнь 2026».
     static func monthTitle(_ d: Date) -> String {
         "\(monthsNom[cal.component(.month, from: d) - 1]) \(cal.component(.year, from: d))"
+    }
+    /// «8 – 14 июня» / «29 июня – 5 июля».
+    static func weekTitle(starting start: Date) -> String {
+        let s = startOfWeek(start)
+        let e = addDays(s, 6)
+        let sd = cal.component(.day, from: s)
+        let ed = cal.component(.day, from: e)
+        let sm = cal.component(.month, from: s)
+        let em = cal.component(.month, from: e)
+        let sy = cal.component(.year, from: s)
+        let ey = cal.component(.year, from: e)
+        if sm == em && sy == ey {
+            return "\(sd) – \(ed) \(monthsGen[sm - 1])"
+        }
+        if sy == ey {
+            return "\(sd) \(monthsGen[sm - 1]) – \(ed) \(monthsGen[em - 1])"
+        }
+        return "\(sd) \(monthsGen[sm - 1]) \(sy) – \(ed) \(monthsGen[em - 1]) \(ey)"
     }
     /// «сегодня» / «через N дней» / «срок прошёл».
     static func relative(_ d: Date) -> String {

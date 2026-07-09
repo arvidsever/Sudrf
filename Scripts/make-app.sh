@@ -53,7 +53,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleDevelopmentRegion</key>      <string>ru</string>
     <key>CFBundleExecutable</key>             <string>SudrfApp</string>
-    <key>CFBundleIdentifier</key>             <string>ru.sudrf.kit.app</string>
+    <key>CFBundleIdentifier</key>             <string>ru.sudrf.app</string>
     <key>CFBundleName</key>                   <string>${APP_NAME}</string>
     <key>CFBundleDisplayName</key>            <string>${APP_NAME}</string>
     <key>CFBundlePackageType</key>            <string>APPL</string>

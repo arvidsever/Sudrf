@@ -77,6 +77,7 @@ enum MovementDerivation {
         var sessions: [StoredSession] = []
         for inst in mv.instances {
             for s in inst.sessions {
+                // CaseSession does not carry a per-session judge; use the instance judge as the closest source.
                 sessions.append(StoredSession(
                     dateRaw: s.date, time: s.time, room: s.room,
                     event: s.event, result: s.result,

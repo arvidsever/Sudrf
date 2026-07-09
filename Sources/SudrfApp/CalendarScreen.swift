@@ -140,12 +140,14 @@ struct CalendarScreen: View {
             legendItem(Color.accentColor, "заседание", dashed: false)
             legendItem(Palette.confirmed, "срок · подтверждён", dashed: false)
             legendItem(Color(red: 0.79, green: 0.54, blue: 0.12), "срок · расчётный", dashed: true)
-            HStack(spacing: 5) {
-                Text("⚠").font(.system(size: 10, weight: .bold))
-                Text("разные суды")
+            if router.calMode == .week {
+                HStack(spacing: 5) {
+                    Text("⚠").font(.system(size: 10, weight: .bold))
+                    Text("разные суды")
+                }
+                .foregroundStyle(Palette.confirmed)
+                .fontWeight(.semibold)
             }
-            .foregroundStyle(Palette.confirmed)
-            .fontWeight(.semibold)
         }
         .font(.system(size: 11)).foregroundStyle(.secondary)
     }
@@ -436,12 +438,12 @@ struct CalendarScreen: View {
                 .padding(.trailing, 8)
             ForEach(Array(weekDays.enumerated()), id: \.offset) { idx, day in
                 let deadlines = events(on: day).filter { $0.kind != .hearing }
-                let noTimeHearings = events(on: day).filter {
-                    $0.kind == .hearing && CalendarWeekLayout.parseTime($0.time) == nil
+                let laneHearings = events(on: day).filter {
+                    $0.kind == .hearing && !CalendarWeekLayout.isWithinWindow($0.time)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(deadlines) { ev in weekDeadlineChip(ev) }
-                    ForEach(noTimeHearings) { ev in weekNoTimeHearingChip(ev) }
+                    ForEach(laneHearings) { ev in weekNoTimeHearingChip(ev) }
                 }
                 .padding(.horizontal, 5)
                 .padding(.vertical, 7)
@@ -455,11 +457,12 @@ struct CalendarScreen: View {
     }
 
     private var weekHourGrid: some View {
-        let height = CGFloat(CalendarWeekLayout.endHour - CalendarWeekLayout.startHour) * CGFloat(CalendarWeekLayout.hourHeight)
+        let blocksByDay = weekDays.map { CalendarWeekLayout.blocks(for: weekHearingInputs(on: $0)) }
+        let height = CGFloat(CalendarWeekLayout.gridHeight(for: blocksByDay))
         return HStack(spacing: 0) {
-            weekTimeAxis.frame(width: 56, height: height)
+            weekTimeAxis(height: height).frame(width: 56, height: height)
             ForEach(Array(weekDays.enumerated()), id: \.offset) { idx, day in
-                weekDayColumn(day, index: idx)
+                weekDayColumn(day, index: idx, blocks: blocksByDay[idx], height: height)
                     .frame(maxWidth: .infinity)
                     .frame(height: height)
             }
@@ -467,9 +470,8 @@ struct CalendarScreen: View {
         .frame(height: height)
     }
 
-    private var weekTimeAxis: some View {
-        let height = CGFloat(CalendarWeekLayout.endHour - CalendarWeekLayout.startHour) * CGFloat(CalendarWeekLayout.hourHeight)
-        return ZStack(alignment: .topTrailing) {
+    private func weekTimeAxis(height: CGFloat) -> some View {
+        ZStack(alignment: .topTrailing) {
             ForEach(CalendarWeekLayout.startHour...CalendarWeekLayout.endHour, id: \.self) { hour in
                 Text(String(format: "%02d:00", hour))
                     .font(.system(size: 9.5))
@@ -482,26 +484,24 @@ struct CalendarScreen: View {
         .background(Color(nsColor: .textBackgroundColor))
     }
 
-    private func weekDayColumn(_ day: Date, index: Int) -> some View {
-        let hearings = weekHearingInputs(on: day)
-        let blocks = CalendarWeekLayout.blocks(for: hearings)
-        return ZStack(alignment: .topLeading) {
-            weekColumnBackground(day, index: index)
+    private func weekDayColumn(_ day: Date, index: Int,
+                               blocks: [CalendarWeekBlock],
+                               height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            weekColumnBackground(day, index: index, height: height)
             ForEach(blocks) { block in
                 weekBlockView(block)
                     .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .frame(height: CGFloat(block.height))
                     .offset(y: CGFloat(block.top))
             }
         }
-        .clipped()
+        .frame(height: height, alignment: .top)
         .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
     }
 
-    private func weekColumnBackground(_ day: Date, index: Int) -> some View {
-        let height = CGFloat(CalendarWeekLayout.endHour - CalendarWeekLayout.startHour) * CGFloat(CalendarWeekLayout.hourHeight)
-        return ZStack(alignment: .topLeading) {
+    private func weekColumnBackground(_ day: Date, index: Int, height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
             weekColumnTint(day, index: index)
             ForEach(0...(CalendarWeekLayout.endHour - CalendarWeekLayout.startHour), id: \.self) { i in
                 Rectangle()
@@ -510,7 +510,8 @@ struct CalendarScreen: View {
                     .offset(y: CGFloat(i) * CGFloat(CalendarWeekLayout.hourHeight))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: height)
+        .frame(maxWidth: .infinity)
+        .frame(height: height, alignment: .topLeading)
     }
 
     private func weekColumnTint(_ day: Date, index: Int) -> Color {
@@ -520,7 +521,9 @@ struct CalendarScreen: View {
     }
 
     private func weekHearingInputs(on day: Date) -> [CalendarWeekHearingLayoutInput] {
-        events(on: day).filter { $0.kind == .hearing }.map { ev in
+        events(on: day).filter {
+            $0.kind == .hearing && CalendarWeekLayout.isWithinWindow($0.time)
+        }.map { ev in
             CalendarWeekHearingLayoutInput(id: ev.id, caseNumber: ev.caseNumber ?? "",
                                            parties: ev.parties, court: ev.court,
                                            room: ev.room, judge: ev.judge, time: ev.time)
@@ -528,10 +531,11 @@ struct CalendarScreen: View {
     }
 
     private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
-        Group {
+        let minHeight = CGFloat(block.height)
+        return Group {
             if block.isSingle, let item = block.hearings.first {
                 Button { router.openCase(item.caseNumber) } label: {
-                    weekSingleCard(item, conflict: false)
+                    weekSingleCard(item, conflict: false, minHeight: minHeight)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -540,7 +544,9 @@ struct CalendarScreen: View {
         }
     }
 
-    private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput, conflict: Bool) -> some View {
+    private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
+                                conflict: Bool,
+                                minHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("№ \(item.caseNumber)")
                 .font(.system(size: 12, weight: .bold))
@@ -555,7 +561,7 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -613,7 +619,7 @@ struct CalendarScreen: View {
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -701,10 +707,11 @@ struct CalendarScreen: View {
     }
 
     private func weekNoTimeHearingChip(_ ev: CalEvent) -> some View {
-        Button {
+        let timePrefix = CalendarWeekLayout.parseTime(ev.time) == nil ? "" : "\(ev.time) · "
+        return Button {
             if let num = ev.caseNumber { router.openCase(num) }
         } label: {
-            Text("ЗАСЕДАНИЕ · № \(ev.caseNumber ?? "")")
+            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(ev.caseNumber ?? "")")
                 .font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(Color.accentColor)
                 .lineLimit(1)

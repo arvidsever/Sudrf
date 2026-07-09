@@ -79,8 +79,29 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertTrue(blocks.isEmpty)
     }
 
+    func testIsWithinWindowAcceptsOnlyGridStartTimes() {
+        XCTAssertFalse(CalendarWeekLayout.isWithinWindow("07:30"))
+        XCTAssertTrue(CalendarWeekLayout.isWithinWindow("09:30"))
+        XCTAssertFalse(CalendarWeekLayout.isWithinWindow("19:00"))
+        XCTAssertFalse(CalendarWeekLayout.isWithinWindow("20:00"))
+    }
+
+    func testGridHeightExpandsForLateBlock() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("2-1/2026", time: "18:30")
+        ])
+
+        XCTAssertEqual(CalendarWeekLayout.baseGridHeight, 1320)
+        XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
+    }
+
     func testWeekTitleAcrossMonthBoundary() {
         let start = DateUtil.parse("29.06.2026")!
         XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 июня – 5 июля")
+    }
+
+    func testWeekTitleAcrossYearBoundary() {
+        let start = DateUtil.parse("29.12.2025")!
+        XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 декабря 2025 – 4 января 2026")
     }
 }

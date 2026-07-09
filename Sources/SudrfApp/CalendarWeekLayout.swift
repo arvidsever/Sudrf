@@ -35,6 +35,9 @@ enum CalendarWeekLayout {
     static let endHour = 19
     static let hourHeight = 120.0
     static let defaultDurationMinutes = 60
+    static var baseGridHeight: Double {
+        Double(endHour - startHour) * hourHeight
+    }
 
     static func parseTime(_ value: String) -> Int? {
         let parts = value.split(separator: ":", maxSplits: 1)
@@ -44,6 +47,18 @@ enum CalendarWeekLayout {
               (0...23).contains(h),
               (0...59).contains(m) else { return nil }
         return h * 60 + m
+    }
+
+    static func isWithinWindow(_ time: String) -> Bool {
+        guard let minutes = parseTime(time) else { return false }
+        return minutes >= startHour * 60 && minutes < endHour * 60
+    }
+
+    static func gridHeight(for blocksByDay: [[CalendarWeekBlock]]) -> Double {
+        let maxBlockBottom = blocksByDay.flatMap { $0 }
+            .map { $0.top + $0.height }
+            .max() ?? 0
+        return max(baseGridHeight, maxBlockBottom)
     }
 
     static func blocks(for raw: [CalendarWeekHearingLayoutInput]) -> [CalendarWeekBlock] {

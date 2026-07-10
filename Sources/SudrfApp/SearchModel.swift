@@ -139,7 +139,7 @@ final class SearchModel: ObservableObject {
             self.captchaSolver = captchaSolver
         } else {
             let solverConfiguration = settings.solverConfiguration
-            var vision = VisionOCRStrategy()
+            var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
             vision.preprocessingProvider = { [weak settings] in
                 settings?.preprocessorEnabled ?? false
             }

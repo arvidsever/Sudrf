@@ -90,6 +90,22 @@ final class CaptchaSolverTests: XCTestCase {
         XCTAssertTrue(pre1)
     }
 
+    func testPreprocessLiveProviderRespectsHostAllowlist() {
+        let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
+        var strategy = VisionOCRStrategy(preprocessorHosts: ["a.sudrf.ru"])
+        strategy.preprocessingProvider = { true }
+
+        let (_, allowedPreprocessed) = strategy.resolveEffectiveData(
+            pngData: png, host: "A.SUDRF.RU"
+        )
+        let (_, blockedPreprocessed) = strategy.resolveEffectiveData(
+            pngData: png, host: "b.sudrf.ru"
+        )
+
+        XCTAssertTrue(allowedPreprocessed)
+        XCTAssertFalse(blockedPreprocessed)
+    }
+
     // MARK: - Real captcha PNGs (v0.38.7)
 
     /// `CaptchaSolverLog.logCandidates` пишет диагностический файл

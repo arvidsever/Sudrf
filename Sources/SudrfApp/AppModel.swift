@@ -417,7 +417,7 @@ final class AppRouter: ObservableObject {
         // модель найдена на диске, она оборачивает Vision-стратегию
         // через `KindDispatchingStrategy`: числовые captcha идут через
         // CoreML, текстовые (`.kcaptcha`) — через Vision.
-        var vision = VisionOCRStrategy()
+        var vision = VisionOCRStrategy(preprocessorHosts: captchaSettings.preprocessorHosts)
         vision.preprocessingProvider = { [weak captchaSettings] in
             captchaSettings?.preprocessorEnabled ?? false
         }

@@ -116,6 +116,50 @@ final class CaptchaSheetStateTests: XCTestCase {
         }
     }
 
+    // MARK: - CaptchaWebViewDidFinishDecisionFactory (happy-path не блокируется)
+
+    func testDidFinishInspectsWhenMarkerNeverSet() {
+        // Главный сценарий регрессии: JS-submit → navigationType == .other →
+        // маркер не выставлен (hasSubmittedNavigation == false). Успешный код
+        // должен инспектироваться, а не висеть до 60-сек watchdog.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .submitting, submittedAttempt: 1, activeID: 1,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .inspect(attempt: 1))
+    }
+
+    func testDidFinishInspectsWhenMarkerMatches() {
+        // Маркер сработал и навигация совпала → инспектируем.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .submitting, submittedAttempt: 2, activeID: 2,
+            hasSubmittedNavigation: true, navigationMatchesSubmitted: true)
+        XCTAssertEqual(d, .inspect(attempt: 2))
+    }
+
+    func testDidFinishSkipsForeignNavigationWhenMarkerSet() {
+        // Маркер выставлен, но пришёл чужой поздний didFinish → skip.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .submitting, submittedAttempt: 2, activeID: 2,
+            hasSubmittedNavigation: true, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .skip)
+    }
+
+    func testDidFinishSkipsAfterRetry() {
+        // Поздний didFinish от submit #1 после retry #2 (activeID != attempt) → skip.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .submitting, submittedAttempt: 1, activeID: 2,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .skip)
+    }
+
+    func testDidFinishSkipsWhenNotSubmitting() {
+        // Навигация формы/фон в .loadingForm — не инспектируем как submit.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .loadingForm, submittedAttempt: nil, activeID: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .skip)
+    }
+
     // MARK: - CaptchaWebViewAttemptGenerator (1 unit-тест, реальный сценарий)
 
     func testAttemptGeneratorFinishRealScenario() {

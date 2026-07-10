@@ -167,6 +167,32 @@ enum CaptchaWebViewNavigationFailureFactory {
     }
 }
 
+/// Решение `didFinish`: инспектировать ли результат submit'а.
+enum CaptchaWebViewDidFinishDecision: Equatable {
+    case inspect(attempt: Int)
+    case skip
+}
+
+enum CaptchaWebViewDidFinishDecisionFactory {
+    /// Инспектируем результат, только если navigation наш активный submit-attempt.
+    /// best-effort `submittedNavigation` уточняет сверку, но НЕ должен блокировать
+    /// happy-path, когда маркер не сработал (`hasSubmittedNavigation == false`) —
+    /// иначе принятый код не разбирается и лист висит до watchdog. Когда маркер
+    /// реально выставлен (`hasSubmittedNavigation == true`), требуем совпадения
+    /// навигации, чтобы отсечь чужой поздний `didFinish`.
+    static func decide(state: CaptchaWebViewState,
+                       submittedAttempt: Int?,
+                       activeID: Int?,
+                       hasSubmittedNavigation: Bool,
+                       navigationMatchesSubmitted: Bool) -> CaptchaWebViewDidFinishDecision {
+        guard state == .submitting,
+              let attempt = submittedAttempt,
+              activeID == attempt else { return .skip }
+        if hasSubmittedNavigation && !navigationMatchesSubmitted { return .skip }
+        return .inspect(attempt: attempt)
+    }
+}
+
 struct CaptchaAssistSheet: View {
     let context: SearchModel.CaptchaContext
     var onCardHTML: (String) -> Void
@@ -598,13 +624,25 @@ struct CaptchaWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             let current = webView.url?.absoluteString ?? ""
 
-            // A15: защита attempt'а — submit наш И навигация та же, что в
-            // best-effort маркере. Поздний didFinish от чужой навигации
-            // не пройдёт guard.
-            if state == .submitting,
-               let a = submittedAttempt,
-               attemptGenerator.activeID == a,
-               submittedNavigation === navigation {
+            // A15: инспектируем результат submit'а, если он наш и attempt ещё
+            // активен. best-effort привязка `submittedNavigation` НЕ должна
+            // блокировать happy-path: WebKit при JS-submit (form.submit()/
+            // синтетический click) часто рапортует navigationType == .other, не
+            // .formSubmitted, поэтому `decidePolicyFor` не ставит маркер и
+            // `submittedNavigation` остаётся nil. Раньше guard `=== navigation`
+            // ронял ВЕСЬ успешный путь → лист висел до 60-сек watchdog и падал
+            // ложным «Суд не ответил» даже при принятом коде. Теперь строгую
+            // сверку навигации применяем ТОЛЬКО когда маркер реально сработал
+            // (`submittedNavigation != nil`) — тогда отсекаем чужой поздний
+            // didFinish; иначе полагаемся на attempt-guard (activeID == a) +
+            // guard `activeID == attempt` внутри `inspectSubmittedResult`.
+            let inspectDecision = CaptchaWebViewDidFinishDecisionFactory.decide(
+                state: Self.mapState(state),
+                submittedAttempt: submittedAttempt,
+                activeID: attemptGenerator.activeID,
+                hasSubmittedNavigation: submittedNavigation != nil,
+                navigationMatchesSubmitted: submittedNavigation === navigation)
+            if case .inspect(let a) = inspectDecision {
                 inspectSubmittedResult(attempt: a, in: webView)
                 return
             }

@@ -6,17 +6,57 @@ on:
     branches:
       - main
       - codex-captcha-assist
+  # NOTE: push.tags НЕ добавлен намеренно. Release tag Sudrf (sudrf-v*)
+  # не запускает этот workflow. Backlog: отдельный release-model.yml с
+  # workflow_dispatch, pinned deps, реальной публикацией asset.
+
+permissions:
+  contents: read  # fetch через gh release download; write не требуется.
 
 jobs:
   build-test:
     runs-on: macos-26
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Fetch CoreML model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
       - name: Build app product
         run: swift build --product SudrfApp
 
       - name: Run tests
         run: swift test
+
+  package-app:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CoreML model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+
+      - name: Package .app (noninteractive)
+        run: bash Scripts/make-app.sh --ci
+
+      - name: Verify .app contains model (full)
+        run: |
+          bash Scripts/verify-model.sh \
+            --model-dir build/SudrfApp.app/Contents/Resources/model-captcha-numeric.mlmodelc \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_MANIFEST.sha256
+
+      - name: Ad-hoc sign + verify
+        run: |
+          codesign --force --sign - --deep build/SudrfApp.app
+          codesign --verify --deep --strict build/SudrfApp.app
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SudrfApp-${{ github.sha }}
+          path: build/SudrfApp.app
+          if-no-files-found: error

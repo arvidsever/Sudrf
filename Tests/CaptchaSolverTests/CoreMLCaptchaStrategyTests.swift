@@ -93,18 +93,18 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
 
     /// `CoreMLCaptchaStrategy` успешно загружает `.mlmodelc/` из
     /// тестового бандла. `XCTSkip`, если модель отсутствует (чистый
-    /// клон без артефактов).
+    /// клон без артефактов; A5: модель в bundle появляется после
+    /// `Scripts/fetch-model.sh` в CI).
     func testModelLoadsFromBundle() throws {
         // `.mlmodelc` — это **директория**, а не файл, поэтому
         // `Bundle.module.url(forResource:withExtension:)` не находит
         // её как одиночный ресурс. Используем `url(forResource:withExtension:subdirectory:)`
         // чтобы заглянуть внутрь `Fixtures/`.
-        let url = try XCTUnwrap(
-            Bundle.module.url(forResource: "model-captcha-numeric",
-                              withExtension: "mlmodelc",
-                              subdirectory: "Fixtures"),
-            "model-captcha-numeric.mlmodelc not in Fixtures/ — run train-coreml-captcha-helper.py"
-        )
+        guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
+                                          withExtension: "mlmodelc",
+                                          subdirectory: "Fixtures") else {
+            throw XCTSkip("model not in bundle (run Scripts/fetch-model.sh first)")
+        }
         let _ = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
     }
 

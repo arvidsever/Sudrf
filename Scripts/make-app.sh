@@ -7,12 +7,23 @@
 #  с прямоугольными кнопками. Обёртка в .app включает новый дизайн.
 #
 #  Запуск:  bash Scripts/make-app.sh
-#  Результат: build/SudrfApp.app (и сразу открывается) +
+#           bash Scripts/make-app.sh --ci   (noninteractive, no open, no codesign)
+#  Результат: build/SudrfApp.app (и сразу открывается, кроме --ci) +
 #  build/Sudrf-Alpha-0.38.9-build48.zip — универсальная сборка
 #  (Apple Silicon + Intel), можно пересылать.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# --ci: noninteractive. Не открываем .app, не подписываем (CI подписывает
+# отдельно через свои entitlements; ad-hoc codesign тут — для local-разработки).
+CI_MODE="0"
+for arg in "$@"; do
+    case "$arg" in
+        --ci) CI_MODE="1" ;;
+        *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    esac
+done
 
 APP_NAME="Sudrf"
 RELEASE_CHANNEL="Alpha"
@@ -29,6 +40,23 @@ BIN="$(swift build -c release --product SudrfApp "${ARCHES[@]}" --show-bin-path)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/SudrfApp"
+
+# A5: CoreML model delivery. Модель должна быть уже в Fixtures/ —
+# make-app.sh НЕ делает fetch (его делает CI build-test/package-app job
+# или dev через Scripts/fetch-model.sh вручную). verify обязателен.
+MODEL_FIXTURES_DIR="Tests/CaptchaSolverTests/Fixtures"
+MODEL_MANIFEST="$MODEL_FIXTURES_DIR/MODEL_MANIFEST.sha256"
+MODEL_DIR="$MODEL_FIXTURES_DIR/model-captcha-numeric.mlmodelc"
+[[ -f "$MODEL_MANIFEST" ]] || {
+    echo "manifest not found: $MODEL_MANIFEST (run Scripts/fetch-model.sh first)" >&2
+    exit 1
+}
+[[ -d "$MODEL_DIR" ]] || {
+    echo "model not found: $MODEL_DIR (run Scripts/fetch-model.sh first)" >&2
+    exit 1
+}
+bash Scripts/verify-model.sh --model-dir "$MODEL_DIR" --manifest "$MODEL_MANIFEST"
+cp -R "$MODEL_DIR" "$APP/Contents/Resources/"
 
 # Иконка: собираем .icns из PNG ассет-каталога (iconutil есть в macOS).
 ICONSET="build/AppIcon.iconset"
@@ -92,11 +120,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+if [[ "$CI_MODE" != "1" ]]; then
+    codesign --force --sign - "$APP"
+fi
 
 # Архив для передачи (ditto сохраняет подпись и атрибуты бандла).
 ditto -c -k --keepParent "$APP" "$ARCHIVE"
 
 echo "Готово: $APP"
 echo "Для передачи: $ARCHIVE (получателю: macOS 26+, при первом запуске — xattr -cr SudrfApp.app или ПКМ → Открыть)"
-open "$APP"
+if [[ "$CI_MODE" != "1" ]]; then
+    open "$APP"
+fi

@@ -89,6 +89,69 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertEqual(r2.value, "fallback")
     }
 
+    func testKindDispatchingFallsBackForLowConfidencePrimary() async throws {
+        let primary = StubAttemptProvider(value: "12345", confidence: 0.54)
+        let fallback = StubAttemptProvider(value: "vision", confidence: 0.9)
+        let dispatch = numericCoreMLDispatch(primary: primary, fallback: fallback)
+
+        let result = try await dispatch.solve(pngData: Data(), kind: .sudrfToken, host: nil)
+
+        XCTAssertEqual(result.value, "vision")
+    }
+
+    func testKindDispatchingFallsBackForIncompatiblePrimaryOutput() async throws {
+        let primary = StubAttemptProvider(value: "1234", confidence: 0.9)
+        let fallback = StubAttemptProvider(value: "vision", confidence: 0.9)
+        let dispatch = numericCoreMLDispatch(primary: primary, fallback: fallback)
+
+        let result = try await dispatch.solve(pngData: Data(), kind: .sudrfToken, host: nil)
+
+        XCTAssertEqual(result.value, "vision")
+    }
+
+    func testKindDispatchingKeepsValidPrimaryOutput() async throws {
+        let primary = StubAttemptProvider(value: "12345", confidence: 0.9)
+        let fallback = StubAttemptProvider(value: "vision", confidence: 0.9)
+        let dispatch = numericCoreMLDispatch(primary: primary, fallback: fallback)
+
+        let result = try await dispatch.solve(pngData: Data(), kind: .sudrfToken, host: nil)
+
+        XCTAssertEqual(result.value, "12345")
+    }
+
+    func testCoreMLCompatibleOutputRequiresFiveASCIIDigits() {
+        XCTAssertTrue(CoreMLCaptchaStrategy.isCompatibleOutput("12345"))
+        XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("1234"))
+        XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("12AB5"))
+        XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("１２３４５"))
+    }
+
+    func testKindDispatchingPropagatesCancellation() async {
+        let dispatch = numericCoreMLDispatch(
+            primary: ThrowingProvider(error: CancellationError()),
+            fallback: StubAttemptProvider(value: "vision", confidence: 0.9)
+        )
+
+        do {
+            _ = try await dispatch.solve(pngData: Data(), kind: .sudrfToken, host: nil)
+            XCTFail("CancellationError must not fall back to Vision")
+        } catch is CancellationError {
+            // Expected: cancellation must remain observable by the caller.
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
+    private func numericCoreMLDispatch(primary: any CaptchaSolvingProvider,
+                                       fallback: any CaptchaSolvingProvider) -> KindDispatchingStrategy {
+        KindDispatchingStrategy(
+            primary: primary,
+            fallback: fallback,
+            minPrimaryConfidence: 0.55,
+            primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
+        )
+    }
+
     // MARK: - Real model tests (требуют наличия .mlmodelc)
 
     /// `CoreMLCaptchaStrategy` успешно загружает `.mlmodelc/` из
@@ -209,5 +272,22 @@ private struct StubLabeledProvider: CaptchaSolvingProvider {
     let label: String
     func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
         return CaptchaAttempt(value: label, confidence: 0.9, duration: 0)
+    }
+}
+
+private struct StubAttemptProvider: CaptchaSolvingProvider {
+    let value: String
+    let confidence: Double
+
+    func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
+        CaptchaAttempt(value: value, confidence: confidence, duration: 0)
+    }
+}
+
+private struct ThrowingProvider: CaptchaSolvingProvider {
+    let error: Error
+
+    func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
+        throw error
     }
 }

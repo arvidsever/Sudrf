@@ -421,16 +421,22 @@ final class AppRouter: ObservableObject {
         vision.preprocessingProvider = { [weak captchaSettings] in
             captchaSettings?.preprocessorEnabled ?? false
         }
+        let solverConfiguration = captchaSettings.solverConfiguration
         let provider: any CaptchaSolvingProvider
         if let modelURL = CoreMLModelDiscovery.discoverURL(),
            let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
-            provider = KindDispatchingStrategy(primary: coreML, fallback: vision)
+            provider = KindDispatchingStrategy(
+                primary: coreML,
+                fallback: vision,
+                minPrimaryConfidence: solverConfiguration.minConfidence,
+                primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
+            )
         } else {
             provider = vision
         }
         let configuredSolver = CaptchaSolver(
             provider: provider,
-            configuration: captchaSettings.solverConfiguration
+            configuration: solverConfiguration
         )
         self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings

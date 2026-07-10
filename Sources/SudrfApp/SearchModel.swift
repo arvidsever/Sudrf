@@ -138,6 +138,7 @@ final class SearchModel: ObservableObject {
         if let captchaSolver {
             self.captchaSolver = captchaSolver
         } else {
+            let solverConfiguration = settings.solverConfiguration
             var vision = VisionOCRStrategy()
             vision.preprocessingProvider = { [weak settings] in
                 settings?.preprocessorEnabled ?? false
@@ -145,13 +146,18 @@ final class SearchModel: ObservableObject {
             let provider: any CaptchaSolvingProvider
             if let modelURL = CoreMLModelDiscovery.discoverURL(),
                let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
-                provider = KindDispatchingStrategy(primary: coreML, fallback: vision)
+                provider = KindDispatchingStrategy(
+                    primary: coreML,
+                    fallback: vision,
+                    minPrimaryConfidence: solverConfiguration.minConfidence,
+                    primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
+                )
             } else {
                 provider = vision
             }
             self.captchaSolver = CaptchaSolver(
                 provider: provider,
-                configuration: settings.solverConfiguration
+                configuration: solverConfiguration
             )
         }
     }

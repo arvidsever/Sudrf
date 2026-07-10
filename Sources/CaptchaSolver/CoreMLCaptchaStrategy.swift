@@ -47,6 +47,14 @@ public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
     private let inputName: String
     private let outputName: String
 
+    /// Контракт числовой модели: ровно пять ASCII-цифр.
+    /// Используется диспетчером A4b, прежде чем принять ответ CoreML.
+    public static func isCompatibleOutput(_ value: String) -> Bool {
+        value.utf8.count == 5 && value.utf8.allSatisfy { byte in
+            byte >= 48 && byte <= 57
+        }
+    }
+
     /// Загружает модель из `modelURL`. Бросает
     /// `CoreMLCaptchaStrategyError.modelLoadFailed` при ошибке.
     public init(modelURL: URL,

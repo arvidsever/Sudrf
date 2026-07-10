@@ -57,7 +57,8 @@ struct CaseMovementView: View {
                 // не являются.
                 ForEach(movement.instances.filter { $0.level != .material }) { inst in
                     InstanceBlock(instance: inst, complaints: movement.complaints,
-                                  expanded: $expanded, onSolveCaptcha: onSolveCaptcha)
+                                  expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                                  onRefresh: onRefresh)
                 }
                 let materials = movement.instances.filter { $0.level == .material }
                 if !materials.isEmpty {
@@ -69,7 +70,8 @@ struct CaseMovementView: View {
                         .padding(.top, 6)
                     ForEach(materials) { inst in
                         InstanceBlock(instance: inst, complaints: movement.complaints,
-                                      expanded: $expanded, onSolveCaptcha: onSolveCaptcha)
+                                      expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                                      onRefresh: onRefresh)
                     }
                 }
                 Text("Чип «обжаловано · ЧЖ» — частная жалоба на определение; "
@@ -323,12 +325,22 @@ private struct InstanceBlock: View {
     let complaints: [String: PrivateComplaint]
     @Binding var expanded: Set<String>
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
+    /// Опциональный callback «повторить» для transient-stub (A16). В поиске
+    /// не передаётся → кнопка скрыта. В мониторинге прокидывается из
+    /// CaseMovementView.onRefresh → RootView (router.refreshOpenCase()).
+    var onRefresh: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             headerRow
             if instance.captchaFormURL != nil {
                 captchaPrompt
+            } else if instance.transientError == true {
+                // Transient-stub: вышестоящий суд не ответил (timeout/DNS после
+                // 3 попыток). Если бы был кэш, MovementCachePolicy.merge уже
+                // подменил stub на real — мы бы здесь не оказались. Это
+                // pure-transient сценарий: кэша нет, инстанция не загружена.
+                transientPrompt
             }
             ForEach(instance.sessions) { s in
                 SessionRow(session: s, color: instance.level.tint,
@@ -356,6 +368,25 @@ private struct InstanceBlock: View {
                 Text("Ввести код").font(.system(size: 11, weight: .semibold))
             }
             .buttonStyle(.glassProminent).controlSize(.small)
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .overlay(Divider(), alignment: .top)
+    }
+
+    /// A16: pure-transient плашка «нет связи с X» + опциональная кнопка
+    /// «Повторить». В поиске onRefresh == nil → кнопка не показывается.
+    private var transientPrompt: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+            Text("Нет связи с \(instance.court) — обновите страницу или повторите позже.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if let onRefresh {
+                Button { onRefresh() } label: {
+                    Text("Повторить").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.glassProminent).controlSize(.small)
+            }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
         .overlay(Divider(), alignment: .top)

@@ -75,6 +75,16 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// Если задан — инстанция не загружена автоматически (форма суда под капчей).
     /// URL формы поиска, которую нужно открыть, чтобы пользователь ввёл код вручную.
     public var captchaFormURL: URL?
+    /// true — инстанция не загружена по сети (timeout / no-net / DNS после
+    /// исчерпания ретраев). `MovementCachePolicy.merge` восстановит
+    /// кэшированные реальные инстанции того же канонического хоста
+    /// (с их актами и телами). В UI показывается как «нет связи с X»
+    /// только в pure-transient сценарии (кэша нет). При наличии кэша
+    /// merge бесшовно подменяет stub — UI показывает кэшированные данные
+    /// без уведомления. Опциональное поле: старые кэши декодируются как
+    /// `nil` без миграции. Устанавливается `Movement.movement(for:...)` при
+    /// catch `SudrfError.transientNetworkError`.
+    public var transientError: Bool?
     /// Пометка к инстанции (напр. «отказ в передаче», «возврат без рассмотрения»
     /// для «отказных» производств ВС РФ). Отображается отдельным чипом.
     public var note: String?
@@ -86,11 +96,13 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
                 sessions: [CaseSession], actID: String? = nil,
-                captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil) {
+                captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil,
+                transientError: Bool? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
         self.result = result; self.sessions = sessions; self.actID = actID
         self.captchaFormURL = captchaFormURL; self.note = note; self.actURL = actURL
+        self.transientError = transientError
     }
 }
 
@@ -530,6 +542,34 @@ public actor MovementService: MovementProviding {
                             sessions: [],
                             actID: nil,
                             captchaFormURL: formURL))
+                    }
+                    break
+                }
+                catch SudrfError.transientNetworkError {
+                    // Сетевой сбой вышестоящего суда (timeout / DNS / нет сети
+                    // после 3 попыток). Ставим transientError-стаб, чтобы
+                    // merge восстановил кэшированные реальные инстанции того
+                    // же канонического хоста (A14 — moduleHost dedup, иначе
+                    // dash+dot формы дали бы две заглушки). A14 inline-комментарий
+                    // L395-398 уже отсылает сюда. Если кэша нет — stub остаётся
+                    // в instances, идёт в персист, UI показывает плашку «нет
+                    // связи» + retry (если onRefresh != nil).
+                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
+                    if !instances.contains(where: {
+                        SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)
+                    }) {
+                        instances.append(CaseInstance(
+                            level: instLevel,
+                            court: higherCourt.title,
+                            caseNumber: "—",
+                            judge: nil,
+                            domain: domain,
+                            foundByUID: false,
+                            result: nil,
+                            sessions: [],
+                            actID: nil,
+                            captchaFormURL: nil,
+                            transientError: true))
                     }
                     break
                 }

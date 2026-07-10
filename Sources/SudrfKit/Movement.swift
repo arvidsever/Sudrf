@@ -392,6 +392,10 @@ public actor MovementService: MovementProviding {
 
         // 2. Вышестоящие суды: поиск по УИД → карточка → инстанция.
         //    Если в карточке УИД не указан, сквозной поиск невозможен — пропускаем.
+        //    A16 follow-up: при transientError-стабе (см. FIXPLAN.md, A16) использовать
+        //    тот же moduleHost-ключ для дедупа, не сырой domain — иначе dash+dot формы
+        //    одного вышестоящего суда породят лишнюю заглушку. Шаблон проверки —
+        //    см. captcha-stub-path ниже.
         let legalForceDate = baseCard.legalForceDate ?? base.legalForceDate
         for target in higherCourtTargets where target.dateRule.matches(legalForceDate: legalForceDate) {
             guard let uid else { break }
@@ -461,6 +465,16 @@ public actor MovementService: MovementProviding {
                     // ниже устойчива по уровню, поэтому порядок кругов сохранится.
                     rounds.sort { $0.sortKey < $1.sortKey }
                     for entry in rounds {
+                        // A14: `expandedHigherDomains` разворачивает один домен в
+                        // dash+dot (`vs.komi.sudrf.ru` → [`vs--komi.sudrf.ru`,
+                        // `vs.komi.sudrf.ru`]), оба попадают в `higherCourtTargets`
+                        // и оба успешно отдают один и тот же круг — без dedup
+                        // инстанция и акт дублируются. Сравниваем по каноническому
+                        // `moduleHost` (одинаков для обеих форм) + номеру дела.
+                        if instances.contains(where: {
+                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(entry.inst.domain)
+                            && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
+                        }) { continue }
                         if let a = entry.act, let b = entry.body {
                             acts.append(a); actBodies[a.id] = b
                         }
@@ -474,15 +488,37 @@ public actor MovementService: MovementProviding {
                     // введёт код во всплывающем окне (см. UI).
                     let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
                     var rescued = false
-                    for kc in knownCards where kc.domain == domain && kc.level != .material {
+                    for kc in knownCards
+                        where SudrfHost.moduleHost(kc.domain) == SudrfHost.moduleHost(domain)
+                        && kc.level != .material {
+                        // A14: дедуп по (moduleHost, caseNumber) — `KnownCard` могут
+                        // содержать несколько кругов одного вышестоящего суда; пропускаем
+                        // только реальный дубль. `MovementService` — actor, fetch-цикл
+                        // последовательный, гонок нет.
+                        if let n = kc.caseNumber, instances.contains(where: {
+                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
+                            && Self.sameCaseNumber($0.caseNumber, n)
+                        }) { rescued = true; continue }
                         guard let entry = await instanceFromKnownCard(kc) else { continue }
+                        // A14: после fetch — финальная проверка против параллельных
+                        // rescue (на случай, если fetched-круг совпадает с уже
+                        // добавленным от предыдущего `kc`/`target`).
+                        if instances.contains(where: {
+                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
+                            && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
+                        }) { rescued = true; continue }
                         if let a = entry.act, let b = entry.body {
                             acts.append(a); actBodies[a.id] = b
                         }
                         instances.append(entry.inst)
                         rescued = true
                     }
-                    if !rescued, !instances.contains(where: { $0.domain == domain }) {
+                    if !rescued, !instances.contains(where: {
+                        // A14: captcha-stub проверяется по каноническому moduleHost,
+                        // не по сырому домену — иначе dash+dot формы вышестоящего суда
+                        // (развёрнутые `expandedHigherDomains`) дали бы две заглушки.
+                        SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)
+                    }) {
                         instances.append(CaseInstance(
                             level: instLevel,
                             court: higherCourt.title,
@@ -506,12 +542,16 @@ public actor MovementService: MovementProviding {
         //     любого звена), подтягиваются прямым GET. Поиск первичен — он находит
         //     все круги; уже собранные инстанции не дублируем.
         for kc in knownCards {
+            // A14: дедуп по каноническому moduleHost — иначе `expandedHigherDomains`
+            // (dash+dot) приведёт к дублю инстанции при доборе.
             if let n = kc.caseNumber, instances.contains(where: {
-                $0.domain == kc.domain && Self.sameCaseNumber($0.caseNumber, n)
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
+                && Self.sameCaseNumber($0.caseNumber, n)
             }) { continue }
             guard let entry = await instanceFromKnownCard(kc) else { continue }
             if instances.contains(where: {
-                $0.domain == kc.domain && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
+                && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
             }) { continue }
             if let a = entry.act, let b = entry.body {
                 acts.append(a); actBodies[a.id] = b

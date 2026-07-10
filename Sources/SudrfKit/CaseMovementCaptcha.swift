@@ -33,7 +33,12 @@ public extension CaseMovement {
                                 foundByUID: true, result: card.result,
                                 sessions: card.sessions, actID: actID)
 
-        var insts = instances.filter { !($0.domain == domain && $0.captchaFormURL != nil) }
+        // A14: ищем stub по каноническому `moduleHost`, не по сырому домену — иначе
+        // заглушка, созданная в dot-форме (например, `oblsud.mo.sudrf.ru`), не снимется
+        // при ручном решении капчи через dash-форму (`oblsud--mo.sudrf.ru`), и будет
+        // висеть лишняя заглушка рядом с новой инстанцией.
+        var insts = instances.filter { !($0.captchaFormURL != nil
+            && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)) }
         insts.append(inst)
         insts.sort { MovementService.instanceOrderKey($0) < MovementService.instanceOrderKey($1) }
         acts.sort { MovementService.actOrderKey($0) < MovementService.actOrderKey($1) }

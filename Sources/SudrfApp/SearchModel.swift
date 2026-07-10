@@ -493,7 +493,7 @@ final class SearchModel: ObservableObject {
                 formURL: formURL,
                 client: client,
                 solver: solver,
-                settings: .default
+                settings: settings.autoSolverSettings
             )
             guard let token = result.token else {
                 throw SudrfError.captchaRequired(formURL: formURL)

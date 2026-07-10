@@ -296,7 +296,7 @@ final class RefreshCenter: ObservableObject {
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return
             }
-            let result = await autoSolve(url, client, solver, .default)
+            let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
             if let token = result.token {
                 await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
                 // v0.38.9: bootstrap в CorpusStore НЕ делаем здесь

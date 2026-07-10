@@ -1,7 +1,8 @@
 import XCTest
+import Foundation
 @testable import SudrfApp
 @testable import CaptchaSolver
-import SudrfKit
+@testable import SudrfKit
 
 /// Тесты для `AutoCaptchaSolver` — общего хелпера, который вызывается
 /// из `SearchModel.runSearch` и `RefreshCenter.performRefresh`. Логика
@@ -20,6 +21,7 @@ final class AutoCaptchaSolverTests: XCTestCase {
     private var failuresDir: URL!
     private var log: CaptchaSolverLog!
     private var originalShared: CaptchaSolverLog!
+    private var session: URLSession!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -32,9 +34,15 @@ final class AutoCaptchaSolverTests: XCTestCase {
         log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir)
         originalShared = CaptchaSolverLog.shared
         CaptchaSolverLog.shared = log
+        AutoCaptchaFormStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AutoCaptchaFormStub.self]
+        session = URLSession(configuration: configuration)
     }
 
     override func tearDownWithError() throws {
+        session.invalidateAndCancel()
+        session = nil
         CaptchaSolverLog.shared = originalShared
         try? FileManager.default.removeItem(at: tmpDir)
         try super.tearDownWithError()
@@ -53,16 +61,9 @@ final class AutoCaptchaSolverTests: XCTestCase {
         }
     }
 
-    /// Стаб `SudrfClient` — мы не подменяем весь клиент, а подменяем
-    /// только тот, который используется внутри `AutoCaptchaSolver.solve`
-    /// (через протокол). Но `SudrfClient` — конкретный тип без протокола,
-    /// поэтому тестируем через реальный HTTP-вызов к локальному
-    /// `httpbin`-эндпоинту. Это упрощённый путь; в реальной жизни
-    /// стоит ввести `URLProtocol` stub.
-    ///
-    /// Здесь мы тестируем только ту часть логики, которая не требует
-    /// сетевого вызова: связь между результатом солвера и
-    /// возвращаемым токеном.
+    /// `SudrfClient` получает URLSession с `URLProtocol` stub'ом, поэтому
+    /// тесты `AutoCaptchaSolver.solve` изолированы от сети и от cookies
+    /// реальных судов.
 
     func testReturnsNilWhenDisabled() async throws {
         let solver = CaptchaSolver(provider: StubProvider(results: [
@@ -117,4 +118,83 @@ final class AutoCaptchaSolverTests: XCTestCase {
         XCTAssertEqual(AutoCaptchaSolver.Settings.default.maxAttempts, 3)
         XCTAssertEqual(AutoCaptchaSolver.Settings.default.minConfidence, 0.55, accuracy: 0.001)
     }
+
+    func testMinConfidenceControlsTokenAcceptance() async {
+        let solver = CaptchaSolver(provider: StubProvider(results: [
+            CaptchaAttempt(value: "12345", confidence: 0.7, duration: 0)
+        ]), log: log)
+        let client = SudrfClient(session: session, minInterval: 0)
+        let formURL = URL(string: "https://captcha.example.test/form")!
+
+        let rejected = await AutoCaptchaSolver.solve(
+            formURL: formURL,
+            client: client,
+            solver: solver,
+            settings: .init(maxAttempts: 1, minConfidence: 0.95)
+        )
+        XCTAssertNil(rejected.token)
+
+        let accepted = await AutoCaptchaSolver.solve(
+            formURL: formURL,
+            client: client,
+            solver: solver,
+            settings: .init(maxAttempts: 1, minConfidence: 0.5)
+        )
+        XCTAssertEqual(accepted.token?.value, "12345")
+        XCTAssertEqual(accepted.token?.id, "test-captcha-id")
+    }
+
+    func testCaptchaSettingsBuildsAutoSolverSettingsAndClampsMaxAttempts() {
+        let settings = CaptchaSettings.shared
+        let savedMinConfidence = settings.minConfidence
+        let savedMaxAttempts = settings.maxAttempts
+        defer {
+            settings.minConfidence = savedMinConfidence
+            settings.maxAttempts = savedMaxAttempts
+        }
+
+        settings.minConfidence = 0.95
+        settings.maxAttempts = 4
+        XCTAssertEqual(settings.autoSolverSettings.minConfidence, 0.95, accuracy: 0.001)
+        XCTAssertEqual(settings.autoSolverSettings.maxAttempts, 4)
+        XCTAssertEqual(CaptchaSettings.defaultMaxAttempts, 3)
+        XCTAssertEqual(CaptchaSettings.normalizedMaxAttempts(0), 1)
+        XCTAssertEqual(CaptchaSettings.normalizedMaxAttempts(6), 5)
+
+        settings.maxAttempts = 0
+        XCTAssertEqual(settings.maxAttempts, 1)
+        settings.maxAttempts = 6
+        XCTAssertEqual(settings.maxAttempts, 5)
+    }
+}
+
+private final class AutoCaptchaFormStub: URLProtocol {
+    nonisolated(unsafe) static var responseBody = ""
+
+    static func reset() {
+        responseBody = """
+        <html><body>
+        <input name="captchaid" value="test-captcha-id">
+        <img src="data:image/png;base64,AA==">
+        </body></html>
+        """
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let data = Self.responseBody.data(using: .utf8) ?? Data()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=utf-8"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -125,6 +125,26 @@ public actor SudrfClient {
                 try await backoff(attempt)
                 continue
             }
+            // 5xx (SudrfError.http) — НЕ URLError, летит через L106 /
+            // withHostFallback (L309-316), в финальной классификации не
+            // участвует. .badURL / .cancelled / .badServerResponse — это
+            // URLError, попадают в `catch let e as URLError`, ретраятся 3
+            // раза, lastError обновляется на каждой попытке; на финале
+            // urlErr.isTransient == false → проброс исходной ошибки. Это
+            // согласуется с тестом testFatalURLErrorNotMarkedTransient
+            // (requestCount == 3, проброс URLError(.badURL) / .cancelled).
+        }
+        // Финальная классификация: только последняя ошибка ретрая-цикла
+        // решает, transient это или нет. Если на 1-й был transient, а на
+        // 3-й — fatal URLError (.badURL, .cancelled) — lastError
+        // перезаписан fatal'ом → финал fatal. Если на 1-й был fatal, а на
+        // 3-й — transient — lastError перезаписан transient'ом → финал
+        // transient. Это корректно: финальная попытка определяет результат.
+        if let urlErr = lastError as? URLError, urlErr.isTransient {
+            throw SudrfError.transientNetworkError(
+                domain: url.host ?? "", code: urlErr.code, attempt: attempts)
+            // attempts (= 3) — полное число попыток (= 2 повтора + 1 начальная).
+            // Пользователь видит «после 3 попыток», что соответствует факту.
         }
         throw lastError
     }
@@ -345,6 +365,32 @@ private extension URLError {
              .serverCertificateNotYetValid,
              .clientCertificateRejected,
              .clientCertificateRequired:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Transient (сетевые) коды — суд «не ответил» (timeout, DNS, нет сети),
+    /// НЕ ошибка запроса/отмены. Используется в `fetchHTMLData` для
+    /// классификации исчерпанного URLError → `SudrfError.transientNetworkError`.
+    /// ИСКЛЮЧЕНИЯ:
+    ///   • `.cancelled` (-999) — отменённая Task, не ошибка пользователя,
+    ///     transient-stub ставить нельзя.
+    ///   • 5xx (`SudrfError.http`) — не URLError, идёт через L106.
+    ///   • `.badURL`, `.unsupportedURL`, `.badServerResponse` — фатальные,
+    ///     пробрасываются как есть (тест `testFatalURLErrorNotMarkedTransient`).
+    var isTransient: Bool {
+        switch code {
+        case .timedOut,
+             .cannotConnectToHost,
+             .cannotFindHost,                 // DNS
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .resourceUnavailable,
+             .internationalRoamingOff,
+             .dataNotAllowed:
             return true
         default:
             return false

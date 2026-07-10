@@ -149,6 +149,14 @@ public enum SudrfError: Error, CustomStringConvertible {
     /// пустой страницы — суд отвечает в неизвестном формате (другая версия
     /// интерфейса, JS-защита, заглушка). Пустоту в этом случае показывать нельзя.
     case searchModuleUnavailable(domain: String)
+    /// Сетевая ошибка после исчерпания ретраев вышестоящего суда (timeout /
+    /// нет сети / DNS). Это НЕ «модуль недоступен» (суд отдаёт неизвестный
+    /// HTML) и НЕ капча — суд вообще не ответил. `MovementCachePolicy.merge`
+    /// защищает кэш по `transientError` от затирания частично-успешным
+    /// fetch'ем. Преобразование `URLError → SudrfError.transientNetworkError`
+    /// делает `SudrfClient.fetchHTMLData` ТОЛЬКО после исчерпания 3 попыток
+    /// (= 2 повтора после первой), и только если ФИНАЛЬНАЯ ошибка — transient.
+    case transientNetworkError(domain: String, code: URLError.Code, attempt: Int)
 
     public var description: String {
         switch self {
@@ -169,6 +177,8 @@ public enum SudrfError: Error, CustomStringConvertible {
             return "Поисковый модуль суда \(domain) не отвечает в известных форматах "
                  + "(возможно, JS-защита или нестандартный интерфейс). "
                  + "Попробуйте открыть сайт суда в браузере."
+        case .transientNetworkError(let domain, let code, let attempt):
+            return "Суд \(domain) не отвечает по сети (\(code.rawValue)) после \(attempt) попыток."
         }
     }
 }

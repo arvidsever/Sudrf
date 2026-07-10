@@ -258,6 +258,20 @@ public actor SudrfClient {
                 SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
             }
         }
+        // A2: суд детерминированно отверг наш токен (`.captchaRejected`
+        // хотя бы на одном варианте). Токен уже инвалидирован внутри
+        // цикла, retry не зациклится. UI должен получить `.captchaRequired`
+        // — тогда manual sheet / captcha-queue / авто-солвер (три
+        // обработчика: `searchOnce` cached-token catch, `SearchModel.
+        // handleCaptcha`, `RefreshCenter.performRefresh`) сработают, как
+        // ожидается. `try?` — fallback на старое поведение при
+        // несобираемом formURL (битый cartoteka). В отличие от прежнего
+        // `searchModuleUnavailable` этот throw не проходит `withHostFallback`:
+        // rejection детерминирован для обеих форм одного сервера
+        // (один и тот же back-end), дополнительный GET бесполезен.
+        if lastWasCaptchaRejected, let formURL = try? builder.formURL(cartoteka) {
+            throw SudrfError.captchaRequired(formURL: formURL)
+        }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
 

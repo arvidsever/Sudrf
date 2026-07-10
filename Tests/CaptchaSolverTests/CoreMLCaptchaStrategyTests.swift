@@ -129,26 +129,29 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertGreaterThan(attempt.confidence, 0)
     }
 
-    /// Per-digit accuracy на маленькой held-out выборке из
-    /// `Tests/CaptchaSolverTests/Fixtures/sudrf/labels.csv` —
-    /// наши локальные captcha fixtures (10 captcha, 5 размечены
-    /// «667» / «1909» / дубли, 5 — `UNREADABLE` sovetsky--nsk).
+    /// A4 regression marker: на rotated/struck-through стилях spb/nsk
+    /// модель должна выдавать exact match. Текущая модель выдаёт
+    /// корректные 5-значные ответы на наших 3 уникальных captcha
+    /// (10 PNG с дублями, verified человеком с PNG — см. labels.csv).
+    /// Это и был failure-mode из FIXPLAN A4 P1: «уверенно-неверный
+    /// ответ уходит на сервер». Маркер = «нет уверенно-неверного
+    /// ответа» (не общий accuracy-гейт): низкоуверенный неверный
+    /// не ловит — его отсечёт AutoCaptchaSolver.solve minConfidence
+    /// до отправки на сервер.
     ///
-    /// 5 captcha — регрессионный тест: убеждаемся, что модель
-    /// **загружается и возвращает 5-значный ответ** на нашем
-    /// out-of-distribution стиле (spb rotated/struck-through). Не
-    /// проверяем равенство: эти captcha **out-of-distribution** для
-    /// модели, обученной на корпусе друга (90.4% per-digit на
-    /// его held-out, не 100%). Цель теста — поймать регрессию в
-    /// «модель падает» / «возвращает не 5 цифр», а не промахи в
-    /// самих цифрах.
+    /// CI: без модели → XCTSkip (модель gitignored, см. A5).
+    /// Зубы только локально/где модель есть. Маркер = голый
+    /// XCTAssertTrue (без XCTExpectFailure, который бы проглотил
+    /// регрессию).
     func testLocalSudrfFixturesAccuracy() async throws {
         guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
                                           withExtension: "mlmodelc",
                                           subdirectory: "Fixtures") else {
             throw XCTSkip("model not in bundle")
         }
-        // Грузим labels.csv (filename,expected,kind,notes) — наши 10 captcha.
+        // Грузим labels.csv (filename,expected,kind,notes) — наши 10 captcha
+        // (3 уникальных rotated-стиля: 90299/56667 spb, 60984 nsk; dups
+        // у каждого captchaid).
         guard let labelsURL = Bundle.module.url(forResource: "Fixtures/sudrf/labels", withExtension: "csv"),
               let csv = try? String(contentsOf: labelsURL, encoding: .utf8) else {
             throw XCTSkip("labels.csv not in bundle")
@@ -157,6 +160,7 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         let strategy = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
         var total = 0
         var allReturnedValid5 = true
+        var captured: [(filename: String, attempt: CaptchaAttempt, expected: String)] = []
         for line in lines {
             let cols = line.split(separator: ",", omittingEmptySubsequences: false)
             guard cols.count >= 2 else { continue }
@@ -174,9 +178,28 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
                 let ok = attempt.value == expected ? "ok" : "miss"
                 print("\(ok): \(filename) expected=\(expected) got=\(attempt.value) conf=\(String(format: "%.3f", attempt.confidence))")
             }
+            captured.append((filename, attempt, expected))
         }
-        XCTAssertEqual(total, 5, "expected 5 readable captcha, 5 unreadable")
-        XCTAssertTrue(allReturnedValid5, "all 5 attempts must return valid 5-digit strings")
+        XCTAssertEqual(total, 10, "expected 10 readable captcha (5 spb + 5 nsk)")
+        XCTAssertTrue(allReturnedValid5, "all 10 attempts must return valid 5-digit strings")
+
+        // A4 regression marker: на rotated/struck-through стилях spb/nsk
+        // модель должна выдавать exact match. Голый assert — если
+        // модель регрессирует (выдаёт уверенно-неверный ответ),
+        // тест поймает КАК КРАСНЫЙ.
+        //
+        // Семантика: «нет уверенно-неверного ответа» (не общий
+        // accuracy-гейт). Низкоуверенный неверный ответ не ловит —
+        // его отсечёт AutoCaptchaSolver.solve minConfidence до
+        // отправки на сервер. Это и был failure-mode из
+        // FIXPLAN A4 (P1).
+        let minConfidence: Double = 0.55
+        for entry in captured {
+            let isExact = entry.attempt.value == entry.expected
+            let isLowConf = entry.attempt.confidence < minConfidence
+            XCTAssertTrue(isExact || isLowConf,
+                "A4 regression: \(entry.filename) expected=\(entry.expected) got=\(entry.attempt.value) conf=\(String(format: "%.3f", entry.attempt.confidence))")
+        }
     }
 }
 

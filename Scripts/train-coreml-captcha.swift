@@ -9,6 +9,15 @@
 //   от судрфовского teal ~(2, 103, 154)) → downsample 100×30 → 64×20
 //   → CoreML conv×2 + dense + 5 softmax(10) голов
 //
+// A4 regression marker: модель обучена на 5-значных rotated/
+// struck-through captcha. Текущая модель выдаёт корректные
+// 5-значные ответы на наших 3 уникальных captcha spb/nsk
+// (verified человеком с PNG; см. testLocalSudrfFixturesAccuracy —
+// голый XCTAssertTrue, ловит уверенно-неверный ответ). Раньше
+// labels.csv содержал Vision-ошибки (667/1909/UNREADABLE), что
+// стало основой FIXPLAN A4. Captcha всегда 5-значная, Vision
+// просто не справляется с rotated/struck-through стилями.
+//
 // Запуск:
 //
 //   swift Scripts/train-coreml-captcha.swift \

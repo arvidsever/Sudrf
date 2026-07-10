@@ -6,8 +6,10 @@ import Vision
 /// Стратегия распознавания на основе CoreML-модели, обученной на
 /// размеченном корпусе captcha-изображений. Заменяет/дополняет
 /// `VisionOCRStrategy` для captcha-стилей, на которых Vision даёт
-/// conf=0.00 (rotated/struck-through digits у `1kas`,
-/// `oblsud--mo.sudrf.ru`, `sankt-peterburgsky--spb.sudrf.ru`).
+/// низкую точность (rotated/struck-through digits у `1kas`,
+/// `oblsud--mo.sudrf.ru`, `sankt-peterburgsky--spb.sudrf.ru` и
+/// `sovetsky--nsk.sudrf.ru`: Vision на них пропускает цифры или
+/// возвращает пусто).
 ///
 /// Архитектура (см. `Scripts/train-coreml-captcha-helper.py`):
 ///   вход 100×30 RGB → бинарная маска «чернил» (порог по цвету
@@ -27,6 +29,16 @@ import Vision
 ///     value = 5 цифр, confidence = min(softmax по 5 головам).
 ///   - `topCandidates(...)` возвращает топ-N 5-значных строк по
 ///     уверенности, для diagnostics.
+///
+/// **A4 regression marker:** на rotated/struck-through captcha spb/nsk
+/// модель in-distribution и выдаёт корректные 5-значные ответы
+/// (verified человеком с PNG; см. `testLocalSudrfFixturesAccuracy`
+/// в `Tests/CaptchaSolverTests/CoreMLCaptchaStrategyTests.swift` —
+/// regression marker на наших 3 уникальных captcha spb/nsk).
+/// Раньше `labels.csv` содержал Vision-ошибки (667/1909/UNREADABLE)
+/// как «expected», что стало основой FIXPLAN A4. В действительности
+/// captcha всегда 5-значная, а Vision просто не справляется с
+/// rotated/struck-through стилями.
 public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
 
     public let modelURL: URL

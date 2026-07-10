@@ -12,8 +12,12 @@ final class CaptchaSettings: ObservableObject {
 
     private static let enabledKey = "captcha.autoSolve"
     private static let minConfidenceKey = "captcha.minConfidence"
+    private static let maxAttemptsKey = "captcha.maxAttempts"
     private static let preprocessorEnabledKey = "captcha.preprocessorEnabled"
     private static let preprocessorHostsKey = "captcha.preprocessorHosts"
+
+    static let defaultMaxAttempts = 3
+    static let maxAttemptsRange = 1...5
 
     /// Принудительно выключает солвер независимо от настройки — для
     /// тестов, в которых нужен детерминированный «как без солвера»
@@ -29,6 +33,20 @@ final class CaptchaSettings: ObservableObject {
     @Published var minConfidence: Double {
         didSet {
             UserDefaults.standard.set(minConfidence, forKey: Self.minConfidenceKey)
+        }
+    }
+
+    /// Число свежих captcha-форм, которые авто-солвер пробует перед
+    /// переходом к ручному вводу. Настройка рассчитана на power users;
+    /// UI-контрола намеренно нет, чтобы не подталкивать к лишним запросам
+    /// на сайты судов.
+    @Published var maxAttempts: Int {
+        didSet {
+            let normalized = Self.normalizedMaxAttempts(maxAttempts)
+            if maxAttempts != normalized {
+                maxAttempts = normalized
+            }
+            UserDefaults.standard.set(normalized, forKey: Self.maxAttemptsKey)
         }
     }
 
@@ -53,15 +71,22 @@ final class CaptchaSettings: ObservableObject {
         }
     }
 
-    /// Текущая «эффективная» конфигурация для `CaptchaSolver`. Объединяет
-    /// пользовательские настройки с жёсткими лимитами (`maxAttempts = 3`,
-    /// `minIntervalMs = 50`).
+    /// Текущая «эффективная» конфигурация для `CaptchaSolver`.
     var solverConfiguration: CaptchaConfiguration {
         var config = CaptchaConfiguration.default
         config.minConfidence = minConfidence
+        config.maxAttempts = maxAttempts
         config.preprocessingEnabled = preprocessorEnabled
         config.preprocessorHosts = preprocessorHosts
         return config
+    }
+
+    /// Единый снимок пользовательских настроек для всех вызовов
+    /// `AutoCaptchaSolver`: поиска, фонового обновления и retry из
+    /// карточки дела.
+    var autoSolverSettings: AutoCaptchaSolver.Settings {
+        AutoCaptchaSolver.Settings(maxAttempts: maxAttempts,
+                                   minConfidence: minConfidence)
     }
 
     var isEffectivelyEnabled: Bool {
@@ -75,13 +100,24 @@ final class CaptchaSettings: ObservableObject {
         // «выключено» при `Bool()` от `nil`.
         defaults.register(defaults: [Self.enabledKey: true])
         defaults.register(defaults: [Self.minConfidenceKey: 0.55])
+        defaults.register(defaults: [Self.maxAttemptsKey: Self.defaultMaxAttempts])
         // Preprocessor: выключен по умолчанию (см. solverConfiguration).
         defaults.register(defaults: [Self.preprocessorEnabledKey: false])
         defaults.register(defaults: [Self.preprocessorHostsKey: [String]()])
         self.autoSolveEnabled = defaults.bool(forKey: Self.enabledKey)
         self.minConfidence = defaults.double(forKey: Self.minConfidenceKey)
+        let storedMaxAttempts = defaults.integer(forKey: Self.maxAttemptsKey)
+        let normalizedMaxAttempts = Self.normalizedMaxAttempts(storedMaxAttempts)
+        self.maxAttempts = normalizedMaxAttempts
+        if storedMaxAttempts != normalizedMaxAttempts {
+            defaults.set(normalizedMaxAttempts, forKey: Self.maxAttemptsKey)
+        }
         self.preprocessorEnabled = defaults.bool(forKey: Self.preprocessorEnabledKey)
         let hosts = defaults.stringArray(forKey: Self.preprocessorHostsKey) ?? []
         self.preprocessorHosts = Set(hosts)
+    }
+
+    static func normalizedMaxAttempts(_ value: Int) -> Int {
+        min(max(value, maxAttemptsRange.lowerBound), maxAttemptsRange.upperBound)
     }
 }

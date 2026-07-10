@@ -769,7 +769,7 @@ final class AppRouter: ObservableObject {
                     formURL: url,
                     client: self.client,
                     solver: self.captchaSolver,
-                    settings: .default
+                    settings: self.captchaSettings.autoSolverSettings
                 )
                 if let token = result.token {
                     await CaptchaTokenStore.shared.store(token, domain: host)

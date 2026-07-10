@@ -79,6 +79,7 @@ final class RefreshCenterTests: XCTestCase {
     private var savedAutoSolve: Bool!
     private var savedForceDisabled: Bool!
     private var savedMinConf: Double!
+    private var savedMaxAttempts: Int!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -96,6 +97,7 @@ final class RefreshCenterTests: XCTestCase {
         savedAutoSolve = s.autoSolveEnabled
         savedForceDisabled = s.forceDisabled
         savedMinConf = s.minConfidence
+        savedMaxAttempts = s.maxAttempts
         s.autoSolveEnabled = true
         s.forceDisabled = false
         s.minConfidence = 0.5
@@ -106,6 +108,7 @@ final class RefreshCenterTests: XCTestCase {
         s.autoSolveEnabled = savedAutoSolve
         s.forceDisabled = savedForceDisabled
         s.minConfidence = savedMinConf
+        s.maxAttempts = savedMaxAttempts
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
         store = nil
         scripted = nil
@@ -166,6 +169,24 @@ final class RefreshCenterTests: XCTestCase {
         // (это часть потока, который A1 чинит).
         let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertEqual(stored?.value, "12345")
+    }
+
+    func testBackgroundAutoSolveUsesCaptchaSettings() async throws {
+        let settings = CaptchaSettings.shared
+        settings.minConfidence = 0.95
+        settings.maxAttempts = 4
+        var receivedSettings: AutoCaptchaSolver.Settings?
+        let center = makeCenter { _, _, _, autoSolverSettings in
+            receivedSettings = autoSolverSettings
+            return AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let key = store.all()[0].key
+        await center.refresh(key: key)?.value
+
+        let actualSettings = try XCTUnwrap(receivedSettings)
+        XCTAssertEqual(actualSettings.minConfidence, 0.95, accuracy: 0.001)
+        XCTAssertEqual(actualSettings.maxAttempts, 4)
     }
 
     /// Sanity: если `autoSolve` вернул nil-токен, inline-retry НЕ идёт,

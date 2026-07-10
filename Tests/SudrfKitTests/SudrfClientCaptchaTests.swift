@@ -49,8 +49,13 @@ final class SudrfClientCaptchaTests: XCTestCase {
 
     /// **Главный тест для v0.38.10:** токен в `CaptchaTokenStore`
     /// инвалидируется, когда сервер возвращает `.captchaRejected`.
-    /// Без фикса токен остаётся в хранилище, и следующий search
-    /// попадает в ту же петлю (v0.38.7-0.38.9 баг).
+    /// Без фикса токен оставался в хранилище, и следующий search
+    /// попадал в ту же петлю (v0.38.7-0.38.9 баг).
+    ///
+    /// **v0.39.14 (A2):** после исчерпания вариантов `runVariants` бросает
+    /// `.captchaRequired` (суд детерминированно отверг токен → manual
+    /// sheet / captcha-queue), а не `.searchModuleUnavailable` как раньше.
+    /// Главная проверка фикса — инвалидация токена — остаётся.
     func testCaptchaRejectedInvalidatesToken() async throws {
         CaptchaRejectionStub.responseBody = stubHTML(rejectionMarker: "Неверно указан проверочный код с картинки")
 
@@ -68,9 +73,11 @@ final class SudrfClientCaptchaTests: XCTestCase {
                 field: .caseNumber,
                 value: "1-1/2026"
             )
-            XCTFail("expected searchModuleUnavailable, got success")
+            XCTFail("expected captchaRequired, got success")
+        } catch SudrfError.captchaRequired {
+            // expected (A2)
         } catch SudrfError.searchModuleUnavailable {
-            // expected
+            XCTFail("A2: rejected-путь должен бросать .captchaRequired, не .searchModuleUnavailable")
         }
 
         // Токен ДОЛЖЕН быть удалён из хранилища (это и есть фикс v0.38.10).
@@ -112,6 +119,10 @@ final class SudrfClientCaptchaTests: XCTestCase {
     /// суде), `.captchaRejected` всё равно корректно пробрасывается
     /// без попытки инвалидировать (captcha == nil → skip).
     /// Это страховка от regression в `if captcha != nil` guard.
+    ///
+    /// **v0.39.14 (A2):** ожидаемый throw — `.captchaRequired` (rejected
+    /// детерминирован → UI должен открыть captcha sheet), а не
+    /// `.searchModuleUnavailable` как раньше.
     func testCaptchaRejectedWithoutTokenDoesNotCrash() async throws {
         CaptchaRejectionStub.responseBody = stubHTML(rejectionMarker: "Invalid security code")
 
@@ -126,9 +137,43 @@ final class SudrfClientCaptchaTests: XCTestCase {
                 field: .caseNumber,
                 value: "1-1/2026"
             )
-            XCTFail("expected searchModuleUnavailable")
+            XCTFail("expected captchaRequired")
+        } catch SudrfError.captchaRequired {
+            // expected (A2), no crash
         } catch SudrfError.searchModuleUnavailable {
-            // expected, no crash
+            XCTFail("A2: rejected-путь должен бросать .captchaRequired, не .searchModuleUnavailable")
+        }
+    }
+
+    /// **Главный тест для A2 (v0.39.14):** rejection-страница на всех
+    /// вариантах выдачи должна приводить к `.captchaRequired` с
+    /// корректным formURL, а НЕ к `.searchModuleUnavailable` как
+    /// до фикса. Без A2 три обработчика (searchOnce cached-token catch,
+    /// SearchModel.handleCaptcha, RefreshCenter.performRefresh) не
+    /// срабатывали — manual sheet не открывался, captcha-queue не
+    /// пополнялся, дело «терялось» как «модуль недоступен».
+    func testCaptchaRejectedThrowsCaptchaRequiredForPrimary() async throws {
+        CaptchaRejectionStub.responseBody = stubHTML(rejectionMarker: "Неверно указан проверочный код с картинки")
+
+        let client = SudrfClient(session: session)
+
+        do {
+            _ = try await client.search(
+                court: CaptchaRejectionStub.court,
+                cartoteka: CaptchaRejectionStub.cartoteka,
+                field: .caseNumber,
+                value: "1-1/2026"
+            )
+            XCTFail("expected .captchaRequired, got success")
+        } catch SudrfError.searchModuleUnavailable {
+            XCTFail("A2: rejected-путь должен бросать .captchaRequired, не .searchModuleUnavailable")
+        } catch SudrfError.captchaRequired(let formURL) {
+            // spb.sudrf.ru — `.primary`, moduleHost identity (нет точки
+            // региона), host formURL равен host суда.
+            XCTAssertEqual(formURL.host, "spb.sudrf.ru",
+                           "formURL.host должен соответствовать суду")
+            XCTAssertTrue(formURL.query?.contains("name_op=sf") == true,
+                          "formURL должен указывать на форму (name_op=sf), query=\(formURL.query ?? "nil")")
         }
     }
 

@@ -140,15 +140,22 @@ public final class CaptchaSolverLog: @unchecked Sendable {
         let today = calendar.startOfDay(for: Date())
         var n = 0
         for line in text.split(separator: "\n").reversed() {
-            // Быстрый разбор: первые 19 символов — это ISO-8601 дата.
-            guard line.count > 19 else { continue }
-            let dateString = String(line.prefix(19))
+            // Первая tab-разделённая колонка содержит полный ISO-8601
+            // timestamp, включая обязательный designator часового пояса.
+            guard let timestamp = line.split(separator: "\t", maxSplits: 1).first else {
+                continue
+            }
+            let dateString = String(timestamp)
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime]
             guard let date = formatter.date(from: dateString) else { continue }
             if calendar.startOfDay(for: date) != today { break }
-            if line.contains("\tOK") || (line.range(of: #"value=\S+\s+conf="#) != nil
-                && !line.contains("\tSKIP") && !line.contains("\tERROR")) {
+            let columns = line.split(separator: "\t")
+            let isSuccessfulAttempt = columns.contains { $0.hasPrefix("value=") }
+                && columns.contains { $0.hasPrefix("conf=") }
+                && !columns.contains("SKIP")
+                && !columns.contains("ERROR")
+            if columns.contains("OK") || isSuccessfulAttempt {
                 n += 1
             }
         }

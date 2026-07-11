@@ -166,6 +166,23 @@ final class CaptchaSolverLogTests: XCTestCase {
         XCTAssertTrue(names.contains("captcha-solve.log"))
     }
 
+    func testSolvedCountTodayCountsSuccessButNotYesterday() throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+        let yesterdayLine = "\(formatter.string(from: yesterday))\tyesterday.sudrf.ru\tsudrfToken\tvalue=00000\tconf=1.00\tdur_ms=1\n"
+        try yesterdayLine.write(to: logFile, atomically: true, encoding: .utf8)
+
+        log.logAttempt(
+            host: "today.sudrf.ru",
+            kind: .sudrfToken,
+            attempt: CaptchaAttempt(value: "12345", confidence: 0.9, duration: 0.01)
+        )
+        waitForFileLines(expected: 2)
+
+        XCTAssertEqual(log.solvedCountToday(), 1)
+    }
+
     /// Спит пока в файле не окажется ровно `expected` строк, до 3 секунд.
     private func waitForFileLines(expected: Int) {
         let deadline = Date().addingTimeInterval(3)

@@ -198,10 +198,12 @@ public final class CaptchaSolverLog: @unchecked Sendable {
                 .appendingPathComponent("\(url.lastPathComponent).\(i)")
             let dst = url.deletingLastPathComponent()
                 .appendingPathComponent("\(url.lastPathComponent).\(i + 1)")
+            try? fm.removeItem(at: dst)
             try? fm.moveItem(at: src, to: dst)
         }
         let first = url.deletingLastPathComponent()
             .appendingPathComponent("\(url.lastPathComponent).1")
+        try? fm.removeItem(at: first)
         try? fm.moveItem(at: url, to: first)
     }
 

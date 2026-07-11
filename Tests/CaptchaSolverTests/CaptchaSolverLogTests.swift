@@ -146,6 +146,26 @@ final class CaptchaSolverLogTests: XCTestCase {
         )
     }
 
+    func testFourthRotationKeepsBoundedGenerations() {
+        let oversizedReason = String(repeating: "x", count: 1_100_000)
+        for i in 0..<4 {
+            log.logSkip(host: "rotation.sudrf.ru", kind: .sudrfToken,
+                        reason: oversizedReason)
+            log.logSkip(host: "rotation.sudrf.ru", kind: .sudrfToken,
+                        reason: "rotation-\(i)")
+        }
+        waitForFileText("rotation-3")
+
+        let names = ((try? FileManager.default.contentsOfDirectory(
+            at: tmpDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []).map(\.lastPathComponent)
+        XCTAssertLessThanOrEqual(names.filter { $0 == "captcha-solve.log" ||
+            $0.hasPrefix("captcha-solve.log.") }.count, 4)
+        XCTAssertTrue(names.contains("captcha-solve.log"))
+    }
+
     /// Спит пока в файле не окажется ровно `expected` строк, до 3 секунд.
     private func waitForFileLines(expected: Int) {
         let deadline = Date().addingTimeInterval(3)
@@ -156,5 +176,17 @@ final class CaptchaSolverLogTests: XCTestCase {
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
+    }
+
+    private func waitForFileText(_ text: String) {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let content = try? String(contentsOf: logFile, encoding: .utf8),
+               content.contains(text) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTFail("timed out waiting for \(text) in log")
     }
 }

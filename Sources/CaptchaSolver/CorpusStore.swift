@@ -97,8 +97,10 @@ public actor CorpusStore {
         self.dateFormatter = df
         // Load manifest.json or start with default.
         let manifestURL = self.baseDir.appendingPathComponent("manifest.json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         if let data = try? Data(contentsOf: manifestURL),
-           let loaded = try? JSONDecoder().decode(Manifest.self, from: data) {
+           let loaded = try? decoder.decode(Manifest.self, from: data) {
             self.manifest = loaded
         } else {
             self.manifest = Manifest()
@@ -241,12 +243,9 @@ public actor CorpusStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         if let data = try? encoder.encode(manifest),
            let _ = try? data.write(to: url, options: .atomic) {
             // success
         }
-        _ = decoder  // keep decoder reference to avoid unused warning
     }
 }

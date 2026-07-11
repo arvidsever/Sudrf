@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import SudrfKit
 
 final class DistrictResolverTests: XCTestCase {
@@ -127,6 +128,61 @@ extension DistrictResolverTests {
         XCTAssertEqual(courts.first?.portalSubject, "78")
         XCTAssertEqual(courts.first?.codeLetters, "RS")
     }
+
+    func testUntaggedMilitaryCacheDoesNotMarkSubjectLoaded() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DistrictResolverTests-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        // Nationwide harvest не передаёт court_subj. Код гарнизонного суда
+        // совпадает с кодом субъекта дислокации, но не доказывает, что портал
+        // уже загрузил все районные суды этого субъекта.
+        let military = DistrictCourt(
+            title: "Екатеринбургский гарнизонный военный суд",
+            domain: "egvs.svd.sudrf.ru",
+            code: "66GV0001",
+            regionCode: "svd",
+            kind: .military
+        )
+        try JSONEncoder().encode([military]).write(to: cacheURL)
+
+        DistrictResolverStub.requestCount = 0
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DistrictResolverStub.self]
+        let client = SudrfClient(
+            session: URLSession(configuration: configuration), minInterval: 0)
+        let resolver = DistrictCourtResolver(client: client, cacheURL: cacheURL)
+
+        let courts = try await resolver.courts(forRegion: "Свердловская область")
+
+        XCTAssertEqual(DistrictResolverStub.requestCount, 1)
+        XCTAssertEqual(courts.map(\.code), ["66RS0001"])
+    }
+}
+
+private final class DistrictResolverStub: URLProtocol {
+    nonisolated(unsafe) static var requestCount = 0
+
+    private static let responseBody = """
+    <ul><li><a class='court-result' onclick="listcontrol('x','66RS0001')">Ленинский районный суд Екатеринбурга</a>
+    <a href='https://leninsky.svd.sudrf.ru/'>сайт</a></li></ul>
+    """
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=utf-8"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(Self.responseBody.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 // MARK: - Буквенные типы кодов, снятые с живой выдачи портала (v12.2, проба по СПб)

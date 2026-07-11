@@ -534,7 +534,11 @@ public actor DistrictCourtResolver {
               let arr = try? JSONDecoder().decode([DistrictCourt].self, from: data) else { return }
         for c in arr {
             cache[c.domain] = c
-            if let s = c.subjectNum { loadedSubjects.insert(s) }
+            // Только ответ, полученный запросом court_subj, подтверждает, что
+            // субъект полностью загружен. Nationwide harvest (в особенности
+            // гарнизонные суды) не несёт portalSubject и не может блокировать
+            // последующую загрузку райсудов по первым цифрам своего кода.
+            if let subject = c.portalSubject { loadedSubjects.insert(subject) }
         }
     }
 

@@ -1,6 +1,7 @@
 import XCTest
 import SudrfKit
 @testable import SudrfApp
+@testable import CaptchaSolver
 
 final class SearchResultSelectionTests: XCTestCase {
     func testStableIDPrefersCardURLAndFallbackIsNonEmpty() throws {
@@ -46,5 +47,37 @@ final class SearchResultSelectionTests: XCTestCase {
 
         XCTAssertNil(model.selectedResultID)
         XCTAssertNil(model.selectedResult)
+    }
+
+    @MainActor
+    func testCaptchaCorpusBootstrapUsesSubmittedTokenAfterStoreOverwrite() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("SearchModelCorpusTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let corpus = CorpusStore(baseDir: dir)
+        let model = SearchModel(corpusStore: corpus)
+        let host = "court.sudrf.ru"
+        model.lastSubmittedCaptcha = (
+            png: Data([0x01]),
+            token: CaptchaToken(value: "sent-token", id: "sent-id")
+        )
+        await CaptchaTokenStore.shared.store(
+            CaptchaToken(value: "overwritten-token", id: "new-id"), domain: host
+        )
+        defer { Task { await CaptchaTokenStore.shared.invalidate(domain: host) } }
+
+        await model.bootstrapCaptchaToCorpus(
+            host: host,
+            results: [CaseSearchResult(caseNumber: "2-1/2026")]
+        )
+
+        let files = try FileManager.default.contentsOfDirectory(
+            at: dir.appendingPathComponent("solved-numeric"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(files.count, 1)
+        XCTAssertTrue(files[0].lastPathComponent.hasPrefix("sent-token_"))
+        XCTAssertNil(model.lastSubmittedCaptcha)
     }
 }

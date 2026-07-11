@@ -130,15 +130,22 @@ public struct CaseMovement: Sendable, Equatable, Codable {
     public var actBodies: [String: String]              // act.id → текст акта
     public var category: String?                        // категория дела (карточка 1-й инстанции)
     public var parties: CaseParties                     // стороны (карточка; фолбэк — выдача)
+    /// Канонические домены вышестоящих судов, для которых свежая загрузка
+    /// завершилась ошибкой. Метка живёт только до `MovementCachePolicy.merge`:
+    /// она не даёт частичному ответу затереть сохранённые инстанции этого суда.
+    /// Optional сохраняет декодирование старых записей кэша без миграции.
+    public var incompleteHigherCourtDomains: [String]?
 
     public init(uid: String, caseNumber: String, inForce: Bool,
                 instances: [CaseInstance], complaints: [String: PrivateComplaint],
                 acts: [CaseAct], actBodies: [String: String] = [:],
-                category: String? = nil, parties: CaseParties = CaseParties()) {
+                category: String? = nil, parties: CaseParties = CaseParties(),
+                incompleteHigherCourtDomains: [String]? = nil) {
         self.uid = uid; self.caseNumber = caseNumber; self.inForce = inForce
         self.instances = instances; self.complaints = complaints
         self.acts = acts; self.actBodies = actBodies
         self.category = category; self.parties = parties
+        self.incompleteHigherCourtDomains = incompleteHigherCourtDomains
     }
 }
 
@@ -331,6 +338,14 @@ public actor MovementService: MovementProviding {
             result: base.result ?? baseCard.result,
             sessions: baseCard.sessions,
             actID: baseActID)]
+        var incompleteHigherCourtDomains: [String] = []
+        func markHigherCourtIncomplete(_ domain: String) {
+            let canonical = SudrfHost.moduleHost(domain)
+            guard !incompleteHigherCourtDomains.contains(where: {
+                SudrfHost.moduleHost($0) == canonical
+            }) else { return }
+            incompleteHigherCourtDomains.append(domain)
+        }
 
         // 1b. Тот же суд: другие круги под этим же УИД. После отмены вышестоящим
         //     судом и возврата на новое рассмотрение в том же суде заводится НОВАЯ
@@ -494,6 +509,7 @@ public actor MovementService: MovementProviding {
                     }
                     break   // записи апелляции найдены в этой картотеке — к следующему суду
                 } catch SudrfError.captchaRequired(let formURL) {
+                    markHigherCourtIncomplete(domain)
                     // Форма этого суда под капчей — автопоиск невозможен. Если из
                     // импорта известны прямые ссылки на карточки этого суда — берём
                     // их (карточки капчой не закрыты); иначе заглушка: пользователь
@@ -546,6 +562,7 @@ public actor MovementService: MovementProviding {
                     break
                 }
                 catch SudrfError.transientNetworkError {
+                    markHigherCourtIncomplete(domain)
                     // Сетевой сбой вышестоящего суда (timeout / DNS / нет сети
                     // после 3 попыток). Ставим transientError-стаб, чтобы
                     // merge восстановил кэшированные реальные инстанции того
@@ -573,7 +590,13 @@ public actor MovementService: MovementProviding {
                     }
                     break
                 }
-                catch { continue }
+                catch {
+                    // Любая иная ошибка означает, что ответ неполон. Отдельную
+                    // UI-заглушку не показываем, но merge сохранит кэшированные
+                    // круги этого суда вместо тихого удаления из движения.
+                    markHigherCourtIncomplete(domain)
+                    continue
+                }
             }
         }
 
@@ -632,7 +655,9 @@ public actor MovementService: MovementProviding {
                             inForce: base.legalForceDate != nil || baseCard.legalForceDate != nil,
                             instances: sortedInst, complaints: [:],
                             acts: sortedActs, actBodies: actBodies,
-                            category: baseCard.category, parties: parties)
+                            category: baseCard.category, parties: parties,
+                            incompleteHigherCourtDomains: incompleteHigherCourtDomains.isEmpty
+                                ? nil : incompleteHigherCourtDomains)
     }
 
     /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).

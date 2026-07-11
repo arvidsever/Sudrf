@@ -1,0 +1,230 @@
+# Captcha auto-solver — v0.39.17
+
+## Контекст
+
+FIXPLAN A14 [P1] (H1 из ревью №2, captcha-часть): «дубли + неудаляемая
+captcha-заглушка». `MovementContext.expandedHigherDomains` разворачивает
+каждый вышестоящий домен в dash+dot форму (`vs.komi.sudrf.ru` →
+`[vs--komi.sudrf.ru, vs.komi.sudrf.ru]`), потому что `modules.php`
+живёт на дефисной форме, а dot-форма иногда мёртвая. Обе формы
+проходят через `withHostFallback → moduleHost` к одному хосту, оба
+**успешно** отдают одну и ту же карточку — и без dedup появляются
+как разные инстанции с разными `inst.domain`.
+
+### Что было сломано (A14)
+
+1. **Success-path** (`Movement.swift`, цикл `for entry in rounds`):
+   `expandedHigherDomains` → `higherCourtTargets` = 2 записи для одного
+   `moduleHost`. Каждый target в `for target in higherCourtTargets`
+   проходит `for higherCart in toTry`, делает `client.search` →
+   `fetchCard`, и **каждый** успешно добавляет свой `CaseInstance` +
+   `CaseAct` в `instances`/`acts`. Без dedup — **2 инстанции + 2 акта**
+   одной и той же апелляции. `actID` строится как
+   `act_<domain>#<caseNumber>` (L433), поэтому у dash и dot форм
+   `actID` тоже разный (хотя содержательно это один акт).
+
+2. **Captcha-stub path** (`Movement.swift`, `catch SudrfError.captchaRequired`):
+   оба target-а под капчей, `for kc in knownCards where kc.domain == domain`
+   — `kc.domain` в одной форме (обычно dash) не сматчит dot-форму target-а,
+   `instanceFromKnownCard` не вызывается, и **создаётся второй
+   captcha-stub** на dot-форму (после dedup-а: всё равно проверка
+   `!instances.contains { $0.domain == domain }` смотрит по сырому
+   домену — dot-stub не видит dash-stub и создаётся). Без dedup —
+   **2 captcha-stub** на одном вышестоящем суде, оба с `captchaFormURL`.
+
+3. **Known-card-rescue (2b)** (`Movement.swift`, добор knownCards):
+   аналогично — `instances.contains { $0.domain == kc.domain }` по
+   сырому домену. `instanceFromKnownCard` не сматчит, если первая
+   итерация добавила инстанцию в другой форме, и **создаст дубль**
+   через `instances.append(entry.inst)`. Без dedup — **2 спасенных
+   инстанции** вместо 1 (для одного known-card).
+
+4. **`replacingCaptchaStub` (UI)**: фильтр `!($0.domain == domain && $0.captchaFormURL != nil)`
+   по сырому домену. Если stub был создан в dot-форме (от предыдущего
+   target-а), а пользователь решил captcha через dash-форму (открыл
+   форму, ввёл код, вклеил карточку) — stub **не снимается**, висит
+   лишняя заглушка рядом с новой инстанцией.
+
+### Премисса, которая делает фикс простым
+
+`SudrfHost.moduleHost(_:)` детерминированно канонизирует обе формы к
+одному хосту: `vs.komi.sudrf.ru` → `vs--komi.sudrf.ru`, и уже
+дефисный `vs--komi.sudrf.ru` → без изменений (no-op). Односегментные
+хосты (`3kas`, `vap`, `vkas`, `2ap`) — тоже no-op. **Сравнение по
+`moduleHost` безопасно**: `moduleHost(dash) == moduleHost(dot) == один
+канонический хост для обеих форм**.
+
+## Что в v0.39.17 (код)
+
+### Bug fix: dedup by canonical moduleHost
+
+- **`Sources/SudrfKit/Movement.swift`** — 3 точки правок:
+
+  1. **Success-path** (цикл `for entry in rounds` после `rounds.sort`):
+     перед `acts.append`/`actBodies[a.id] = b`/`instances.append(entry.inst)`
+     проверяем `instances.contains(where: { moduleHost($0.domain) ==
+     moduleHost(entry.inst.domain) && sameCaseNumber($0.caseNumber,
+     entry.inst.caseNumber) })`. Если да — `continue` (ни инстанция,
+     ни акт не добавляются). Сравнение по `moduleHost`, не по сырому
+     домену, поэтому dash+dot формы одного суда схлопываются.
+
+  2. **Captcha-stub path** (`catch SudrfError.captchaRequired`):
+     - `for kc in knownCards where kc.domain == domain` →
+       `where SudrfHost.moduleHost(kc.domain) == SudrfHost.moduleHost(domain)`.
+     - Внутри цикла — проверка `instances.contains(where: { moduleHost($0.domain)
+       == moduleHost(kc.domain) && sameCaseNumber($0.caseNumber, n) })` ДО
+       `instanceFromKnownCard` (если `kc.caseNumber` известен). При найденном
+       дубле — `rescued = true; continue` (чтобы не падать в stub-ветку).
+     - После `instanceFromKnownCard` — финальная проверка по
+       `entry.inst.caseNumber` (мог появиться параллельный rescue от
+       предыдущего kc/target).
+     - В создании stub: `!instances.contains(where: { $0.domain == domain })` →
+       `!instances.contains(where: { moduleHost($0.domain) == moduleHost(domain) })`.
+       Теперь dash+dot forms captcha дают один stub вместо двух.
+
+  3. **Добор knownCards (2b)** (`for kc in knownCards` после основного
+     цикла): `instances.contains(where: { $0.domain == kc.domain && ... })` →
+     `moduleHost($0.domain) == moduleHost(kc.domain)` в обеих проверках
+     (до `instanceFromKnownCard` по `kc.caseNumber`, после — по
+     `entry.inst.caseNumber`).
+
+- **`Sources/SudrfKit/CaseMovementCaptcha.swift`** — `replacingCaptchaStub`:
+  фильтр заглушек `!($0.domain == domain && $0.captchaFormURL != nil)` →
+  `!($0.captchaFormURL != nil && moduleHost($0.domain) == moduleHost(domain))`.
+  Теперь ручное решение капчи через dash-форму снимает stub, созданный
+  в dot-форме (и наоборот).
+
+- **Комментарий у блока 2 «Вышестоящие суды»** в `Movement.swift`:
+  `// A16 follow-up: при transientError-стабе (см. FIXPLAN.md, A16) использовать
+  тот же moduleHost-ключ для дедупа, не сырой domain — иначе dash+dot формы
+  одного вышестоящего суда породят лишнюю заглушку.` — чтобы A16
+  не забыл применить ту же канонизацию.
+
+### Не трогаем
+
+- `MovementContext.expandedHigherDomains` — контракт: «обе формы».
+  Дедуп делается на стороне `Movement`/`CaseMovementCaptcha`. Менять
+  контракт = ломать всех потребителей (2 шт.: `MovementContext.makeService`
+  и `SearchModel.makeMovementService`).
+- `SudrfHost.moduleHost`/`alternate`/`dashVariant` — корректны, не правятся.
+- `knownCards` фильтрация в `MovementContext`-уровне (нет такого —
+  knownCards приходят через `MovementService.init` явно).
+
+### Совместимость
+
+- **3kas (кассация, односегментный домен)**: `expandedHigherDomains` для
+  кассации даёт 1 домен (`3kas.sudrf.ru`), `moduleHost("3kas.sudrf.ru") =
+  "3kas.sudrf.ru"` (no-op), dedup ничего не делает. Поведение не меняется.
+- **Magistrate суда** (например, г. Усинск, мировой участок): `movementTargets`
+  в `SearchModel.swift:780-825` строит **один** `MovementSearchTarget` с
+  дефисной формой (`dashVariant(of: d.domain) ?? d.domain`). Дублей в
+  `higherCourtTargets` нет. Dedup ничего не делает.
+- **Военная вертикаль** (`MovementContext.higherCourtDomains` для
+  `branch == .general` military): `okrug.domain`/`cassationMilitaryCourt.domain`
+  — нужно проверить на каждой форме, но `moduleHost` для них — no-op
+  (односегментные хосты) или безопасно канонизирует (если двухсегментные).
+  Текущий код уже прошёл этот путь через `withHostFallback`.
+
+### Тесты
+
+- **`Tests/SudrfKitTests/MovementDedupTests.swift`** (новый, 5 тестов):
+
+  - `testMovementDedupesAppealsAndActsByModuleHost` — **success-path**.
+    `higherCourtTargets` = [dash, dot] для одного `moduleHost`. Оба target-а
+    успешно отдают один круг (одинаковый `caseNumber`, одинаковый `actText`).
+    Ассерты: `appeals.count == 1` (не 2), `appealInstances[0].domain ==
+    "oblsud--mo.sudrf.ru"` (первый target), `appealActs.count == 1`,
+    `appealActs[0].id == appealInstances[0].actID`.
+
+  - `testMovementCaptchaStubDedupesByModuleHost` — **captcha-stub path**.
+    Оба target-а под капчей (`captchaDomains: [dash, dot]`), no knownCards.
+    Ассерты: `captchaStubs.count == 1` (не 2), `captchaStubs[0].domain ==
+    "oblsud--mo.sudrf.ru"`, `appeals.count == 1` (stub имеет `.level = .appeal`
+    от `instanceLevel(forCourtLevel: .subject) = .appeal`).
+
+  - `testMovementCaptchaWithKnownCardRescuesOnce` — **captcha + known card**.
+    Оба target-а под капчей, один `KnownCard` в dash-форме (`обязательно`,
+    контракт `KnownCard.domain = "--"`-форма). Ассерты: `appeals.count == 1`,
+    `appeals[0].domain == "oblsud--mo.sudrf.ru"` (от `kc.domain`, через
+    `instanceFromKnownCard`), `captchaStubs.isEmpty`, `appealActs.count == 1`.
+
+  - `testReplacingCaptchaStubDropsBothLegacyStubsByModuleHost` —
+    **`replacingCaptchaStub` снимает оба legacy-stub**. `CaseMovement`
+    собирается вручную с **2 captcha-stub** (dash + dot) на одном
+    `moduleHost` + 1 легитимная апелляция (`1-1111/2023`) с
+    соответствующим `CaseAct` и телом в `actBodies`. Вызываем
+    `replacingCaptchaStub(domain: dash, ..., card: <новая CaseCard
+    с caseNumber "2-2222/2024" и актом в `acts`>)`. Ассерты:
+    `captchaStubs.isEmpty` (оба legacy-stub сняты), новая инстанция
+    в `out.instances` (`caseNumber == "2-2222/2024"`),
+    `appealActs.count == 2` (1 легитимный + 1 новый), оба `actBodies` на месте.
+
+  - `testMovementKnownCardMultipleRoundsSameModuleHost` — **защита v2-регрессии**.
+    Два `KnownCard` одного `moduleHost` (`oblsud--mo.sudrf.ru`, dash) с
+    разными `caseID` (`kc-1`/`kc-2`) и разными `caseNumber`
+    (`1-1111/2023`/`2-2222/2024`). Оба target-а под капчей. Ассерты:
+    `appeals.count == 2` (оба спасены, разные круги),
+    `Set(appeals.map(\.caseNumber)) == ["1-1111/2023", "2-2222/2024"]`,
+    `appeals.allSatisfy { $0.domain == "oblsud--mo.sudrf.ru" }`,
+    `captchaStubs.isEmpty`, `appealActs.count == 2`.
+
+- **Mock:** общий `MovementMock: CaseProviding` (actor) с управляемым
+  роутингом. `search` бросает `captchaRequired`, если `court.domain`
+  в `captchaDomains`; иначе возвращает `appealRows[court.domain] ?? []`.
+  `fetchCard` отдаёт `firstCard` для `baseID`, иначе ищет в `appealCards`.
+  `fetchCard(url:)` бросает 404 (не используется в этих сценариях).
+  Captcha flow идёт через mock, **не** через реальный `AutoCaptchaSolver`,
+  поэтому `CaptchaTokenStore.shared` в этих тестах не участвует.
+
+- **Fixtures:**
+  - Базовый суд: `syktsud--komi.sudrf.ru` (district, модульная dash-форма).
+  - Базовая `Cartoteka`: `g1` (district, гражданское 1 инст.) — даёт
+    `higherCartotekaIDs(baseID: "g1", level: .subject) = ["g2"]`
+    непустой `toTry` для subject-таргетов.
+  - Targets: `MovementSearchTarget(domain: "oblsud--mo.sudrf.ru",
+    courtLevel: .subject, instanceLevel: .appeal)` + dot-вариант.
+  - `baseCard.uid` обязательно непустой (`"11RS0001-01-2025-011255-03"`)
+    — иначе `guard let uid` (Movement.swift:397) прерывает цикл targets.
+
+## Тесты (v0.39.17)
+
+Всего 317 тестов (было 312, +5):
+- 5 в `MovementDedupTests` — success-path, captcha-stub, captcha+knownCard,
+  replacingCaptchaStub (2 legacy-stub), knownCard multiple rounds (v2-regression).
+
+## Release notes (lift to `changelog/changelog-v0.39.17.md` at merge)
+
+- **Bug fix:** инстанции, акты и captcha-stub теперь дедуплицируются по
+  каноническому `SudrfHost.moduleHost` (одинаков для dash+dot форм одного
+  вышестоящего суда) + `sameCaseNumber`. До A14 `MovementContext.expandedHigherDomains`
+  разворачивал каждый домен в dash+dot, оба target-а успешно отдавали одну
+  и ту же карточку и порождали по инстанции/акту/стабу — UI получал
+  дубли и неудаляемые stub-ы после ручного решения капчи.
+- **Captcha-stub path:** rescue через `KnownCard` теперь не сматчивается
+  по сырому домену, а по `(moduleHost, caseNumber)`, поэтому один
+  `KnownCard` спасает оба target-а (dash и dot) ровно один раз. Второй
+  target корректно понимает, что rescue уже состоялся, и не падает в
+  stub-ветку.
+- **`replacingCaptchaStub`:** фильтр stub-ов по `moduleHost`, не по
+  сырому домену — ручное решение капчи через dash-форму снимает
+  legacy-stub, созданный в dot-форме (и наоборот).
+- **Добор knownCards (2b):** те же `(moduleHost, caseNumber)` проверки
+  — `KnownCard` с одной формой домена не дублируется через другой
+  target, если первая итерация уже добавила инстанцию.
+- **A16 follow-up:** в `Movement.swift` оставлен комментарий у блока 2
+  «Вышестоящие суды» — при реализации A16 (`Movement.catch { continue }`
+  + расширение `merge` на `transientError`) использовать тот же
+  `moduleHost`-ключ для дедупа transientError-стаба.
+- **Не тронуто:** `MovementContext.expandedHigherDomains` (контракт
+  «обе формы», дедуп на стороне `Movement`/`CaseMovementCaptcha`),
+  `SudrfHost`/`dashVariant` (корректны).
+- **Совместимость:** 3kas (без dash-варианта), magistrate суда
+  (один target), односегментные хосты — поведение не меняется.
+- +5 тестов в `MovementDedupTests`. Всего 317.
+
+## Что остаётся
+
+- **Track A P1:** A5, A15, A16.
+- **Track A P2:** A6, A7, A8, A9, A10, A11, A12.
+- **Track A P3:** A13.
+- **Track B:** отдельные PR от main.

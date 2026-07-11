@@ -84,6 +84,23 @@ final class CorpusStoreTests: XCTestCase {
         XCTAssertEqual(after, 0)
     }
 
+    func testManifestReopenPreservesTrainedMetadata() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        await store.markTrained(kind: .sudrfToken, count: 3)
+        await store.markTrained(kind: .kcaptcha, count: 2)
+        await store.flushManifest()
+
+        let reopened = CorpusStore(baseDir: tmpDir)
+        let manifest = await reopened.manifest
+
+        XCTAssertEqual(manifest.numericLastTrainedCount, 3)
+        XCTAssertEqual(manifest.numericPendingSinceLastTrain, 0)
+        XCTAssertNotNil(manifest.numericLastTrainedAt)
+        XCTAssertEqual(manifest.textLastTrainedCount, 2)
+        XCTAssertEqual(manifest.textPendingSinceLastTrain, 0)
+        XCTAssertNotNil(manifest.textLastTrainedAt)
+    }
+
     /// Text-captcha length distribution трекается в manifest. Сейчас
     /// мы не делаем активную нормализацию, просто пишем в словарь.
     func testTextLengthDistributionTracksInManifest() async throws {

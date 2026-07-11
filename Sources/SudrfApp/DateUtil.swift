@@ -70,13 +70,19 @@ enum DateUtil {
         guard let s else { return nil }
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return nil }
-        // Берём первые три числовых группы, разделённые точкой.
+        // Берём дату до хвоста времени. Год всегда четырёхзначный: иначе
+        // Calendar трактует «26» как 26 год н. э.
         let head = t.split(whereSeparator: { $0 == " " }).first.map(String.init) ?? t
         let parts = head.split(separator: ".")
-        guard parts.count >= 3,
+        guard parts.count == 3,
+              parts[2].count == 4,
               let d = Int(parts[0]), let m = Int(parts[1]), let y = Int(parts[2]),
               (1...31).contains(d), (1...12).contains(m) else { return nil }
-        return cal.date(from: DateComponents(year: y, month: m, day: d)).map(startOfDay)
+        guard let date = cal.date(from: DateComponents(year: y, month: m, day: d)),
+              cal.component(.day, from: date) == d,
+              cal.component(.month, from: date) == m,
+              cal.component(.year, from: date) == y else { return nil }
+        return startOfDay(date)
     }
 
     // MARK: Форматирование

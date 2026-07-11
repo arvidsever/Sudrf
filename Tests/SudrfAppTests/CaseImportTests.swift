@@ -82,6 +82,13 @@ final class CaseImportTests: XCTestCase {
         XCTAssertEqual(s.anchorRank, 100, "материал якорем быть не должен")
     }
 
+    func testGarrisonCourtUsesMilitaryDistrictRoute() throws {
+        let s = try seed(row("2-1/2026", "Сыктывкарский гарнизонный военный суд (Республика Коми)",
+                             "https://gvs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=1&case_uid=u&delo_id=1540005"))
+        XCTAssertEqual(s.level, .district)
+        XCTAssertEqual(s.branch, .military)
+    }
+
     /// Материал вида «15-…» (индекса нет в реестре) — картотека по delo_id.
     func testMaterial15ResolvedByDeloID() throws {
         let s = try seed(row("15-34/2026", "Сыктывкарский городской суд (Республика Коми)",

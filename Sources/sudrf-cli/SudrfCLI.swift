@@ -21,8 +21,11 @@ struct CourtOptions: ParsableArguments {
     @Option(name: .long, help: "Звено: district | subject | appeal | cassation.")
     var level: String = CourtLevel.district.rawValue
 
-    func court() -> Court {
-        let lvl = CourtLevel(rawValue: level) ?? .district
+    func court() throws -> Court {
+        let normalized = level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let lvl = CourtLevel(rawValue: normalized) else {
+            throw ValidationError("Неизвестное звено «\(level)». Допустимо: district, subject, appeal, cassation.")
+        }
         return Court(domain: domain, title: domain, level: lvl)
     }
 }
@@ -50,7 +53,7 @@ extension SudrfCLI {
         var name: String?
 
         func run() async throws {
-            let court = courtOpts.court()
+            let court = try courtOpts.court()
             guard let cartoteka = CartotekaRegistry.find(level: court.level, id: type) else {
                 throw ValidationError("Неизвестная картотека «\(type)» для звена «\(court.level.rawValue)».")
             }
@@ -108,7 +111,7 @@ extension SudrfCLI {
         @Option(name: .customLong("new"), help: "new (для апелляции/кассации; 1-я инстанция = 0).") var new: String = "0"
 
         func run() async throws {
-            let court = courtOpts.court()
+            let court = try courtOpts.court()
             let client = SudrfClient()
             do {
                 let card = try await client.fetchCard(

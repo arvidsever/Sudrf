@@ -228,7 +228,7 @@ final class RefreshCenter: ObservableObject {
                         for key in courtKeys {
                             if Task.isCancelled { return }
                             await self?.refresh(key: key)?.value
-                            await self?.bumpWalkProgress(total: total)
+                            await self?.bumpWalkProgress(total: total, generation: gen)
                         }
                     }
                 }
@@ -243,7 +243,12 @@ final class RefreshCenter: ObservableObject {
 
     /// Инкремент счётчика завершённых дел обхода (вызывается воркерами по мере
     /// готовности каждого дела). На @MainActor — гонок по walkProgress нет.
-    private func bumpWalkProgress(total: Int) {
+    static func acceptsWalkProgress(generation: Int, currentGeneration: Int) -> Bool {
+        generation == currentGeneration
+    }
+
+    private func bumpWalkProgress(total: Int, generation: Int) {
+        guard Self.acceptsWalkProgress(generation: generation, currentGeneration: walkGeneration) else { return }
         let done = (walkProgress?.done ?? 0) + 1
         walkProgress = WalkProgress(done: min(done, total), total: total)
     }

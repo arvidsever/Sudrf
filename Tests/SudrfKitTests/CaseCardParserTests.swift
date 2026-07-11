@@ -7,6 +7,24 @@ import XCTest
 /// трём инстанциям. Фикстуры лежат в Tests/SudrfKitTests/Fixtures.
 final class CaseCardParserTests: XCTestCase {
 
+    func testCaseNumberComesOnlyFromCaseHeaderAndTableCellsStaySeparated() throws {
+        let html = """
+        <html><body>
+        <nav>дело № ХРОМ-999/2026</nav>
+        <div class="casenumber">ДЕЛО № 2-42/2026</div>
+        <table><tr><td>Судебное заседание</td><td>31.03.2025</td><th>14:10</th></tr></table>
+        </body></html>
+        """
+        let card = try CaseCardParser.parse(html: html)
+        XCTAssertEqual(card.caseNumber, "2-42/2026")
+        XCTAssertTrue(card.rawText.contains("Судебное заседание\n31.03.2025\n14:10"))
+    }
+
+    func testCaseNumberDoesNotFallBackToPageChrome() throws {
+        let card = try CaseCardParser.parse(html: "<html><body>Дело № ХРОМ-999/2026</body></html>")
+        XCTAssertNil(card.caseNumber)
+    }
+
     private func loadFixture(_ name: String) throws -> String {
         guard let url = Bundle.module.url(forResource: name, withExtension: "html",
                                           subdirectory: "Fixtures") else {

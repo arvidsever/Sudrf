@@ -34,9 +34,20 @@ final class MagistrateTests: XCTestCase {
         })
         XCTAssertTrue(courts.contains {
             $0.code == "78MS0001"
-                && $0.domain == "mirsud.spb.ru"
+                && $0.domain == "unsupported-ms:78MS0001"
                 && !$0.isSupported
         })
+    }
+
+    func testDirectoryPrefersMSudrfLinkOverUnrelatedLink() {
+        let html = """
+        <table class="msSearchResultTbl"><tr><td>
+        <a onclick="listcontrol(0,'11MS0010');">Участок</a>
+        <div class="courtInfoCont"><a href="https://example.org">справка</a>
+        <a href="https://site.komi.msudrf.ru">сайт</a></div>
+        </td></tr></table>
+        """
+        XCTAssertEqual(MagistrateCourtParser.parse(html: html).first?.domain, "site.komi.msudrf.ru")
     }
 
     func testURLBuilderUsesUTF8QueryAndNoUIDSearch() throws {

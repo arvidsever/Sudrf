@@ -56,7 +56,7 @@ public enum CaseCardParser {
         let decision = meta["дата рассмотрения"]
         let legalForce = meta["дата вступления в законную силу"]
         let category = meta["категория дела"]
-        let caseNumber = parseCaseNumber(html: html)
+        let caseNumber = parseCaseNumber(doc: doc)
         let appeals = parseAppeals(doc)
         let parties = parseParties(doc)
 
@@ -95,7 +95,7 @@ public enum CaseCardParser {
         return !(((try? doc.select("div[id^=tab_content_]").array()) ?? []).isEmpty)
     }
 
-    private static func parseVintage(_ doc: Document, html: String, rawText: String) -> CaseCard {
+    private static func parseVintage(_ doc: Document, html _: String, rawText: String) -> CaseCard {
         // Метаданные: вкладка «Дело». УИД может лежать внутри <a class="dashed">.
         var meta: [String: String] = [:]
         if let cont = vintageTab(doc, "Case") {
@@ -122,7 +122,7 @@ public enum CaseCardParser {
                             ?? meta["решение"]
                             ?? vintageResult(doc),
                         uid: meta["уникальный идентификатор дела"],
-                        caseNumber: parseCaseNumber(html: html),
+                        caseNumber: parseCaseNumber(doc: doc),
                         category: meta["категория"] ?? meta["категория дела"],
                         receiptDate: meta["дата поступления"],
                         decisionDate: meta["дата рассмотрения"],
@@ -433,10 +433,22 @@ public enum CaseCardParser {
 
     /// Номер дела из заголовка карточки: «ДЕЛО № …» / «ПРОИЗВОДСТВО № …».
     /// Для КСОЮ это, например, «8Г-2430/2026 [88-4097/2026]».
-    private static func parseCaseNumber(html: String) -> String? {
-        guard let raw = firstMatch(#"(?:ДЕЛО|ПРОИЗВОДСТВО)\s*№\s*([^<\n]{1,60})"#, in: html) else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    private static func parseCaseNumber(doc: Document) -> String? {
+        let headers = (try? doc.select(".casenumber, .case-num").array()) ?? []
+        for header in headers {
+            let text = ((try? header.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let re = try? NSRegularExpression(
+                pattern: #"^(?:ДЕЛО|ПРОИЗВОДСТВО)\s*№\s*(.{1,60})$"#,
+                options: [.caseInsensitive]
+            ) else { continue }
+            let ns = text as NSString
+            guard let match = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+                  match.numberOfRanges > 1 else { continue }
+            let raw = ns.substring(with: match.range(at: 1))
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     // MARK: - Движение дела
@@ -545,7 +557,7 @@ public enum CaseCardParser {
     // MARK: - Извлечение текста с сохранением абзацев
 
     private static let blockTags: Set<String> = [
-        "p", "div", "tr", "li", "table", "section", "article", "blockquote",
+        "p", "div", "tr", "td", "th", "li", "table", "section", "article", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
     ]
 

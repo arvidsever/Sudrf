@@ -74,14 +74,23 @@ public enum SearchPageClassifier {
         ]
         if emptyMarkers.contains(where: html.contains) { return .empty }
 
-        // 3) Страница с шапкой выдачи, но без ссылок и без «не найдено» —
-        // считаем пустой: «Всего по запросу найдено — 0» встречается без
-        // отдельной фразы об отсутствии данных.
-        if html.contains("Всего по запросу найдено") { return .empty }
+        // 3) Счётчик выдачи без карточек. Положительный счётчик означает
+        // регрессию селектора, а не уверенное «дел нет».
+        if let count = resultCount(in: html) { return count == 0 ? .empty : .unrecognized }
+        if html.contains("Всего по запросу найдено") { return .unrecognized }
         if html.contains("Найдено дел: 0") || html.contains("id=\"search_results\"") {
             return .empty
         }
 
         return .unrecognized
+    }
+
+    private static func resultCount(in html: String) -> Int? {
+        let pattern = #"Всего\s+по\s+запросу\s+найдено\s*[-—:]?\s*(?:<[^>]+>\s*)*(\d+)"#
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let ns = html as NSString
+        guard let match = re.firstMatch(in: html, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges > 1 else { return nil }
+        return Int(ns.substring(with: match.range(at: 1)))
     }
 }

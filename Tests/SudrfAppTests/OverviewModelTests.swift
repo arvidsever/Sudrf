@@ -41,6 +41,15 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertEqual(buckets.firstLaterDays, 9)
     }
 
+    func testTimelessHearingsHaveDistinctStableIDsFromSource() {
+        let date = DateUtil.addDays(today, 2)
+        let a = TrackedHearing(recordKey: "court/2-1", date: date, time: "", caseNumber: "2-1/2026",
+                               parties: "", court: "СГС", room: "", dateLabel: "", identitySuffix: "Назначено#")
+        let b = TrackedHearing(recordKey: "court/2-1", date: date, time: "", caseNumber: "2-1/2026",
+                               parties: "", court: "СГС", room: "", dateLabel: "", identitySuffix: "Отложено#")
+        XCTAssertNotEqual(a.id, b.id)
+    }
+
     func testPinnedDeadlinePrefersUpcomingProposal() {
         let old = deadline("10", plus: -3)
         let next = deadline("11", plus: 4)

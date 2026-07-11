@@ -93,6 +93,34 @@ final class VSRFMovementTests: XCTestCase {
         let mv = try await service.movement(for: base(), court: district(), cartoteka: cart)
         XCTAssertFalse(mv.instances.contains { $0.level == .vsCassation })
     }
+
+    func testIntakeIsAssignedOnlyToNearestFollowingCaseRound() async {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд", caseNumber: "2-1649/2022")
+        let complaintOne = VSRFProduction(cardID: "c1", kind: .complaint, number: "3-КФ-1",
+                                           incomingDate: "01.01.2025", firstInstance: first,
+                                           events: [VSRFEvent(date: "10.01.2025", text: "Истребовано дело")])
+        let complaintUnmatched = VSRFProduction(cardID: "c2", kind: .complaint, number: "3-КФ-2",
+                                                 incomingDate: "01.04.2025", firstInstance: first,
+                                                 events: [VSRFEvent(date: "20.04.2025", text: "Истребовано дело")])
+        let caseOne = VSRFProduction(cardID: "d1", kind: .caseFile, number: "3-КГ-1",
+                                     incomingDate: "12.01.2025", uid: uid, firstInstance: first,
+                                     events: [VSRFEvent(date: "15.01.2025", text: "Передано судье")])
+        let caseTwo = VSRFProduction(cardID: "d2", kind: .caseFile, number: "3-КГ-2",
+                                     incomingDate: "15.03.2025", uid: uid, firstInstance: first,
+                                     events: [VSRFEvent(date: "16.03.2025", text: "Принято к производству")])
+        let results = VSRFSearchResults(total: 4, results: [caseOne, caseTwo, complaintOne, complaintUnmatched])
+        let mock = MockVSRF(uidResults: results, numberResults: results, card: VSRFCard(productions: []))
+
+        let instances = await MovementService.vsrfInstances(
+            vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+        let roundOne = instances.first { $0.caseNumber == "3-КГ-1" }
+        let roundTwo = instances.first { $0.caseNumber == "3-КГ-2" }
+        XCTAssertTrue(roundOne?.sessions.contains { $0.event.contains("Истребовано дело") } == true)
+        XCTAssertFalse(roundTwo?.sessions.contains { $0.event.contains("Истребовано дело") } == true)
+        XCTAssertNotNil(instances.first { $0.caseNumber == "3-КФ-2" },
+                        "жалоба без датированного последующего дела остаётся отдельной")
+    }
 }
 
 // MARK: - Моки

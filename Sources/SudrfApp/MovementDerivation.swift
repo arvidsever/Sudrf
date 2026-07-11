@@ -130,7 +130,7 @@ enum MovementDerivation {
             statusText = "Вступило в силу"; statusChip = .green
         } else if nextHearing != nil {
             statusText = "Назначено заседание"; statusChip = .blue
-        } else if let r = mv.instances.last?.result, !r.isEmpty {
+        } else if let r = mv.instances.last(where: { $0.level != .material })?.result, !r.isEmpty {
             statusText = r; statusChip = .gray
         } else if let last = sessions.last {
             statusText = last.event; statusChip = .blue

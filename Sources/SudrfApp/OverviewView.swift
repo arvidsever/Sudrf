@@ -487,7 +487,7 @@ struct OverviewView: View {
         Text(text)
             .font(.system(size: 10.5, weight: .bold))
             .kerning(0.4)
-            .foregroundStyle(tone == .blue ? Color.accentColor : tone == .red ? Palette.confirmed : .blue)
+            .foregroundStyle(tone == .blue ? Color.accentColor : tone == .red ? Palette.confirmed : Color.secondary.opacity(0.75))
             .padding(.horizontal, 15)
             .padding(.top, 10)
             .padding(.bottom, 5)

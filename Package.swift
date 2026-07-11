@@ -51,10 +51,7 @@ let package = Package(
             name: "SudrfApp",
             dependencies: ["SudrfKit", "CaptchaSolver"]
         ),
-        .target(
-            name: "CaptchaSolver",
-            dependencies: ["SudrfKit"]
-        ),
+        .target(name: "CaptchaSolver"),
         .testTarget(
             name: "SudrfKitTests",
             dependencies: ["SudrfKit"],

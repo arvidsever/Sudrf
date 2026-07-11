@@ -481,3 +481,266 @@ private actor MockClient: CaseProviding {
         return higherCards[caseID] ?? firstCard
     }
 }
+
+// MARK: - A16 transient-stub merge tests
+
+/// Мок клиента, бросающий заранее заданную ошибку на запросах к вышестоящему
+/// суду. Используется для тестов transient-ветки в `Movement.movement(...)`:
+/// мок бросает `SudrfError.transientNetworkError` (тесты
+/// `testTransientErrorRestoresCachedHigherInstance`,
+/// `testModuleHostDashDotMatchInMerge`, `testMultiRoundRestoredFromCache`)
+/// или `URLError(.cancelled)` (`testCancelledDoesNotCreateTransientStub`).
+/// Преобразование `URLError → SudrfError.transientNetworkError` тестируется
+/// отдельно в `SudrfClientTransientErrorTests`.
+private actor FailingMockClient: CaseProviding {
+    private let firstCardID: String
+    private let firstCard: CaseCard
+    private let homeDomain: String
+    private let expectedUID: String
+    /// Ошибка, бросаемая на ЛЮБОЙ запрос к вышестоящему суду (search + fetchCard).
+    private let higherError: Error
+    private let firstCardError: Error?
+    private(set) var searchedValues: [String] = []
+
+    init(firstCardID: String, firstCard: CaseCard,
+         homeDomain: String = "syktsud--komi.sudrf.ru",
+         expectedUID: String = "11RS0001-01-2025-011255-03",
+         higherError: Error,
+         firstCardError: Error? = nil) {
+        self.firstCardID = firstCardID
+        self.firstCard = firstCard
+        self.homeDomain = homeDomain
+        self.expectedUID = expectedUID
+        self.higherError = higherError
+        self.firstCardError = firstCardError
+    }
+
+    func search(court: Court, cartoteka: Cartoteka,
+                field: SearchField, value: String) async throws -> [CaseSearchResult] {
+        searchedValues.append(value)
+        if let firstCardError, court.domain == homeDomain { throw firstCardError }
+        throw higherError
+    }
+
+    func fetchCard(url: URL) async throws -> CaseCard {
+        throw SudrfError.http(status: 404)
+    }
+
+    func fetchCard(court: Court, caseID: String, caseUID: String,
+                   deloID: String, new: String) async throws -> CaseCard {
+        if caseID == firstCardID { return firstCard }
+        throw higherError
+    }
+}
+
+/// `testTransientErrorRestoresCachedHigherInstance` — single round. cached
+/// содержит 1 real round этого домена с `actID`; fresh (через `FailingMockClient`,
+/// бросающий `SudrfError.transientNetworkError`) ставит transient-stub.
+/// После `MovementCachePolicy.merge` — stub удалён, real из кэша, акт перенесён,
+/// `transientError == nil`, `captchaFormURL == nil`.
+final class MovementServiceTransientStubTests: XCTestCase {
+
+    private static let uid = "11RS0001-01-2026-000001-11"
+
+    private func firstCardFixture() throws -> CaseCard {
+        let url = Bundle.module.url(forResource: "sgs_1inst", withExtension: "html",
+                                    subdirectory: "Fixtures")
+        let html = try String(contentsOf: XCTUnwrap(url), encoding: .utf8)
+        return try CaseCardParser.parse(html: html)
+    }
+
+    private func districtCourt() -> Court {
+        Court(domain: "syktsud--komi.sudrf.ru",
+              title: "Сыктывкарский городской суд", level: .district)
+    }
+
+    private func base() -> CaseSearchResult {
+        CaseSearchResult(caseNumber: "2-1/2026", caseID: "30636693",
+                         caseUID: "0cec7ea2-1eae-47eb-988b-5df03f4f190c")
+    }
+
+    /// Fresh: 1 transient-stub для `vs--komi.sudrf.ru`. Cached: 1 real round
+    /// того же домена с `actID`. Merge подменяет stub на cached real, акт
+    /// переезжает. `transientError == nil`, `captchaFormURL == nil`.
+    func testTransientErrorRestoresCachedHigherInstance() async throws {
+        let firstCard = try firstCardFixture()
+        let actID = "act_vs--komi.sudrf.ru#33-4818/2026"
+        let cachedReal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-4818/2026",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: true,
+            result: "решение отменено", sessions: [CaseSession(date: "01.06.2026", event: "Заседание")],
+            actID: actID)
+        let cachedAct = CaseAct(id: actID, title: "Апелляционное определение",
+                                date: "15.09.2026", courtShort: "ВС Коми", instanceLevel: .appeal)
+        let cached = CaseMovement(uid: Self.uid, caseNumber: "2-1/2026", inForce: true,
+                                 instances: [
+                                    CaseInstance(level: .first, court: "Сыктывкарский городской суд",
+                                                 caseNumber: "2-1/2026", judge: nil,
+                                                 domain: "syktsud--komi.sudrf.ru",
+                                                 foundByUID: false, result: nil, sessions: []),
+                                    cachedReal
+                                 ],
+                                 complaints: [:], acts: [cachedAct], actBodies: [actID: "Текст акта"])
+
+        let mock = FailingMockClient(
+            firstCardID: "30636693", firstCard: firstCard,
+            higherError: SudrfError.transientNetworkError(
+                domain: "vs--komi.sudrf.ru", code: .timedOut, attempt: 3))
+        let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+        // Fresh: 1 transient-stub, captchaFormURL == nil, transientError == true.
+        XCTAssertEqual(fresh.instances.filter { $0.transientError == true }.count, 1)
+        let freshStub = fresh.instances.first { $0.transientError == true }!
+        XCTAssertNil(freshStub.captchaFormURL)
+
+        // Merge: stub удалён, cached real на месте, акт перенесён.
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let mergedInst = merged.instances.first { $0.domain == "vs--komi.sudrf.ru" }!
+        XCTAssertNil(mergedInst.captchaFormURL, "transient-stub не заменяется captcha-stub")
+        XCTAssertNil(mergedInst.transientError, "stub заменён на cached real — transientError == nil")
+        XCTAssertEqual(mergedInst.caseNumber, "33-4818/2026", "cached real caseNumber")
+        XCTAssertEqual(mergedInst.actID, actID, "cached real actID")
+        XCTAssertTrue(merged.acts.contains { $0.id == actID }, "акт из кэша перенесён в merged")
+        XCTAssertEqual(merged.actBodies[actID], "Текст акта", "тело акта из кэша перенесено")
+    }
+
+    /// Fresh: 1 transient-stub для `vs--komi.sudrf.ru` (dash-форма).
+    /// Cached: 1 real round для `vs.komi.sudrf.ru` (dot-форма). После merge
+    /// — stub удалён, real восстановлен по каноническому moduleHost.
+    /// A14 dedup + A16 merge: dash и dot формы — один и тот же хост.
+    func testModuleHostDashDotMatchInMerge() async throws {
+        let firstCard = try firstCardFixture()
+        let actID = "act_vs.komi.sudrf.ru#33-4818/2026"
+        let cached = CaseMovement(uid: Self.uid, caseNumber: "2-1/2026", inForce: true,
+                                 instances: [
+                                    CaseInstance(level: .first, court: "Сыктывкарский городской суд",
+                                                 caseNumber: "2-1/2026", judge: nil,
+                                                 domain: "syktsud--komi.sudrf.ru",
+                                                 foundByUID: false, result: nil, sessions: []),
+                                    CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-4818/2026",
+                                                 judge: nil, domain: "vs.komi.sudrf.ru",
+                                                 foundByUID: true, result: "оставлено без изменения",
+                                                 sessions: [CaseSession(date: "01.06.2026", event: "Заседание")],
+                                                 actID: actID)
+                                 ],
+                                 complaints: [:],
+                                 acts: [CaseAct(id: actID, title: "Апелляционное определение",
+                                               date: "15.09.2026", courtShort: "ВС Коми", instanceLevel: .appeal)],
+                                 actBodies: [actID: "Текст акта dot-формы"])
+
+        let mock = FailingMockClient(
+            firstCardID: "30636693", firstCard: firstCard,
+            higherError: SudrfError.transientNetworkError(
+                domain: "vs--komi.sudrf.ru", code: .timedOut, attempt: 3))
+        let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+        XCTAssertEqual(fresh.instances.filter { $0.transientError == true }.count, 1)
+        let freshStub = fresh.instances.first { $0.transientError == true }!
+        XCTAssertEqual(freshStub.domain, "vs--komi.sudrf.ru", "fresh stub в dash-форме")
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        // dot-форма из кэша восстановлена, dash-stub удалён.
+        XCTAssertNil(merged.instances.first { $0.domain == "vs--komi.sudrf.ru" && $0.transientError == true },
+                     "dash-stub удалён после merge")
+        let realInst = merged.instances.first { $0.domain == "vs.komi.sudrf.ru" }!
+        XCTAssertNil(realInst.transientError, "cached real — transientError == nil")
+        XCTAssertEqual(realInst.caseNumber, "33-4818/2026")
+        XCTAssertEqual(realInst.actID, actID)
+        XCTAssertEqual(merged.actBodies[actID], "Текст акта dot-формы")
+    }
+
+    /// Fresh: 1 transient-stub для `vs--komi.sudrf.ru`. Cached: 2 real rounds
+    /// того же канонического хоста с разными `actID`. Merge восстанавливает
+    /// ОБА round'а + оба акта, stub удалён. **Закрывает BM7 (для
+    /// transient-ветки)**: «восстанавливать все кэш-инстанции домена, не
+    /// только первую». Captcha-аналог — `testCaptchaMultiRoundRestoredFromCache`
+    /// в `MovementCachePolicyTests`.
+    func testMultiRoundRestoredFromCache() async throws {
+        let firstCard = try firstCardFixture()
+        let actID1 = "act_vs--komi.sudrf.ru#33-1/2025"
+        let actID2 = "act_vs--komi.sudrf.ru#33-2/2026"
+        let round1 = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-1/2025",
+                                  judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,
+                                  result: "решение отменено",
+                                  sessions: [CaseSession(date: "01.06.2025", event: "Заседание")],
+                                  actID: actID1)
+        let round2 = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-2/2026",
+                                  judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,
+                                  result: "оставлено без изменения",
+                                  sessions: [CaseSession(date: "01.06.2026", event: "Заседание")],
+                                  actID: actID2)
+        let cached = CaseMovement(uid: Self.uid, caseNumber: "2-1/2026", inForce: true,
+                                 instances: [
+                                    CaseInstance(level: .first, court: "Сыктывкарский городской суд",
+                                                 caseNumber: "2-1/2026", judge: nil,
+                                                 domain: "syktsud--komi.sudrf.ru",
+                                                 foundByUID: false, result: nil, sessions: []),
+                                    round1, round2
+                                 ],
+                                 complaints: [:],
+                                 acts: [
+                                    CaseAct(id: actID1, title: "Апелляционное определение",
+                                            date: "15.09.2025", courtShort: "ВС Коми", instanceLevel: .appeal),
+                                    CaseAct(id: actID2, title: "Апелляционное определение",
+                                            date: "15.09.2026", courtShort: "ВС Коми", instanceLevel: .appeal)
+                                 ],
+                                 actBodies: [actID1: "Тело акта 1", actID2: "Тело акта 2"])
+
+        let mock = FailingMockClient(
+            firstCardID: "30636693", firstCard: firstCard,
+            higherError: SudrfError.transientNetworkError(
+                domain: "vs--komi.sudrf.ru", code: .timedOut, attempt: 3))
+        let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        // Нет transient-stub после merge
+        XCTAssertFalse(merged.instances.contains { $0.transientError == true },
+                       "transient-stub удалён после merge")
+        // ОБА cached round'а восстановлены
+        let realRounds = merged.instances.filter { $0.domain == "vs.komi.sudrf.ru" }
+        XCTAssertEqual(realRounds.count, 2, "оба cached round'а восстановлены (BM7)")
+        XCTAssertEqual(Set(realRounds.map(\.caseNumber)), ["33-1/2025", "33-2/2026"])
+        // ОБА акта перенесены
+        XCTAssertTrue(merged.acts.contains { $0.id == actID1 },
+                      "акт кэша 1 перенесён в merged (BM7)")
+        XCTAssertTrue(merged.acts.contains { $0.id == actID2 },
+                      "акт кэша 2 перенесён в merged (BM7)")
+        XCTAssertEqual(merged.actBodies[actID1], "Тело акта 1")
+        XCTAssertEqual(merged.actBodies[actID2], "Тело акта 2")
+    }
+
+    /// `URLError(.cancelled)` НЕ входит в `isTransient` (SudrfClient не
+    /// преобразует в `SudrfError.transientNetworkError`). Стало быть, в
+    /// `Movement.movement(...)` catch `SudrfError.transientNetworkError` НЕ
+    /// срабатывает, `transient-stub` НЕ ставится — `URLError(.cancelled)`
+    /// летит в общий `catch { continue }` и весь вышестоящий суд
+    /// пропускается без инстанции. SudrfClient-сторона для `.cancelled`
+    /// покрыта в `SudrfClientTransientErrorTests.testFatalURLErrorNotMarkedTransient_Cancelled`.
+    func testCancelledDoesNotCreateTransientStub() async throws {
+        let firstCard = try firstCardFixture()
+        // Бросаем именно URLError(.cancelled), НЕ SudrfError.transientNetworkError.
+        // Если бы в Movement.catch был catch URLError + isTransient — была бы
+        // регрессия (отмена Task оставляла бы stub). Логика НЕ должна
+        // создавать stub на отмену.
+        let mock = FailingMockClient(
+            firstCardID: "30636693", firstCard: firstCard,
+            higherError: URLError(.cancelled))
+        let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+        XCTAssertFalse(fresh.instances.contains { $0.transientError == true },
+                       "URLError(.cancelled) НЕ ставит transient-stub")
+        XCTAssertFalse(fresh.instances.contains { $0.captchaFormURL != nil },
+                       "URLError(.cancelled) НЕ ставит captcha-stub")
+        // 1-я инстанция (district) на месте, вышестоящего — нет.
+        XCTAssertEqual(fresh.instances.count, 1, "только 1-я инстанция, вышестоящий пропущен")
+    }
+}

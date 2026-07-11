@@ -90,14 +90,24 @@ final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
 
-    init() {
-        // Постоянное хранилище в стандартной папке поддержки приложения; при
-        // сбое (несовместимая миграция и т. п.) — откат в память, чтобы
-        // приложение не падало на старте.
+    convenience init() {
+        self.init(inMemory: false)
+    }
+
+    /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
+    /// `~/Library/Application Support` и держать записи изолированно.
+    /// Продовый init (`inMemory: false`) создаёт постоянное хранилище; при
+    /// сбое (несовместимая миграция и т. п.) — откат в память, чтобы
+    /// приложение не падало на старте.
+    init(inMemory: Bool) {
         do {
-            container = try ModelContainer(for: TrackedCaseRecord.self)
+            let config: ModelConfiguration = inMemory
+                ? ModelConfiguration(isStoredInMemoryOnly: true)
+                : ModelConfiguration()
+            container = try ModelContainer(for: TrackedCaseRecord.self,
+                                           configurations: config)
         } catch {
-            storeLog.error("Постоянное хранилище не открылось, откат в память: \(error, privacy: .public)")
+            storeLog.error("Хранилище не открылось, откат в память: \(error, privacy: .public)")
             do {
                 container = try ModelContainer(for: TrackedCaseRecord.self,
                                 configurations: ModelConfiguration(isStoredInMemoryOnly: true))

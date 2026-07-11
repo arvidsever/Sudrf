@@ -1,0 +1,189 @@
+# Captcha auto-solver — v0.39.19
+
+## Контекст
+
+FIXPLAN A16 [P1] (H2 из ревью №2, captcha-часть): «не терять реальную
+инстанцию при таймауте вышестоящего суда». Цикл `Movement.movement(...)`
+для вышестоящих судов проглатывал **все** сетевые ошибки через
+`catch { continue }` без заглушки → кэш на диске затирался пустотой
+по домену, и при следующем live-fetch'е `hasAppeal` флипал вниз.
+
+### Что было сломано (A16)
+
+1. **Таймаут/нет сети вышестоящего суда ронял кэш**:
+   `SudrfClient.fetchHTMLData` (L85-130) делал 3 ретрая (0.8s × N) и
+   бросал `URLError` после исчерпания. `Movement.swift:548`
+   `catch { continue }` не ставил заглушку → `instances` оставался
+   без записи по этому домену.
+
+2. **`MovementCachePolicy.merge` не защищал кэш**: защита
+   срабатывала только для `captchaFormURL != nil`. Если в свежих
+   `instances` нет инстанции этого домена (transient проглочен),
+   merge не имеет что подменять → кэш на диске (RefreshCenter
+   L342) затирается пустотой.
+
+3. **UI не знал про «нет связи»**: в `CaseMovementView.InstanceBlock`
+   была только `captchaFormURL` ветка. `transientError` поля не было.
+
+4. **BM7 (для captcha-части)**: `merge` использовал `first(where:)`
+   → восстанавливался только один cached round; при двух кругах
+   апелляции один терялся.
+
+5. **A14 moduleHost dedup не покрывал merge** (после A16): сравнение
+   шло по `inst.domain == $0.domain` — dash+dot формы не матчатся.
+
+### Скоуп A16 (явно)
+
+Защита **captcha-merge** от частично-успешного fetch'а при сетевом
+сбое вышестоящего суда. Полный контракт H2 (RefreshCenter.applyMovement
+с «статусом частичного fetch» + нотификация UI) — Track B, B2 (от
+`main`, отдельный PR).
+
+**Скоуп transient-классификации** (SudrfClient):
+- ✅ `.timedOut`, `.cannotConnectToHost`, `.cannotFindHost`,
+  `.networkConnectionLost`, `.dnsLookupFailed`,
+  `.notConnectedToInternet`, `.resourceUnavailable`,
+  `.internationalRoamingOff`, `.dataNotAllowed` (3 попытки = 2 повтора).
+- ❌ `.cancelled` (Task-отмена) — проброс исходного, не transient.
+- ❌ 5xx (`SudrfError.http`) — проброс как есть.
+- ❌ `.badURL`, `.unsupportedURL`, `.badServerResponse` — проброс
+  как есть (фатальные).
+
+## Что в v0.39.19 (код)
+
+### Production (5 файлов, +234 / −36)
+
+- **`Sources/SudrfKit/Models.swift`**: новый `SudrfError` case
+  `transientNetworkError(domain: String, code: URLError.Code, attempt: Int)`
+  + `description` строка «суд {domain} не отвечает по сети
+  ({code.rawValue}) после {attempt} попыток». URLError — Foundation,
+  доступен.
+
+- **`Sources/SudrfKit/SudrfClient.swift`**:
+  - `URLError.isTransient: Bool` (fileprivate extension) — список
+    transient-кодов (см. «Скоуп»).
+  - `fetchHTMLData(...)` финальная классификация: после цикла
+    `if let urlErr = lastError as? URLError, urlErr.isTransient`
+    → `throw SudrfError.transientNetworkError(...)`, иначе
+    `throw lastError`. Классифицируется только последняя ошибка
+    ретрай-цикла (НЕ «последняя transient в любой попытке»): если
+    1-я transient + 3-я fatal → финал fatal; если 1-я fatal +
+    3-я transient → финал transient.
+
+- **`Sources/SudrfKit/Movement.swift`**:
+  - `CaseInstance.transientError: Bool?` (опциональное, Codable).
+    Старые кэши декодируются как `nil` без миграции. `init(...)`
+    с дефолтом `nil`.
+  - Новый `catch SudrfError.transientNetworkError` после captcha-catch
+    в higher-court цикле (`Movement.movement(...)`): ставит stub
+    с `transientError: true`, дедуп по `SudrfHost.moduleHost`
+    (A14 — иначе dash+dot формы дали бы две заглушки). `break` — к
+    следующему суду.
+
+- **`Sources/SudrfKit/MovementCachePolicy.swift`**: двухпроходный
+  merge-алгоритм (1) собрать `stubIndices` для всех stub'ов
+  (`captchaFormURL != nil || transientError == true`), 2) удалить
+  в обратном порядке (`sort(by: >)`). `instances.remove(at: i)`
+  внутри `enumerated()` инвалидирует индексы — старая логика
+  `captcha-merge` уже имела этот баг, A16 его исправляет для обеих
+  веток. Восстановление **всех** cached rounds канонического хоста
+  (через `SudrfHost.moduleHost`, не по сырому `domain` — A14
+  re-fixing на merge-стороне) с их актами и телами.
+  `stripped(forPersist:)` НЕ вырезает transient-stub'ы (это
+  специально: merge на следующий fetch должен увидеть, что у
+  домена был сетевой сбой, иначе UI увидит «дело исчезло», а не
+  «нет связи»). Captcha-stub'ы всё ещё вырезаются.
+
+- **`Sources/SudrfApp/CaseMovementView.swift`**: `InstanceBlock`
+  принимает `onRefresh: (() -> Void)?` (в дополнение к
+  `onSolveCaptcha`); `CaseMovementView` прокидывает свой верхний
+  `onRefresh` в каждый `InstanceBlock`. `RootView` (мониторинг)
+  передаёт `onRefresh: { router.refreshOpenCase() }`; `ContentView`
+  (поиск) не передаёт → `InstanceBlock.onRefresh == nil` → кнопка
+  «Повторить» скрыта. В `body` `InstanceBlock` добавлена ветка
+  `else if instance.transientError == true { transientPrompt }` —
+  плашка «Нет связи с {instance.court} — обновите страницу или
+  повторите позже» с иконкой `wifi.exclamationmark`. Плашка
+  показывается **только в pure-transient** сценарии: в cached
+  merge подменяет stub на real, UI рендерит real → плашка не
+  показывается (бесшовный показ кэша).
+
+### Кешированный vs pure-transient сценарии
+
+| Сценарий | Merge | UI |
+|---|---|---|
+| Кэш есть, вышестоящий суд timeout | stub удалён, real rounds восстановлены (все BM7) | кэшированные данные бесшовно, плашка НЕ показывается |
+| Кэша нет, вышестоящий суд timeout | stub остаётся в `instances`, идёт в персист | плашка «Нет связи с X» + кнопка «Повторить» (в мониторинге; в поиске — без кнопки) |
+
+### Тесты (3 файла, +11, baseline 340 → 351)
+
+`Tests/SudrfKitTests/SudrfClientTransientErrorTests.swift` (новый, 3 теста):
+1. `testTransientRetriesExhaustedThenThrowsTransientNetworkError` —
+   URLProtocol-stub `URLError(.timedOut)`, `requestCount == 3`,
+   pattern matching `case SudrfError.transientNetworkError(let d, let c, let a)`
+   с проверкой `d == "test.example"`, `c == .timedOut`, `a == 3`.
+2. `testFatalURLErrorNotMarkedTransient_BadURL` — `URLError(.badURL)`,
+   `requestCount == 3`, НЕ transient, проброс исходного.
+3. `testFatalURLErrorNotMarkedTransient_Cancelled` — `URLError(.cancelled)`,
+   `requestCount == 3`, НЕ transient, проброс исходного. SudrfClient-сторона
+   для `.cancelled` явно покрыта.
+
+`Tests/SudrfKitTests/MovementServiceTests.swift` (добавлен
+`MovementServiceTransientStubTests`, 4 теста):
+4. `testTransientErrorRestoresCachedHigherInstance` (single round) — мок
+   бросает `SudrfError.transientNetworkError`, cached real с `actID` →
+   merge восстанавливает real, акт + тело перенесены, `transientError == nil`.
+5. `testModuleHostDashDotMatchInMerge` — fresh stub `vs--komi.sudrf.ru`,
+   cached real `vs.komi.sudrf.ru` → merge восстанавливает real по
+   `SudrfHost.moduleHost` (A14 dedup).
+6. `testMultiRoundRestoredFromCache` — 2 cached rounds одного
+   канонического хоста с разными `actID` → merge восстанавливает
+   ОБА round'а + оба акта + оба тела (**BM7** для transient-ветки).
+7. `testCancelledDoesNotCreateTransientStub` — мок бросает
+   `URLError(.cancelled)` → `Movement.movement(...)` НЕ ставит
+   transient-stub (`.cancelled` не входит в `isTransient`).
+
+`Tests/SudrfKitTests/MovementCachePolicyTests.swift` (+4):
+8. `testTransientStubPreservesCachedRealInstance` (single round).
+9. `testTransientStubDoesNotOverwriteAnotherTransient` — fresh + cached
+   оба transient → fresh побеждает (не откатываемся к прошлой ошибке).
+10. `testStrippedKeepsTransientStub` — `stripped(forPersist:)` НЕ
+    вырезает transient-stub; captcha-stub всё ещё вырезается.
+11. `testCaptchaMultiRoundRestoredFromCache` — captcha-stub + 2 cached
+    rounds → merge восстанавливает ОБА round'а + оба акта + оба тела
+    (**BM7** для captcha-ветки, отдельный тест от A16-transient).
+
+## Что остаётся / Backlog
+
+- **B2 (Track B, от `main`)** — полный контракт H2: RefreshCenter
+  должен гарантировать, что частично-успешный fetch **никогда** не
+  затирает полный кэш (не только captcha-merge). Включает
+  «статус частичного fetch» с нотификацией UI (тогда в cached-сценарии
+  UI мог бы показывать «обновлено, но {domain} недоступен» вместо
+  бесшовного показа кэша).
+- msudrf transient (там своя логика HTTP-fallback в
+  `SudrfClient.swift:115-122`).
+- Retry-budget в SudrfClient (3 попытки = 2 повтора — вне scope A16).
+- Рефакторинг `submitCaptcha` для тестируемости (inject протокол).
+
+## Совместимость
+
+- A1, A2, A14, A15 — не задействованы. A14 inline-комментарий
+  (`Movement.swift:395-398`) уже отсылает к A16 — ничего не меняем.
+- `CaseInstance` — новое опциональное поле, Codable-совместимо со
+  старыми кэшами.
+- `MovementCachePolicy.stripped` — без изменений в captcha-ветке.
+- `SudrfError` — новый case (не breaking; switch'и не exhaustive-compile-issue).
+- AutoCaptchaSolver, CaptchaTokenStore, SearchModel, KindDispatchingStrategy —
+  не задействованы.
+
+## Release notes (черновик для `changelog/changelog-v0.39.19.md`)
+
+> **v0.39.19** (A16, captcha-часть H2) — фикс: при таймауте вышестоящего
+> суда не теряется ранее загруженная реальная инстанция из кэша.
+> `MovementCachePolicy.merge` теперь защищает кэш и для `transientError`-стаба
+> (помимо `captchaFormURL`-стаба), восстанавливая все cached rounds
+> канонического хоста (A14 moduleHost dedup, BM7 fix для обеих веток).
+> В pure-transient сценарии UI показывает плашку «Нет связи с X» + кнопку
+> «Повторить» (в мониторинге; в поиске — без кнопки). Полный контракт H2
+> (RefreshCenter) — Track B B2.

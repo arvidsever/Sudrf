@@ -15,6 +15,7 @@
 
 import Foundation
 import SudrfKit
+import CaptchaSolver
 
 struct CaptchaPendingGroup: Equatable, Identifiable {
     var host: String
@@ -90,6 +91,21 @@ final class RefreshCenter: ObservableObject {
     private let client: SudrfClient
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient = MosGorSudClient()
+    /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
+    /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
+    /// в init.
+    private let captchaSolver: CaptchaSolver?
+    private let captchaSettings: CaptchaSettings?
+    /// Шаг авто-решения капчи. Дефолт зовёт реальный `AutoCaptchaSolver.solve`;
+    /// подменяется в тестах, чтобы не зависеть от сети. Сигнатура повторяет
+    /// статический `AutoCaptchaSolver.solve`, чтобы в проде замыкание было
+    /// прозрачной обёрткой.
+    private let autoSolve: (URL, SudrfClient, CaptchaSolver,
+                            AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult
+    /// Сборщик `MovementProviding` по `MovementContext`. Дефолт строит
+    /// `MovementService` через `ctx.makeService(...)`; подменяется в тестах,
+    /// чтобы скриптовать `service.movement(...)` без сети.
+    private let serviceBuilder: (MovementContext) -> any MovementProviding
     private var tasks: [String: Task<Void, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
@@ -97,9 +113,31 @@ final class RefreshCenter: ObservableObject {
     private var walkGeneration = 0
     private var timerTask: Task<Void, Never>? = nil
 
-    init(store: TrackedStore, client: SudrfClient) {
+    init(store: TrackedStore, client: SudrfClient,
+         captchaSolver: CaptchaSolver? = nil,
+         captchaSettings: CaptchaSettings? = nil,
+         autoSolve: ((URL, SudrfClient, CaptchaSolver,
+                      AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
+         serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil) {
         self.store = store
         self.client = client
+        self.captchaSolver = captchaSolver
+        self.captchaSettings = captchaSettings
+        // Локальные копии — чтобы default-замыкания не захватывали self
+        // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
+        // self в escaping-замыкании до init-completion = ошибка компиляции).
+        let vsrf = vsrfClient
+        let mgs = mosGorSudClient
+        self.serviceBuilder = serviceBuilder ?? { ctx in
+            let provider: any CaseProviding = ctx.courtLevel == .magistrate
+                ? MagistrateClient(sudrfClient: client)
+                : client
+            return ctx.makeService(client: provider, vsrf: vsrf, mosgorsud: mgs)
+        }
+        self.autoSolve = autoSolve ?? { url, c, s, settings in
+            await AutoCaptchaSolver.solve(formURL: url, client: c,
+                                          solver: s, settings: settings)
+        }
     }
 
     func isRefreshing(_ key: String) -> Bool { refreshing.contains(key) }
@@ -234,38 +272,82 @@ final class RefreshCenter: ObservableObject {
             fail(key, "Не удалось восстановить параметры поиска по делу.")
             return
         }
-        let provider: any CaseProviding = ctx.courtLevel == .magistrate
-            ? MagistrateClient(sudrfClient: client)
-            : client
-        let service = ctx.makeService(client: provider, vsrf: vsrfClient,
-                                      mosgorsud: mosGorSudClient)
+        let service = serviceBuilder(ctx)
         do {
             let mv = try await service.movement(for: ctx.baseResult,
                                                 court: ctx.searchCourt, cartoteka: cart)
-            // Запись могла быть удалена, пока шёл запрос.
-            guard let rec = store.record(forKey: key) else { return }
-            let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
-            let newSnap = MovementDerivation.preservingConfirmedDeadlines(
-                MovementDerivation.snapshot(from: merged, context: ctx), old: rec.snapshot)
-            let changed = rec.snapshot != newSnap
-            rec.snapshot = newSnap
-            rec.movement = MovementCachePolicy.stripped(forPersist: merged)
-            rec.movementFetchedAt = Date()
-            // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
-            // кроме дела, открытого прямо сейчас (пользователь его и так видит).
-            if changed && openedKey?() != key { rec.seenAt = nil }
-            store.save()
-            captchaPending.remove(key: key)
-            lastErrors[key] = nil
-            onRefreshed?(key, merged)
+            applyMovement(key: key, ctx: ctx, mv: mv)
         } catch SudrfError.captchaRequired(let url) {
-            queueCaptcha(key: key, formURL: url)
-            fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+            // Сначала пробуем авто-солвер. Если он вернёт уверенный
+            // ответ и токен попадёт в CaptchaTokenStore, повторный
+            // `service.movement` пройдёт без капчи и без ручного ввода.
+            // Если солвер выключен / не уверен / исчерпал попытки — ставим
+            // в `CaptchaPendingQueue` и ждём пользователя.
+            //
+            // A1: повтор `service.movement` идёт INLINE в этой же Task.
+            // Прежний путь звал `refresh(key:)` → `refresh` дедуплицирует
+            // по `tasks[key]`, который чистится только ПОСЛЕ возврата
+            // `performRefresh`. Получалось, что `refresh` возвращал
+            // текущий task, и токен оставался в сторе не потреблённым.
+            guard let solver = captchaSolver,
+                  let settings = captchaSettings,
+                  settings.isEffectivelyEnabled else {
+                queueCaptcha(key: key, formURL: url)
+                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                return
+            }
+            let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
+            if let token = result.token {
+                await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
+                // v0.38.9: bootstrap в CorpusStore НЕ делаем здесь
+                // (нет гарантии, что retry с токеном прошёл; это
+                // шумный сигнал, лучше перебдеть). Bootstrap живёт
+                // в `SearchModel.executeSearch`.
+                do {
+                    let mv = try await service.movement(for: ctx.baseResult,
+                                                        court: ctx.searchCourt,
+                                                        cartoteka: cart)
+                    applyMovement(key: key, ctx: ctx, mv: mv)
+                } catch SudrfError.captchaRequired(let url2) {
+                    queueCaptcha(key: key, formURL: url2)
+                    fail(key, "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)")
+                } catch let e as SudrfError {
+                    fail(key, e.description)
+                } catch {
+                    fail(key, "Не удалось собрать движение дела: \(error.localizedDescription)")
+                }
+            } else {
+                queueCaptcha(key: key, formURL: url)
+                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+            }
         } catch let e as SudrfError {
             fail(key, e.description)
         } catch {
             fail(key, "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
+    }
+
+    /// Success-путь `performRefresh`: merge / snapshot / persist / сброс
+    /// `lastErrors` + `captchaPending`. Выделен в helper, чтобы его
+    /// выполнял и обычный happy path, и inline-retry после успешного
+    /// авто-солва капчи (A1). Guard на удалённую запись сохранён: пока
+    /// шёл сетевой вызов, пользователь мог удалить дело.
+    private func applyMovement(key: String, ctx: MovementContext, mv: CaseMovement) {
+        guard let rec = store.record(forKey: key) else { return }
+        let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
+        let newSnap = MovementDerivation.preservingConfirmedDeadlines(
+            MovementDerivation.snapshot(from: merged, context: ctx), old: rec.snapshot)
+        let changed = rec.snapshot != newSnap
+        rec.snapshot = newSnap
+        rec.movement = MovementCachePolicy.stripped(forPersist: merged)
+        rec.movementFetchedAt = Date()
+        // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
+        // кроме дела, открытого прямо сейчас (пользователь его и так видит).
+        if changed && openedKey?() != key { rec.seenAt = nil }
+        store.save()
+        captchaPending.remove(key: key)
+        lastErrors[key] = nil
+        onRefreshed?(key, merged)
     }
 
     private func queueCaptcha(key: String, formURL: URL) {

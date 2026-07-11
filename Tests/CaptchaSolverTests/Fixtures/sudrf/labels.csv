@@ -1,0 +1,11 @@
+filename,expected,kind,notes
+90299_sankt-peterburgsky--spb_sudrf_ru_1_v3ruvq66jtumpc886v4g0fp6o7.png,90299,sudrfToken,rotated/struck-through 5-digit captcha (ground truth: human read from PNG)
+90299_sankt-peterburgsky--spb_sudrf_ru_2_v3ruvq66jtumpc886v4g0fp6o7.png,90299,sudrfToken,duplicate captchaid — same image
+90299_sankt-peterburgsky--spb_sudrf_ru_3_v3ruvq66jtumpc886v4g0fp6o7.png,90299,sudrfToken,duplicate
+56667_sankt-peterburgsky--spb_sudrf_ru_4_1l2tq5qui7m1s78j0q2hevqbc4.png,56667,sudrfToken,rotated/struck-through 5-digit captcha
+56667_sankt-peterburgsky--spb_sudrf_ru_5_1l2tq5qui7m1s78j0q2hevqbc4.png,56667,sudrfToken,duplicate
+60984_sovetsky--nsk_sudrf_ru_21_pr641ommin0kjkh9vbqn7q3qjk.png,60984,sudrfToken,Vision returns empty (different style), CoreML exact match verified
+60984_sovetsky--nsk_sudrf_ru_22_pr641ommin0kjkh9vbqn7q3qjk.png,60984,sudrfToken,duplicate
+60984_sovetsky--nsk_sudrf_ru_23_pr641ommin0kjkh9vbqn7q3qjk.png,60984,sudrfToken,duplicate
+60984_sovetsky--nsk_sudrf_ru_24_pr641ommin0kjkh9vbqn7q3qjk.png,60984,sudrfToken,duplicate
+60984_sovetsky--nsk_sudrf_ru_25_pr641ommin0kjkh9vbqn7q3qjk.png,60984,sudrfToken,duplicate

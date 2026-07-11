@@ -17,6 +17,7 @@ import SwiftUI
 import AppKit
 import Combine
 import SudrfKit
+import CaptchaSolver
 
 // MARK: - Палитра разделов
 
@@ -381,6 +382,14 @@ final class AppRouter: ObservableObject {
     private let store = TrackedStore()
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
+    /// Авто-солвер капчи для интерактивного пути `beginCaptcha(for:)`
+    /// (per-instance заглушки в `CaseMovementView`). Создаётся здесь,
+    /// чтобы `SearchModel` и `AppRouter` могли иметь разные инстансы
+    /// солвера — у каждого свой rate-limit и лог. `CaptchaSettings`
+    /// общий (singleton), так что toggle в системном меню действует
+    /// на оба пути.
+    private let captchaSolver: CaptchaSolver
+    private let captchaSettings: CaptchaSettings
     private var refreshCenterSink: AnyCancellable? = nil
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
     private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
@@ -393,8 +402,47 @@ final class AppRouter: ObservableObject {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
     }
 
-    init() {
-        refreshCenter = RefreshCenter(store: store, client: client)
+    init(captchaSettings: CaptchaSettings = .shared) {
+        // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
+        // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
+        // определяют, какие хосты проходят через preprocess — см. v0.38.4.
+        //
+        // `preprocessingProvider` пробрасывает live-источник флага из
+        // `CaptchaSettings`: пользователь переключает preprocess в меню,
+        // и следующий вызов `solver.solve` сразу видит новое значение.
+        // Без provider флаг был бы зафиксирован на момент конструирования
+        // солвера, и тоггл в меню не действовал бы до перезапуска.
+        //
+        // `CoreMLCaptchaStrategy` (v0.38.8) — для `.sudrfToken`. Если
+        // модель найдена на диске, она оборачивает Vision-стратегию
+        // через `KindDispatchingStrategy`: числовые captcha идут через
+        // CoreML, текстовые (`.kcaptcha`) — через Vision.
+        var vision = VisionOCRStrategy(preprocessorHosts: captchaSettings.preprocessorHosts)
+        vision.preprocessingProvider = { [weak captchaSettings] in
+            captchaSettings?.preprocessorEnabled ?? false
+        }
+        let solverConfiguration = captchaSettings.solverConfiguration
+        let provider: any CaptchaSolvingProvider
+        if let modelURL = CoreMLModelDiscovery.discoverURL(),
+           let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
+            provider = KindDispatchingStrategy(
+                primary: coreML,
+                fallback: vision,
+                minPrimaryConfidence: solverConfiguration.minConfidence,
+                primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
+            )
+        } else {
+            provider = vision
+        }
+        let configuredSolver = CaptchaSolver(
+            provider: provider,
+            configuration: solverConfiguration
+        )
+        self.captchaSolver = configuredSolver
+        self.captchaSettings = captchaSettings
+        refreshCenter = RefreshCenter(store: store, client: client,
+                                       captchaSolver: configuredSolver,
+                                       captchaSettings: captchaSettings)
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv in
             self?.applyRefreshed(key: key, movement: mv)
@@ -701,9 +749,53 @@ final class AppRouter: ObservableObject {
     func selectAct(_ id: String) { selectedActID = id }
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
 
+    /// Открыть окно ввода кода для инстанции-заглушки. Сначала пробует
+    /// авто-солвер (Vision, on-device). На успех токен сохраняется в
+    /// `CaptchaTokenStore`, и `refreshOpenCase` тихо пересобирает
+    /// движение — заглушка заменится на реальную инстанцию без
+    /// участия пользователя. На неуверенность / выключенный солвер —
+    /// открывается ручной `CaptchaAssistSheet` (как раньше).
+    ///
+    /// Сигнатура остаётся sync: async-работа внутри `Task`, чтобы
+    /// не менять места вызова в `CaseMovementView` (Button).
     func beginCaptcha(for inst: CaseInstance) {
         guard let url = inst.captchaFormURL else { return }
-        let host = url.host
+        let host = url.host ?? ""
+
+        if captchaSettings.isEffectivelyEnabled {
+            Task { [weak self] in
+                guard let self else { return }
+                let result = await AutoCaptchaSolver.solve(
+                    formURL: url,
+                    client: self.client,
+                    solver: self.captchaSolver,
+                    settings: self.captchaSettings.autoSolverSettings
+                )
+                if let token = result.token {
+                    await CaptchaTokenStore.shared.store(token, domain: host)
+                    // NOTE: bootstrap в CorpusStore не делаем здесь —
+                    // мы не имеем гарантии, что retry с этим токеном
+                    // прошёл (сервер мог отклонить). Bootstrap живёт
+                    // в `SearchModel.executeSearch`, где есть явный
+                    // сигнал «search вернул ≥ 1 результата».
+                    await MainActor.run {
+                        self.pendingCaptchaRefresh = true
+                        self.refreshCenter.retryPendingCaptcha(host: host)
+                        self.refreshOpenCase()
+                        self.pendingCaptchaRefresh = false
+                    }
+                    return
+                }
+                // Авто-солвер не справился — открываем ручной лист.
+                await MainActor.run { self.openManualCaptchaSheet(for: inst, url: url, host: host) }
+            }
+        } else {
+            openManualCaptchaSheet(for: inst, url: url, host: host)
+        }
+    }
+
+    /// Построить `CaptchaContext` и открыть ручной лист.
+    private func openManualCaptchaSheet(for inst: CaseInstance, url: URL, host: String) {
         captcha = SearchModel.CaptchaContext(formURL: url,
                                              uid: liveMovement?.uid ?? "",
                                              instanceID: inst.id,

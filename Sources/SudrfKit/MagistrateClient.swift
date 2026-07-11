@@ -339,6 +339,14 @@ public actor MagistrateClient: CaseProviding {
         if CaptchaDetector.hasCaptcha(in: firstHTML) {
             throw SudrfError.captchaRequired(formURL: try builder.formURL())
         }
+        // v0.38.10: проверяем на .captchaRejected (через общий
+        // SearchPageClassifier) ДО MagistratePageClassifier —
+        // если суд отверг наш токен, это другой диагноз, чем
+        // «неизвестный формат». Дамп отдельно + searchModuleUnavailable.
+        if SearchPageClassifier.classify(html: firstHTML) == .captchaRejected {
+            SearchDiagnostics.dumpCaptchaRejected(data: Data(firstHTML.utf8), host: court.domain)
+            throw SudrfError.searchModuleUnavailable(domain: court.domain)
+        }
         guard MagistratePageClassifier.classify(html: firstHTML) != .unrecognized else {
             throw SudrfError.searchModuleUnavailable(domain: court.domain)
         }
@@ -351,6 +359,10 @@ public actor MagistrateClient: CaseProviding {
             let html = try await client.fetchHTML(url)
             if CaptchaDetector.hasCaptcha(in: html) {
                 throw SudrfError.captchaRequired(formURL: try builder.formURL())
+            }
+            if SearchPageClassifier.classify(html: html) == .captchaRejected {
+                SearchDiagnostics.dumpCaptchaRejected(data: Data(html.utf8), host: court.domain)
+                throw SudrfError.searchModuleUnavailable(domain: court.domain)
             }
             rows += try MagistrateResultsParser.parse(html: html, court: court)
         }

@@ -40,6 +40,22 @@ public actor SudrfClient {
         self.captchaStore = captchaStore
     }
 
+    /// Внутренний init для тестов: позволяет подсунуть свой `URLSession`,
+    /// сконфигурированный с `URLProtocol` stub'ом (URLSessionConfiguration.default
+    /// НЕ подхватывает глобально зарегистрированные protocol classes —
+    /// только тот configuration, на котором они указаны явно).
+    internal init(session: URLSession,
+                   minInterval: TimeInterval = 1.5,
+                   userAgent: String = "SudrfKitTests",
+                   variantStore: WorkingVariantStore = .shared,
+                   captchaStore: CaptchaTokenStore = .shared) {
+        self.session = session
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+        self.variantStore = variantStore
+        self.captchaStore = captchaStore
+    }
+
     /// Число повторов при временных ошибках (502/503/504, обрывы соединения).
     public var maxAttempts = 3
 
@@ -48,7 +64,25 @@ public actor SudrfClient {
         try await fetchHTML(url, allowHTTPFallback: true)
     }
 
+    /// Загрузить HTML формы поиска (страница с капчей). Семантически то
+    /// же, что `fetchHTML`, но имя сигнализирует о намерении — нужно
+    /// `RefreshCenter.tryAutoSolve` для авто-солвера.
+    public func fetchForm(_ url: URL) async throws -> String {
+        try await fetchHTML(url, allowHTTPFallback: true)
+    }
+
     private func fetchHTML(_ url: URL, allowHTTPFallback: Bool) async throws -> String {
+        let (_, html) = try await fetchHTMLData(url, allowHTTPFallback: allowHTTPFallback)
+        return html
+    }
+
+    /// Внутренний helper, возвращающий и сырые байты, и декодированную
+    /// строку. Используется там, где нужно сбросить HTML-ответ на диск
+    /// в его исходной кодировке (например, `SearchDiagnostics.dumpVariant`):
+    /// `String`-перегрузка `fetchHTML` теряет исходные байты при
+    /// перекодировании, а пользователю нужны именно байты — иначе
+    /// файл в браузере показывает mojibake.
+    private func fetchHTMLData(_ url: URL, allowHTTPFallback: Bool) async throws -> (Data, String) {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
@@ -73,9 +107,9 @@ public actor SudrfClient {
                 }
                 // Суды отдают windows-1251, единый портал — тоже cp1251; UTF-8 как запасной.
                 let ctype = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-                if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) { return s }
-                if let s = Cyrillic1251.decode(data) { return s }
-                if let s = String(data: data, encoding: .utf8) { return s }
+                if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) { return (data, s) }
+                if let s = Cyrillic1251.decode(data) { return (data, s) }
+                if let s = String(data: data, encoding: .utf8) { return (data, s) }
                 throw SudrfError.decodingFailed
             } catch let e as URLError {
                 if allowHTTPFallback, e.isTLSError,
@@ -84,13 +118,33 @@ public actor SudrfClient {
                     // data in query parameters. Plain HTTP is allowed only for
                     // msudrf hosts, only after TLS fails, and only for this one
                     // retry so broken government TLS does not silently broaden.
-                    return try await fetchHTML(httpURL, allowHTTPFallback: false)
+                    return try await fetchHTMLData(httpURL, allowHTTPFallback: false)
                 }
                 lastError = e
                 guard attempt + 1 < attempts else { break }
                 try await backoff(attempt)
                 continue
             }
+            // 5xx (SudrfError.http) — НЕ URLError, летит через L106 /
+            // withHostFallback (L309-316), в финальной классификации не
+            // участвует. .badURL / .cancelled / .badServerResponse — это
+            // URLError, попадают в `catch let e as URLError`, ретраятся 3
+            // раза, lastError обновляется на каждой попытке; на финале
+            // urlErr.isTransient == false → проброс исходной ошибки. Это
+            // согласуется с тестом testFatalURLErrorNotMarkedTransient
+            // (requestCount == 3, проброс URLError(.badURL) / .cancelled).
+        }
+        // Финальная классификация: только последняя ошибка ретрая-цикла
+        // решает, transient это или нет. Если на 1-й был transient, а на
+        // 3-й — fatal URLError (.badURL, .cancelled) — lastError
+        // перезаписан fatal'ом → финал fatal. Если на 1-й был fatal, а на
+        // 3-й — transient — lastError перезаписан transient'ом → финал
+        // transient. Это корректно: финальная попытка определяет результат.
+        if let urlErr = lastError as? URLError, urlErr.isTransient {
+            throw SudrfError.transientNetworkError(
+                domain: url.host ?? "", code: urlErr.code, attempt: attempts)
+            // attempts (= 3) — полное число попыток (= 2 повтора + 1 начальная).
+            // Пользователь видит «после 3 попыток», что соответствует факту.
         }
         throw lastError
     }
@@ -136,10 +190,17 @@ public actor SudrfClient {
         // её распознает классификатор, экономя запрос.
         if builder.pattern == .primary {
             let formURL = try builder.formURL(cartoteka)
-            let formHTML = try await fetchHTML(formURL)
+            let (formData, formHTML) = try await fetchHTMLData(formURL, allowHTTPFallback: true)
             if CaptchaDetector.hasCaptcha(in: formHTML) {
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
+            // Диагностика: форма у этого суда (captcha-включённого, раз
+            // мы здесь на .primary) не распознана как содержащая капчу.
+            // Скорее всего суд изменил маркер — сохраним форму, чтобы
+            // увидеть, как она выглядит сейчас. Сохраняем СЫРЫЕ байты,
+            // чтобы файл можно было открыть в браузере (тот прочитает
+            // `<meta charset=...>` из самого HTML и применит его).
+            SearchDiagnostics.dumpFormCheck(data: formData, host: court.domain)
         }
 
         // 2) Перебор вариантов выдачи.
@@ -166,24 +227,71 @@ public actor SudrfClient {
         }
 
         var sawEmpty = false
+        var lastData: Data? = nil
+        var lastWasCaptchaRejected = false
         for v in variants {
-            let html = try await fetchHTML(v.url)
+            let (data, html) = try await fetchHTMLData(v.url, allowHTTPFallback: true)
             switch SearchPageClassifier.classify(html: html) {
             case .captcha:
                 throw SudrfError.captchaRequired(formURL: try builder.formURL(cartoteka))
+            case .captchaRejected:
+                // Сервер отверг наш проверочный код (v0.38.9). Это не
+                // форма captcha — это та же страница результатов, на
+                // которой сервер сообщил «неверный код». Наш токен в
+                // `CaptchaTokenStore` больше не валиден — следующий
+                // search с ним даст тот же ответ. Инвалидируем сейчас,
+                // чтобы вызывающая сторона не зацикливалась на плохом
+                // токене (v0.38.10).
+                if captcha != nil {
+                    await captchaStore.invalidate(domain: court.domain)
+                }
+                // Дамп — отдельно от variant_, чтобы при разборе было
+                // видно «суд отверг токен» vs «суд вернул неизвестный
+                // формат». Дальше ведём себя как unrecognized: пробрасываем
+                // `searchModuleUnavailable` наверх.
+                lastData = data
+                lastWasCaptchaRejected = true
+                continue
             case .results:
                 await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
                 return try ResultsParser.parse(html: html, court: court)
             case .empty:
                 sawEmpty = true
             case .unrecognized:
+                lastData = data
+                lastWasCaptchaRejected = false
                 continue
             }
         }
         if sawEmpty { return [] }
         // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
         // в неизвестном формате (другой интерфейс, JS-защита, заглушка).
-        // Честная ошибка вместо тихого «ничего не найдено».
+        // Сбрасываем последний ответ (сырые байты + декодированную строку),
+        // чтобы пользователь мог посмотреть, что суд реально прислал —
+        // `SearchPageClassifier` не узнал ни одного маркера. Это и есть
+        // путь к `searchModuleUnavailable`. Байты нужны без перекодирования,
+        // иначе файл в браузере показывает mojibake (как в v0.38.5).
+        if let lastData {
+            if lastWasCaptchaRejected {
+                SearchDiagnostics.dumpCaptchaRejected(data: lastData, host: court.domain)
+            } else {
+                SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
+            }
+        }
+        // A2: суд детерминированно отверг наш токен (`.captchaRejected`
+        // хотя бы на одном варианте). Токен уже инвалидирован внутри
+        // цикла, retry не зациклится. UI должен получить `.captchaRequired`
+        // — тогда manual sheet / captcha-queue / авто-солвер (три
+        // обработчика: `searchOnce` cached-token catch, `SearchModel.
+        // handleCaptcha`, `RefreshCenter.performRefresh`) сработают, как
+        // ожидается. `try?` — fallback на старое поведение при
+        // несобираемом formURL (битый cartoteka). В отличие от прежнего
+        // `searchModuleUnavailable` этот throw не проходит `withHostFallback`:
+        // rejection детерминирован для обеих форм одного сервера
+        // (один и тот же back-end), дополнительный GET бесполезен.
+        if lastWasCaptchaRejected, let formURL = try? builder.formURL(cartoteka) {
+            throw SudrfError.captchaRequired(formURL: formURL)
+        }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
 
@@ -257,6 +365,32 @@ private extension URLError {
              .serverCertificateNotYetValid,
              .clientCertificateRejected,
              .clientCertificateRequired:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Transient (сетевые) коды — суд «не ответил» (timeout, DNS, нет сети),
+    /// НЕ ошибка запроса/отмены. Используется в `fetchHTMLData` для
+    /// классификации исчерпанного URLError → `SudrfError.transientNetworkError`.
+    /// ИСКЛЮЧЕНИЯ:
+    ///   • `.cancelled` (-999) — отменённая Task, не ошибка пользователя,
+    ///     transient-stub ставить нельзя.
+    ///   • 5xx (`SudrfError.http`) — не URLError, идёт через L106.
+    ///   • `.badURL`, `.unsupportedURL`, `.badServerResponse` — фатальные,
+    ///     пробрасываются как есть (тест `testFatalURLErrorNotMarkedTransient`).
+    var isTransient: Bool {
+        switch code {
+        case .timedOut,
+             .cannotConnectToHost,
+             .cannotFindHost,                 // DNS
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .resourceUnavailable,
+             .internationalRoamingOff,
+             .dataNotAllowed:
             return true
         default:
             return false

@@ -12,6 +12,7 @@ let package = Package(
     ],
     products: [
         .library(name: "SudrfKit", targets: ["SudrfKit"]),
+        .library(name: "CaptchaSolver", targets: ["CaptchaSolver"]),
         .executable(name: "sudrf-cli", targets: ["sudrf-cli"]),
         .executable(name: "SudrfApp", targets: ["SudrfApp"])
     ],
@@ -48,8 +49,9 @@ let package = Package(
         ),
         .executableTarget(
             name: "SudrfApp",
-            dependencies: ["SudrfKit"]
+            dependencies: ["SudrfKit", "CaptchaSolver"]
         ),
+        .target(name: "CaptchaSolver"),
         .testTarget(
             name: "SudrfKitTests",
             dependencies: ["SudrfKit"],
@@ -60,6 +62,11 @@ let package = Package(
         .testTarget(
             name: "SudrfAppTests",
             dependencies: ["SudrfApp"]
+        ),
+        .testTarget(
+            name: "CaptchaSolverTests",
+            dependencies: ["CaptchaSolver", "SudrfKit"],
+            resources: [.copy("Fixtures")]
         )
     ]
 )

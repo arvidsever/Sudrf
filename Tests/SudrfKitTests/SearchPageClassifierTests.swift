@@ -105,6 +105,42 @@ final class SearchPageClassifierTests: XCTestCase {
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .unrecognized)
     }
 
+    /// v0.38.9: маркеры captcha-rejection (сервер отверг наш код)
+    /// дают `.captchaRejected`. Это отдельный кейс от `.captcha`
+    /// (форма с картинкой) — здесь страница результатов с сообщением
+    /// «неверный код».
+    func testCaptchaRejectedMarkers() {
+        for marker in SearchPageClassifier.captchaRejectedMarkers {
+            let html = """
+            <html><body>
+            <div>\(marker)</div>
+            </body></html>
+            """
+            XCTAssertEqual(
+                SearchPageClassifier.classify(html: html),
+                .captchaRejected,
+                "marker '\(marker)' should classify as captchaRejected"
+            )
+        }
+    }
+
+    /// Captcha-rejected на странице с формой captcha (для re-entry) —
+    /// всё равно `.captchaRejected`, не `.captcha`. Это нужно для
+    /// bootstrap-хука: страница с rejected-message не должна
+    /// добавлять captcha в корпус.
+    func testCaptchaRejectedBeatsEmbeddedCaptchaForm() {
+        let html = """
+        <html><body>
+        <div>Неверно указан проверочный код с картинки</div>
+        <form>
+          <input name="captcha" type="text">
+          <input name="captchaid" type="hidden" value="abc">
+        </form>
+        </body></html>
+        """
+        XCTAssertEqual(SearchPageClassifier.classify(html: html), .captchaRejected)
+    }
+
     func testBlankPageIsUnrecognized() {
         XCTAssertEqual(SearchPageClassifier.classify(html: ""), .unrecognized)
     }

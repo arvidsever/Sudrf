@@ -252,7 +252,7 @@ struct TrackedDeadline: Identifiable {
 }
 
 struct TrackedHearing: Identifiable {
-    var id: String { "\(recordKey)#hearing#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(court)" }
+    var id: String { "\(recordKey)#hearing#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(court)#\(identitySuffix)" }
     var recordKey: String
     var date: Date
     var time: String
@@ -262,6 +262,9 @@ struct TrackedHearing: Identifiable {
     var room: String
     var dateLabel: String
     var judge: String = ""
+    /// При времени «—» несколько событий одного дня иначе имеют одинаковый id.
+    /// Источник сохраняется только в UI-идентификаторе, формат снимка не меняется.
+    var identitySuffix: String = ""
 }
 
 struct FeedEntry: Identifiable {
@@ -929,7 +932,7 @@ final class AppRouter: ObservableObject {
                 hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
                     caseNumber: rec.caseNumber, parties: snap.partiesShort,
                     court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
-                    judge: s.judge ?? ""))
+                    judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
             }
             // Сроки.
             for dl in snap.deadlines {

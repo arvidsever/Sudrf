@@ -231,6 +231,7 @@ private struct FormLabel: View {
 private struct ResultsPane: View {
     @ObservedObject var model: SearchModel
     @EnvironmentObject var router: AppRouter
+    @State private var singleClickTask: Task<Void, Never>?
 
     private var paneTitle: String { model.isDrilled ? "Движение дела" : "Выдача" }
 
@@ -270,6 +271,7 @@ private struct ResultsPane: View {
                 onSessionUnlocked: { host in model.captchaSessionUnlocked(host: host) },
                 onCancel: { model.captcha = nil })
         }
+        .onDisappear { singleClickTask?.cancel() }
     }
 
     /// Плавающая шапка уместна только над списком карточек выдачи.
@@ -308,8 +310,19 @@ private struct ResultsPane: View {
                 ForEach(rows) { result in
                     ResultCard(result: result,
                                selected: model.selectedResultID == result.stableID)
-                        .onTapGesture(count: 2) { Task { await model.openMovement(result) } }
-                        .onTapGesture { Task { await model.openCard(result) } }
+                        .onTapGesture(count: 2) {
+                            singleClickTask?.cancel()
+                            singleClickTask = nil
+                            Task { await model.openMovement(result) }
+                        }
+                        .onTapGesture {
+                            singleClickTask?.cancel()
+                            singleClickTask = Task {
+                                try? await Task.sleep(for: .milliseconds(250))
+                                guard !Task.isCancelled else { return }
+                                await model.openCard(result)
+                            }
+                        }
                 }
                 Text("Двойной клик по карточке — движение дела по инстанциям.")
                     .font(.caption2)

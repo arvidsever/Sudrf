@@ -13,9 +13,16 @@ public enum CaptchaDetector {
             if hasNamedCaptchaInput(in: doc) || hasCaptchaLabelNearEditableInput(in: doc) {
                 return true
             }
+            // Старые страницы иногда оставляют подпись заголовком вне контейнера
+            // поля. Допускаем её лишь вне таблиц: текст чужой строки не должен
+            // влиять на произвольное поле ниже страницы.
+            if hasCaptchaTextOutsideTable(in: doc), hasEditableInput(in: doc) {
+                return true
+            }
+            return false
         }
 
-        // Фолбэк по тексту — на случай нестандартной разметки.
+        // Фолбэк по тексту — только если нестандартная разметка не разобралась.
         // На судах ОСЮ (напр. КСОЮ) капча выводится inline-картинкой (data:URI),
         // а поле подписано «Проверочный код»; на странице ошибки — «Неверно указан
         // проверочный код». Не считаем `captchaid` внутри URL счётчиков признаком:
@@ -32,6 +39,18 @@ public enum CaptchaDetector {
             guard isEditableInput(input) else { return false }
             let name = inputName(input)
             return name == "captcha" || (name.contains("captcha") && !name.contains("captchaid"))
+        }
+    }
+
+    private static func hasEditableInput(in doc: Document) -> Bool {
+        ((try? doc.select("input").array()) ?? []).contains(where: isEditableInput)
+    }
+
+    private static func hasCaptchaTextOutsideTable(in doc: Document) -> Bool {
+        let candidates = (try? doc.select("h1, h2, h3, h4, h5, h6, label, p, span, div").array()) ?? []
+        return candidates.contains { element in
+            let inTable = element.parents().array().contains { $0.tagName().lowercased() == "table" }
+            return !inTable && hasCaptchaText(((try? element.text()) ?? "").lowercased())
         }
     }
 
@@ -61,7 +80,8 @@ public enum CaptchaDetector {
     }
 
     private static func nearbyText(for input: Element) -> String {
-        if let row = try? input.parents().select("tr").first(), let text = try? row.text() {
+        if let row = input.parents().array().first(where: { $0.tagName().lowercased() == "tr" }),
+           let text = try? row.text() {
             return text
         }
         var parts: [String] = []
@@ -71,6 +91,14 @@ public enum CaptchaDetector {
         }
         if let parent = input.parent(), let text = try? parent.text() {
             parts.append(text)
+            // Некоторые страницы ставят заголовок «Проверочный код» отдельным
+            // элементом непосредственно перед контейнером поля. Это локальная
+            // связь, в отличие от поиска первой строки таблицы по документу.
+            if let previous = try? parent.previousElementSibling(),
+               ["h1", "h2", "h3", "h4", "h5", "h6"].contains(previous.tagName().lowercased()),
+               let heading = try? previous.text() {
+                parts.append(heading)
+            }
         }
         return parts.joined(separator: " ")
     }

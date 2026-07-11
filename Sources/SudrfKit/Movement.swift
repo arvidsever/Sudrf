@@ -1012,11 +1012,36 @@ extension MovementService {
 
         var out: [CaseInstance] = []
         if !cases.isEmpty {
-            // События истребовавших жалоб (интейк дела) — вливаем в движение дела.
-            let intake = complaints.filter { $0.caseRequested }.flatMap { $0.events }
-            for d in cases { out.append(mapProduction(d, extraEvents: intake)) }
-            // Мёртвые жалобы (не привели к истребованию) — отдельными инстанциями.
-            for c in complaints where !c.caseRequested { out.append(mapProduction(c)) }
+            // Жалоба, по которой истребовано дело, относится только к ближайшему
+            // следующему производству дела. Раньше все такие события приклеивались
+            // ко всем раундам ВС РФ и смешивали их хронологию.
+            var intakeByCase = Array(repeating: [VSRFEvent](), count: cases.count)
+            var attachedComplaints = Set<Int>()
+            for (complaintIndex, complaint) in complaints.enumerated() where complaint.caseRequested {
+                let requestDate = complaint.events.first(where: {
+                    $0.text.localizedCaseInsensitiveContains("Истребовано дело")
+                        && dateSortKey($0.date) != Int.max
+                })?.date ?? complaint.incomingDate
+                let requestKey = dateSortKey(requestDate)
+                guard requestKey != Int.max,
+                      let caseIndex = cases.indices
+                        .filter({
+                            let key = dateSortKey(cases[$0].incomingDate)
+                            return key != Int.max && key >= requestKey
+                        })
+                        .min(by: { dateSortKey(cases[$0].incomingDate) < dateSortKey(cases[$1].incomingDate) })
+                else { continue }
+                intakeByCase[caseIndex].append(contentsOf: complaint.events)
+                attachedComplaints.insert(complaintIndex)
+            }
+            for (index, d) in cases.enumerated() {
+                out.append(mapProduction(d, extraEvents: intakeByCase[index]))
+            }
+            // Не связанные с конкретным последующим делом жалобы остаются видны
+            // отдельными инстанциями, а не теряются и не приписываются эвристикой.
+            for (index, complaint) in complaints.enumerated() where !attachedComplaints.contains(index) {
+                out.append(mapProduction(complaint))
+            }
         } else {
             for c in complaints { out.append(mapProduction(c)) }
         }

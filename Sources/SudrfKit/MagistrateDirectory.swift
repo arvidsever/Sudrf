@@ -67,7 +67,7 @@ public enum MagistrateCourtParser {
         let links = (try? scope.select("a[href]").array()) ?? []
         for link in links {
             guard let host = host(from: (try? link.attr("href")) ?? "") else { continue }
-            return host
+            if SudrfHost.isMSudrfHost(host) { return host }
         }
         return nil
     }

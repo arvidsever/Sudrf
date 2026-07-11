@@ -59,6 +59,11 @@ public actor SudrfClient {
     /// Число повторов при временных ошибках (502/503/504, обрывы соединения).
     public var maxAttempts = 3
 
+    /// Тестовый хук для сценариев, где повтор сетевой ошибки не нужен.
+    internal func setMaxAttemptsForTesting(_ value: Int) {
+        maxAttempts = value
+    }
+
     /// Загрузить страницу и декодировать как windows-1251.
     public func fetchHTML(_ url: URL) async throws -> String {
         try await fetchHTML(url, allowHTTPFallback: true)
@@ -346,11 +351,26 @@ public actor SudrfClient {
     /// вместе.
     private func throttle(host: String) async throws {
         let now = Date()
-        let slot = max(now, nextAllowedAt[host] ?? now)
-        nextAllowedAt[host] = slot.addingTimeInterval(minInterval)
+        let previousTail = nextAllowedAt[host]
+        let slot = max(now, previousTail ?? now)
+        let reservation = slot.addingTimeInterval(minInterval)
+        nextAllowedAt[host] = reservation
         let wait = slot.timeIntervalSince(now)
         if wait > 0 {
-            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            do {
+                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            } catch {
+                // Освобождаем только собственный хвост очереди. Если после нас
+                // уже забронирован новый слот, его расписание не трогаем.
+                if nextAllowedAt[host] == reservation {
+                    if let previousTail, previousTail > now {
+                        nextAllowedAt[host] = previousTail
+                    } else {
+                        nextAllowedAt[host] = nil
+                    }
+                }
+                throw error
+            }
         }
     }
 }

@@ -99,6 +99,19 @@ final class SearchPageClassifierTests: XCTestCase {
         }
     }
 
+    func testResultCounterDistinguishesZeroFromPositiveWithoutCards() {
+        XCTAssertEqual(SearchPageClassifier.classify(html: "<div>Всего по запросу найдено — <b>0</b></div>"), .empty)
+        XCTAssertEqual(SearchPageClassifier.classify(html: "<div>Всего по запросу найдено: 3</div>"), .unrecognized)
+    }
+
+    func testUnrelatedCaptchaTableRowDoesNotMakePageCaptcha() {
+        let html = """
+        <table><tr><td>Проверочный код</td></tr></table>
+        <form><div><input type="text" name="query"></div></form>
+        """
+        XCTAssertFalse(CaptchaDetector.hasCaptcha(in: html))
+    }
+
     func testJSStubIsUnrecognized() {
         // Заглушка с JS-редиректом — так выглядит анти-бот прослойка.
         let html = "<html><head><script>window.location.href='/challenge';</script></head><body></body></html>"

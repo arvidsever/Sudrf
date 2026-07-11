@@ -106,4 +106,13 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(snap.stageRaw, "appeal")
         XCTAssertEqual(snap.steps, ["done", "active", "todo"])
     }
+
+    func testMaterialResultCannotOverrideCaseOutcomeStatus() {
+        let material = CaseInstance(level: .material, court: "СГС", caseNumber: "13-1/2026",
+                                    judge: nil, domain: "syktsud.komi.sudrf.ru", foundByUID: false,
+                                    result: "Материал оставлен без движения", sessions: [])
+        let snap = MovementDerivation.snapshot(from: movement(sessions: [], instances: [material]),
+                                               context: context(), today: today)
+        XCTAssertEqual(snap.statusText, "Иск удовлетворён")
+    }
 }

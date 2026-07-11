@@ -204,7 +204,7 @@ enum CaseImporter {
 
         let searchDomain = SudrfHost.moduleHost(host)
         let displayDomain = SudrfHost.alternate(searchDomain) ?? searchDomain
-        let (level, branch) = courtLevelAndBranch(forHost: searchDomain)
+        let (level, branch) = courtLevelAndBranch(forHost: searchDomain, courtTitle: row.court)
 
         // «Сыктывкарский городской суд (Республика Коми)» → название + регион.
         var courtTitle = row.court
@@ -232,8 +232,12 @@ enum CaseImporter {
             isMaterial: isMaterial, cartoteka: cartoteka))
     }
 
-    /// Звено и ветвь по домену (модульная форма).
-    static func courtLevelAndBranch(forHost host: String) -> (CourtLevel, CourtBranch) {
+    /// Звено и ветвь по домену (модульная форма) и названию суда. Гарнизонные
+    /// военные суды живут на обычных sudrf-доменах, поэтому по одному хосту их
+    /// не отличить от районных.
+    static func courtLevelAndBranch(forHost host: String, courtTitle: String = "") -> (CourtLevel, CourtBranch) {
+        let title = courtTitle.lowercased()
+        if title.contains("гарнизон") && title.contains("воен") { return (.district, .military) }
         if host == "vkas.sudrf.ru" { return (.cassation, .military) }
         if host == "vap.sudrf.ru"  { return (.appeal, .military) }
         let dotForm = SudrfHost.alternate(host) ?? host

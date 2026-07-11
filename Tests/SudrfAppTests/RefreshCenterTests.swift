@@ -210,4 +210,9 @@ final class RefreshCenterTests: XCTestCase {
         let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertNil(stored, "без токена стор должен остаться пустым")
     }
+
+    func testStaleWalkGenerationCannotUpdateNewProgress() {
+        XCTAssertFalse(RefreshCenter.acceptsWalkProgress(generation: 4, currentGeneration: 5))
+        XCTAssertTrue(RefreshCenter.acceptsWalkProgress(generation: 5, currentGeneration: 5))
+    }
 }

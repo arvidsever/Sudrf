@@ -131,19 +131,19 @@ extension SudrfCLI {
             abstract: "По региону показать суд субъекта, апелляционный и кассационный суды ОСЮ."
         )
 
-        @Option(name: .long, help: "Регион (субъект РФ), напр. «Коми», «Санкт-Петербург».")
-        var region: String
+        @Option(name: .customLong("subject-code"), help: "Двухзначный код субъекта РФ, напр. «11» (Коми).")
+        var subjectCode: String
 
         func run() throws {
-            if let s = CourtDirectory.subjectCourt(matching: region) {
-                print("Суд субъекта:   \(s.title) — \(s.domain)")
-            } else {
-                print("Суд субъекта:   не найден по запросу «\(region)»")
+            let code = CourtDirectory.normalizedSubjectCode(subjectCode)
+            guard let subject = CourtDirectory.subjectCourt(forSubjectCode: code) else {
+                throw ValidationError("Неизвестный код субъекта: «\(subjectCode)».")
             }
-            if let a = CourtDirectory.appealCourt(forRegion: region) {
+            print("Суд субъекта:   \(subject.title) — \(subject.domain)")
+            if let a = CourtDirectory.appealCourt(forSubjectCode: code) {
                 print("Апелляция ОСЮ:  \(a.title) — \(a.domain)")
             }
-            if let k = CourtDirectory.cassationCourt(forRegion: region) {
+            if let k = CourtDirectory.cassationCourt(forSubjectCode: code) {
                 print("Кассация ОСЮ:   \(k.title) — \(k.domain)")
             }
         }
@@ -159,8 +159,8 @@ extension SudrfCLI {
             abstract: "Резолв районных/городских судов региона через единый портал (с кэшем)."
         )
 
-        @Option(name: .long, help: "Регион (субъект РФ), напр. «Коми».")
-        var region: String
+        @Option(name: .customLong("subject-code"), help: "Двухзначный код субъекта РФ, напр. «11» (Коми).")
+        var subjectCode: String
 
         @Flag(name: .long, help: "Принудительно перечитать портал.")
         var refresh = false
@@ -170,6 +170,10 @@ extension SudrfCLI {
 
         func run() async throws {
             let resolver = DistrictCourtResolver()
+            let code = CourtDirectory.normalizedSubjectCode(subjectCode)
+            guard let region = CourtDirectory.subjectName(forSubjectCode: code) else {
+                throw ValidationError("Неизвестный код субъекта: «\(subjectCode)».")
+            }
             if debug {
                 print(await resolver.diagnose(region: region))
                 return
@@ -181,7 +185,7 @@ extension SudrfCLI {
             let courts = try await resolver.courts(forRegion: region)
             let military = try await resolver.militaryCourts(forRegion: region)
             if courts.isEmpty && military.isEmpty {
-                print("Не найдено по региону «\(region)». Проверьте написание или попробуйте --refresh.")
+                print("Не найдено для субъекта \(code). Попробуйте --refresh.")
                 return
             }
             print("Районные/городские суды (\(courts.count)):")

@@ -150,12 +150,14 @@ public enum CourtDirectory {
 
     /// Кассационный суд ОСЮ по региону (субъекту РФ).
     public static func cassationCourt(forRegion region: String) -> TerritorialCourt? {
-        territorialCourt(forRegion: region, among: cassationCourts)
+        guard let code = subjectNumericCode(forRegion: region) else { return nil }
+        return cassationCourt(forSubjectCode: code)
     }
 
     /// Апелляционный суд ОСЮ по региону (субъекту РФ).
     public static func appealCourt(forRegion region: String) -> TerritorialCourt? {
-        territorialCourt(forRegion: region, among: appealCourts)
+        guard let code = subjectNumericCode(forRegion: region) else { return nil }
+        return appealCourt(forSubjectCode: code)
     }
 
     /// Суд субъекта по подстроке названия (напр. "Коми", "Свердлов").
@@ -177,47 +179,6 @@ public enum CourtDirectory {
 
     // MARK: - нормализация
 
-    private static func territorialCourt(forRegion region: String,
-                                         among courts: [TerritorialCourt]) -> TerritorialCourt? {
-        var best: (score: Int, court: TerritorialCourt)?
-        for court in courts {
-            let score = court.regions.map { regionMatchScore(candidate: $0, query: region) }.max() ?? 0
-            // При равных оценках сохраняем порядок справочника.
-            if score > (best?.score ?? 0) {
-                best = (score, court)
-            }
-        }
-        return best?.court
-    }
-
-    /// Каждый значимый корень запроса должен найтись в кандидате; точный
-    /// корень весит больше префиксного. Это отличает ЯНАО от НАО, но сохраняет
-    /// короткие запросы вроде «Коми».
-    private static func regionMatchScore(candidate: String, query: String) -> Int {
-        let candidateNormalized = normalize(candidate)
-        let queryNormalized = normalize(query)
-        guard !candidateNormalized.isEmpty, !queryNormalized.isEmpty else { return 0 }
-        if candidateNormalized == queryNormalized { return Int.max }
-
-        let candidateRoots = significantRoots(candidate)
-        let queryRoots = significantRoots(query)
-        guard !candidateRoots.isEmpty, !queryRoots.isEmpty else {
-            return candidateNormalized.contains(queryNormalized) ? 1 : 0
-        }
-
-        var score = 0
-        for queryRoot in queryRoots {
-            let rootScore = candidateRoots.map { candidateRoot in
-                if candidateRoot == queryRoot { return 3 }
-                if candidateRoot.hasPrefix(queryRoot) || queryRoot.hasPrefix(candidateRoot) { return 1 }
-                return 0
-            }.max() ?? 0
-            guard rootScore > 0 else { return 0 }
-            score += rootScore
-        }
-        return score
-    }
-
     private static func normalize(_ s: String) -> String {
         String(s.lowercased().unicodeScalars.filter { CharacterSet.letters.contains($0) })
     }
@@ -233,6 +194,12 @@ public extension CourtDirectory {
         let digits = String(raw.prefix(while: \.isNumber))
         let d = digits.isEmpty ? String(raw.filter(\.isNumber).prefix(2)) : String(digits.prefix(2))
         return d.count == 1 ? "0" + d : d
+    }
+
+    /// Официальное имя субъекта по его двухзначному коду.
+    static func subjectName(forSubjectCode raw: String) -> String? {
+        let code = normalizedSubjectCode(raw)
+        return subjectCodeTable.first { $0.code == code }?.name
     }
 
     /// КСОЮ по региональному коду (первые две цифры классификационного кода

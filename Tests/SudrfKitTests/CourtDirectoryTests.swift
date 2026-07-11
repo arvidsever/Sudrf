@@ -34,6 +34,12 @@ final class CourtDirectoryTests: XCTestCase {
             forRegion: "Республика Саха (Якутия)")?.number, 9)
     }
 
+    func testSubjectNameByCode() {
+        XCTAssertEqual(CourtDirectory.subjectName(forSubjectCode: "89"),
+                       "Ямало-Ненецкий автономный округ")
+        XCTAssertNil(CourtDirectory.subjectName(forSubjectCode: "99"))
+    }
+
     func testSubjectLookup() {
         // v5: модульные страницы судов субъектов живут на хосте с двойным тире.
         XCTAssertEqual(CourtDirectory.subjectCourt(matching: "Коми")?.domain, "vs--komi.sudrf.ru")

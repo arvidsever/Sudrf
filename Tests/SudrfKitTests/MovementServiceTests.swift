@@ -606,6 +606,45 @@ final class MovementServiceTransientStubTests: XCTestCase {
         XCTAssertEqual(merged.actBodies[actID], "Текст акта", "тело акта из кэша перенесено")
     }
 
+    /// Ошибка, которую клиент не классифицировал как transient (например,
+    /// единичный timeout тестового провайдера), раньше попадала в `catch {
+    /// continue }`: свежий результат терял вышестоящий суд и затирал кэш.
+    func testGenericHigherCourtFailurePreservesCachedInstance() async throws {
+        let firstCard = try firstCardFixture()
+        let actID = "act_vs--komi.sudrf.ru#33-4818/2026"
+        let cachedReal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-4818/2026",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: true,
+            result: "решение отменено", sessions: [CaseSession(date: "01.06.2026", event: "Заседание")],
+            actID: actID)
+        let cached = CaseMovement(uid: Self.uid, caseNumber: "2-1/2026", inForce: true,
+                                 instances: [
+                                    CaseInstance(level: .first, court: "Сыктывкарский городской суд",
+                                                 caseNumber: "2-1/2026", judge: nil,
+                                                 domain: "syktsud--komi.sudrf.ru",
+                                                 foundByUID: false, result: nil, sessions: []),
+                                    cachedReal
+                                 ],
+                                 complaints: [:],
+                                 acts: [CaseAct(id: actID, title: "Апелляционное определение",
+                                                date: "15.09.2026", courtShort: "ВС Коми", instanceLevel: .appeal)],
+                                 actBodies: [actID: "Текст акта"])
+        let mock = FailingMockClient(firstCardID: "30636693", firstCard: firstCard,
+                                     higherError: URLError(.timedOut))
+        let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+        XCTAssertEqual(fresh.incompleteHigherCourtDomains, ["vs--komi.sudrf.ru"])
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let restored = try XCTUnwrap(merged.instances.first { $0.domain == "vs--komi.sudrf.ru" })
+        XCTAssertEqual(restored.caseNumber, "33-4818/2026")
+        XCTAssertEqual(restored.actID, actID)
+        XCTAssertEqual(merged.actBodies[actID], "Текст акта")
+        XCTAssertNil(merged.incompleteHigherCourtDomains)
+    }
+
     /// Fresh: 1 transient-stub для `vs--komi.sudrf.ru` (dash-форма).
     /// Cached: 1 real round для `vs.komi.sudrf.ru` (dot-форма). После merge
     /// — stub удалён, real восстановлен по каноническому moduleHost.

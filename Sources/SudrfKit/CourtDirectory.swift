@@ -150,12 +150,14 @@ public enum CourtDirectory {
 
     /// Кассационный суд ОСЮ по региону (субъекту РФ).
     public static func cassationCourt(forRegion region: String) -> TerritorialCourt? {
-        cassationCourts.first { c in c.regions.contains { regionsMatch($0, region) } }
+        guard let code = subjectNumericCode(forRegion: region) else { return nil }
+        return cassationCourt(forSubjectCode: code)
     }
 
     /// Апелляционный суд ОСЮ по региону (субъекту РФ).
     public static func appealCourt(forRegion region: String) -> TerritorialCourt? {
-        appealCourts.first { c in c.regions.contains { regionsMatch($0, region) } }
+        guard let code = subjectNumericCode(forRegion: region) else { return nil }
+        return appealCourt(forSubjectCode: code)
     }
 
     /// Суд субъекта по подстроке названия (напр. "Коми", "Свердлов").
@@ -177,12 +179,6 @@ public enum CourtDirectory {
 
     // MARK: - нормализация
 
-    private static func regionsMatch(_ a: String, _ b: String) -> Bool {
-        let x = normalize(a), y = normalize(b)
-        guard !x.isEmpty, !y.isEmpty else { return false }
-        return x.contains(y) || y.contains(x)
-    }
-
     private static func normalize(_ s: String) -> String {
         String(s.lowercased().unicodeScalars.filter { CharacterSet.letters.contains($0) })
     }
@@ -198,6 +194,12 @@ public extension CourtDirectory {
         let digits = String(raw.prefix(while: \.isNumber))
         let d = digits.isEmpty ? String(raw.filter(\.isNumber).prefix(2)) : String(digits.prefix(2))
         return d.count == 1 ? "0" + d : d
+    }
+
+    /// Официальное имя субъекта по его двухзначному коду.
+    static func subjectName(forSubjectCode raw: String) -> String? {
+        let code = normalizedSubjectCode(raw)
+        return subjectCodeTable.first { $0.code == code }?.name
     }
 
     /// КСОЮ по региональному коду (первые две цифры классификационного кода

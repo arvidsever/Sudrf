@@ -23,6 +23,23 @@ final class CourtDirectoryTests: XCTestCase {
         XCTAssertEqual(CourtDirectory.cassationCourt(forRegion: "город Москва")?.number, 2)
     }
 
+    func testCassationRoutingDistinguishesNenetsAutonomousOkrugs() {
+        XCTAssertEqual(CourtDirectory.cassationCourt(
+            forRegion: "Ямало-Ненецкий автономный округ")?.number, 7)
+        XCTAssertEqual(CourtDirectory.cassationCourt(
+            forRegion: "Ненецкий автономный округ")?.number, 3)
+        XCTAssertEqual(CourtDirectory.cassationCourt(
+            forRegion: "Сахалинская область")?.number, 9)
+        XCTAssertEqual(CourtDirectory.cassationCourt(
+            forRegion: "Республика Саха (Якутия)")?.number, 9)
+    }
+
+    func testSubjectNameByCode() {
+        XCTAssertEqual(CourtDirectory.subjectName(forSubjectCode: "89"),
+                       "Ямало-Ненецкий автономный округ")
+        XCTAssertNil(CourtDirectory.subjectName(forSubjectCode: "99"))
+    }
+
     func testSubjectLookup() {
         // v5: модульные страницы судов субъектов живут на хосте с двойным тире.
         XCTAssertEqual(CourtDirectory.subjectCourt(matching: "Коми")?.domain, "vs--komi.sudrf.ru")

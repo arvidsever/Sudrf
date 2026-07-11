@@ -17,6 +17,10 @@ public protocol CaptchaSolvingProvider: Sendable {
     /// которые применяют preprocessing per-host. Передаётся из
     /// `AutoCaptchaSolver.solve` через `formURL.host`.
     func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt
+
+    /// Вернуть top-N кандидатов для diagnostics. Второй элемент кортежа
+    /// сообщает, применялась ли предобработка.
+    func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool)
 }
 
 /// Расширение протокола с default-реализацией, чтобы существующие
@@ -25,6 +29,12 @@ public protocol CaptchaSolvingProvider: Sendable {
 extension CaptchaSolvingProvider {
     public func solve(pngData: Data, kind: CaptchaKind) async throws -> CaptchaAttempt {
         try await solve(pngData: pngData, kind: kind, host: nil)
+    }
+
+    /// Провайдеры без собственной диагностики остаются совместимыми и
+    /// возвращают пустой результат.
+    public func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int = 3) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
+        ([], false)
     }
 }
 

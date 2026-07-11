@@ -50,8 +50,8 @@ swift run sudrf-cli search --domain vs--komi.sudrf.ru --level subject --type g2 
 # Карточка дела (капчей не защищена)
 swift run sudrf-cli card --case-id 98765 --case-uid ABC-123-GUID --delo-id 1500001
 
-# Маршрутизация по региону: суд субъекта + апелляционный и кассационный суды ОСЮ
-swift run sudrf-cli route --region "Коми"
+# Маршрутизация по коду субъекта: суд субъекта + апелляционный и кассационный суды ОСЮ
+swift run sudrf-cli route --subject-code 11   # 11 — Республика Коми
 # Суд субъекта:  Верховный суд Республики Коми — vs.komi.sudrf.ru
 # Апелляция ОСЮ: Второй апелляционный суд — 2ap.sudrf.ru
 # Кассация ОСЮ:  Третий кассационный суд — 3kas.sudrf.ru
@@ -211,9 +211,9 @@ try await resolver.refresh(forRegion: "Коми")                    // пере
 ```
 
 ```bash
-swift run sudrf-cli district --region "Коми"
-swift run sudrf-cli district --region "Свердловская область" --refresh
-swift run sudrf-cli district --region "Город Санкт-Петербург" --debug  # диагностика парсинга
+swift run sudrf-cli district --subject-code 11              # 11 — Республика Коми
+swift run sudrf-cli district --subject-code 66 --refresh    # 66 — Свердловская область
+swift run sudrf-cli district --subject-code 78 --debug      # 78 — Санкт-Петербург; диагностика парсинга
 swift run sudrf-cli harvest --type GV  # все гарнизонные суды одним запросом (включая зарубежные)
 swift run sudrf-cli harvest --type OV  # окружные (флотские) — строки для хардкода в CourtDirectory
 ```

@@ -142,6 +142,28 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         }
     }
 
+    func testKindDispatchingExposesCoreMLCandidates() async throws {
+        guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
+                                          withExtension: "mlmodelc",
+                                          subdirectory: "Fixtures") else {
+            throw XCTSkip("model not in bundle (run Scripts/fetch-model.sh first)")
+        }
+        let coreML = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
+        let dispatcher = KindDispatchingStrategy(
+            primary: coreML,
+            fallback: VisionOCRStrategy()
+        )
+        let solver = CaptchaSolver(provider: dispatcher)
+        let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
+
+        let (candidates, preprocessed) = await solver.topCandidates(
+            pngData: png, kind: .sudrfToken, n: 3
+        )
+
+        XCTAssertFalse(candidates.isEmpty)
+        XCTAssertFalse(preprocessed)
+    }
+
     private func numericCoreMLDispatch(primary: any CaptchaSolvingProvider,
                                        fallback: any CaptchaSolvingProvider) -> KindDispatchingStrategy {
         KindDispatchingStrategy(

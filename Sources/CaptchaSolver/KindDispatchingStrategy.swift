@@ -59,4 +59,11 @@ public struct KindDispatchingStrategy: CaptchaSolvingProvider {
         }
         return try await fallback.solve(pngData: pngData, kind: kind, host: host)
     }
+
+    public func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int = 3) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
+        if primaryKinds.contains(kind) {
+            return try await primary.topCandidates(pngData: pngData, kind: kind, host: host, n: n)
+        }
+        return try await fallback.topCandidates(pngData: pngData, kind: kind, host: host, n: n)
+    }
 }

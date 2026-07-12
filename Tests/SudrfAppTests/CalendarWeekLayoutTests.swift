@@ -33,6 +33,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         XCTAssertEqual(blocks.map(\.kind), [.single, .single])
         XCTAssertEqual(blocks.map { $0.hearings.first?.caseNumber }, ["2-1/2026", "2-2/2026"])
+        XCTAssertLessThanOrEqual(blocks[0].top + blocks[0].height, blocks[1].top)
     }
 
     func testSameStartSameCourtBecomesQueueStack() {

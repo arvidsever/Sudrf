@@ -650,12 +650,15 @@ final class AppRouter: ObservableObject {
     }
     @Published var importState: ImportState? = nil
     private var importTask: Task<Void, Never>? = nil
+    private var importGeneration = 0
 
     /// Запуск импорта. Сетевой этап (карточка каждого дела — прямой GET без
     /// капчи) идёт с троттлингом клиента ~1.5 с/запрос; записи создаются одним
     /// батчем в конце, поэтому отмена ничего не оставляет за собой.
     func beginImport(csvText: String) {
         guard importTask == nil else { return }
+        importGeneration &+= 1
+        let generation = importGeneration
         let rows = CaseImporter.rows(fromCSV: csvText)
         guard !rows.isEmpty else {
             var s = ImportSummary()
@@ -664,13 +667,15 @@ final class AppRouter: ObservableObject {
             return
         }
         importTask = Task { [weak self] in
-            await self?.runImport(rows: rows)
+            await self?.runImport(rows: rows, generation: generation)
+            guard self?.importGeneration == generation else { return }
             self?.importTask = nil
         }
     }
 
     func cancelImport() {
         importTask?.cancel()
+        importGeneration &+= 1
         importTask = nil
         importState = nil
     }
@@ -679,7 +684,8 @@ final class AppRouter: ObservableObject {
         if case .finished = importState { importState = nil }
     }
 
-    private func runImport(rows: [ImportedRow]) async {
+    private func runImport(rows: [ImportedRow], generation: Int) async {
+        guard generation == importGeneration, !Task.isCancelled else { return }
         var skipped: [String: Int] = [:]
         var seeds: [ImportSeed] = []
         for row in rows {
@@ -696,11 +702,12 @@ final class AppRouter: ObservableObject {
             let card = try? await client.fetchCard(court: court, caseID: seed.caseID,
                                                    caseUID: seed.caseUID,
                                                    deloID: seed.deloID, new: seed.new)
-            if Task.isCancelled { return }
+            guard generation == importGeneration, !Task.isCancelled else { return }
             fetched.append(CaseImporter.Fetched(seed: seed, card: card))
             importState = .running(done: i + 1, total: seeds.count)
         }
 
+        guard generation == importGeneration, !Task.isCancelled else { return }
         let plan = CaseImporter.plan(fetched)
         let df = DateFormatter()
         df.dateFormat = "dd.MM.yyyy"
@@ -718,6 +725,7 @@ final class AppRouter: ObservableObject {
         summary.stitched = plan.stitched
         summary.cold = plan.cold
         summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
+        guard generation == importGeneration, !Task.isCancelled else { return }
         importState = .finished(summary)
     }
 

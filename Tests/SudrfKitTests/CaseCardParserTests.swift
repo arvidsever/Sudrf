@@ -7,6 +7,12 @@ import XCTest
 /// трём инстанциям. Фикстуры лежат в Tests/SudrfKitTests/Fixtures.
 final class CaseCardParserTests: XCTestCase {
 
+    func testSearchExcerptBarePersonsMarkerMeansThirdPartiesOnly() {
+        let split = CaseParties.split(essence: "ИСТЕЦ: Иванов И.И. ОТВЕТЧИК: ФСИН России ЛИЦА: Рыжкова Е.А.")
+        XCTAssertEqual(split.parties?.defendants, ["ФСИН России"])
+        XCTAssertEqual(split.parties?.thirdParties, ["Рыжкова Е.А."])
+    }
+
     func testCaseNumberComesOnlyFromCaseHeaderAndTableCellsStaySeparated() throws {
         let html = """
         <html><body>

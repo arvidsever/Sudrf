@@ -72,4 +72,12 @@ final class CaptchaStubReplacementTests: XCTestCase {
         XCTAssertTrue(out.acts.isEmpty)
         XCTAssertNil(out.instances.first { $0.level == .appeal }?.actID)
     }
+
+    func testCaptchaActPrefersDecisionDate() {
+        let card = CaseCard(rawText: "", actText: "акт", sessions: [], judge: nil, result: nil,
+                            caseNumber: "33-300/2026", receiptDate: "01.01.2026", decisionDate: "02.02.2026",
+                            acts: [CaseActText(id: "doc1", kind: "Определение", label: "Акт", body: "акт")])
+        let out = movementWithStub().replacingCaptchaStub(domain: domain, courtTitle: "ВС Коми", level: .appeal, card: card)
+        XCTAssertEqual(out.acts.first?.date, "02.02.2026")
+    }
 }

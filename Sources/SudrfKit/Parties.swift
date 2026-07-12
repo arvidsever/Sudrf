@@ -322,7 +322,7 @@ public struct CaseParties: Sendable, Equatable, Codable {
     private static let rolePattern =
         #"(административный\s+истец|административный\s+ответчик|"#
         + #"адм\.\s*истец|адм\.\s*ответчик|истцы|истец|ответчики|ответчик|"#
-        + #"третьи\s+лица|третье\s+лицо|заинтересованные\s+лица|"#
+        + #"третьи\s+лица|третье\s+лицо|заинтересованные\s+лица|лица|"#
         + #"заинтересованное\s+лицо|заявители|заявитель|взыскатели|взыскатель|"#
         + #"должники|должник|привлекаемое\s+лицо)\s*(?:\([^)]{0,40}\))?\s*[:：]?"#
 
@@ -341,7 +341,12 @@ public struct CaseParties: Sendable, Equatable, Codable {
 
         var parties = CaseParties()
         for (i, m) in matches.enumerated() {
-            let role = ns.substring(with: m.range(at: 1))
+            let rawRole = ns.substring(with: m.range(at: 1))
+            // На выдаче Самарского облсуда «ЛИЦА:» — сокращённый заголовок
+            // списка третьих лиц. Это нормализация только поискового текста;
+            // роли из карточки (например, «АДВОКАТ») не затрагиваются.
+            let role = rawRole.compare("лица", options: .caseInsensitive) == .orderedSame
+                ? "третьи лица" : rawRole
             let valueStart = m.range.location + m.range.length
             let valueEnd = i + 1 < matches.count ? matches[i + 1].range.location : ns.length
             guard valueEnd > valueStart else { continue }

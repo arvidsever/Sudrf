@@ -20,7 +20,7 @@ public extension CaseMovement {
             let id = "act_\(domain)#\(card.caseNumber ?? "—")"
             acts.append(CaseAct(id: id,
                                 title: card.acts.first?.label ?? "Судебный акт",
-                                date: card.receiptDate ?? "—",
+                                date: card.decisionDate ?? card.receiptDate ?? "—",
                                 courtShort: courtTitle,
                                 instanceLevel: level))
             bodies[id] = body

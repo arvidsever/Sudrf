@@ -82,6 +82,11 @@ final class MosGorSudTests: XCTestCase {
                        "https://mos-gorsud.ru/mgs/services/cases/civil/details/abc123")
     }
 
+    func testResultsParserDoesNotTreatBailiffAsCourt() throws {
+        let html = "<table><tr><td><a href='/details/1'>02-1/2026</a></td><td>Судебный пристав-исполнитель</td><td>Тверской районный суд</td></tr></table>"
+        XCTAssertEqual(try MosGorSudResultsParser.parse(html: html).first?.court, "Тверской районный суд")
+    }
+
     func testCardParserOnSyntheticCard() throws {
         let html = """
         <html><body>
@@ -91,6 +96,7 @@ final class MosGorSudTests: XCTestCase {
           <tr><th>Судья</th><td>Сидорова А.А.</td></tr>
           <tr><th>Категория дела</th><td>Споры о защите прав потребителей</td></tr>
           <tr><th>Результат</th><td>Удовлетворено</td></tr>
+          <tr><th>Дата вступления в законную силу</th><td>01.07.2024</td></tr>
         </table>
         <h2>Судебные заседания</h2>
         <table>
@@ -106,6 +112,7 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(card.judge, "Сидорова А.А.")
         XCTAssertEqual(card.category, "Споры о защите прав потребителей")
         XCTAssertEqual(card.result, "Удовлетворено")
+        XCTAssertEqual(card.legalForceDate, "01.07.2024")
         XCTAssertEqual(card.sessions.count, 2)
         XCTAssertEqual(card.sessions.first?.date, "20.05.2024")
         XCTAssertEqual(card.sessions.first?.time, "10:30")

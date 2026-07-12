@@ -112,47 +112,6 @@ public extension CourtDirectory {
         return nil
     }
 
-    /// Буквенный код субъекта по региону (через справочник судов субъектов).
-    static func regionCode(forRegion query: String) -> String? {
-        let key = lettersOnly(query)
-        for (alias, code) in regionAliases where key.contains(alias) { return code }
-        let qRoots = significantRoots(query)
-        guard !qRoots.isEmpty else { return nil }
-        var best: (score: Int, code: String)?
-        for s in subjectCourts {
-            let tRoots = significantRoots(s.title)
-            let score = qRoots.reduce(0) { acc, q in
-                acc + (tRoots.contains { $0.hasPrefix(q) || q.hasPrefix($0) } ? 1 : 0)
-            }
-            guard score > (best?.score ?? 0),
-                  let code = regionCode(forDomain: s.domain) ?? nonSudrfRegionCodes[s.domain]
-            else { continue }
-            best = (score, code)
-        }
-        return best?.code
-    }
-
-    /// Суд субъекта по человекочитаемому региону. Идёт через ту же машинерию,
-    /// что и `regionCode(forRegion:)` (корни слов + алиасы «Москва»/«Петербург»),
-    /// поэтому «Республика Коми» → ВС Республики Коми, «город Москва» →
-    /// Мосгорсуд (вне платформы sudrf — см. `isSudrfPlatform`).
-    static func subjectCourt(forRegion query: String) -> DirectoryCourt? {
-        if let code = regionCode(forRegion: query),
-           let c = subjectCourts.first(where: {
-               regionCode(forDomain: $0.domain) == code || nonSudrfRegionCodes[$0.domain] == code
-           }) {
-            return c
-        }
-        return subjectCourt(matching: query)
-    }
-
-    static let nonSudrfRegionCodes: [String: String] = [
-        "nnoblsud.ru": "nnov", "www.oblsud.penza.ru": "pnz",
-        "www.uloblsud.ru": "uln", "www.mos-gorsud.ru": "msk"
-    ]
-    static let regionAliases: [String: String] = [
-        "санктпетербург": "spb", "петербург": "spb", "москва": "msk"
-    ]
     static let stopRoots: Set<String> = [
         "суд", "верхов", "областн", "краев", "город", "городск",
         "автоном", "округ", "област", "край", "республик", "народн", "территор"

@@ -112,7 +112,7 @@ extension MovementService {
 
         return CaseMovement(uid: uid ?? "",
                             caseNumber: base.caseNumber,
-                            inForce: false,
+                            inForce: baseCard?.legalForceDate?.isEmpty == false,
                             instances: sortedInst,
                             complaints: [:],
                             acts: sortedActs,

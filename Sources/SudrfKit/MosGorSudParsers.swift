@@ -41,7 +41,10 @@ public enum MosGorSudResultsParser {
             results.append(MosGorSudResult(
                 caseNumber: text,
                 uid: firstUID(in: joined),
-                court: cells.first { $0.localizedCaseInsensitiveContains("суд") },
+                court: cells.first { cell in
+                    let lower = cell.lowercased()
+                    return ["районный суд", "городской суд", "областной суд", "верховный суд", "гарнизонный суд", "межрайонный суд"].contains { lower.contains($0) }
+                },
                 judge: nil,   // в выдаче судья не размечен однозначно — берётся из карточки
                 receiptDate: firstDate(in: cells),
                 participants: joined.isEmpty ? nil : joined,
@@ -145,6 +148,7 @@ public enum MosGorSudCardParser {
             category: field("Категория дела", "Категория", "Статья"),
             result: field("Результат", "Результат рассмотрения", "Текущее состояние"),
             receiptDate: field("Дата регистрации", "Дата поступления"),
+            legalForceDate: field("Дата вступления в законную силу"),
             sessions: sessions,
             participants: field("Стороны", "Участники").map { [$0] } ?? [],
             actLinks: actLinks,

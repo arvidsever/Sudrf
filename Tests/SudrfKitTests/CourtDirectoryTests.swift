@@ -67,16 +67,6 @@ final class CourtDirectoryTests: XCTestCase {
 
 extension CourtDirectoryTests {
 
-    func testSubjectCourtForRegion() {
-        XCTAssertEqual(CourtDirectory.subjectCourt(forRegion: "Республика Коми")?.domain,
-                       "vs--komi.sudrf.ru")
-        // Алиасы городов федерального значения работают и тут.
-        XCTAssertEqual(CourtDirectory.subjectCourt(forRegion: "город Москва")?.domain,
-                       "www.mos-gorsud.ru")
-        XCTAssertEqual(CourtDirectory.subjectCourt(forRegion: "город Москва")?.isSudrfPlatform,
-                       false, "Мосгорсуд — вне платформы sudrf")
-    }
-
     func testCourtTierLevels() {
         XCTAssertNil(CourtTier.supreme.level, "ВС РФ — вне платформы sud_delo")
         XCTAssertEqual(CourtTier.cassation.level, .cassation)

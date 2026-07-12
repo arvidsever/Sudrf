@@ -80,6 +80,7 @@ public struct MosGorSudCard: Sendable, Equatable {
     public var category: String?
     public var result: String?
     public var receiptDate: String?
+    public var legalForceDate: String?
     public var sessions: [CaseSession]
     public var participants: [String]
     public var actLinks: [URL]
@@ -87,11 +88,11 @@ public struct MosGorSudCard: Sendable, Equatable {
 
     public init(uid: String? = nil, caseNumber: String? = nil, court: String? = nil,
                 judge: String? = nil, category: String? = nil, result: String? = nil,
-                receiptDate: String? = nil, sessions: [CaseSession] = [],
+                receiptDate: String? = nil, legalForceDate: String? = nil, sessions: [CaseSession] = [],
                 participants: [String] = [], actLinks: [URL] = [], rawText: String = "") {
         self.uid = uid; self.caseNumber = caseNumber; self.court = court
         self.judge = judge; self.category = category; self.result = result
-        self.receiptDate = receiptDate; self.sessions = sessions
+        self.receiptDate = receiptDate; self.legalForceDate = legalForceDate; self.sessions = sessions
         self.participants = participants; self.actLinks = actLinks; self.rawText = rawText
     }
 }

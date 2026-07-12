@@ -16,20 +16,6 @@ final class DistrictResolverTests: XCTestCase {
         XCTAssertEqual(CourtDirectory.regionCode(forDomain: "oblsud.chel.sudrf.ru"), "chel")
     }
 
-    func testRegionCodeFromRegionName() {
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Коми"), "komi")
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Свердловская область"), "svd")
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Челябинская область"), "chel")
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Санкт-Петербург"), "spb")
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Нижегородская область"), "nnov")
-    }
-
-    func testRegionCodeDisambiguatesAutonomousOkrug() {
-        // «Ямало-Ненецкий» не должен схлопнуться в «Ненецкий» из-за общего корня.
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Ямало-Ненецкий автономный округ"), "ynao")
-        XCTAssertEqual(CourtDirectory.regionCode(forRegion: "Ненецкий автономный округ"), "nao")
-    }
-
     func testRegionCodeUnknown() {
         XCTAssertNil(CourtDirectory.regionCode(forDomain: "example.com"))
     }

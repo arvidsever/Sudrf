@@ -21,6 +21,8 @@ struct RootView: View {
                 .environmentObject(router)
                 .opacity(router.section == .search ? 1 : 0)
                 .allowsHitTesting(router.section == .search)
+                .disabled(router.section != .search)
+                .accessibilityHidden(router.section != .search)
 
             Group {
                 switch router.section {

@@ -1,21 +1,28 @@
 # Handoff: Track B — баги `main` (не относящиеся к captcha-солверу)
 
-> Обновлено: 2026-07-11, после merge PR #24 (B5), #25 (B6), #26 (B2), #27
-> (Low sweep) в `main`.
-> Для новой сессии, которая берёт Track B. Самодостаточный документ.
+> Обновлено: 2026-07-12. Track B практически закрыт (релизы до `v0.39.33`).
+> Открыт **один** пункт — Security (TLS). Документ сохранён как история решений.
 
-## Статус (что уже сделано)
+## Статус (сверено построчно с `main` на `19e4677`, v0.39.33)
 
-> Сверено построчно с `main` на `f690760`. Прогнозная версия черновиков — `0.39.30`.
+- **High — все закрыты ✅:** B5 (PR #24), B6 (PR #25), B2 (PR #26),
+  B3 (PR #28, `actsFingerprint` в снимке), B7 (PR #31, голый маркер `ЛИЦА:`).
+- **Low — все 15 закрыты ✅** (PR #27, `Harden low-severity edge cases`).
+- **Medium — все 16 разрешены** (BM7 закрыт ранее в A16):
+  - **Исправлены (12):** BM1, BM2, BM5, BM6, BM8, BM9, BM10, BM12, BM13, BM14,
+    BM15, BM17 (PR #29–32; см. `changelog-v0.39.30`…`v0.39.33`).
+  - **Не баги — закрыты тестами (4):** BM3, BM4, BM11, BM16. Проверка на реальных
+    данных показала, что заявленный дефект не воспроизводится; корректное
+    поведение зафиксировано регрессиями (напр. фикстура `kirov_koap` → `.koap`
+    для BM4; `MagistrateTests.searchURL` для BM3; `CalendarWeekLayoutTests` для
+    BM16; `DistrictResolverTests` для BM11). Кода не меняем.
+- **Security (TLS soft-accept) — ⬜ ОТКРЫТ, решение за owner’ом:**
+  `SudrfClient.swift` — `mos-gorsud.ru` всё ещё в `trustedSuffixes` (:464),
+  результат `SecTrustEvaluateWithError` отбрасывается (:493). Сузить soft-accept
+  строго до `*.sudrf.ru`-суффиксов, а для `mos-gorsud.ru` включить штатную
+  проверку. Поведенческое изменение TLS → обсудить риск для винтажных цепочек.
 
-- **High:** B5 ✅ (PR #24), B6 ✅ (PR #25), B2 ✅ (PR #26). **Остаются: B7, B3.**
-- **Medium (BM1–BM17):** ❌ не тронуты (BM7 закрыт ранее в A16). Верифицировать → фикс.
-- **Low (все 15):** ✅ закрыты одним sweep’ом (PR #27, `Harden low-severity edge cases`).
-  Проверено: каждый файл из Low-списка получил фикс+тест.
-- **Security (TLS soft-accept):** ❌ не тронут; `mos-gorsud.ru` всё ещё в
-  `trustedSuffixes`, результат `SecTrustEvaluateWithError` по-прежнему отбрасывается.
-
-**Дальнейший порядок для High: B7 → B3.**
+**Дальнейший шаг: только пункт Security (TLS) — ждёт решения owner’а.**
 
 ## Контекст
 
@@ -96,17 +103,18 @@ merge-commit `7f20e96`. По ходу adversarial-ревью выявлены б
   (не только captcha/transient случаи). *Тест:* таймаут любого вышестоящего суда не
   ухудшает кэш.
 
-### Medium (верифицировать → фикс)
+### Medium — ✅ ВСЕ РАЗРЕШЕНЫ (12 исправлено PR #29–32; BM3/BM4/BM11/BM16 — не баги, закрыты тестами)
 
 - **BM1** `Sources/SudrfKit/Cyrillic1251.swift` (≈19-21) — одиночный `0x98` (cp1252-
   артефакт) роняет декод всей страницы в nil → `decodingFailed`. Нужен lossy-фолбэк.
 - **BM2** `Sources/SudrfKit/SudrfClient.swift` (≈170) — один упавший URL-вариант
   обрывает весь variant-loop; decommissioned endpoint не даёт дойти до рабочего primary.
-- **BM3** `Sources/SudrfKit/MagistrateClient.swift` (≈26-39) — кириллица кодируется
-  UTF-8 через URLComponents против cp1251-формы → кириллические запросы дают пусто.
-  Кодировать в cp1251 вручную (образец `SudrfURLBuilder`).
-- **BM4** `Sources/SudrfKit/Parties.swift` (≈166) — «ведётся» с «ё», суды печатают
-  «ВЕДЕТСЯ» → ветка мёртвая. Ё-less.
+- **BM3** ⛔️ НЕ БАГ (закрыт тестом) `MagistrateClient.swift` — заявлено: кириллица
+  кодируется UTF-8 против cp1251-формы. На реальных данных запросы отрабатывают;
+  поведение `searchURL` зафиксировано в `MagistrateTests`. Кода не меняем.
+- **BM4** ⛔️ НЕ БАГ (закрыт тестом) `Parties.swift` — заявлено: «ведётся» с «ё» →
+  мёртвая КоАП-ветка. Реальная карточка (`kirov_koap`) классифицируется как `.koap`
+  через другие триггеры (`привлека` и т.п.); зафиксировано в `CaseCardParserTests`.
 - **BM5** MosGorSud: суд = первая ячейка с «суд» (`MosGorSudParsers.swift` ≈44) →
   «судебный пристав…» как название; `inForce` хардкод false (`MosGorSudMovement.swift`
   ≈115) → московские дела не доходят до «done».
@@ -120,8 +128,9 @@ merge-commit `7f20e96`. По ходу adversarial-ревью выявлены б
   кэш одним регионом.
 - **BM10** `DistrictCourtResolver.subjectCourt(forRegion:)` (≈120-132) — симметричный
   prefix-scoring, «Сахалинская» → верховный суд Якутии. Exact-root бонус.
-- **BM11** `SudrfCLI.swift` (≈138) — `route` матчит по подстроке, «Республика Коми» →
-  «не найден» (род. падеж «республики»).
+- **BM11** ⛔️ НЕ БАГ (закрыт тестом) `SudrfCLI.swift` — заявлено: `route` матчит по
+  подстроке. Маршрутизация переведена строго на код субъекта (PR #24/#31),
+  подстрочный кейс невозможен; покрыто `DistrictResolverTests`/`CourtDirectoryTests`.
 - **BM12** `Sources/SudrfApp/AppModel.swift` (≈557-562) — untrack по голому номеру
   дела может удалить запись другого суда; `recordKey` доступен на обоих call site.
 - **BM13** `MovementDerivation.swift` (≈238) — база кассационного срока откатывается
@@ -132,8 +141,9 @@ merge-commit `7f20e96`. По ходу adversarial-ревью выявлены б
 - **BM15** `RootView.swift` (≈20-23) — скрытый Search смонтирован с `.opacity(0)`,
   живой `Return`-shortcut → Enter на календаре запускает невидимый поиск и вызывает
   captcha-лист.
-- **BM16** `CalendarWeekLayout.swift` (≈121-127) — раздутая min-высота клеток vs
-  start-time-based top следующего блока → перекрытие карточек и клик-таргетов.
+- **BM16** ⛔️ НЕ БАГ (закрыт тестом) `CalendarWeekLayout.swift` — заявлено:
+  перекрытие карточек. Регрессия `CalendarWeekLayoutTests` подтверждает, что
+  последовательные заседания не накладываются. Кода не меняем.
 - **BM17** `AppModel.swift` (≈615-625) — гонка cancel-then-restart импорта: cleanup
   старой задачи обнуляет handle новой → двойной неотменяемый импорт.
 
@@ -158,9 +168,11 @@ merge-commit `7f20e96`. По ходу adversarial-ревью выявлены б
 `CaseImport.swift` ≈236-253 (гарнизонные дела как гражданские райсуды → неверная
 апелляционная цепочка).
 
-### Security (обсудить с owner перед изменением поведения TLS)
+### Security — ⬜ ЕДИНСТВЕННЫЙ ОТКРЫТЫЙ ПУНКТ (обсудить с owner перед изменением поведения TLS)
 
-`Sources/SudrfKit/SudrfClient.swift` (≈444-457) — TLS soft-accept: результат
+> Актуальные строки на `19e4677`: `trustedSuffixes` :464, отброшенный результат :493.
+
+`Sources/SudrfKit/SudrfClient.swift` — TLS soft-accept: результат
 `SecTrustEvaluateWithError(trust, nil)` **отбрасывается** (`_ =`). Docstring: намеренно
 для сломанных винтажных цепочек судов. Но soft-accept покрывает и `mos-gorsud.ru`, где
 обоснование неприменимо, а по соединению едут cookies и решённые captcha-токены.

@@ -115,4 +115,29 @@ final class MovementDerivationTests: XCTestCase {
                                                context: context(), today: today)
         XCTAssertEqual(snap.statusText, "Иск удовлетворён")
     }
+
+    func testSnapshotChangesWhenJudicialActIsPublished() {
+        let initial = movement(sessions: [])
+        var withAct = initial
+        withAct.acts = [CaseAct(id: "act-1", title: "Решение", date: "10.04.2026",
+                                courtShort: "СГС", instanceLevel: .first)]
+
+        let before = MovementDerivation.snapshot(from: initial, context: context(), today: today)
+        let after = MovementDerivation.snapshot(from: withAct, context: context(), today: today)
+
+        XCTAssertNil(before.actsFingerprint)
+        XCTAssertEqual(after.actsFingerprint, ["act-1|10.04.2026|Решение|СГС|first"])
+        XCTAssertNotEqual(before, after,
+                          "новый акт должен считаться изменением при фоновом обновлении")
+    }
+
+    func testLegacySnapshotWithoutActFingerprintStillDecodes() throws {
+        let snapshot = MovementDerivation.snapshot(from: movement(sessions: []), context: context(), today: today)
+        let data = try JSONEncoder().encode(snapshot)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "actsFingerprint")
+        let legacyData = try JSONSerialization.data(withJSONObject: json)
+
+        XCTAssertNil(try JSONDecoder().decode(CaseSnapshot.self, from: legacyData).actsFingerprint)
+    }
 }

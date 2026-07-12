@@ -60,6 +60,9 @@ struct CaseSnapshot: Codable, Equatable {
     var steps: [String]         // 3 элемента: «done» | «active» | «todo»
     var sessions: [StoredSession]
     var deadlines: [StoredDeadline]
+    /// Метаданные опубликованных актов для детектора фоновых обновлений.
+    /// Optional сохраняет декодирование снимков, созданных до появления поля.
+    var actsFingerprint: [String]?
 }
 
 // MARK: - Движок
@@ -109,6 +112,12 @@ enum MovementDerivation {
                                        hasAppeal: hasAppeal, hasCassation: hasCassation,
                                        today: today)
         let nextHearing = futureHearings(sessions, today: today).first
+        // Порядок `acts` не должен сам по себе создавать ложное уведомление.
+        // Тело акта намеренно не включаем: для факта новой публикации достаточно
+        // стабильных публичных метаданных, а снимок остаётся компактным.
+        let actsFingerprint = mv.acts.map {
+            "\($0.id)|\($0.date)|\($0.title)|\($0.courtShort)|\($0.instanceLevel.rawValue)"
+        }.sorted()
 
         // «Дальше» + цвет.
         var nextEvent = "—"
@@ -165,7 +174,8 @@ enum MovementDerivation {
             stageRaw: stage.rawValue, stageTag: stageTag,
             statusText: statusText, statusChipRaw: statusChip.rawValue,
             lastEvent: lastEvent, nextEvent: nextEvent, nextChipRaw: nextChip.rawValue,
-            steps: steps, sessions: sessions, deadlines: deadlines)
+            steps: steps, sessions: sessions, deadlines: deadlines,
+            actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint)
     }
 
     /// Переносит в свежий снимок пользовательские правки сроков: подтверждённый

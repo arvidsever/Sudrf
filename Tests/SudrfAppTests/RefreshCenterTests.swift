@@ -35,6 +35,13 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor FixedMovement: MovementProviding {
+        let value: CaseMovement
+        init(_ value: CaseMovement) { self.value = value }
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement { value }
+    }
+
     /// `CaptchaSolvingProvider`-стаб, который `RefreshCenter` не должен
     /// вызывать: шаг авто-решения капчи в тестах перекрыт `autoSolve`-
     /// замыканием в init. Нужен только потому, что `CaptchaSolver`
@@ -214,5 +221,27 @@ final class RefreshCenterTests: XCTestCase {
     func testStaleWalkGenerationCannotUpdateNewProgress() {
         XCTAssertFalse(RefreshCenter.acceptsWalkProgress(generation: 4, currentGeneration: 5))
         XCTAssertTrue(RefreshCenter.acceptsWalkProgress(generation: 5, currentGeneration: 5))
+    }
+
+    func testNewActMarksPreviouslySeenCaseAsUpdated() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let oldMovement = successMV!
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.snapshot = MovementDerivation.snapshot(from: oldMovement, context: ctx)
+        rec.movement = oldMovement
+        rec.seenAt = Date()
+
+        var updatedMovement = oldMovement
+        updatedMovement.acts = [CaseAct(id: "act-1", title: "Решение", date: "10.04.2026",
+                                        courtShort: "СГС", instanceLevel: .first)]
+        let service = FixedMovement(updatedMovement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        await center.refresh(key: key)?.value
+
+        XCTAssertNil(rec.seenAt, "новый акт должен вернуть бейдж «обновлено»")
+        XCTAssertEqual(rec.snapshot?.actsFingerprint?.count, 1)
     }
 }

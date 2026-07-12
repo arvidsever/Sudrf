@@ -17,7 +17,15 @@ public enum Cyrillic1251 {
 
     /// Декодирует тело ответа суда (страница в cp1251) в строку.
     public static func decode(_ data: Data) -> String? {
-        String(data: data, encoding: encoding)
+        if let decoded = String(data: data, encoding: encoding) { return decoded }
+
+        // 0x98 не определён в windows-1251, но иногда попадает в HTML как
+        // мусорный управляющий байт. Foundation тогда отвергает весь ответ,
+        // хотя остальные байты страницы корректны. Чиним только этот байт,
+        // не включая lossy-декодирование для произвольных повреждений.
+        guard data.contains(0x98) else { return nil }
+        let repaired = Data(data.map { $0 == 0x98 ? 0x3F : $0 })
+        return String(data: repaired, encoding: encoding)
     }
 
     /// Кодирует строку в байты cp1251 (без потерь — кириллица обязана уложиться в 1251).

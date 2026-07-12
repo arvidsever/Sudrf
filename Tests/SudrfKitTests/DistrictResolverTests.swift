@@ -158,6 +158,34 @@ extension DistrictResolverTests {
         XCTAssertEqual(DistrictResolverStub.requestCount, 1)
         XCTAssertEqual(courts.map(\.code), ["66RS0001"])
     }
+
+    func testNationwideHarvestPreservesDiskCache() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DistrictResolverTests-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let persisted = DistrictCourt(
+            title: "Сохранённый районный суд",
+            domain: "saved.example.sudrf.ru",
+            code: "11RS0001",
+            regionCode: "komi",
+            kind: .district,
+            portalSubject: "11"
+        )
+        try JSONEncoder().encode([persisted]).write(to: cacheURL)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DistrictResolverStub.self]
+        let resolver = DistrictCourtResolver(
+            client: SudrfClient(session: URLSession(configuration: configuration), minInterval: 0),
+            cacheURL: cacheURL
+        )
+
+        _ = try await resolver.courtsNationwide(type: "RS")
+        let stored = try JSONDecoder().decode([DistrictCourt].self, from: Data(contentsOf: cacheURL))
+        XCTAssertTrue(stored.contains { $0.domain == persisted.domain })
+        XCTAssertTrue(stored.contains { $0.domain == "leninsky.svd.sudrf.ru" })
+    }
 }
 
 private final class DistrictResolverStub: URLProtocol {

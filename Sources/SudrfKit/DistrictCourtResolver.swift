@@ -401,6 +401,9 @@ public actor DistrictCourtResolver {
     /// жизни резолвера; суды также докладываются в общий доменный кэш.
     public func courtsNationwide(type rawType: String) async throws -> [DistrictCourt] {
         let type = rawType.uppercased()
+        // Nationwide harvest дописывает общий доменный кэш. Сначала поднимем
+        // сохранённые записи, иначе persist ниже затрёт их одним harvest-ом.
+        try await ensureDiskLoaded()
         if loadedTypes.contains(type) {
             return cache.values.filter { $0.codeLetters == type }
                 .sorted { $0.title < $1.title }

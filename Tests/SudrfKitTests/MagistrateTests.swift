@@ -64,6 +64,28 @@ final class MagistrateTests: XCTestCase {
             .searchURL(cartoteka: cart, field: .uid, value: "11MS..."))
     }
 
+    func testResolverUsesPersistedMagistrateCacheBeforeNetwork() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MagistrateTests-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+        let persisted = MagistrateCourt(title: "Сохранённый участок",
+                                        domain: "saved.komi.msudrf.ru",
+                                        code: "11MS0001", portalSubject: "11")
+        try JSONEncoder().encode([persisted]).write(to: cacheURL)
+
+        MagistrateCacheStub.requestCount = 0
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MagistrateCacheStub.self]
+        let resolver = MagistrateCourtResolver(
+            client: SudrfClient(session: URLSession(configuration: config), minInterval: 0),
+            cacheURL: cacheURL
+        )
+
+        let courts = try await resolver.courts(forRegion: "Республика Коми")
+        XCTAssertEqual(courts.map(\.code), ["11MS0001"])
+        XCTAssertEqual(MagistrateCacheStub.requestCount, 0)
+    }
+
     func testResultsParserParsesRowsAndPagination() throws {
         let html = """
         <div id="search_results">
@@ -159,4 +181,16 @@ final class MagistrateTests: XCTestCase {
         XCTAssertTrue(MovementDateRule.before2026.matches(legalForceDate: nil))
         XCTAssertTrue(MovementDateRule.from2026.matches(legalForceDate: nil))
     }
+}
+
+private final class MagistrateCacheStub: URLProtocol {
+    nonisolated(unsafe) static var requestCount = 0
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requestCount += 1
+        client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+    }
+    override func stopLoading() {}
 }

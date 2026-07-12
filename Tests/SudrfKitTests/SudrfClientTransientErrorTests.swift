@@ -109,6 +109,26 @@ final class SudrfClientTransientErrorTests: XCTestCase {
     func testFatalURLErrorNotMarkedTransient_Cancelled() async throws {
         try await assertFatalURLErrorNotMarkedTransient(code: .cancelled)
     }
+
+    func testVariantTransportFailureFallsThroughToNextVariant() async throws {
+        VariantFallbackStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [VariantFallbackStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "anninsky--vrn.sudrf.ru", title: "Аннинский районный суд", level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        let results = try await client.search(court: court, cartoteka: cartoteka,
+                                              field: .caseNumber, value: "2-1/2026")
+
+        XCTAssertEqual(VariantFallbackStub.requestCount, 2)
+        XCTAssertEqual(results.map(\.caseNumber), ["2-1/2026"])
+    }
 }
 
 /// URLProtocol-stub, отдающий `didFailWithError(URLError(code))` на каждый
@@ -130,6 +150,31 @@ private final class TransientErrorStub: URLProtocol {
         Self.requestCount += 1
         let err = URLError(Self.failureCode)
         client?.urlProtocol(self, didFailWithError: err)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class VariantFallbackStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestCount = 0
+
+    static func reset() { requestCount = 0 }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        if Self.requestCount == 1 {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        let html = "<table><tr><td><a href='?name_op=case&case_id=1&case_uid=u'>2-1/2026</a></td></tr></table>"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=windows-1251"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}

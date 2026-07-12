@@ -234,8 +234,23 @@ public actor SudrfClient {
         var sawEmpty = false
         var lastData: Data? = nil
         var lastWasCaptchaRejected = false
+        var lastTransportError: Error?
         for v in variants {
-            let (data, html) = try await fetchHTMLData(v.url, allowHTTPFallback: true)
+            let data: Data
+            let html: String
+            do {
+                (data, html) = try await fetchHTMLData(v.url, allowHTTPFallback: true)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                // Один endpoint варианта мог временно отвалиться, тогда как
+                // соседний вариант той же формы вполне отвечает. Пустая
+                // валидная выдача по-прежнему выигрывает у такой ошибки.
+                lastTransportError = error
+                continue
+            }
             switch SearchPageClassifier.classify(html: html) {
             case .captcha:
                 throw SudrfError.captchaRequired(formURL: try builder.formURL(cartoteka))
@@ -297,6 +312,7 @@ public actor SudrfClient {
         if lastWasCaptchaRejected, let formURL = try? builder.formURL(cartoteka) {
             throw SudrfError.captchaRequired(formURL: formURL)
         }
+        if let lastTransportError { throw lastTransportError }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
 

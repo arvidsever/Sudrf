@@ -37,4 +37,9 @@ final class Cyrillic1251Tests: XCTestCase {
         XCTAssertNotNil(data)
         XCTAssertEqual(Cyrillic1251.decode(data!), s)
     }
+
+    func testDecodeRepairsOnlyUndefined98Byte() {
+        let data = Data([0xD2, 0xE5, 0xF1, 0xF2, 0x98, 0xEA, 0xEE, 0xED, 0xE5, 0xF6])
+        XCTAssertEqual(Cyrillic1251.decode(data), "Тест?конец")
+    }
 }

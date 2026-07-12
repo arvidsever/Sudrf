@@ -23,7 +23,9 @@ public actor VSRFClient {
     private let session: URLSession
     private let userAgent: String
     private let minInterval: TimeInterval
-    private var lastRequestAt: Date?
+    /// Хвост зарезервированной очереди запросов. Резервация выполняется до
+    /// `await`, поэтому несколько параллельных поисков не просыпаются разом.
+    private var nextAllowedAt: Date?
     public var maxAttempts = 3
 
     public init(minInterval: TimeInterval = 1.5,
@@ -37,6 +39,15 @@ public actor VSRFClient {
         cfg.timeoutIntervalForRequest = 30
         let delegate: (any URLSessionDelegate)? = trustVSRFCertificate ? VSRFTLSDelegate() : nil
         self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+    }
+
+    /// Внутренний init для тестов с URLProtocol-stub'ом.
+    internal init(session: URLSession,
+                  minInterval: TimeInterval = 1.5,
+                  userAgent: String = "SudrfKitTests") {
+        self.session = session
         self.userAgent = userAgent
         self.minInterval = minInterval
     }
@@ -137,13 +148,13 @@ public actor VSRFClient {
         try await Task.sleep(nanoseconds: UInt64(Double(attempt + 1) * 0.8 * 1_000_000_000))
     }
     private func throttle() async throws {
-        if let last = lastRequestAt {
-            let elapsed = Date().timeIntervalSince(last)
-            if elapsed < minInterval {
-                try await Task.sleep(nanoseconds: UInt64((minInterval - elapsed) * 1_000_000_000))
-            }
+        let now = Date()
+        let slot = max(now, nextAllowedAt ?? now)
+        nextAllowedAt = slot.addingTimeInterval(minInterval)
+        let wait = slot.timeIntervalSince(now)
+        if wait > 0 {
+            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
         }
-        lastRequestAt = Date()
     }
 }
 

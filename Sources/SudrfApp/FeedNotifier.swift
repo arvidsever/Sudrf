@@ -36,6 +36,8 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// старте: macOS 26 иногда шумит в консоль системными donation/shortcut
     /// сообщениями даже до первого реального уведомления.
     func configure() {
+        guard available else { return }
+        UNUserNotificationCenter.current().delegate = self
     }
 
     /// По одному уведомлению на новую запись ленты. Ограничиваем пачку, чтобы

@@ -78,6 +78,14 @@ final class MovementDerivationTests: XCTestCase {
                      "дело уже в апелляции — срок апелляции не считается")
     }
 
+    func testNoCassationDeadlineWithoutLegalForceEvidence() {
+        let mv = movement(inForce: true, sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание", result: "иск удовлетворён"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+        XCTAssertNil(snap.deadlines.first { $0.kind == "cassation" })
+    }
+
     func testPreservingConfirmedDeadlines() {
         let mv = movement(sessions: [CaseSession(date: "10.04.2026", event: "Судебное заседание",
                                                  result: "иск удовлетворён")])

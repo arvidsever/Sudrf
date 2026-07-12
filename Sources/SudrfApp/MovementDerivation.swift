@@ -245,7 +245,7 @@ enum MovementDerivation {
 
         // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
         if mv.inForce, !hasCassation, let days = cassationDays(prefix: prefix) {
-            let base = inForceDate(sessions) ?? lastAppealDate(mv) ?? today
+            guard let base = inForceDate(sessions) ?? lastAppealDate(mv) else { return out }
             let due = DateUtil.addDays(base, days)
             out.append(StoredDeadline(
                 kind: "cassation", what: "Кассационная жалоба",

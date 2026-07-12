@@ -605,10 +605,10 @@ final class AppRouter: ObservableObject {
                      collections: collections)
         reload()
     }
-    func untrack(_ number: String) {
-        guard let rec = recordFor(number: number) else { return }
-        store.remove(key: rec.key)
-        if openedCase == number { closeCase() }
+    func untrack(recordKey: String) {
+        guard store.record(forKey: recordKey) != nil else { return }
+        store.remove(key: recordKey)
+        if openedKey == recordKey { closeCase() }
         reload()
     }
     func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(key: ctx.key) }

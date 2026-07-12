@@ -163,7 +163,7 @@ struct MyCasesView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Убрать из отслеживания", role: .destructive) { router.untrack(c.caseNumber) }
+            Button("Убрать из отслеживания", role: .destructive) { router.untrack(recordKey: c.recordKey) }
         }
     }
 
@@ -456,7 +456,7 @@ struct MyCasesView: View {
         .overlay(Divider(), alignment: .top)
         .draggable(c.recordKey)   // drop — на подборку в сайдбаре
         .contextMenu {
-            Button("Убрать из отслеживания", role: .destructive) { router.untrack(c.caseNumber) }
+            Button("Убрать из отслеживания", role: .destructive) { router.untrack(recordKey: c.recordKey) }
         }
     }
 

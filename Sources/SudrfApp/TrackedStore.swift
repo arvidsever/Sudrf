@@ -34,6 +34,9 @@ final class TrackedCaseRecord {
     var caseNumber: String
     var courtTitle: String
     var displayDomain: String
+    /// Настоящий судебный УИД; не `case_uid` из ссылки. Optional позволяет
+    /// лёгкую миграцию существующего SwiftData-хранилища.
+    var judicialUID: String? = nil
 
     /// Поисковый контекст (MovementContext) — JSON, для перезапроса движения.
     var contextData: Data
@@ -116,6 +119,7 @@ final class TrackedStore {
             }
         }
         migrateFolders()
+        migrateJudicialUIDs()
     }
 
     /// Одноразовый посев подборок из legacy-папок (до v20): непустая папка
@@ -132,6 +136,23 @@ final class TrackedStore {
         if changed { save() }
     }
 
+    /// Наполняет новый денормализованный индекс из JSON-контекста/кэша без сети.
+    /// Идемпотентно; дубли пока допустимы и будут сведены repair-координатором.
+    private func migrateJudicialUIDs() {
+        var changed = false
+        for rec in all() where (rec.judicialUID ?? "").isEmpty {
+            let uid = rec.context?.judicialUID ?? rec.movement?.uid
+            guard let uid, !uid.isEmpty else { continue }
+            rec.judicialUID = Self.normalizedUID(uid)
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    nonisolated static func normalizedUID(_ raw: String) -> String {
+        raw.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
     func all() -> [TrackedCaseRecord] {
         let d = FetchDescriptor<TrackedCaseRecord>(sortBy: [SortDescriptor(\.addedAt, order: .reverse)])
         return (try? context.fetch(d)) ?? []
@@ -144,6 +165,11 @@ final class TrackedStore {
     }
 
     func isTracked(key: String) -> Bool { record(forKey: key) != nil }
+
+    func records(forJudicialUID uid: String) -> [TrackedCaseRecord] {
+        let normalized = Self.normalizedUID(uid)
+        return all().filter { ($0.judicialUID ?? "") == normalized }
+    }
 
     @discardableResult
     func upsert(context ctx: MovementContext, snapshot snap: CaseSnapshot?,
@@ -162,12 +188,18 @@ final class TrackedStore {
             existing.caseNumber = ctx.caseNumber
             existing.courtTitle = ctx.courtTitle
             existing.displayDomain = ctx.displayDomain
+            if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
+                existing.judicialUID = Self.normalizedUID(uid)
+            }
             save()
             return existing
         }
         let rec = TrackedCaseRecord(key: key, collections: collections, caseNumber: ctx.caseNumber,
                                     courtTitle: ctx.courtTitle, displayDomain: ctx.displayDomain,
                                     contextData: ctxData, snapshotData: snapData)
+        if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
+            rec.judicialUID = Self.normalizedUID(uid)
+        }
         if mvData != nil {
             rec.movementData = mvData
             rec.movementFetchedAt = Date()
@@ -183,8 +215,24 @@ final class TrackedStore {
         save()
     }
 
-    func save() {
-        do { try context.save() }
-        catch { storeLog.error("Не удалось сохранить хранилище: \(error, privacy: .public)") }
+    /// Низкоуровневое удаление для атомарного repair-слияния. Вызывающая
+    /// сторона обязана завершить группу одним `save()`.
+    func deleteWithoutSaving(_ rec: TrackedCaseRecord) {
+        context.delete(rec)
+    }
+
+    /// SwiftData сохраняет все изменения контекста одной транзакцией. При
+    /// ошибке откатываем и изменения выжившей записи, и отложенные удаления,
+    /// чтобы repair никогда не оставил базу в полуслитом состоянии.
+    @discardableResult
+    func save() -> Bool {
+        do {
+            try context.save()
+            return true
+        } catch {
+            context.rollback()
+            storeLog.error("Не удалось сохранить хранилище: \(error, privacy: .public)")
+            return false
+        }
     }
 }

@@ -794,73 +794,10 @@ final class SearchModel: ObservableObject {
               let cart = cartoteka ?? CartotekaRegistry.find(level: .magistrate, id: cartotekaId) else {
             return nil
         }
-        let number = base?.caseNumber ?? queryCaseNumber
-        let appealIDs = magistrateAppealCartotekaIDs(baseID: cart.id, caseNumber: number)
-        let ksoyIDs = magistrateCassationCartotekaIDs(baseID: cart.id, caseNumber: number, target: .ksoy)
-        let presidiumIDs = magistrateCassationCartotekaIDs(baseID: cart.id, caseNumber: number, target: .presidium)
-        let subjectCode = option.code.map(CourtDirectory.normalizedSubjectCode)
-            ?? CourtDirectory.subjectNumericCode(forRegion: region)
-
-        var targets: [MovementSearchTarget] = []
-        if !appealIDs.isEmpty {
-            for d in magistrateDistrictCourts {
-                targets.append(MovementSearchTarget(
-                    domain: CourtDirectory.dashVariant(of: d.domain) ?? d.domain,
-                    courtTitle: d.title,
-                    courtLevel: .district,
-                    instanceLevel: cart.id == "m" ? .material : .appeal,
-                    cartotekaIDs: appealIDs))
-            }
-        }
-
-        if let subjectCode, !ksoyIDs.isEmpty,
-           let ksoy = CourtDirectory.cassationCourt(forSubjectCode: subjectCode) {
-            targets.append(MovementSearchTarget(
-                domain: ksoy.domain,
-                courtTitle: ksoy.title,
-                courtLevel: .cassation,
-                instanceLevel: .cassation,
-                cartotekaIDs: ksoyIDs,
-                dateRule: .before2026))
-        }
-        if let subjectCode, !presidiumIDs.isEmpty,
-           let subject = CourtDirectory.subjectCourt(forSubjectCode: subjectCode), subject.isSudrfPlatform {
-            targets.append(MovementSearchTarget(
-                domain: CourtDirectory.dashVariant(of: subject.domain) ?? subject.domain,
-                courtTitle: subject.title,
-                courtLevel: .subject,
-                instanceLevel: .cassation,
-                cartotekaIDs: presidiumIDs,
-                dateRule: .from2026))
-        }
-        return targets.isEmpty ? nil : targets
-    }
-
-    private enum MagistrateCassationTarget { case ksoy, presidium }
-
-    private func magistrateAppealCartotekaIDs(baseID: String, caseNumber: String) -> [String] {
-        switch baseID {
-        case "u1": return ["u2"]
-        case "g1":
-            return CartotekaRegistry.normalizedNumber(caseNumber).hasPrefix("2а") ? ["p2"] : ["g2"]
-        case "adm": return ["admj"]
-        case "m": return ["m"]
-        default: return []
-        }
-    }
-
-    private func magistrateCassationCartotekaIDs(baseID: String, caseNumber: String,
-                                                 target: MagistrateCassationTarget) -> [String] {
-        let isKAS = CartotekaRegistry.normalizedNumber(caseNumber).hasPrefix("2а")
-        switch (baseID, target) {
-        case ("u1", .ksoy): return ["u3"]
-        case ("u1", .presidium): return ["u33"]
-        case ("g1", .ksoy): return [isKAS ? "p3" : "g3"]
-        case ("g1", .presidium): return [isKAS ? "p33" : "g33"]
-        case ("adm", .ksoy): return ["adm3"]
-        case ("adm", .presidium): return ["adm33"]
-        default: return []
-        }
+        return MovementTargetBuilder.magistrateTargets(
+            baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,
+            courtCode: option.code, region: region,
+            districtCourts: magistrateDistrictCourts.map { ($0.domain, $0.title) })
     }
 
     // MARK: - Контекст для отслеживания

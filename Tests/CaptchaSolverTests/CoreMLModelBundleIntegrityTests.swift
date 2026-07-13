@@ -106,6 +106,12 @@ final class CoreMLModelBundleIntegrityTests: XCTestCase {
             XCTFail("cannot enumerate \(modelURL.path)")
             return
         }
+        // На macOS `/tmp` является симлинком на `/private/tmp`. Bundle может
+        // вернуть корень в первой форме, а FileManager.enumerator — дочерние URL
+        // во второй. Строковая замена префикса тогда оставляла ложный компонент
+        // `private` (`privateweights/weight.bin`). Сравниваем канонические URL
+        // по path components, чтобы не зависеть от формы системного temp path.
+        let canonicalModelURL = modelURL.resolvingSymlinksInPath().standardizedFileURL
         var seen: Set<String> = []
         for case let fileURL as URL in enumerator {
             let values = try? fileURL.resourceValues(forKeys: resourceKeys)
@@ -117,7 +123,10 @@ final class CoreMLModelBundleIntegrityTests: XCTestCase {
             // (socket, device, fifo) также отрисовываются как не-regular;
             // они не listed в manifest → negative list ловит.
             guard values?.isRegularFile == true else { continue }
-            let suffix = fileURL.path.replacingOccurrences(of: modelURL.path + "/", with: "")
+            guard let suffix = Self.relativePath(of: fileURL, under: canonicalModelURL) else {
+                XCTFail("model file escaped model root: \(fileURL.path)")
+                continue
+            }
             let rel = "model-captcha-numeric.mlmodelc/\(suffix)"
             guard let exp = expected[rel] else {
                 XCTFail("unlisted file in .mlmodelc/: \(rel)")
@@ -137,6 +146,14 @@ final class CoreMLModelBundleIntegrityTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private static func relativePath(of fileURL: URL, under rootURL: URL) -> String? {
+        let root = rootURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let file = fileURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        guard file.count > root.count,
+              Array(file.prefix(root.count)) == root else { return nil }
+        return file.dropFirst(root.count).joined(separator: "/")
+    }
 
     /// SHA-256 через `Process` + `/usr/bin/shasum -a 256` (без CryptoKit).
     private static func sha256(of url: URL) throws -> String {

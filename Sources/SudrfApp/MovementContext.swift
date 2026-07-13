@@ -37,6 +37,16 @@ struct MovementContext: Codable, Equatable, Sendable {
     var legalForceDate: String?
     var cardURLString: String?
 
+    /// Настоящий судебный УИД (например, 11RS0001-01-...), в отличие от
+    /// `caseUID`, который является GUID ссылки на карточку конкретного суда.
+    var judicialUID: String? = nil
+    /// Фактический процессуальный уровень базовой карточки. Optional сохраняет
+    /// декодирование старых контекстов; для них уровень выводится из картотеки.
+    var baseInstanceLevelRaw: String? = nil
+    /// Точная исходная ссылка базовой карточки. При переякоривании вниз она
+    /// становится known card и не теряется.
+    var sourceKnownCard: KnownCard? = nil
+
     /// Известные прямые ссылки на карточки этого дела в других судах/картотеках
     /// (вышестоящие инстанции, материалы) — из импорта выгрузки стороннего
     /// сервиса. Опционально: старые сохранённые контексты декодируются без
@@ -52,6 +62,24 @@ struct MovementContext: Codable, Equatable, Sendable {
     var branch: CourtBranch { CourtBranch(rawValue: branchRaw) ?? .general }
     var courtLevel: CourtLevel { CourtLevel(rawValue: courtLevelRaw) ?? .district }
     var cartotekaLevel: CourtLevel { CourtLevel(rawValue: cartotekaLevelRaw) ?? courtLevel }
+    var baseInstanceLevel: CaseInstance.Level {
+        if let raw = baseInstanceLevelRaw, let level = CaseInstance.Level(rawValue: raw) { return level }
+        return Self.instanceLevel(cartotekaID: cartotekaId, courtLevel: courtLevel)
+    }
+
+    static func instanceLevel(cartotekaID: String, courtLevel: CourtLevel) -> CaseInstance.Level {
+        if cartotekaID == "m" { return .material }
+        if cartotekaID == "adm" || cartotekaID == "admj" || cartotekaID.hasSuffix("1") {
+            return .first
+        }
+        if cartotekaID.hasSuffix("33") || cartotekaID.hasSuffix("3") { return .cassation }
+        if cartotekaID.hasSuffix("2") { return .appeal }
+        switch courtLevel {
+        case .magistrate, .district: return .first
+        case .subject, .appeal: return .appeal
+        case .cassation: return .cassation
+        }
+    }
 
     var searchCourt: Court {
         Court(domain: searchDomain, title: courtTitle, level: courtLevel)
@@ -77,13 +105,15 @@ struct MovementContext: Codable, Equatable, Sendable {
                      mosgorsud: (any MosGorSudProviding)? = nil) -> MovementService {
         MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
                         higherCourtTargets: higherCourtTargets,
-                        knownCards: knownCards ?? [], vsrf: vsrf, mosgorsud: mosgorsud)
+                        knownCards: knownCards ?? [], baseInstanceLevel: baseInstanceLevel,
+                        vsrf: vsrf, mosgorsud: mosgorsud)
     }
 
     /// Домены вышестоящих судов с разворотом в оба синонима («vs--X» и «vs.X»):
     /// модуль sud_delo живёт на дефисном варианте, мёртвый молча пропускается.
     func expandedHigherDomains() -> [String] {
         Self.expandedHigherDomains(branch: branch, courtLevel: courtLevel,
+                                   baseInstanceLevel: baseInstanceLevel,
                                    courtTitle: courtTitle, courtCode: courtCode,
                                    region: region, displayDomain: displayDomain)
     }
@@ -92,63 +122,17 @@ struct MovementContext: Codable, Equatable, Sendable {
     /// выше) и живого поиска (SearchModel, где контекст ещё не собран).
     /// Единственный источник правды о подсудности.
     static func expandedHigherDomains(branch: CourtBranch, courtLevel: CourtLevel,
+                                      baseInstanceLevel: CaseInstance.Level = .first,
                                       courtTitle: String, courtCode: String?,
                                       region: String, displayDomain: String) -> [String] {
-        higherCourtDomains(branch: branch, courtLevel: courtLevel,
-                           courtTitle: courtTitle, courtCode: courtCode,
-                           region: region, displayDomain: displayDomain)
+        MovementTargetBuilder.higherDomains(branch: branch, courtLevel: courtLevel,
+                                            baseInstanceLevel: baseInstanceLevel,
+                                            courtTitle: courtTitle, courtCode: courtCode,
+                                            region: region, displayDomain: displayDomain)
             .flatMap { d -> [String] in
                 if let dash = CourtDirectory.dashVariant(of: d) { return [dash, d] }
                 return [d]
             }
     }
 
-    /// Базовые домены вышестоящих судов по подсудности (без разворота синонимов).
-    private static func higherCourtDomains(branch: CourtBranch, courtLevel: CourtLevel,
-                                           courtTitle: String, courtCode: String?,
-                                           region: String, displayDomain: String) -> [String] {
-        guard branch == .general else {
-            // Военная вертикаль (345-ФЗ / 466-ФЗ): подсудность гарнизонного суда —
-            // по НАЗВАНИЮ (код субъекта дислокации врёт о юрисдикции).
-            var domains: [String] = []
-            switch courtLevel {
-            case .district:   // гарнизонный → его окружной (флотский) → КВС
-                if let okrug = CourtDirectory.okrugMilitaryCourt(
-                        forGarrisonTitle: courtTitle, code: courtCode) {
-                    domains.append(okrug.domain)
-                }
-                domains.append(CourtDirectory.cassationMilitaryCourt.domain)
-            case .subject:    // окружной (1-я инстанция) → АВС → КВС
-                domains.append(CourtDirectory.appellateMilitaryCourt.domain)
-                domains.append(CourtDirectory.cassationMilitaryCourt.domain)
-            default:
-                break
-            }
-            return domains
-        }
-        var domains: [String] = []
-        switch courtLevel {
-        case .magistrate:
-            break
-        case .district:
-            let code = courtCode.map(CourtDirectory.normalizedSubjectCode)
-                ?? CourtDirectory.subjectNumericCode(forRegion: region)
-            if let code {
-                if let s = CourtDirectory.subjectCourt(forSubjectCode: code), s.isSudrfPlatform {
-                    domains.append(s.domain)
-                }
-                if let k = CourtDirectory.cassationCourt(forSubjectCode: code) {
-                    domains.append(k.domain)
-                }
-            }
-        case .subject:
-            if let code = CourtDirectory.subjectCode(forDomain: displayDomain) {
-                if let a = CourtDirectory.appealCourt(forSubjectCode: code) { domains.append(a.domain) }
-                if let k = CourtDirectory.cassationCourt(forSubjectCode: code) { domains.append(k.domain) }
-            }
-        default:
-            break   // апелляция/кассация — выше только ВС РФ (вне проекта)
-        }
-        return domains
-    }
 }

@@ -262,6 +262,9 @@ public actor MovementService: MovementProviding {
     /// Известные прямые ссылки на карточки этого дела (вышестоящие инстанции,
     /// материалы) — фолбэк при капче и добор того, что поиск не нашёл.
     let knownCards: [KnownCard]
+    /// Реальный уровень базовой карточки. По умолчанию `.first` для
+    /// совместимости с существующими вызывающими сторонами и тестами.
+    let baseInstanceLevel: CaseInstance.Level
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
     let vsrf: (any VSRFProviding)?
     /// Клиент портала судов Москвы (mos-gorsud.ru). nil — московская ветка
@@ -270,13 +273,16 @@ public actor MovementService: MovementProviding {
 
     public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
                 higherCourtTargets: [MovementSearchTarget]? = nil,
-                knownCards: [KnownCard] = [], vsrf: (any VSRFProviding)? = nil,
+                knownCards: [KnownCard] = [],
+                baseInstanceLevel: CaseInstance.Level = .first,
+                vsrf: (any VSRFProviding)? = nil,
                 mosgorsud: (any MosGorSudProviding)? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
         self.higherCourtTargets = higherCourtTargets
             ?? higherCourtDomains.map { MovementSearchTarget(domain: $0) }
         self.knownCards = knownCards
+        self.baseInstanceLevel = baseInstanceLevel
         self.vsrf = vsrf
         self.mosgorsud = mosgorsud
     }
@@ -300,10 +306,11 @@ public actor MovementService: MovementProviding {
         }
 
         guard Self.hasCardAccess(base) else {
-            return Self.minimalMovement(base: base, court: court)
+            return Self.minimalMovement(base: base, court: court, level: baseInstanceLevel)
         }
 
-        // 1. Карточка 1-й инстанции: сессии + текст акта
+        // 1. Базовая карточка: обычно 1-я инстанция, но импорт/legacy-записи
+        // могут начинаться с апелляции или кассации.
         let baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
 
         // УИД дела (вида 11RS0001-01-2025-011255-03) — из метаданных карточки.
@@ -322,14 +329,17 @@ public actor MovementService: MovementProviding {
             let actID = "act_\(court.domain)"
             let date = base.decisionDate ?? base.receiptDate ?? "—"
             acts.append(CaseAct(id: actID,
-                                title: Self.actTitle(cartotekaID: cartoteka.id, level: .first),
-                                date: date, courtShort: "1-я инстанция", instanceLevel: .first))
+                                title: Self.actTitle(cartotekaID: cartoteka.id,
+                                                     level: baseInstanceLevel),
+                                date: date,
+                                courtShort: Self.levelLabel(baseInstanceLevel),
+                                instanceLevel: baseInstanceLevel))
             actBodies[actID] = actText
             baseActID = actID
         }
 
         var instances: [CaseInstance] = [CaseInstance(
-            level: .first,
+            level: baseInstanceLevel,
             court: court.title,
             caseNumber: base.caseNumber,
             judge: base.judge ?? baseCard.judge,
@@ -352,7 +362,7 @@ public actor MovementService: MovementProviding {
         //     карточка (новый № дела) под тем же УИД. Прежде искались только
         //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
         //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
-        if let uid, court.level != .magistrate {
+        if let uid, court.level != .magistrate, baseInstanceLevel != .material {
             let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
                                                           field: .uid, value: uid)) ?? []
             for r in sameCourtRows {
@@ -369,13 +379,16 @@ public actor MovementService: MovementProviding {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
                     let date = r.decisionDate ?? r.receiptDate ?? card.decisionDate ?? "—"
                     acts.append(CaseAct(id: actID,
-                                        title: Self.actTitle(cartotekaID: cartoteka.id, level: .first),
-                                        date: date, courtShort: "1-я инстанция", instanceLevel: .first))
+                                        title: Self.actTitle(cartotekaID: cartoteka.id,
+                                                             level: baseInstanceLevel),
+                                        date: date,
+                                        courtShort: Self.levelLabel(baseInstanceLevel),
+                                        instanceLevel: baseInstanceLevel))
                     actBodies[actID] = actText
                     roundActID = actID
                 }
                 instances.append(CaseInstance(
-                    level: .first,
+                    level: baseInstanceLevel,
                     court: court.title,
                     caseNumber: r.caseNumber,
                     judge: r.judge ?? card.judge,
@@ -696,6 +709,17 @@ public actor MovementService: MovementProviding {
 // MARK: - Вспомогательные методы
 
 extension MovementService {
+
+    static func levelLabel(_ level: CaseInstance.Level) -> String {
+        switch level {
+        case .first: return "1-я инстанция"
+        case .appeal: return "Апелляция"
+        case .cassation: return "Кассация"
+        case .vsCassation: return "ВС РФ"
+        case .supervisory: return "Надзор"
+        case .material: return "Материал"
+        }
+    }
 
     /// Можно ли открыть карточку по этой строке выдачи: либо пара
     /// case_id/case_uid (канонический путь через билдер), либо готовая ссылка
@@ -1084,9 +1108,10 @@ extension MovementService {
     /// Минимальное движение без сетевых запросов — когда у записи нет ID карточки.
     /// УИД здесь неизвестен: карточка не загружалась, а `base.caseUID` — это
     /// GUID ссылки на карточку, а не УИД.
-    static func minimalMovement(base: CaseSearchResult, court: Court) -> CaseMovement {
+    static func minimalMovement(base: CaseSearchResult, court: Court,
+                                level: CaseInstance.Level = .first) -> CaseMovement {
         let inst = CaseInstance(
-            level: .first, court: court.title, caseNumber: base.caseNumber,
+            level: level, court: court.title, caseNumber: base.caseNumber,
             judge: base.judge, domain: court.domain, foundByUID: false,
             result: base.result, sessions: [], actID: nil)
         return CaseMovement(uid: "", caseNumber: base.caseNumber,

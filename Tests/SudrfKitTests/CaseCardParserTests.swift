@@ -158,6 +158,12 @@ final class CaseCardParserTests: XCTestCase {
         let act = try XCTUnwrap(card.acts.first)
         XCTAssertEqual(act.kind, "Определение")
         XCTAssertTrue(act.body.contains("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ"))
+        let lower = try XCTUnwrap(card.lowerCourt)
+        XCTAssertNil(lower.region)
+        XCTAssertEqual(lower.courtTitle, "Сыктывкарский городской суд")
+        XCTAssertEqual(lower.caseNumber, "2-7212/2025 ~ М-5922/2025")
+        XCTAssertNil(lower.decisionDate)
+        XCTAssertEqual(lower.judge, "Машкалева О.А.")
     }
 
     // MARK: - Уголовное дело (вкладки «ЛИЦА» + «СТОРОНЫ»)
@@ -258,5 +264,29 @@ final class CaseCardParserTests: XCTestCase {
         let act = try XCTUnwrap(card.acts.first)
         XCTAssertEqual(act.kind, "Постановления")
         XCTAssertTrue(act.body.contains("ТРЕТИЙ КАССАЦИОННЫЙ СУД ОБЩЕЙ ЮРИСДИКЦИИ"))
+        let lower = try XCTUnwrap(card.lowerCourt)
+        XCTAssertEqual(lower.region, "11 - Республика Коми")
+        XCTAssertEqual(lower.courtTitle, "Сыктывкарский городской суд")
+        XCTAssertEqual(lower.caseNumber, "2-7212/2025")
+        XCTAssertEqual(lower.decisionDate, "18.08.2025")
+        XCTAssertEqual(lower.judge, "Машкалева Ольга Александровна")
+    }
+
+    func testLowerCourtWithoutUIDAndMissingTab() throws {
+        let html = """
+        <div class="casenumber">ДЕЛО № 33-1/2026</div>
+        <div id="cont2"><table>
+          <tr><th>РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ</th></tr>
+          <tr><td><b>Суд (судебный участок) первой инстанции</b></td><td>Районный суд</td></tr>
+          <tr><td><b>Номер дела в первой инстанции</b></td><td>2-7/2025</td></tr>
+        </table></div>
+        """
+        let card = try CaseCardParser.parse(html: html)
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.lowerCourt?.caseNumber, "2-7/2025")
+
+        let withoutTab = try CaseCardParser.parse(
+            html: "<div class=\"casenumber\">ДЕЛО № 2-7/2025</div>")
+        XCTAssertNil(withoutTab.lowerCourt)
     }
 }

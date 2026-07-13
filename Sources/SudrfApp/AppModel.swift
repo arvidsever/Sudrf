@@ -385,6 +385,9 @@ final class AppRouter: ObservableObject {
     private let store = TrackedStore()
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
+    private let originResolver: CaseOriginResolver
+    private let repairCoordinator: TrackedCaseRepairCoordinator
+    @Published var repairSummary: CaseRepairSummary? = nil
     /// Авто-солвер капчи для интерактивного пути `beginCaptcha(for:)`
     /// (per-instance заглушки в `CaseMovementView`). Создаётся здесь,
     /// чтобы `SearchModel` и `AppRouter` могли иметь разные инстансы
@@ -443,9 +446,19 @@ final class AppRouter: ObservableObject {
         )
         self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings
+        let originResolver = CaseOriginResolver(client: client)
+        self.originResolver = originResolver
+        self.repairCoordinator = TrackedCaseRepairCoordinator(
+            store: store, client: client, originResolver: originResolver)
         refreshCenter = RefreshCenter(store: store, client: client,
                                        captchaSolver: configuredSolver,
                                        captchaSettings: captchaSettings)
+        refreshCenter.repairBeforeRefresh = { [weak self] key in
+            guard let self else { return key }
+            let outcome = await self.repairCoordinator.repairIfNeeded(key: key)
+            self.applyRepair(outcome.summary, presentReport: false)
+            return outcome.effectiveKey
+        }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv in
             self?.applyRefreshed(key: key, movement: mv)
@@ -462,8 +475,13 @@ final class AppRouter: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             self?.openCase(key: key)
         }
-        refreshCenter.start()
         reload()
+        Task { [weak self] in
+            guard let self else { return }
+            let summary = await self.repairCoordinator.runAll()
+            self.applyRepair(summary)
+            self.refreshCenter.start()
+        }
     }
 
     // MARK: Навигация
@@ -684,6 +702,31 @@ final class AppRouter: ObservableObject {
         if case .finished = importState { importState = nil }
     }
 
+    func dismissRepairSummary() { repairSummary = nil }
+
+    private func applyRepair(_ summary: CaseRepairSummary, presentReport: Bool = true) {
+        guard summary.hasReport else { reload(); return }
+        func remap(_ ids: Set<String>) -> Set<String> {
+            Set(ids.map { id in
+                if let old = summary.keyRemaps.keys
+                    .filter({ id.hasPrefix($0 + "#") })
+                    .max(by: { $0.count < $1.count }) {
+                    return summary.effectiveKey(for: old) + id.dropFirst(old.count)
+                }
+                return id
+            })
+        }
+        readFeedIDs = remap(readFeedIDs); saveReadFeedIDs()
+        knownFeedIDs = remap(knownFeedIDs)
+        UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
+        if let openedKey {
+            let new = summary.effectiveKey(for: openedKey)
+            if new != openedKey { self.openedKey = new }
+        }
+        if presentReport { repairSummary = summary }
+        reload()
+    }
+
     private func runImport(rows: [ImportedRow], generation: Int) async {
         guard generation == importGeneration, !Task.isCancelled else { return }
         var skipped: [String: Int] = [:]
@@ -697,14 +740,70 @@ final class AppRouter: ObservableObject {
         importState = .running(done: 0, total: seeds.count)
 
         var fetched: [CaseImporter.Fetched] = []
+        var transient = 0
+        var parsing = 0
+        var withoutUID = 0
         for (i, seed) in seeds.enumerated() {
             let court = Court(domain: seed.searchDomain, title: seed.courtTitle, level: seed.level)
-            let card = try? await client.fetchCard(court: court, caseID: seed.caseID,
-                                                   caseUID: seed.caseUID,
-                                                   deloID: seed.deloID, new: seed.new)
+            let card: CaseCard?
+            do {
+                card = try await client.fetchCard(court: court, caseID: seed.caseID,
+                                                  caseUID: seed.caseUID,
+                                                  deloID: seed.deloID, new: seed.new)
+                if card?.uid?.isEmpty != false { withoutUID += 1 }
+            } catch let error as SudrfError {
+                card = nil
+                if case .transientNetworkError = error { transient += 1 }
+                else { parsing += 1 }
+            } catch {
+                card = nil
+                parsing += 1
+            }
             guard generation == importGeneration, !Task.isCancelled else { return }
             fetched.append(CaseImporter.Fetched(seed: seed, card: card))
             importState = .running(done: i + 1, total: seeds.count)
+        }
+
+        // Если в UID-группе нет первой инстанции, пробуем восстановить её по
+        // вкладке нижестоящего суда до построения плана.
+        var recoveredDown = 0
+        var ambiguous = 0
+        var unresolvedNumbers: [String] = []
+        let originalCount = fetched.count
+        for i in 0..<originalCount {
+            guard let card = fetched[i].card,
+                  fetched[i].seed.instanceLevel == .appeal
+                    || fetched[i].seed.instanceLevel == .cassation else { continue }
+            let uid = card.uid
+            let alreadyHasFirst = fetched.contains { other in
+                guard other.seed.instanceLevel == .first else { return false }
+                if let uid, !uid.isEmpty,
+                   let otherUID = other.card?.uid, !otherUID.isEmpty {
+                    return TrackedStore.normalizedUID(otherUID)
+                        == TrackedStore.normalizedUID(uid)
+                }
+                guard let lower = card.lowerCourt?.caseNumber else { return false }
+                return CaseOriginResolver.sameCaseNumber(
+                    other.card?.caseNumber ?? other.seed.row.number, lower)
+            }
+            if alreadyHasFirst { continue }
+            let anchor = CaseImporter.makeContext(fetched[i], known: [])
+            do {
+                let origin = try await originResolver.resolve(anchorContext: anchor, anchorCard: card)
+                if fetched[i].card?.uid?.isEmpty != false {
+                    fetched[i].card?.uid = origin.card.uid
+                }
+                fetched.append(CaseImporter.originFetched(origin, linkedFrom: fetched[i]))
+                recoveredDown += 1
+            } catch is CaseOriginResolutionError {
+                ambiguous += 1
+                unresolvedNumbers.append(anchor.caseNumber)
+            } catch let error as SudrfError {
+                if case .transientNetworkError = error { transient += 1 }
+                else { parsing += 1 }
+            } catch {
+                transient += 1
+            }
         }
 
         guard generation == importGeneration, !Task.isCancelled else { return }
@@ -716,6 +815,7 @@ final class AppRouter: ObservableObject {
             store.upsert(context: rec.context, snapshot: nil, movement: nil,
                          collections: [collection])
         }
+        let repaired = await repairCoordinator.runAll()
         reload()
 
         var summary = ImportSummary()
@@ -724,6 +824,14 @@ final class AppRouter: ObservableObject {
         summary.materials = plan.records.filter { $0.isMaterial }.count
         summary.stitched = plan.stitched
         summary.cold = plan.cold
+        summary.stitchedExisting = repaired.merged
+        summary.recoveredDown = recoveredDown + repaired.reanchored
+        summary.transient = transient + repaired.transient
+        summary.parsing = parsing
+        summary.withoutUID = withoutUID
+        summary.ambiguous = ambiguous + repaired.unresolved.count
+        summary.unresolvedNumbers = Array(NSOrderedSet(
+            array: unresolvedNumbers + repaired.unresolved).array.compactMap { $0 as? String })
         summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
         guard generation == importGeneration, !Task.isCancelled else { return }
         importState = .finished(summary)

@@ -143,13 +143,29 @@ struct ImportSummary {
     var materials = 0                  // записей-материалов (отдельных)
     var stitched = 0                   // карточек сшито в knownCards
     var cold = 0                       // карточка не загрузилась — импорт без сшивания
+    var stitchedExisting = 0           // объединено с уже отслеживаемыми записями
+    var recoveredDown = 0              // найдена и добавлена первая инстанция
+    var transient = 0                  // временные сетевые ошибки
+    var parsing = 0                    // карточка ответила, но не разобрана
+    var withoutUID = 0                 // в загруженной карточке нет настоящего УИД
+    var ambiguous = 0                  // нижняя карточка не определена однозначно
+    var unresolvedNumbers: [String] = []
     var skipped: [(reason: String, count: Int)] = []
     var total = 0                      // строк в CSV
 
     var text: String {
         var lines = ["Дел: \(cases), отдельных материалов: \(materials) (строк в файле: \(total))."]
         if stitched > 0 { lines.append("Сшито карточек вышестоящих инстанций и материалов: \(stitched).") }
+        if stitchedExisting > 0 { lines.append("Объединено с уже сохранёнными делами: \(stitchedExisting).") }
+        if recoveredDown > 0 { lines.append("Восстановлено карточек первой инстанции: \(recoveredDown).") }
         if cold > 0 { lines.append("Без сшивания (карточка не загрузилась): \(cold).") }
+        if transient > 0 { lines.append("Временно недоступно, можно повторить импорт: \(transient).") }
+        if parsing > 0 { lines.append("Не удалось разобрать ответ карточки: \(parsing).") }
+        if withoutUID > 0 { lines.append("Карточек без опубликованного УИД: \(withoutUID).") }
+        if ambiguous > 0 {
+            lines.append("Не удалось однозначно связать с первой инстанцией: \(ambiguous).")
+            lines.append(contentsOf: unresolvedNumbers.prefix(12).map { "• \($0)" })
+        }
         for s in skipped { lines.append("Пропущено — \(s.reason): \(s.count).") }
         return lines.joined(separator: "\n")
     }
@@ -298,7 +314,7 @@ enum CaseImporter {
         var loners: [Fetched] = []
         for f in fetched {
             if let uid = f.card?.uid, !uid.isEmpty {
-                groups[uid, default: []].append(f)
+                groups[TrackedStore.normalizedUID(uid), default: []].append(f)
             } else {
                 loners.append(f)
                 if f.card == nil { plan.cold += 1 }
@@ -355,6 +371,9 @@ enum CaseImporter {
             resultText: f.card?.result,
             legalForceDate: nil,
             cardURLString: seed.row.urlString)
+        ctx.judicialUID = f.card?.uid
+        ctx.baseInstanceLevelRaw = seed.instanceLevel.rawValue
+        if !seed.caseID.isEmpty, !seed.caseUID.isEmpty { ctx.sourceKnownCard = knownCard(f) }
         if !known.isEmpty { ctx.knownCards = known }
         return ctx
     }
@@ -371,5 +390,31 @@ enum CaseImporter {
                          caseNumber: f.card?.caseNumber ?? (seed.row.number.isEmpty ? nil : seed.row.number),
                          levelRaw: seed.instanceLevel.rawValue,
                          cartotekaID: seed.cartoteka?.id)
+    }
+
+    /// Синтетическая строка первой инстанции, найденная по реквизитам
+    /// апелляционной/кассационной карточки. Нужна только планировщику: дальше
+    /// проходит тем же путём, что обычная строка CSV.
+    static func originFetched(_ origin: ResolvedCaseOrigin, linkedFrom source: Fetched) -> Fetched {
+        let result = origin.result
+        let display = SudrfHost.alternate(origin.court.domain) ?? origin.court.domain
+        let url = result.cardURL ?? {
+            guard let id = result.caseID, let guid = result.caseUID else { return nil }
+            return try? SudrfURLBuilder(court: origin.court).cardURL(
+                caseID: id, caseUID: guid, deloID: origin.cartoteka.deloID,
+                new: origin.cartoteka.new)
+        }()
+        let seed = ImportSeed(
+            row: ImportedRow(number: origin.card.caseNumber ?? result.caseNumber,
+                             court: origin.court.title,
+                             parties: result.essence ?? source.seed.row.parties,
+                             urlString: url?.absoluteString ?? ""),
+            searchDomain: SudrfHost.moduleHost(origin.court.domain),
+            displayDomain: display, branch: origin.branch, level: origin.court.level,
+            courtTitle: origin.court.title, region: origin.region,
+            courtCode: origin.courtCode, caseID: result.caseID ?? "",
+            caseUID: result.caseUID ?? "", deloID: origin.cartoteka.deloID,
+            new: origin.cartoteka.new, isMaterial: false, cartoteka: origin.cartoteka)
+        return Fetched(seed: seed, card: origin.card)
     }
 }

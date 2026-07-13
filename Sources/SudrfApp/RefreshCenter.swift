@@ -86,6 +86,9 @@ final class RefreshCenter: ObservableObject {
     /// Ключ открытой сейчас карточки — фоновое обновление не должно гасить
     /// ей бейдж «обновлено» (см. правило seenAt в задаче обновления).
     var openedKey: (() -> String?)?
+    /// Точечный repair-preflight. Может переякорить запись и вернуть
+    /// новый ключ; nil сохраняет поведение тестов и старых вызовов.
+    var repairBeforeRefresh: ((String) async -> String)?
 
     private let store: TrackedStore
     private let client: SudrfClient
@@ -272,16 +275,17 @@ final class RefreshCenter: ObservableObject {
     }
 
     private func performRefresh(key: String) async {
-        guard let rec = store.record(forKey: key),
+        let effectiveKey = await repairBeforeRefresh?(key) ?? key
+        guard let rec = store.record(forKey: effectiveKey),
               let ctx = rec.context, let cart = ctx.cartoteka else {
-            fail(key, "Не удалось восстановить параметры поиска по делу.")
+            fail(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
             return
         }
         let service = serviceBuilder(ctx)
         do {
             let mv = try await service.movement(for: ctx.baseResult,
                                                 court: ctx.searchCourt, cartoteka: cart)
-            applyMovement(key: key, ctx: ctx, mv: mv)
+            applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
         } catch SudrfError.captchaRequired(let url) {
             // Сначала пробуем авто-солвер. Если он вернёт уверенный
             // ответ и токен попадёт в CaptchaTokenStore, повторный
@@ -297,8 +301,8 @@ final class RefreshCenter: ObservableObject {
             guard let solver = captchaSolver,
                   let settings = captchaSettings,
                   settings.isEffectivelyEnabled else {
-                queueCaptcha(key: key, formURL: url)
-                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                queueCaptcha(key: effectiveKey, formURL: url)
+                fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return
             }
             let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
@@ -312,23 +316,23 @@ final class RefreshCenter: ObservableObject {
                     let mv = try await service.movement(for: ctx.baseResult,
                                                         court: ctx.searchCourt,
                                                         cartoteka: cart)
-                    applyMovement(key: key, ctx: ctx, mv: mv)
+                    applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
                 } catch SudrfError.captchaRequired(let url2) {
-                    queueCaptcha(key: key, formURL: url2)
-                    fail(key, "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)")
+                    queueCaptcha(key: effectiveKey, formURL: url2)
+                    fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)")
                 } catch let e as SudrfError {
-                    fail(key, e.description)
+                    fail(effectiveKey, e.description)
                 } catch {
-                    fail(key, "Не удалось собрать движение дела: \(error.localizedDescription)")
+                    fail(effectiveKey, "Не удалось собрать движение дела: \(error.localizedDescription)")
                 }
             } else {
-                queueCaptcha(key: key, formURL: url)
-                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                queueCaptcha(key: effectiveKey, formURL: url)
+                fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
             }
         } catch let e as SudrfError {
-            fail(key, e.description)
+            fail(effectiveKey, e.description)
         } catch {
-            fail(key, "Не удалось собрать движение дела: \(error.localizedDescription)")
+            fail(effectiveKey, "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
     }
 

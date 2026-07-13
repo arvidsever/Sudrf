@@ -59,6 +59,7 @@ public enum CaseCardParser {
         let caseNumber = parseCaseNumber(doc: doc)
         let appeals = parseAppeals(doc)
         let parties = parseParties(doc)
+        let lowerCourt = parseLowerCourt(doc)
 
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
@@ -73,7 +74,8 @@ public enum CaseCardParser {
                         legalForceDate: legalForce,
                         acts: acts,
                         appeals: appeals,
-                        parties: parties)
+                        parties: parties,
+                        lowerCourt: lowerCourt)
     }
 
     // MARK: - Винтажная карточка (VNKOD-суды)
@@ -129,7 +131,8 @@ public enum CaseCardParser {
                         legalForceDate: meta["дата вступления в законную силу"],
                         acts: acts,
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
-                        parties: vintageParties(doc))
+                        parties: vintageParties(doc),
+                        lowerCourt: parseLowerCourt(doc))
     }
 
     /// Вкладка по имени: #tab_content_<name>.
@@ -429,6 +432,39 @@ public enum CaseCardParser {
             if map[k] == nil { map[k] = val }
         }
         return map
+    }
+
+    /// Вкладка апелляционной/кассационной карточки с реквизитами исходного
+    /// рассмотрения. Ищем по заголовку, а не по номеру contN: порядок вкладок
+    /// различается между судами и видами производства.
+    private static func parseLowerCourt(_ doc: Document) -> LowerCourtReference? {
+        let marker = "рассмотрение в нижестоящем суде"
+        let vintage = (try? doc.select("div[id^=tab_content_]").array()) ?? []
+        guard let cont = (tabContainers(doc) + vintage).first(where: {
+            ((try? $0.text()) ?? "").lowercased().contains(marker)
+        }) else { return nil }
+
+        var map: [String: String] = [:]
+        for row in (try? cont.select("tr").array()) ?? [] {
+            let cells = (try? row.select("td, th").array()) ?? []
+            guard cells.count >= 2 else { continue }
+            let key = ((try? cells[0].text()) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = ((try? cells[1].text()) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            map[key] = value
+        }
+
+        let ref = LowerCourtReference(
+            region: map["регион суда первой инстанции"],
+            courtTitle: map["суд (судебный участок) первой инстанции"]
+                ?? map["суд первой инстанции"],
+            caseNumber: map["номер дела в первой инстанции"],
+            decisionDate: map["дата решения первой инстанции"],
+            judge: map["судья (мировой судья) первой инстанции"]
+                ?? map["судья первой инстанции"])
+        return ref.isEmpty ? nil : ref
     }
 
     /// Номер дела из заголовка карточки: «ДЕЛО № …» / «ПРОИЗВОДСТВО № …».

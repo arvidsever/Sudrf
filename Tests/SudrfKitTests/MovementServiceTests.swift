@@ -435,6 +435,26 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(MovementService.actTitle(cartotekaID: "adm", level: .first), "Постановление")
         XCTAssertEqual(MovementService.actTitle(cartotekaID: "adm2", level: .appeal), "Решение")
     }
+
+    func testAppealAnchorKeepsAppealLevelForBaseInstanceAndAct() async throws {
+        let card = CaseCard(rawText: "", actText: "Текст апелляционного акта",
+                            uid: Self.uid, caseNumber: "33-4818/2025")
+        let mock = MockClient(firstCardID: "appeal-id", firstCard: card,
+                              higherResults: [], higherCards: [:],
+                              homeDomain: "vs--komi.sudrf.ru")
+        let service = MovementService(client: mock, baseInstanceLevel: .appeal)
+        let court = Court(domain: "vs--komi.sudrf.ru",
+                          title: "Верховный Суд Республики Коми", level: .subject)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "g2"))
+        let base = CaseSearchResult(caseNumber: "33-4818/2025",
+                                    caseID: "appeal-id", caseUID: "link-guid")
+
+        let movement = try await service.movement(for: base, court: court, cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.first?.level, .appeal)
+        XCTAssertEqual(movement.acts.first?.instanceLevel, .appeal)
+        XCTAssertEqual(movement.acts.first?.title, "Апелляционное определение")
+    }
 }
 
 /// Мок клиента: отдаёт заранее заданные карточки и записывает значения поиска.

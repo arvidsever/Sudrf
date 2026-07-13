@@ -96,6 +96,30 @@ public struct AppealRecord: Sendable, Equatable {
     }
 }
 
+/// Ссылка из карточки апелляционной/кассационной инстанции на рассмотрение
+/// в нижестоящем суде. Эти поля позволяют восстановить каноническую карточку
+/// первой инстанции даже тогда, когда УИД в вышестоящей карточке не опубликован.
+public struct LowerCourtReference: Sendable, Equatable, Codable {
+    public var region: String?
+    public var courtTitle: String?
+    public var caseNumber: String?
+    public var decisionDate: String?
+    public var judge: String?
+
+    public init(region: String? = nil, courtTitle: String? = nil,
+                caseNumber: String? = nil, decisionDate: String? = nil,
+                judge: String? = nil) {
+        self.region = region; self.courtTitle = courtTitle
+        self.caseNumber = caseNumber; self.decisionDate = decisionDate
+        self.judge = judge
+    }
+
+    public var isEmpty: Bool {
+        [region, courtTitle, caseNumber, decisionDate, judge]
+            .allSatisfy { ($0 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+}
+
 public struct CaseCard: Sendable {
     public var rawText: String          // весь текст карточки (для отладки/фолбэка)
     public var actText: String?         // текст первого судебного акта (для обратной совместимости)
@@ -111,6 +135,7 @@ public struct CaseCard: Sendable {
     public var acts: [CaseActText]      // все судебные акты карточки (инлайн-тексты)
     public var appeals: [AppealRecord]  // вкладка «Обжалование» (в карточке 1-й инстанции)
     public var parties: CaseParties     // вкладка «СТОРОНЫ ПО ДЕЛУ» (истцы/ответчики/третьи)
+    public var lowerCourt: LowerCourtReference? // «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ»
 
     public init(rawText: String, actText: String?,
                 sessions: [CaseSession] = [], judge: String? = nil, result: String? = nil,
@@ -118,7 +143,8 @@ public struct CaseCard: Sendable {
                 receiptDate: String? = nil, decisionDate: String? = nil,
                 legalForceDate: String? = nil,
                 acts: [CaseActText] = [], appeals: [AppealRecord] = [],
-                parties: CaseParties = CaseParties()) {
+                parties: CaseParties = CaseParties(),
+                lowerCourt: LowerCourtReference? = nil) {
         self.rawText = rawText
         self.actText = actText
         self.sessions = sessions
@@ -133,6 +159,7 @@ public struct CaseCard: Sendable {
         self.acts = acts
         self.appeals = appeals
         self.parties = parties
+        self.lowerCourt = lowerCourt
     }
 }
 

@@ -138,6 +138,32 @@ final class RefreshCenterTests: XCTestCase {
         )
     }
 
+    func testRepairPreflightRefreshesRemappedKey() async throws {
+        let old = makeContext()
+        var canonical = old
+        canonical.displayDomain = "canonical.komi.sudrf.ru"
+        canonical.searchDomain = "canonical--komi.sudrf.ru"
+        canonical.caseNumber = "2-200/2026"
+        let canonicalMovement = makeSuccessMovement(court: canonical.searchCourt)
+        let provider = FixedMovement(canonicalMovement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in provider })
+        var callbackKey: String?
+        center.onRefreshed = { key, _ in callbackKey = key }
+        center.repairBeforeRefresh = { [store] key in
+            XCTAssertEqual(key, old.key)
+            store?.upsert(context: canonical, snapshot: nil, collections: [])
+            store?.remove(key: old.key)
+            return canonical.key
+        }
+
+        await center.refresh(key: old.key)?.value
+
+        XCTAssertNil(store.record(forKey: old.key))
+        XCTAssertNotNil(store.record(forKey: canonical.key)?.movement)
+        XCTAssertEqual(callbackKey, canonical.key)
+    }
+
     // MARK: - A1: inline retry
 
     /// Позитивный сценарий A1: первый вызов `service.movement` бросает

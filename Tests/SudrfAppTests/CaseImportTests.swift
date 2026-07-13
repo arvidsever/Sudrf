@@ -206,6 +206,23 @@ final class CaseImportTests: XCTestCase {
         XCTAssertNil(lone.context.knownCards)
     }
 
+    func testStitchingNormalizesUIDFormatting() throws {
+        let first = try fetched(
+            row("2-7212/2025", "Сыктывкарский городской суд (Республика Коми)",
+                "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=100&case_uid=a&delo_id=1540005"),
+            uid: "11RS0001-01-2025-011255-03")
+        let appeal = try fetched(
+            row("33-4818/2025", "Верховный Суд Республики Коми (Республика Коми)",
+                "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=200&case_uid=b&delo_id=5&new=5"),
+            uid: "11rs000101202501125503")
+
+        let plan = CaseImporter.plan([appeal, first])
+
+        XCTAssertEqual(plan.records.count, 1)
+        XCTAssertEqual(plan.stitched, 1)
+        XCTAssertEqual(plan.records.first?.context.caseNumber, "2-7212/2025")
+    }
+
     /// Группа из одних материалов (дела в выгрузке нет) — каждый материал
     /// остаётся самостоятельной записью.
     func testMaterialsOnlyGroupStaysStandalone() throws {
@@ -260,6 +277,11 @@ final class CaseImportTests: XCTestCase {
         XCTAssertEqual(ctx.essence, "Воробьев В.В. ⚔ Администрация МО")
         XCTAssertEqual(ctx.cardURLString, url)
         XCTAssertEqual(ctx.key, "syktsud.komi.sudrf.ru/2-7212/2025")
+        XCTAssertEqual(ctx.judicialUID, "11RS0001-01-2025-011255-03")
+        XCTAssertEqual(ctx.baseInstanceLevel, .first)
+        XCTAssertEqual(ctx.sourceKnownCard?.caseID, "100")
+        XCTAssertEqual(ctx.sourceKnownCard?.caseUID, "a")
+        XCTAssertEqual(ctx.sourceKnownCard?.deloID, "1540005")
         XCTAssertNotNil(ctx.cartoteka, "RefreshCenter требует восстановимую картотеку")
         // Подсудность: домены вышестоящих судов строятся по коду субъекта.
         let higher = ctx.expandedHigherDomains()

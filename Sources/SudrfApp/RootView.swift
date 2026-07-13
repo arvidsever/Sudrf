@@ -54,11 +54,12 @@ struct RootView: View {
             pickCSVAndImport()
         }
         .sheet(isPresented: Binding(
-            get: { router.importState != nil },
+            get: { router.importState != nil || router.repairSummary != nil },
             set: { shown in
                 if !shown {
                     if case .running = router.importState { router.cancelImport() }
-                    else { router.dismissImportSummary() }
+                    else if router.importState != nil { router.dismissImportSummary() }
+                    else { router.dismissRepairSummary() }
                 }
             })) {
             ImportSheet()
@@ -113,7 +114,18 @@ private struct ImportSheet: View {
                         .keyboardShortcut(.defaultAction)
                 }
             case nil:
-                EmptyView()
+                if let summary = router.repairSummary {
+                    Text("Карточки дел исправлены").font(.system(size: 15, weight: .bold))
+                    Text(summary.text)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer()
+                        Button("Готово") { router.dismissRepairSummary() }
+                            .buttonStyle(.borderedProminent).controlSize(.regular)
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
             }
         }
         .padding(20)

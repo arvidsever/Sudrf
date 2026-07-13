@@ -127,10 +127,11 @@ actor CaseOriginResolver {
             case .district, .military:
                 let courts = try await districtResolver.allCourts(forRegion: region)
                 if let found = courts.first(where: { $0.code?.uppercased() == code.uppercased() }) {
-                    let level: CourtLevel = kind == .military ? .district : .district
+                    // Гарнизонный военный суд — тот же районный уровень;
+                    // военная вертикаль передаётся через branch.
                     return OriginCourtResolution(
                         court: Court(domain: SudrfHost.moduleHost(found.domain), title: found.title,
-                                     level: level),
+                                     level: .district),
                         branch: kind == .military ? .military : .general, code: found.code)
                 }
             case .subject:
@@ -192,6 +193,10 @@ actor CaseOriginResolver {
         case "u": id = "u1"
         case "adm":
             id = CartotekaRegistry.normalizedNumber(lowerNumber).hasPrefix("12-") ? "admj" : "adm"
+        case "admj":
+            // Якорь «Жалобы по делам об АП» (12-…): по существу дело
+            // рассматривалось в картотеке «adm» мирового или районного суда.
+            id = "adm"
         default:
             throw CaseOriginResolutionError.unsupportedCourt
         }

@@ -120,4 +120,16 @@ final class CaseOriginResolverTests: XCTestCase {
             }
         }
     }
+
+    /// Якорь «Жалобы по делам об АП» (admj, 12-…) ведёт к первой инстанции
+    /// в картотеке «adm» — и у мирового, и у районного суда.
+    func testFirstCartotekaForAdmjAnchor() throws {
+        let district = try CaseOriginResolver.firstCartoteka(
+            anchorID: "admj", lowerNumber: "5-100/2025", level: .district)
+        XCTAssertEqual(district.id, "adm")
+
+        let magistrate = try CaseOriginResolver.firstCartoteka(
+            anchorID: "admj", lowerNumber: "5-100/2025", level: .magistrate)
+        XCTAssertEqual(magistrate.id, "adm")
+    }
 }

@@ -79,7 +79,8 @@ final class CaseImportTests: XCTestCase {
         XCTAssertTrue(s.isMaterial)
         XCTAssertEqual(s.cartoteka?.id, "m")
         XCTAssertEqual(s.instanceLevel, .material)
-        XCTAssertEqual(s.anchorRank, 100, "материал якорем быть не должен")
+        XCTAssertEqual(CaseImporter.Fetched(seed: s, card: nil).anchorRank, 100,
+                       "материал якорем быть не должен")
     }
 
     func testGarrisonCourtUsesMilitaryDistrictRoute() throws {
@@ -159,6 +160,31 @@ final class CaseImportTests: XCTestCase {
                      caseNumber: cardNumber ?? (r.number.isEmpty ? nil : r.number))
         }
         return CaseImporter.Fetched(seed: s, card: card)
+    }
+
+    func testAdmjImportRoleComesFromFetchedUID() throws {
+        let imported = row(
+            "12-10/2026", "Сыктывкарский городской суд (Республика Коми)",
+            "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=90&case_uid=a&delo_id=1502001")
+        let seed = try self.seed(imported)
+        XCTAssertEqual(seed.cartoteka?.id, "admj")
+        XCTAssertEqual(seed.instanceLevel, .first, "до загрузки УИД роль неизвестна")
+
+        let ms = CaseImporter.Fetched(
+            seed: seed, card: CaseCard(rawText: "", actText: nil,
+                                      uid: "11MS0062-01-2026-000010-10",
+                                      caseNumber: imported.number))
+        let rs = CaseImporter.Fetched(
+            seed: seed, card: CaseCard(rawText: "", actText: nil,
+                                      uid: "11RS0001-01-2026-000010-10",
+                                      caseNumber: imported.number))
+
+        XCTAssertEqual(ms.instanceLevel, .appeal)
+        XCTAssertEqual(ms.anchorRank, 20)
+        XCTAssertEqual(rs.instanceLevel, .first)
+        XCTAssertEqual(rs.anchorRank, 0)
+        XCTAssertEqual(CaseImporter.makeContext(ms, known: []).baseInstanceLevel, .appeal)
+        XCTAssertEqual(CaseImporter.makeContext(rs, known: []).baseInstanceLevel, .first)
     }
 
     func testStitchingGroupsByUID() throws {

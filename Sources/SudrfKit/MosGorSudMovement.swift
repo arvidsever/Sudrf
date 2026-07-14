@@ -138,7 +138,8 @@ extension MovementService {
             let court = Court(domain: domain,
                               title: Self.shortCourtName(forDomain: domain),
                               level: level)
-            let ids = Self.higherCartotekaIDs(baseID: baseCartotekaID, level: level)
+            let ids = Self.higherCartotekaIDs(baseID: baseCartotekaID, level: level,
+                                              judicialUID: uid)
             let toTry = CartotekaRegistry.sets(for: level).filter { ids.contains($0.id) }
 
             for cart in toTry {

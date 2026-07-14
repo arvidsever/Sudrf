@@ -772,11 +772,11 @@ final class AppRouter: ObservableObject {
         let originalCount = fetched.count
         for i in 0..<originalCount {
             guard let card = fetched[i].card,
-                  fetched[i].seed.instanceLevel == .appeal
-                    || fetched[i].seed.instanceLevel == .cassation else { continue }
+                  fetched[i].instanceLevel == .appeal
+                    || fetched[i].instanceLevel == .cassation else { continue }
             let uid = card.uid
             let alreadyHasFirst = fetched.contains { other in
-                guard other.seed.instanceLevel == .first else { return false }
+                guard other.instanceLevel == .first else { return false }
                 if let uid, !uid.isEmpty,
                    let otherUID = other.card?.uid, !otherUID.isEmpty {
                     return TrackedStore.normalizedUID(otherUID)
@@ -826,6 +826,7 @@ final class AppRouter: ObservableObject {
         summary.cold = plan.cold
         summary.stitchedExisting = repaired.merged
         summary.recoveredDown = recoveredDown + repaired.reanchored
+        summary.rerouted = repaired.rerouted
         summary.transient = transient + repaired.transient
         summary.parsing = parsing
         summary.withoutUID = withoutUID

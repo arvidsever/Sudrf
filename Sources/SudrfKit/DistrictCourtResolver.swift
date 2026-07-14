@@ -7,6 +7,7 @@ import SwiftSoup
 /// апелляционный суд ОЮ, 78KJ0003 — Третий кассационный суд ОЮ,
 /// 78OV0000 — 1-й Западный окружной военный суд, 78OS0000 — горсуд СПб.
 public enum CourtKind: String, Sendable, Codable {
+    case magistrate  // MS — мировой судья / судебный участок
     case district    // RS — районный/городской/межрайонный
     case military    // GV/OV — гарнизонные/окружные; KV/AV — предположительно КВС/АВС
     case subject     // OS/VS — суд субъекта / ВС РФ
@@ -19,6 +20,7 @@ public enum CourtKind: String, Sendable, Codable {
             ? String(Array(code)[2..<4]).uppercased()
             : ""
         switch t {
+        case "MS":                       self = .magistrate
         case "RS":                       self = .district
         case "GV", "OV", "KV", "AV":     self = .military
         case "OS", "VS", "UD":           self = .subject

@@ -142,7 +142,12 @@ final class CartotekaRegistryTests: XCTestCase {
 
     func testKoAPRoutes() {
         XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "adm", level: .subject), ["adm1"])
-        XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "admj", level: .subject), ["adm2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "admj", level: .subject,
+            judicialUID: "11RS0001-01-2025-000001-01"), ["adm2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "admj", level: .subject,
+            judicialUID: "11MS0062-01-2025-000001-01"), [])
         XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "adm", level: .cassation), ["adm3"])
         XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "admj", level: .cassation), ["adm3"])
         // КоАП в АСОЮ не рассматривается.

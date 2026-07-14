@@ -790,14 +790,15 @@ final class SearchModel: ObservableObject {
     // MARK: - Маршрут движения мировых судей
 
     private func movementTargets(for option: CourtOption, base: CaseSearchResult?) -> [MovementSearchTarget]? {
-        guard option.level == .magistrate,
-              let cart = cartoteka ?? CartotekaRegistry.find(level: .magistrate, id: cartotekaId) else {
-            return nil
-        }
-        return MovementTargetBuilder.magistrateTargets(
+        guard let cart = cartoteka
+            ?? CartotekaRegistry.find(level: option.level, id: cartotekaId) else { return nil }
+        return MovementTargetBuilder.targets(
+            branch: branch, courtLevel: option.level,
             baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,
-            courtCode: option.code, region: region,
-            districtCourts: magistrateDistrictCourts.map { ($0.domain, $0.title) })
+            judicialUID: nil, courtTitle: option.title, courtCode: option.code,
+            region: region, displayDomain: option.domain,
+            districtCourts: option.level == .magistrate
+                ? magistrateDistrictCourts.map { ($0.domain, $0.title) } : [])
     }
 
     // MARK: - Контекст для отслеживания

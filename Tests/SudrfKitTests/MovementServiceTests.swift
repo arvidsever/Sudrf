@@ -347,7 +347,12 @@ final class MovementServiceTests: XCTestCase {
     /// постановление (admj) → ВС «жалобы на решения по жалобам» (adm2).
     func testKoAPHigherCartotekaMapping() {
         XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "adm", level: .subject), ["adm1"])
-        XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "admj", level: .subject), ["adm2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "admj", level: .subject,
+            judicialUID: "11RS0001-01-2025-000001-01"), ["adm2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "admj", level: .subject,
+            judicialUID: "11MS0062-01-2025-000001-01"), [])
         // Регресс по гражданским — не сломан.
         XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "g1", level: .subject), ["g2"])
     }
@@ -454,6 +459,25 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(movement.instances.first?.level, .appeal)
         XCTAssertEqual(movement.acts.first?.instanceLevel, .appeal)
         XCTAssertEqual(movement.acts.first?.title, "Апелляционное определение")
+    }
+
+    func testMSAdmjCardOverridesLegacyFirstLevel() async throws {
+        let uid = "11MS0062-01-2025-000100-10"
+        let card = CaseCard(rawText: "", actText: "Решение по жалобе",
+                            uid: uid, caseNumber: "12-10/2025")
+        let mock = MockClient(firstCardID: "admj-id", firstCard: card,
+                              higherResults: [], higherCards: [:],
+                              expectedUID: uid)
+        let service = MovementService(client: mock, baseInstanceLevel: .first)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "admj"))
+        let base = CaseSearchResult(caseNumber: "12-10/2025",
+                                    caseID: "admj-id", caseUID: "link-guid")
+
+        let movement = try await service.movement(for: base, court: districtCourt(),
+                                                  cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.first?.level, .appeal)
+        XCTAssertEqual(movement.acts.first?.instanceLevel, .appeal)
     }
 }
 

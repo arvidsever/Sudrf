@@ -10,6 +10,14 @@ struct ResolvedCaseOrigin: Sendable {
     var cartoteka: Cartoteka
     var result: CaseSearchResult
     var card: CaseCard
+    /// Районные суды региона для поиска необязательной апелляции на акт
+    /// мирового судьи после переякоривания.
+    var districtAppealCourts: [OriginTargetCourt] = []
+}
+
+struct OriginTargetCourt: Sendable, Equatable {
+    var domain: String
+    var title: String
 }
 
 enum CaseOriginResolutionError: Error, Equatable {
@@ -64,6 +72,14 @@ actor CaseOriginResolver {
         }
 
         let judicialUID = anchorCard.uid ?? anchorContext.judicialUID
+        if anchorContext.courtLevel == .subject,
+           anchorContext.cartotekaId == "adm33",
+           KoAPProceduralRole.uidCourtKind(judicialUID) == .district,
+           !Self.isHistoricalSubjectReview(context: anchorContext, card: anchorCard) {
+            // Современная adm33-компетенция суда субъекта охватывает MS-цепочки.
+            // RS допустим только для исторических производств до реформы 2019 г.
+            throw CaseOriginResolutionError.unsupportedCourt
+        }
         let code = Self.classificationCode(from: judicialUID)
         let region = Self.cleanRegion(ref.region)
             ?? code.flatMap { CourtDirectory.subjectName(forSubjectCode: $0) }
@@ -113,9 +129,18 @@ actor CaseOriginResolver {
             throw matches.isEmpty ? CaseOriginResolutionError.notFound
                                   : CaseOriginResolutionError.ambiguous
         }
+        let districtAppealCourts: [OriginTargetCourt]
+        if resolved.court.level == .magistrate {
+            districtAppealCourts = ((try? await districtResolver.allCourts(forRegion: region)) ?? [])
+                .filter { $0.kind == .district && $0.domain.hasSuffix("sudrf.ru") }
+                .map { OriginTargetCourt(domain: $0.domain, title: $0.title) }
+        } else {
+            districtAppealCourts = []
+        }
         return ResolvedCaseOrigin(court: resolved.court, branch: resolved.branch,
                                   region: region, courtCode: resolved.code,
-                                  cartoteka: cart, result: match.0, card: match.1)
+                                  cartoteka: cart, result: match.0, card: match.1,
+                                  districtAppealCourts: districtAppealCourts)
     }
 
     private func resolveCourt(code: String?, title: String?, region: String) async throws
@@ -124,6 +149,13 @@ actor CaseOriginResolver {
         if let code {
             let kind = CourtKind(classificationCode: code)
             switch kind {
+            case .magistrate:
+                let courts = try await magistrateResolver.courts(forRegion: region)
+                if let found = courts.first(where: { $0.code.uppercased() == code.uppercased() }),
+                   found.isSupported {
+                    return OriginCourtResolution(court: found.court, branch: .general,
+                                                 code: found.code)
+                }
             case .district, .military:
                 let courts = try await districtResolver.allCourts(forRegion: region)
                 if let found = courts.first(where: { $0.code?.uppercased() == code.uppercased() }) {
@@ -139,13 +171,6 @@ actor CaseOriginResolver {
                     return OriginCourtResolution(
                         court: Court(domain: SudrfHost.moduleHost(found.domain), title: found.title,
                                      level: .subject), branch: .general, code: code)
-                }
-            case .other where code.uppercased().contains("MS"):
-                let courts = try await magistrateResolver.courts(forRegion: region)
-                if let found = courts.first(where: { $0.code.uppercased() == code.uppercased() }),
-                   found.isSupported {
-                    return OriginCourtResolution(court: found.court, branch: .general,
-                                                 code: found.code)
                 }
             default:
                 break
@@ -185,20 +210,49 @@ actor CaseOriginResolver {
 
     static func firstCartoteka(anchorID: String, lowerNumber: String,
                                level: CourtLevel) throws -> Cartoteka {
-        let prefix = String(anchorID.prefix(while: { $0.isLetter })).lowercased()
+        let anchorID = anchorID.lowercased()
+        let prefix = String(anchorID.prefix(while: { $0.isLetter }))
         let id: String
-        switch prefix {
-        case "g": id = "g1"
-        case "p": id = "p1"
-        case "u": id = "u1"
-        case "adm":
-            id = CartotekaRegistry.normalizedNumber(lowerNumber).hasPrefix("12-") ? "admj" : "adm"
+        switch anchorID {
+        case "adm1":
+            // Областная жалоба на постановление районного суда.
+            guard level == .district else { throw CaseOriginResolutionError.unsupportedCourt }
+            id = "adm"
+        case "adm2":
+            // Областная жалоба на решение райсуда по жалобе на постановление органа.
+            guard level == .district else { throw CaseOriginResolutionError.unsupportedCourt }
+            id = "admj"
+        case "adm33", "adm3":
+            // Для вступившего в силу акта УИД указывает исходный суд, а точный
+            // номер из нижестоящей вкладки различает районные adm/admj.
+            switch level {
+            case .magistrate:
+                id = "adm"
+            case .district:
+                id = CartotekaRegistry.normalizedNumber(lowerNumber).hasPrefix("12-")
+                    ? "admj" : "adm"
+            default:
+                throw CaseOriginResolutionError.unsupportedCourt
+            }
         case "admj":
-            // Якорь «Жалобы по делам об АП» (12-…): по существу дело
-            // рассматривалось в картотеке «adm» мирового или районного суда.
+            // Только MS-ветка: районный admj является апелляцией на
+            // постановление мирового судьи. RS-admj уже является первым
+            // судебным якорем и вниз не разрешается.
+            guard level == .magistrate else {
+                throw CaseOriginResolutionError.unsupportedCourt
+            }
             id = "adm"
         default:
-            throw CaseOriginResolutionError.unsupportedCourt
+            switch prefix {
+            case "g": id = "g1"
+            case "p": id = "p1"
+            case "u": id = "u1"
+            case "adm":
+                id = CartotekaRegistry.normalizedNumber(lowerNumber).hasPrefix("12-")
+                    ? "admj" : "adm"
+            default:
+                throw CaseOriginResolutionError.unsupportedCourt
+            }
         }
         guard let cart = CartotekaRegistry.find(level: level, id: id) else {
             throw CaseOriginResolutionError.unsupportedCourt
@@ -207,11 +261,7 @@ actor CaseOriginResolver {
     }
 
     static func classificationCode(from uid: String?) -> String? {
-        guard let uid else { return nil }
-        let upper = uid.uppercased()
-        guard let range = upper.range(of: #"^\d{2}[A-ZА-Я]{2}\d{4}"#,
-                                      options: .regularExpression) else { return nil }
-        return String(upper[range])
+        KoAPProceduralRole.classificationCode(from: uid)
     }
 
     static func normalizedUID(_ uid: String) -> String {
@@ -237,6 +287,26 @@ actor CaseOriginResolver {
             raw.removeSubrange(range)
         }
         return raw.isEmpty ? nil : raw
+    }
+
+    static func isHistoricalSubjectReview(context: MovementContext, card: CaseCard) -> Bool {
+        let dates = [card.receiptDate, card.decisionDate,
+                     context.receiptDate, context.decisionDate].compactMap { raw -> Int? in
+            guard let raw else { return nil }
+            let parts = raw.prefix(10).split(separator: ".")
+            guard parts.count == 3, let d = Int(parts[0]), let m = Int(parts[1]),
+                  let y = Int(parts[2]) else { return nil }
+            return y * 10_000 + m * 100 + d
+        }
+        if let earliest = dates.min() { return earliest < 2019_10_01 }
+        let candidates = [card.caseNumber, Optional(context.caseNumber)].compactMap { $0 }
+            .compactMap { value -> Int? in
+            guard let match = value.range(of: #"/(\d{4})"#, options: .regularExpression) else {
+                return nil
+            }
+            return Int(value[match].dropFirst())
+        }
+        return candidates.contains { $0 <= 2019 }
     }
 }
 

@@ -4,11 +4,15 @@ import SudrfKit
 struct CaseRepairSummary: Equatable {
     var merged = 0
     var reanchored = 0
+    var rerouted = 0
     var unresolved: [String] = []
     var transient = 0
     var keyRemaps: [String: String] = [:]
 
-    var hasReport: Bool { merged > 0 || reanchored > 0 || !unresolved.isEmpty || transient > 0 }
+    var hasReport: Bool {
+        merged > 0 || reanchored > 0 || rerouted > 0
+            || !unresolved.isEmpty || transient > 0
+    }
 
     /// Слияние дублей и последующее переякоривание могут дать цепочку
     /// `старый -> промежуточный -> канонический`. Потребители всегда должны
@@ -25,6 +29,7 @@ struct CaseRepairSummary: Equatable {
     var text: String {
         var lines = ["Объединено дублирующих карточек: \(merged).",
                      "Восстановлено карточек первой инстанции: \(reanchored)."]
+        if rerouted > 0 { lines.append("Исправлено маршрутов КоАП: \(rerouted).") }
         if transient > 0 { lines.append("Временно недоступно, будет повторено: \(transient).") }
         if !unresolved.isEmpty {
             lines.append("Не удалось однозначно связать: \(unresolved.count).")
@@ -48,7 +53,7 @@ final class TrackedCaseRepairCoordinator {
     private let anchorCardFetcher: (MovementContext) async throws -> CaseCard
     private let defaults: UserDefaults
     private let now: () -> Date
-    private static let migrationID = "importChainRepair.v1"
+    private static let migrationID = "importChainRepair.v2"
     private var attemptsKey: String { "\(Self.migrationID).attempts" }
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
@@ -82,13 +87,13 @@ final class TrackedCaseRepairCoordinator {
 
     private func runAllPass() async -> CaseRepairSummary {
         var summary = CaseRepairSummary()
+        summary.rerouted += normalizeStoredKoAPRoutes()
         mergeKnownUIDDuplicates(into: &summary)
 
         // Снимок ключей после локального слияния: сеть не должна работать с уже
         // удалёнными managed objects.
         let keys = store.all().compactMap { rec -> String? in
-            guard let ctx = rec.context,
-                  ctx.baseInstanceLevel == .appeal || ctx.baseInstanceLevel == .cassation else { return nil }
+            guard let ctx = rec.context, shouldRepair(ctx) else { return nil }
             return rec.key
         }
         for key in keys {
@@ -107,11 +112,12 @@ final class TrackedCaseRepairCoordinator {
             return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
         }
         var summary = CaseRepairSummary()
+        summary.rerouted += normalizeStoredKoAPRoutes()
         mergeKnownUIDDuplicates(into: &summary)
         let localKey = summary.effectiveKey(for: key)
         guard let rec = store.record(forKey: localKey),
               let ctx = rec.context,
-              ctx.baseInstanceLevel == .appeal || ctx.baseInstanceLevel == .cassation,
+              shouldRepair(ctx),
               shouldAttempt(key: localKey) else {
             return Outcome(effectiveKey: localKey, summary: summary)
         }
@@ -123,9 +129,31 @@ final class TrackedCaseRepairCoordinator {
         guard let rec = store.record(forKey: key), let anchorContext = rec.context else { return }
         do {
             let anchorCard = try await fetchAnchorCard(anchorContext)
-            let origin = try await originResolver.resolve(anchorContext: anchorContext,
+            let normalized = normalizedKoAPContext(anchorContext, card: anchorCard)
+            let effectiveContext = normalized.context
+            if normalized.changed {
+                rec.context = effectiveContext
+                if let uid = effectiveContext.judicialUID, !uid.isEmpty {
+                    rec.judicialUID = TrackedStore.normalizedUID(uid)
+                }
+                rec.movementFetchedAt = nil
+                _ = store.save()
+                summary.rerouted += 1
+            }
+            if normalized.role == .authorityJudicialReview
+                || normalized.role == .firstInstance {
+                clearRetry(key: key)
+                return
+            }
+            guard effectiveContext.baseInstanceLevel == .appeal
+                    || effectiveContext.baseInstanceLevel == .cassation else {
+                summary.unresolved.append(effectiveContext.caseNumber)
+                recordUnsupported(key: key)
+                return
+            }
+            let origin = try await originResolver.resolve(anchorContext: effectiveContext,
                                                           anchorCard: anchorCard)
-            let canonical = makeContext(origin: origin, anchor: anchorContext,
+            let canonical = makeContext(origin: origin, anchor: effectiveContext,
                                         anchorCard: anchorCard)
             let survivor = store.record(forKey: canonical.key) ?? rec
             let duplicates = survivor === rec ? [] : [rec]
@@ -184,6 +212,58 @@ final class TrackedCaseRepairCoordinator {
         }
     }
 
+    private func shouldRepair(_ context: MovementContext) -> Bool {
+        if context.baseInstanceLevel == .appeal || context.baseInstanceLevel == .cassation {
+            return true
+        }
+        return context.courtLevel == .district && context.cartotekaId == "admj"
+            && KoAPProceduralRole.resolve(
+                courtLevel: context.courtLevel, cartotekaID: context.cartotekaId,
+                judicialUID: context.judicialUID) == .unknown
+    }
+
+    /// Исправляет сохранённые уровни и точные цели без сети. Записи admj без
+    /// УИД остаются кандидатами сетевого прохода, где роль уточняется по карточке.
+    private func normalizeStoredKoAPRoutes() -> Int {
+        var changedCount = 0
+        for rec in store.all() {
+            guard let context = rec.context, context.cartotekaId.hasPrefix("adm") else { continue }
+            let normalized = normalizedKoAPContext(context, card: nil)
+            guard normalized.changed else { continue }
+            rec.context = normalized.context
+            rec.movementFetchedAt = nil
+            changedCount += 1
+        }
+        if changedCount > 0 { _ = store.save() }
+        return changedCount
+    }
+
+    private func normalizedKoAPContext(_ original: MovementContext, card: CaseCard?)
+        -> (context: MovementContext, role: KoAPProceduralRole, changed: Bool) {
+        var context = original
+        if let uid = card?.uid, !uid.isEmpty { context.judicialUID = uid }
+        let role = KoAPProceduralRole.resolve(
+            courtLevel: context.courtLevel, cartotekaID: context.cartotekaId,
+            judicialUID: context.judicialUID,
+            lowerCourtTitle: card?.lowerCourt?.courtTitle)
+        if let level = role.instanceLevel { context.baseInstanceLevelRaw = level.rawValue }
+
+        if let cart = context.cartoteka {
+            let districtCourts = (context.higherCourtTargets ?? []).compactMap { target
+                -> (domain: String, title: String)? in
+                guard target.courtLevel == .district else { return nil }
+                return (target.domain, target.courtTitle ?? "Районный суд")
+            }
+            context.higherCourtTargets = MovementTargetBuilder.targets(
+                branch: context.branch, courtLevel: context.courtLevel,
+                baseCartoteka: cart, caseNumber: context.caseNumber,
+                judicialUID: context.judicialUID, courtTitle: context.courtTitle,
+                courtCode: context.courtCode, region: context.region,
+                displayDomain: context.displayDomain, districtCourts: districtCourts)
+        }
+        return (context, role, context != original)
+    }
+
     private func fetchAnchorCard(_ ctx: MovementContext) async throws -> CaseCard {
         try await anchorCardFetcher(ctx)
     }
@@ -219,6 +299,13 @@ final class TrackedCaseRepairCoordinator {
         var known = anchor.knownCards ?? []
         if let source = anchor.sourceKnownCard ?? Self.knownCard(from: anchor) { known.append(source) }
         ctx.knownCards = Self.dedupKnown(known)
+        ctx.higherCourtTargets = MovementTargetBuilder.targets(
+            branch: origin.branch, courtLevel: origin.court.level,
+            baseCartoteka: origin.cartoteka, caseNumber: ctx.caseNumber,
+            judicialUID: ctx.judicialUID, courtTitle: origin.court.title,
+            courtCode: origin.courtCode, region: origin.region,
+            displayDomain: display,
+            districtCourts: origin.districtAppealCourts.map { ($0.domain, $0.title) })
         return ctx
     }
 

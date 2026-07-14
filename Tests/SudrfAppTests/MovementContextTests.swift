@@ -56,6 +56,21 @@ final class MovementContextTests: XCTestCase {
         XCTAssertEqual(militaryAppeal.expandedHigherDomains(), ["vkas.sudrf.ru"])
     }
 
+    func testKoAPLevelsUseCartotekaAndUIDOrigin() {
+        var ms = context(level: .district, cartoteka: "admj")
+        ms.judicialUID = "11MS0062-01-2025-000100-10"
+        XCTAssertEqual(ms.baseInstanceLevel, .appeal)
+
+        var rs = context(level: .district, cartoteka: "admj")
+        rs.judicialUID = "11RS0001-01-2025-000100-10"
+        XCTAssertEqual(rs.baseInstanceLevel, .first)
+
+        XCTAssertEqual(context(level: .subject, cartoteka: "adm1").baseInstanceLevel, .appeal)
+        XCTAssertEqual(context(level: .subject, cartoteka: "adm2").baseInstanceLevel, .appeal)
+        XCTAssertEqual(context(level: .subject, cartoteka: "adm33").baseInstanceLevel, .cassation)
+        XCTAssertEqual(context(level: .cassation, cartoteka: "adm3").baseInstanceLevel, .cassation)
+    }
+
     @MainActor
     func testSwiftDataRecordAllowsMissingDenormalizedUID() {
         let store = TrackedStore(inMemory: true)

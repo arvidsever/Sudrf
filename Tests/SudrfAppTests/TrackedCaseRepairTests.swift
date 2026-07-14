@@ -198,6 +198,75 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(store.all().count, 1)
     }
 
+    func testRSAdmjRemainsFirstJudicialAnchor() async throws {
+        let store = TrackedStore(inMemory: true)
+        let anchor = context(level: .first, number: "12-10/2026",
+                             domain: "syktsud--komi.sudrf.ru", cartoteka: "admj",
+                             courtLevel: .district)
+        store.upsert(context: anchor, snapshot: nil, collections: [])
+        let resolver = StubOriginResolver(.ambiguous)
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { _ in
+                XCTFail("RS-admj must not be resolved downward")
+                throw CaseOriginResolutionError.notFound
+            })
+
+        let summary = await coordinator.runAll()
+        let calls = await resolver.calls
+
+        XCTAssertEqual(summary.reanchored, 0)
+        XCTAssertEqual(calls, 0)
+        let saved = try XCTUnwrap(store.record(forKey: anchor.key)?.context)
+        XCTAssertEqual(saved.baseInstanceLevel, .first)
+        XCTAssertTrue(saved.higherCourtTargets?.contains { $0.cartotekaIDs == ["adm2"] } == true)
+    }
+
+    func testLegacyMSAdmjIsReclassifiedAndReanchoredToMagistrate() async throws {
+        let store = TrackedStore(inMemory: true)
+        var anchor = context(level: .first, number: "12-11/2026",
+                             domain: "syktsud--komi.sudrf.ru", cartoteka: "admj",
+                             courtLevel: .district)
+        let msUID = "11MS0062-01-2026-000011-11"
+        anchor.judicialUID = msUID
+        store.upsert(context: anchor, snapshot: nil, collections: ["Import"])
+        let lowerCard = CaseCard(rawText: "", actText: nil, uid: msUID,
+                                 caseNumber: "5-11/2026")
+        let origin = ResolvedCaseOrigin(
+            court: Court(domain: "62.komi.msudrf.ru", title: "Судебный участок № 62",
+                         level: .magistrate),
+            branch: .general, region: "Республика Коми", courtCode: "11MS0062",
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm")),
+            result: CaseSearchResult(caseNumber: "5-11/2026",
+                                     caseID: "lower-id", caseUID: "lower-guid"),
+            card: lowerCard,
+            districtAppealCourts: [OriginTargetCourt(
+                domain: "syktsud.komi.sudrf.ru", title: "Сыктывкарский городской суд")])
+        let resolver = StubOriginResolver(.resolved(origin))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { _ in
+                CaseCard(rawText: "", actText: nil, uid: msUID,
+                         caseNumber: "12-11/2026",
+                         lowerCourt: LowerCourtReference(
+                            courtTitle: "Судебный участок № 62", caseNumber: "5-11/2026"))
+            })
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.reanchored, 1)
+        XCTAssertGreaterThanOrEqual(summary.rerouted, 1)
+        let canonical = try XCTUnwrap(store.record(forKey: "62.komi.msudrf.ru/5-11/2026"))
+        XCTAssertEqual(canonical.context?.baseInstanceLevel, .first)
+        XCTAssertTrue(canonical.context?.higherCourtTargets?.contains {
+            $0.courtLevel == .district && $0.cartotekaIDs == ["admj"]
+        } == true)
+        XCTAssertNil(store.record(forKey: anchor.key))
+
+        let second = await coordinator.runAll()
+        XCTAssertFalse(second.hasReport)
+    }
+
     func testTransientRepairUsesPersistentBackoff() async {
         let store = TrackedStore(inMemory: true)
         let appeal = context(level: .appeal, number: "33-10/2026",

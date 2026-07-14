@@ -99,36 +99,8 @@ struct ImportSeed {
     /// Уровень «инстанции» карточки внутри чужого дела (для knownCards).
     var instanceLevel: CaseInstance.Level {
         if isMaterial { return .material }
-        // Картотеки 1-й инстанции (u1/g1/p1/adm/admj) — .first независимо от
-        // звена: дело субъекта по 1-й инстанции — не «апелляция».
-        if let id = cartoteka?.id {
-            if id.hasSuffix("1") || id == "adm" || id == "admj" { return .first }
-            if id.hasSuffix("3") || id.hasSuffix("33") { return .cassation }
-            if id.hasSuffix("2") { return .appeal }
-        }
-        switch level {
-        case .magistrate:return .first
-        case .district:  return .first
-        case .subject:   return .appeal
-        case .appeal:    return .appeal
-        case .cassation: return .cassation
-        }
-    }
-
-    /// Ранг якоря: чем меньше, тем «базовее» карточка. Материалы якорем не
-    /// становятся (кроме групп, где дел нет вовсе).
-    var anchorRank: Int {
-        if isMaterial { return 100 }
-        let levelRank: Int
-        switch level {
-        case .magistrate:levelRank = -1
-        case .district:  levelRank = 0
-        case .subject:   levelRank = 1
-        case .appeal:    levelRank = 2
-        case .cassation: levelRank = 3
-        }
-        let firstInstance = (cartoteka?.new ?? new) == "0" ? 0 : 1
-        return levelRank * 10 + firstInstance
+        return MovementContext.instanceLevel(
+            cartotekaID: cartoteka?.id ?? "", courtLevel: level)
     }
 }
 
@@ -145,6 +117,7 @@ struct ImportSummary {
     var cold = 0                       // карточка не загрузилась — импорт без сшивания
     var stitchedExisting = 0           // объединено с уже отслеживаемыми записями
     var recoveredDown = 0              // найдена и добавлена первая инстанция
+    var rerouted = 0                   // исправлена процессуальная роль/маршрут КоАП
     var transient = 0                  // временные сетевые ошибки
     var parsing = 0                    // карточка ответила, но не разобрана
     var withoutUID = 0                 // в загруженной карточке нет настоящего УИД
@@ -158,6 +131,7 @@ struct ImportSummary {
         if stitched > 0 { lines.append("Сшито карточек вышестоящих инстанций и материалов: \(stitched).") }
         if stitchedExisting > 0 { lines.append("Объединено с уже сохранёнными делами: \(stitchedExisting).") }
         if recoveredDown > 0 { lines.append("Восстановлено карточек первой инстанции: \(recoveredDown).") }
+        if rerouted > 0 { lines.append("Исправлено маршрутов КоАП: \(rerouted).") }
         if cold > 0 { lines.append("Без сшивания (карточка не загрузилась): \(cold).") }
         if transient > 0 { lines.append("Временно недоступно, можно повторить импорт: \(transient).") }
         if parsing > 0 { lines.append("Не удалось разобрать ответ карточки: \(parsing).") }
@@ -293,6 +267,28 @@ enum CaseImporter {
     struct Fetched {
         var seed: ImportSeed
         var card: CaseCard?
+        var higherCourtTargets: [MovementSearchTarget]? = nil
+
+        var instanceLevel: CaseInstance.Level {
+            if seed.isMaterial { return .material }
+            return MovementContext.instanceLevel(
+                cartotekaID: seed.cartoteka?.id ?? "", courtLevel: seed.level,
+                judicialUID: card?.uid,
+                lowerCourtTitle: card?.lowerCourt?.courtTitle)
+        }
+
+        /// Ранг вычисляется после загрузки карточки: только тогда районный
+        /// admj можно надёжно разделить на MS-апелляцию и RS-якорь.
+        var anchorRank: Int {
+            if seed.isMaterial { return 100 }
+            switch instanceLevel {
+            case .first: return seed.level == .magistrate ? -10 : 0
+            case .appeal: return 20
+            case .cassation: return 30
+            case .vsCassation, .supervisory: return 40
+            case .material: return 100
+            }
+        }
     }
 
     /// Готовая к записи единица импорта.
@@ -325,7 +321,7 @@ enum CaseImporter {
                                               isMaterial: f.seed.isMaterial))
         }
         for (_, members) in groups.sorted(by: { $0.key < $1.key }) {
-            let sorted = members.sorted { $0.seed.anchorRank < $1.seed.anchorRank }
+            let sorted = members.sorted { $0.anchorRank < $1.anchorRank }
             guard let anchor = sorted.first else { continue }
             if anchor.seed.isMaterial {
                 // Группа из одних материалов — дела в выгрузке нет; каждый
@@ -372,9 +368,16 @@ enum CaseImporter {
             legalForceDate: nil,
             cardURLString: seed.row.urlString)
         ctx.judicialUID = f.card?.uid
-        ctx.baseInstanceLevelRaw = seed.instanceLevel.rawValue
+        ctx.baseInstanceLevelRaw = f.instanceLevel.rawValue
         if !seed.caseID.isEmpty, !seed.caseUID.isEmpty { ctx.sourceKnownCard = knownCard(f) }
         if !known.isEmpty { ctx.knownCards = known }
+        ctx.higherCourtTargets = f.higherCourtTargets ?? seed.cartoteka.flatMap {
+            MovementTargetBuilder.targets(
+                branch: seed.branch, courtLevel: seed.level, baseCartoteka: $0,
+                caseNumber: number, judicialUID: f.card?.uid,
+                courtTitle: seed.courtTitle, courtCode: seed.courtCode,
+                region: seed.region, displayDomain: seed.displayDomain)
+        }
         return ctx
     }
 
@@ -388,7 +391,7 @@ enum CaseImporter {
                          deloID: seed.deloID,
                          new: seed.new,
                          caseNumber: f.card?.caseNumber ?? (seed.row.number.isEmpty ? nil : seed.row.number),
-                         levelRaw: seed.instanceLevel.rawValue,
+                         levelRaw: f.instanceLevel.rawValue,
                          cartotekaID: seed.cartoteka?.id)
     }
 
@@ -415,6 +418,14 @@ enum CaseImporter {
             courtCode: origin.courtCode, caseID: result.caseID ?? "",
             caseUID: result.caseUID ?? "", deloID: origin.cartoteka.deloID,
             new: origin.cartoteka.new, isMaterial: false, cartoteka: origin.cartoteka)
-        return Fetched(seed: seed, card: origin.card)
+        let targets = MovementTargetBuilder.targets(
+            branch: origin.branch, courtLevel: origin.court.level,
+            baseCartoteka: origin.cartoteka,
+            caseNumber: origin.card.caseNumber ?? result.caseNumber,
+            judicialUID: origin.card.uid, courtTitle: origin.court.title,
+            courtCode: origin.courtCode, region: origin.region,
+            displayDomain: display,
+            districtCourts: origin.districtAppealCourts.map { ($0.domain, $0.title) })
+        return Fetched(seed: seed, card: origin.card, higherCourtTargets: targets)
     }
 }

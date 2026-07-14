@@ -64,10 +64,18 @@ struct MovementContext: Codable, Equatable, Sendable {
     var cartotekaLevel: CourtLevel { CourtLevel(rawValue: cartotekaLevelRaw) ?? courtLevel }
     var baseInstanceLevel: CaseInstance.Level {
         if let raw = baseInstanceLevelRaw, let level = CaseInstance.Level(rawValue: raw) { return level }
-        return Self.instanceLevel(cartotekaID: cartotekaId, courtLevel: courtLevel)
+        return Self.instanceLevel(cartotekaID: cartotekaId, courtLevel: courtLevel,
+                                  judicialUID: judicialUID)
     }
 
-    static func instanceLevel(cartotekaID: String, courtLevel: CourtLevel) -> CaseInstance.Level {
+    static func instanceLevel(cartotekaID: String, courtLevel: CourtLevel,
+                              judicialUID: String? = nil,
+                              lowerCourtTitle: String? = nil) -> CaseInstance.Level {
+        if let level = KoAPProceduralRole.resolve(
+            courtLevel: courtLevel, cartotekaID: cartotekaID,
+            judicialUID: judicialUID, lowerCourtTitle: lowerCourtTitle).instanceLevel {
+            return level
+        }
         if cartotekaID == "m" { return .material }
         if cartotekaID == "adm" || cartotekaID == "admj" || cartotekaID.hasSuffix("1") {
             return .first
@@ -103,10 +111,18 @@ struct MovementContext: Codable, Equatable, Sendable {
 
     func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil,
                      mosgorsud: (any MosGorSudProviding)? = nil) -> MovementService {
-        MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
-                        higherCourtTargets: higherCourtTargets,
-                        knownCards: knownCards ?? [], baseInstanceLevel: baseInstanceLevel,
-                        vsrf: vsrf, mosgorsud: mosgorsud)
+        let exactTargets = higherCourtTargets ?? cartoteka.flatMap {
+            MovementTargetBuilder.targets(
+                branch: branch, courtLevel: courtLevel, baseCartoteka: $0,
+                caseNumber: caseNumber, judicialUID: judicialUID,
+                courtTitle: courtTitle, courtCode: courtCode, region: region,
+                displayDomain: displayDomain)
+        }
+        return MovementService(client: client, higherCourtDomains: expandedHigherDomains(),
+                               higherCourtTargets: exactTargets,
+                               knownCards: knownCards ?? [],
+                               baseInstanceLevel: baseInstanceLevel,
+                               vsrf: vsrf, mosgorsud: mosgorsud)
     }
 
     /// Домены вышестоящих судов с разворотом в оба синонима («vs--X» и «vs.X»):

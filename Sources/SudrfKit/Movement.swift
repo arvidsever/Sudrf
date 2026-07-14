@@ -211,6 +211,13 @@ public enum MovementDateRule: String, Sendable, Equatable, Codable {
     case always
     case before2026
     case from2026
+    /// Старое производство в президиуме суда субъекта остаётся возможным,
+    /// если акт вступил в силу до передачи полномочий КСОЮ 01.10.2019.
+    /// При неизвестной дате проверяются оба портала.
+    case koapSubjectBeforeOctober2019Possible
+    /// Жалоба могла быть подана в КСОЮ до передачи MS-цепочек обратно судам
+    /// субъектов 10.05.2026. При неизвестной дате проверяются оба портала.
+    case koapKSOYuBeforeMay2026Possible
 
     func matches(legalForceDate: String?) -> Bool {
         switch self {
@@ -220,6 +227,12 @@ public enum MovementDateRule: String, Sendable, Equatable, Codable {
             let key = MovementService.dateSortKey(legalForceDate)
             if key == Int.max { return true }
             return self == .before2026 ? key < 2026_01_01 : key >= 2026_01_01
+        case .koapSubjectBeforeOctober2019Possible:
+            let key = MovementService.dateSortKey(legalForceDate)
+            return key == Int.max || key < 2019_10_01
+        case .koapKSOYuBeforeMay2026Possible:
+            let key = MovementService.dateSortKey(legalForceDate)
+            return key == Int.max || key < 2026_05_10
         }
     }
 }
@@ -318,6 +331,14 @@ public actor MovementService: MovementProviding {
         // (параметр case_uid=…), у каждого суда он свой — для сквозного поиска
         // по инстанциям не годится.
         let uid = baseCard.uid
+        // Для КоАП фактический уровень нельзя вывести только из картотеки:
+        // районный admj с MS-УИД — апелляция, с RS-УИД — первый судебный
+        // пересмотр. Карточка является более авторитетным источником, чем
+        // legacy-контекст с ранее записанным `.first`.
+        let effectiveBaseLevel = KoAPProceduralRole.resolve(
+            courtLevel: court.level, cartotekaID: cartoteka.id,
+            judicialUID: uid, lowerCourtTitle: baseCard.lowerCourt?.courtTitle
+        ).instanceLevel ?? baseInstanceLevel
         // Вкладка «Обжалование» 1-й инстанции — авторитетный классификатор жалоб
         // (вид + даты). Парсится из уже загруженной карточки, без доп. запросов.
         let appeals = baseCard.appeals
@@ -330,16 +351,16 @@ public actor MovementService: MovementProviding {
             let date = base.decisionDate ?? base.receiptDate ?? "—"
             acts.append(CaseAct(id: actID,
                                 title: Self.actTitle(cartotekaID: cartoteka.id,
-                                                     level: baseInstanceLevel),
+                                                     level: effectiveBaseLevel),
                                 date: date,
-                                courtShort: Self.levelLabel(baseInstanceLevel),
-                                instanceLevel: baseInstanceLevel))
+                                courtShort: Self.levelLabel(effectiveBaseLevel),
+                                instanceLevel: effectiveBaseLevel))
             actBodies[actID] = actText
             baseActID = actID
         }
 
         var instances: [CaseInstance] = [CaseInstance(
-            level: baseInstanceLevel,
+            level: effectiveBaseLevel,
             court: court.title,
             caseNumber: base.caseNumber,
             judge: base.judge ?? baseCard.judge,
@@ -362,7 +383,7 @@ public actor MovementService: MovementProviding {
         //     карточка (новый № дела) под тем же УИД. Прежде искались только
         //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
         //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
-        if let uid, court.level != .magistrate, baseInstanceLevel != .material {
+        if let uid, court.level != .magistrate, effectiveBaseLevel != .material {
             let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
                                                           field: .uid, value: uid)) ?? []
             for r in sameCourtRows {
@@ -380,15 +401,15 @@ public actor MovementService: MovementProviding {
                     let date = r.decisionDate ?? r.receiptDate ?? card.decisionDate ?? "—"
                     acts.append(CaseAct(id: actID,
                                         title: Self.actTitle(cartotekaID: cartoteka.id,
-                                                             level: baseInstanceLevel),
+                                                             level: effectiveBaseLevel),
                                         date: date,
-                                        courtShort: Self.levelLabel(baseInstanceLevel),
-                                        instanceLevel: baseInstanceLevel))
+                                        courtShort: Self.levelLabel(effectiveBaseLevel),
+                                        instanceLevel: effectiveBaseLevel))
                     actBodies[actID] = actText
                     roundActID = actID
                 }
                 instances.append(CaseInstance(
-                    level: baseInstanceLevel,
+                    level: effectiveBaseLevel,
                     court: court.title,
                     caseNumber: r.caseNumber,
                     judge: r.judge ?? card.judge,
@@ -444,7 +465,8 @@ public actor MovementService: MovementProviding {
             let higherCourt = Court(domain: domain,
                                     title: target.courtTitle ?? Self.shortCourtName(forDomain: domain),
                                     level: level)
-            let cartotekaIDs = target.cartotekaIDs ?? Self.higherCartotekaIDs(baseID: cartoteka.id, level: level)
+            let cartotekaIDs = target.cartotekaIDs ?? Self.higherCartotekaIDs(
+                baseID: cartoteka.id, level: level, judicialUID: uid)
             let toTry = CartotekaRegistry.sets(for: level).filter { cartotekaIDs.contains($0.id) }
             guard !toTry.isEmpty else { continue }
 
@@ -872,9 +894,11 @@ extension MovementService {
     ///   район (1 инст) → суд субъекта (апелляция) → КСОЮ → [ВС РФ]
     ///   суд субъекта (1 инст) → АСОЮ (апелляция) → КСОЮ → [ВС РФ]
     ///   КоАП: район (adm) → субъект (adm1) → КСОЮ (adm3, вступившие);
-    ///         район (admj — жалоба на несудебное/мировое постановление)
-    ///         → субъект (adm2) → КСОЮ (adm3). АСОЮ в КоАП не участвует.
-    static func higherCartotekaIDs(baseID: String, level: CourtLevel) -> [String] {
+    ///         район (admj + RS — жалоба на несудебное постановление)
+    ///         → субъект (adm2) → КСОЮ (adm3). admj + MS уже является
+    ///         районной апелляцией и в adm2 не направляется. АСОЮ не участвует.
+    static func higherCartotekaIDs(baseID: String, level: CourtLevel,
+                                   judicialUID: String? = nil) -> [String] {
         let prefix = String(baseID.prefix(while: { $0.isLetter })).lowercased()
         // База u2/g2/p2 районного звена — апелляция на мировых судей: её акты
         // минуют суд субъекта и АСОЮ, кассация — сразу в КСОЮ.
@@ -894,7 +918,9 @@ extension MovementService {
                 // Постановление судьи 1-й инстанции по делу об АП (adm_case)
                 // обжалуется в суд субъекта по картотеке «жалобы на постановления»
                 // (adm1_case, 1502001).
-            case "admj": return ["adm2"]
+            case "admj":
+                return KoAPProceduralRole.uidCourtKind(judicialUID) == .magistrate
+                    ? [] : ["adm2"]
                 // Решение райсуда по жалобе на несудебное постановление (adm1_case)
                 // → суд субъекта по картотеке «жалобы на решения по жалобам»
                 // (adm2_case, 1513001). КСОЮ (.cassation) ниже — adm3 (вступившие).

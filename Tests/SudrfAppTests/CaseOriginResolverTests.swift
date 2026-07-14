@@ -121,15 +121,79 @@ final class CaseOriginResolverTests: XCTestCase {
         }
     }
 
-    /// Якорь «Жалобы по делам об АП» (admj, 12-…) ведёт к первой инстанции
-    /// в картотеке «adm» — и у мирового, и у районного суда.
+    /// Районный admj ведёт вниз в adm только при подтверждённом мировом судье.
+    /// Для RS-ветки сам admj является первым судебным якорем.
     func testFirstCartotekaForAdmjAnchor() throws {
-        let district = try CaseOriginResolver.firstCartoteka(
-            anchorID: "admj", lowerNumber: "5-100/2025", level: .district)
-        XCTAssertEqual(district.id, "adm")
-
         let magistrate = try CaseOriginResolver.firstCartoteka(
             anchorID: "admj", lowerNumber: "5-100/2025", level: .magistrate)
         XCTAssertEqual(magistrate.id, "adm")
+
+        XCTAssertThrowsError(try CaseOriginResolver.firstCartoteka(
+            anchorID: "admj", lowerNumber: "5-100/2025", level: .district))
+    }
+
+    func testSubjectKoAPCartotekasResolveToTheirExactDistrictOrigins() throws {
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "adm1", lowerNumber: "12-999/2025", level: .district).id, "adm")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "adm2", lowerNumber: "5-999/2025", level: .district).id, "admj")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "adm33", lowerNumber: "12-10/2018", level: .district).id, "admj")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "adm33", lowerNumber: "5-10/2026", level: .magistrate).id, "adm")
+    }
+
+    func testHistoricalAdm33RSRequiresPreOctober2019Evidence() {
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "vs--komi.sudrf.ru", displayDomain: "vs.komi.sudrf.ru",
+            courtTitle: "Верховный Суд Республики Коми", courtLevelRaw: "subject",
+            courtCode: "11", cartotekaId: "adm33", cartotekaLevelRaw: "subject",
+            caseNumber: "4а-10/2026")
+        context.judicialUID = "11RS0001-01-2026-000010-10"
+        let modern = CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                              caseNumber: context.caseNumber, receiptDate: "11.05.2026")
+        XCTAssertFalse(CaseOriginResolver.isHistoricalSubjectReview(
+            context: context, card: modern))
+
+        context.caseNumber = "4а-10/2019"
+        let historical = CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                                  caseNumber: context.caseNumber, receiptDate: "30.09.2019")
+        XCTAssertTrue(CaseOriginResolver.isHistoricalSubjectReview(
+            context: context, card: historical))
+    }
+
+    func testMSAdmjResolvesToMagistrateAdm() async throws {
+        let lower = CaseSearchResult(caseNumber: "5-100/2025", caseID: "m", caseUID: "g")
+        let lowerCard = CaseCard(rawText: "", actText: nil,
+                                 uid: "11MS0062-01-2025-000100-10",
+                                 caseNumber: "5-100/2025")
+        let provider = OriginProviderStub(numberRows: [lower], cards: ["m": lowerCard])
+        let resolver = CaseOriginResolver(
+            client: SudrfClient(), magistrateProvider: provider,
+            courtOverride: OriginCourtResolution(
+                court: Court(domain: "62.komi.msudrf.ru", title: "Судебный участок № 62",
+                             level: .magistrate),
+                branch: .general, code: "11MS0062"))
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд", courtLevelRaw: "district",
+            courtCode: "11", cartotekaId: "admj", cartotekaLevelRaw: "district",
+            caseNumber: "12-10/2025")
+        context.judicialUID = "11MS0062-01-2025-000100-10"
+        context.baseInstanceLevelRaw = CaseInstance.Level.appeal.rawValue
+        let anchor = CaseCard(
+            rawText: "", actText: nil, uid: context.judicialUID,
+            caseNumber: context.caseNumber,
+            lowerCourt: LowerCourtReference(
+                region: "11 - Республика Коми", courtTitle: "Судебный участок № 62",
+                caseNumber: "5-100/2025"))
+
+        let origin = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+
+        XCTAssertEqual(origin.court.level, .magistrate)
+        XCTAssertEqual(origin.cartoteka.id, "adm")
     }
 }

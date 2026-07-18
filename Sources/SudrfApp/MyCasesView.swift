@@ -403,7 +403,9 @@ struct MyCasesView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(c.caseNumber).font(.system(size: 12.5, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(prod.row).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(prod.color)
+                    Text(prod?.row ?? "материал")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(prod?.color ?? Color.secondary)
                 }
                 .frame(minWidth: 86, maxWidth: 150, alignment: .topLeading)
                 // Стороны · суд — стороны через «⚔»; впитывает остаток ширины

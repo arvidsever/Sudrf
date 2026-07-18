@@ -395,37 +395,4 @@ enum CaseImporter {
                          cartotekaID: seed.cartoteka?.id)
     }
 
-    /// Синтетическая строка первой инстанции, найденная по реквизитам
-    /// апелляционной/кассационной карточки. Нужна только планировщику: дальше
-    /// проходит тем же путём, что обычная строка CSV.
-    static func originFetched(_ origin: ResolvedCaseOrigin, linkedFrom source: Fetched) -> Fetched {
-        let result = origin.result
-        let display = SudrfHost.alternate(origin.court.domain) ?? origin.court.domain
-        let url = result.cardURL ?? {
-            guard let id = result.caseID, let guid = result.caseUID else { return nil }
-            return try? SudrfURLBuilder(court: origin.court).cardURL(
-                caseID: id, caseUID: guid, deloID: origin.cartoteka.deloID,
-                new: origin.cartoteka.new)
-        }()
-        let seed = ImportSeed(
-            row: ImportedRow(number: origin.card.caseNumber ?? result.caseNumber,
-                             court: origin.court.title,
-                             parties: result.essence ?? source.seed.row.parties,
-                             urlString: url?.absoluteString ?? ""),
-            searchDomain: SudrfHost.moduleHost(origin.court.domain),
-            displayDomain: display, branch: origin.branch, level: origin.court.level,
-            courtTitle: origin.court.title, region: origin.region,
-            courtCode: origin.courtCode, caseID: result.caseID ?? "",
-            caseUID: result.caseUID ?? "", deloID: origin.cartoteka.deloID,
-            new: origin.cartoteka.new, isMaterial: false, cartoteka: origin.cartoteka)
-        let targets = MovementTargetBuilder.targets(
-            branch: origin.branch, courtLevel: origin.court.level,
-            baseCartoteka: origin.cartoteka,
-            caseNumber: origin.card.caseNumber ?? result.caseNumber,
-            judicialUID: origin.card.uid, courtTitle: origin.court.title,
-            courtCode: origin.courtCode, region: origin.region,
-            displayDomain: display,
-            districtCourts: origin.districtAppealCourts.map { ($0.domain, $0.title) })
-        return Fetched(seed: seed, card: origin.card, higherCourtTargets: targets)
-    }
 }

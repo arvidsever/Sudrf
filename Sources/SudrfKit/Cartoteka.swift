@@ -127,7 +127,7 @@ public enum CartotekaRegistry {
                   uidField: "",
                   nameField: "adm_parts__NAMESS"),
         Cartoteka(id: "m", title: "Материалы",
-                  prefixes: ["3/", "4/", "13"],
+                  prefixes: ["3/", "4/", "6", "8/", "13", "13а", "14", "15", "да"],
                   deloID: "1610001", deloTable: "m_case",
                   caseNumberField: "m_case__CASE_NUMBERSS",
                   uidField: "",
@@ -161,8 +161,8 @@ public enum CartotekaRegistry {
                   caseNumberField: "g1_case__CASE_NUMBERSS",
                   uidField: "g1_case__JUDICIAL_UIDSS",
                   nameField: "G1_PARTS__NAMESS"),
-            // «М-…» — материал до принятия иска (номера выдачи вида
-            // «2-7212/2025 ~ М-5922/2025»): по «М-…» ищут в той же картотеке.
+            // «М-…»/«9-…» технически ищутся в g1, но классификатор оставляет
+            // их без производственной группы, пока нет подтверждающих данных.
         Cartoteka(id: "g2",   title: "Гражданское, апелляция на мировых судей",
                   prefixes: ["11"],
                   deloID: "5", new: "5", deloTable: "g2_case",
@@ -194,7 +194,7 @@ public enum CartotekaRegistry {
                   uidField: "adm1_case__JUDICIAL_UIDSS",
                   nameField: "adm1_parts__NAMESS"),
         Cartoteka(id: "m",    title: "Материалы",
-                  prefixes: ["3/", "4/", "13"],
+                  prefixes: ["3/", "4/", "6", "8/", "13", "13а", "14", "15", "да"],
                   deloID: "1610001", deloTable: "m_case",
                   caseNumberField: "m_case__CASE_NUMBERSS",
                   uidField: "m_case__JUDICIAL_UIDSS",

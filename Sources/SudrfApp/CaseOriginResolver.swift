@@ -1,7 +1,7 @@
 import Foundation
 import SudrfKit
 
-/// Однозначно восстановленная карточка канонической первой инстанции.
+/// Однозначно восстановленная карточка нижестоящего производства.
 struct ResolvedCaseOrigin: Sendable {
     var court: Court
     var branch: CourtBranch
@@ -10,9 +10,20 @@ struct ResolvedCaseOrigin: Sendable {
     var cartoteka: Cartoteka
     var result: CaseSearchResult
     var card: CaseCard
+    /// Карточки, пройденные между исходным якорем и канонической карточкой
+    /// (например, 22К → 3/12-материал → 7У/основное дело). Их нельзя терять:
+    /// MovementService использует точные known links для полной цепочки.
+    var intermediateCards: [ResolvedOriginCard] = []
     /// Районные суды региона для поиска необязательной апелляции на акт
     /// мирового судьи после переякоривания.
     var districtAppealCourts: [OriginTargetCourt] = []
+}
+
+struct ResolvedOriginCard: Sendable {
+    var court: Court
+    var cartoteka: Cartoteka
+    var result: CaseSearchResult
+    var card: CaseCard
 }
 
 struct OriginTargetCourt: Sendable, Equatable {
@@ -61,6 +72,9 @@ actor CaseOriginResolver {
     }
 
     func resolve(anchorContext: MovementContext, anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        if anchorContext.baseInstanceLevel == .material {
+            return try await resolveVerifiedMaterialParent(context: anchorContext, card: anchorCard)
+        }
         guard anchorContext.baseInstanceLevel == .appeal
                 || anchorContext.baseInstanceLevel == .cassation else {
             throw CaseOriginResolutionError.noReference
@@ -71,7 +85,7 @@ actor CaseOriginResolver {
             throw CaseOriginResolutionError.noReference
         }
 
-        let judicialUID = anchorCard.uid ?? anchorContext.judicialUID
+        let judicialUID = Self.nonEmpty(anchorCard.uid) ?? Self.nonEmpty(anchorContext.judicialUID)
         if anchorContext.courtLevel == .subject,
            anchorContext.cartotekaId == "adm33",
            KoAPProceduralRole.uidCourtKind(judicialUID) == .district,
@@ -84,6 +98,10 @@ actor CaseOriginResolver {
         let region = Self.cleanRegion(ref.region)
             ?? code.flatMap { CourtDirectory.subjectName(forSubjectCode: $0) }
             ?? anchorContext.region
+        // УИД сквозной для всей процессуальной цепочки. Код суда внутри него
+        // указывает место первоначального присвоения УИД, но не обязан
+        // совпадать с судом из текущей ссылки вниз. Поэтому опубликованное
+        // название нижестоящего суда всегда маршрутизирует раньше UID-кода.
         let resolved = try await resolveCourt(code: code, title: ref.courtTitle, region: region)
         let cart = try Self.firstCartoteka(anchorID: anchorContext.cartotekaId,
                                            lowerNumber: lowerNumber,
@@ -97,37 +115,43 @@ actor CaseOriginResolver {
                 rows = try await provider.search(court: resolved.court, cartoteka: cart,
                                                  field: .uid, value: judicialUID)
             } catch let error as SudrfError {
+                if case .captchaRequired = error { throw error }
                 if case .transientNetworkError = error { throw error }
                 rows = []
             }
         }
-        if rows.isEmpty {
+        // Некоторые формы игнорируют выбранную картотеку при поиске по УИД и
+        // возвращают связанную строку с другим номером. Это не «не найдено»:
+        // выполняем предусмотренный второй поиск по опубликованному точному №,
+        // а затем всё равно проверяем сквозной УИД загруженной карточки.
+        if !rows.contains(where: { Self.sameCaseNumber($0.caseNumber, lowerNumber) }) {
             rows = try await provider.search(court: resolved.court, cartoteka: cart,
                                              field: .caseNumber, value: lowerNumber)
         }
-        let exact = rows.filter { Self.sameCaseNumber($0.caseNumber, lowerNumber) }
-        guard !exact.isEmpty else { throw CaseOriginResolutionError.notFound }
+        let matched = try await uniqueMatch(rows: rows, number: lowerNumber, uid: judicialUID,
+                                            court: resolved.court, cartoteka: cart,
+                                            provider: provider)
+        var canonical = ResolvedOriginCard(court: resolved.court, cartoteka: cart,
+                                           result: matched.0, card: matched.1)
+        var intermediate: [ResolvedOriginCard] = []
 
-        var matches: [(CaseSearchResult, CaseCard)] = []
-        for row in exact {
-            let card: CaseCard
-            do {
-                card = try await fetchCard(row: row, court: resolved.court,
-                                           cartoteka: cart, provider: provider)
-            } catch let error as SudrfError {
-                if case .transientNetworkError = error { throw error }
-                continue
-            } catch {
-                continue
+        // Материал остаётся самостоятельной карточкой, кроме производства,
+        // для которого внешний УИД подтверждает родительское дело. Для 13/13а
+        // такая связь также допускается только по точному УИД, никогда по №.
+        if cart.id == "m", Self.requiresVerifiedParent(number: lowerNumber,
+                                                       courtLevel: resolved.court.level),
+           let parentCart = Self.verifiedParentCartoteka(for: lowerNumber,
+                                                         level: resolved.court.level),
+           let judicialUID, !judicialUID.isEmpty {
+            let parentRows = try await provider.search(court: resolved.court, cartoteka: parentCart,
+                                                       field: .uid, value: judicialUID)
+            if let parentMatch = try await uniqueUIDMatch(rows: parentRows, uid: judicialUID,
+                                                          court: resolved.court, cartoteka: parentCart,
+                                                          provider: provider) {
+                intermediate.append(canonical)
+                canonical = ResolvedOriginCard(court: resolved.court, cartoteka: parentCart,
+                                               result: parentMatch.0, card: parentMatch.1)
             }
-            if let judicialUID, !judicialUID.isEmpty,
-               let found = card.uid, !found.isEmpty,
-               Self.normalizedUID(found) != Self.normalizedUID(judicialUID) { continue }
-            matches.append((row, card))
-        }
-        guard matches.count == 1, let match = matches.first else {
-            throw matches.isEmpty ? CaseOriginResolutionError.notFound
-                                  : CaseOriginResolutionError.ambiguous
         }
         let districtAppealCourts: [OriginTargetCourt]
         if resolved.court.level == .magistrate {
@@ -137,15 +161,118 @@ actor CaseOriginResolver {
         } else {
             districtAppealCourts = []
         }
-        return ResolvedCaseOrigin(court: resolved.court, branch: resolved.branch,
+        return ResolvedCaseOrigin(court: canonical.court, branch: resolved.branch,
                                   region: region, courtCode: resolved.code,
-                                  cartoteka: cart, result: match.0, card: match.1,
+                                  cartoteka: canonical.cartoteka, result: canonical.result,
+                                  card: canonical.card, intermediateCards: intermediate,
                                   districtAppealCourts: districtAppealCourts)
+    }
+
+    private func resolveVerifiedMaterialParent(context: MovementContext, card: CaseCard) async throws
+        -> ResolvedCaseOrigin {
+        guard Self.requiresVerifiedParent(number: context.caseNumber, courtLevel: context.courtLevel),
+              let uid = Self.nonEmpty(card.uid) ?? Self.nonEmpty(context.judicialUID),
+              let cart = Self.verifiedParentCartoteka(for: context.caseNumber, level: context.courtLevel)
+        else { throw CaseOriginResolutionError.noReference }
+        let court = context.searchCourt
+        let provider: any CaseProviding = court.level == .magistrate ? magistrateProvider : regularProvider
+        let rows = try await provider.search(court: court, cartoteka: cart, field: .uid, value: uid)
+        guard let parent = try await uniqueUIDMatch(rows: rows, uid: uid, court: court,
+                                                    cartoteka: cart, provider: provider) else {
+            throw CaseOriginResolutionError.notFound
+        }
+        guard let materialCart = context.cartoteka else { throw CaseOriginResolutionError.noReference }
+        let material = ResolvedOriginCard(court: court, cartoteka: materialCart,
+                                          result: context.baseResult, card: card)
+        return ResolvedCaseOrigin(court: court, branch: context.branch, region: context.region,
+                                  courtCode: context.courtCode, cartoteka: cart,
+                                  result: parent.0, card: parent.1, intermediateCards: [material])
+    }
+
+    private func uniqueMatch(rows: [CaseSearchResult], number: String, uid: String?,
+                             court: Court, cartoteka: Cartoteka,
+                             provider: any CaseProviding) async throws -> (CaseSearchResult, CaseCard) {
+        let exact = rows.filter { Self.sameCaseNumber($0.caseNumber, number) }
+        guard !exact.isEmpty else { throw CaseOriginResolutionError.notFound }
+        var matches: [(CaseSearchResult, CaseCard)] = []
+        for row in exact {
+            let card: CaseCard
+            do {
+                card = try await fetchCard(row: row, court: court,
+                                           cartoteka: cartoteka, provider: provider)
+            } catch let error as SudrfError {
+                if case .captchaRequired = error { throw error }
+                if case .transientNetworkError = error { throw error }
+                continue
+            } catch {
+                continue
+            }
+            if let uid = Self.nonEmpty(uid) {
+                guard let found = Self.nonEmpty(card.uid),
+                      Self.normalizedUID(found) == Self.normalizedUID(uid) else { continue }
+            }
+            matches.append((row, card))
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw matches.isEmpty ? CaseOriginResolutionError.notFound
+                                  : CaseOriginResolutionError.ambiguous
+        }
+        return match
+    }
+
+    private func uniqueUIDMatch(rows: [CaseSearchResult], uid: String, court: Court,
+                                cartoteka: Cartoteka,
+                                provider: any CaseProviding) async throws -> (CaseSearchResult, CaseCard)? {
+        var matches: [(CaseSearchResult, CaseCard)] = []
+        for row in rows {
+            do {
+                let card = try await fetchCard(row: row, court: court, cartoteka: cartoteka,
+                                               provider: provider)
+                guard let found = card.uid, !found.isEmpty,
+                      Self.normalizedUID(found) == Self.normalizedUID(uid) else { continue }
+                matches.append((row, card))
+            } catch let error as SudrfError {
+                if case .captchaRequired = error { throw error }
+                if case .transientNetworkError = error { throw error }
+            } catch { continue }
+        }
+        if matches.count > 1 { throw CaseOriginResolutionError.ambiguous }
+        return matches.first
     }
 
     private func resolveCourt(code: String?, title: String?, region: String) async throws
         -> OriginCourtResolution {
         if let courtOverride { return courtOverride }
+
+        // Официальная вкладка «Рассмотрение в нижестоящем суде» — основной
+        // источник маршрута. В справочнике портал часто дописывает субъект
+        // («… Республики Коми»), которого нет в карточке вышестоящего суда.
+        if let title, !title.isEmpty {
+            let normalized = title.lowercased().replacingOccurrences(of: "ё", with: "е")
+            let isMagistrateTitle = normalized.contains("судебн") && normalized.contains("участ")
+                || normalized.contains("миров") && normalized.contains("суд")
+            if isMagistrateTitle {
+                let matches = try await magistrateResolver.courts(forRegion: region)
+                    .filter { Self.sameCourtTitle($0.title, title, region: region) && $0.isSupported }
+                if matches.count > 1 { throw CaseOriginResolutionError.ambiguous }
+                if let found = matches.first {
+                    return OriginCourtResolution(court: found.court, branch: .general,
+                                                 code: found.code)
+                }
+            } else {
+                let matches = try await districtResolver.allCourts(forRegion: region)
+                    .filter { Self.sameCourtTitle($0.title, title, region: region) }
+                if matches.count > 1 { throw CaseOriginResolutionError.ambiguous }
+                if let found = matches.first {
+                    return OriginCourtResolution(
+                        court: Court(domain: SudrfHost.moduleHost(found.domain), title: found.title,
+                                     level: found.kind == .subject ? .subject : .district),
+                        branch: found.kind == .military ? .military : .general, code: found.code)
+                }
+            }
+        }
+
+        // Запасной маршрут для карточек, где название суда не опубликовано.
         if let code {
             let kind = CourtKind(classificationCode: code)
             switch kind {
@@ -177,24 +304,6 @@ actor CaseOriginResolver {
             }
         }
 
-        // УИД может отсутствовать в карточке КСОЮ. Тогда допускается только
-        // единственное точное совпадение нормализованного названия в регионе.
-        if let title, !title.isEmpty {
-            let district = try await districtResolver.allCourts(forRegion: region)
-                .filter { Self.normalizedTitle($0.title) == Self.normalizedTitle(title) }
-            if district.count == 1, let found = district.first {
-                return OriginCourtResolution(
-                    court: Court(domain: SudrfHost.moduleHost(found.domain), title: found.title,
-                                 level: found.kind == .subject ? .subject : .district),
-                    branch: found.kind == .military ? .military : .general, code: found.code)
-            }
-            let magistrates = try await magistrateResolver.courts(forRegion: region)
-                .filter { Self.normalizedTitle($0.title) == Self.normalizedTitle(title) && $0.isSupported }
-            if magistrates.count == 1, let found = magistrates.first {
-                return OriginCourtResolution(court: found.court, branch: .general,
-                                             code: found.code)
-            }
-        }
         throw CaseOriginResolutionError.unsupportedCourt
     }
 
@@ -212,6 +321,17 @@ actor CaseOriginResolver {
                                level: CourtLevel) throws -> Cartoteka {
         let anchorID = anchorID.lowercased()
         let prefix = String(anchorID.prefix(while: { $0.isLetter }))
+
+        // Номер из вкладки нижестоящего суда — единственный достоверный
+        // указатель стадии. Нельзя всегда сводить его к первой инстанции:
+        // 3/12-… и 13-… живут в «Материалах», 11-… — районная апелляция,
+        // а 22К-/33-… — апелляционные картотеки суда субъекта.
+        // КоАП-картотеки `adm*` кодируют процессуальную роль якоря, а не
+        // только индекс нижестоящего номера, поэтому для них ниже остаётся
+        // специальная маршрутизация.
+        let matched = anchorID.hasPrefix("adm")
+            ? [] : CartotekaRegistry.matches(caseNumber: lowerNumber, level: level)
+        if matched.count == 1, let cart = matched.first { return cart }
         let id: String
         switch anchorID {
         case "adm1":
@@ -264,8 +384,29 @@ actor CaseOriginResolver {
         KoAPProceduralRole.classificationCode(from: uid)
     }
 
+    static func requiresVerifiedParent(number: String, courtLevel: CourtLevel) -> Bool {
+        if let info = CaseIndexClassifier.classify(caseNumber: number, courtLevel: courtLevel),
+           info.materialLinkPolicy == .requiresVerifiedParent { return true }
+        let index = CaseIndexClassifier.normalizedIndex(from: number)
+        return index == "13" || index == "13а"
+    }
+
+    static func verifiedParentCartoteka(for number: String, level: CourtLevel) -> Cartoteka? {
+        switch CaseIndexClassifier.normalizedIndex(from: number) {
+        case "13": return CartotekaRegistry.find(level: level, id: "g1")
+        case "13а": return CartotekaRegistry.find(level: level, id: "p1")
+        default: return nil
+        }
+    }
+
     static func normalizedUID(_ uid: String) -> String {
         uid.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
     }
 
     static func sameCaseNumber(_ lhs: String, _ rhs: String) -> Bool {
@@ -277,6 +418,49 @@ actor CaseOriginResolver {
     static func normalizedTitle(_ title: String) -> String {
         title.lowercased().replacingOccurrences(of: "ё", with: "е")
             .filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// Сравнение названий внутри уже выбранного региона. Разрешает только
+    /// территориальное окончание полного справочного названия; похожие номера
+    /// участков и разные суды по префиксу совпавшими не считаются.
+    static func sameCourtTitle(_ lhs: String, _ rhs: String, region: String) -> Bool {
+        let left = titleWords(lhs)
+        let right = titleWords(rhs)
+        if left == right { return true }
+        let short: [String]
+        let long: [String]
+        if left.count < right.count { short = left; long = right }
+        else { short = right; long = left }
+        guard !short.isEmpty, Array(long.prefix(short.count)) == short else { return false }
+
+        let genericTerritoryWords: Set<String> = [
+            "республика", "республики", "область", "области", "край", "края",
+            "автономный", "автономного", "автономная", "автономной", "округ", "округа",
+            "город", "города", "федерального", "значения"
+        ]
+        let regionCore = Set(titleWords(region)
+            .filter { !genericTerritoryWords.contains($0) }
+            .map(regionWordStem))
+        let suffixCore = long.dropFirst(short.count)
+            .filter { !genericTerritoryWords.contains($0) }
+            .map(regionWordStem)
+        return !suffixCore.isEmpty && suffixCore.allSatisfy { regionCore.contains($0) }
+    }
+
+    private static func titleWords(_ value: String) -> [String] {
+        value.lowercased().replacingOccurrences(of: "ё", with: "е")
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func regionWordStem(_ word: String) -> String {
+        for suffix in ["ского", "ской", "ская", "ский"] where word.count > suffix.count + 3 {
+            if word.hasSuffix(suffix) { return String(word.dropLast(suffix.count)) }
+        }
+        if word.count > 7, let last = word.last, last == "а" || last == "я" {
+            return String(word.dropLast())
+        }
+        return word
     }
 
     static func cleanRegion(_ raw: String?) -> String? {

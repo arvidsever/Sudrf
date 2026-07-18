@@ -52,6 +52,33 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(ProductionType(cartotekaId: "admj"), .koap)
     }
 
+    func testMaterialProductionUsesIndexClassifier() {
+        XCTAssertEqual(ProductionType.classified(
+            caseNumber: "3/12-31/2026", level: .district,
+            branch: .general, cartotekaID: "m"), .crim)
+        XCTAssertEqual(ProductionType.classified(
+            caseNumber: "13-128/2025", level: .district,
+            branch: .general, cartotekaID: "m"), .civil)
+        XCTAssertEqual(ProductionType.classified(
+            caseNumber: "13а-8/2025", level: .district,
+            branch: .general, cartotekaID: "m"), .kas)
+        XCTAssertEqual(ProductionType.classified(
+            caseNumber: "ДА-4/2026", level: .district,
+            branch: .military, cartotekaID: "m"), .koap)
+    }
+
+    func testUnknownMaterialsHaveNoProductionGroup() {
+        XCTAssertNil(ProductionType.classified(
+            caseNumber: "М-12/2026", level: .district,
+            branch: .general, cartotekaID: "m"))
+        XCTAssertNil(ProductionType.classified(
+            caseNumber: "15-12/2026", level: .district,
+            branch: .general, cartotekaID: "m"))
+        XCTAssertNil(ProductionType.classified(
+            caseNumber: "XYZ-12/2026", level: .district,
+            branch: .general, cartotekaID: "m"))
+    }
+
     // MARK: Стороны через «⚔»
 
     func testPartiesShortUsesCrossedSwords() {

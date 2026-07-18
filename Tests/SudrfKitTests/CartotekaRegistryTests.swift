@@ -56,7 +56,8 @@ final class CartotekaRegistryTests: XCTestCase {
         XCTAssertEqual(single("1-15/2026", .district), "u1")
         XCTAssertEqual(single("10-3/2026", .district), "u2")     // не «1-»!
         XCTAssertEqual(single("2-7212/2025 ~ М-5922/2025", .district), "g1")
-        XCTAssertEqual(single("М-5922/2025", .district), "g1")   // материал до принятия
+        XCTAssertEqual(single("М-5922/2025", .district), "g1")
+        XCTAssertEqual(single("9-5922/2025", .district), "g1")
         XCTAssertEqual(single("11-44/2026", .district), "g2")
         XCTAssertEqual(single("2а-3021/2023", .district), "p1")
         XCTAssertEqual(single("11а-12/2026", .district), "p2")   // не «11-» и не «1-»
@@ -64,7 +65,13 @@ final class CartotekaRegistryTests: XCTestCase {
         XCTAssertEqual(single("12-150/2025", .district), "admj")
         XCTAssertEqual(single("3/1-44/2026", .district), "m")
         XCTAssertEqual(single("4/17-9/2026", .district), "m")
+        XCTAssertEqual(single("6-9/2026", .district), "m")
+        XCTAssertEqual(single("8/2-9/2026", .district), "m")
         XCTAssertEqual(single("13-21/2026", .district), "m")
+        XCTAssertEqual(single("13а-21/2026", .district), "m")  // longest-prefix: не «13»
+        XCTAssertEqual(single("14-21/2026", .district), "m")
+        XCTAssertEqual(single("15-21/2026", .district), "m")
+        XCTAssertEqual(single("ДА-21/2026", .district), "m")
     }
 
     func testSubjectPrefixMatching() {

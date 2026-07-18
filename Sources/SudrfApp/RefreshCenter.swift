@@ -19,11 +19,20 @@ import CaptchaSolver
 
 struct CaptchaPendingGroup: Equatable, Identifiable {
     var host: String
-    var keys: [String]
-    var caseNumbers: [String]
+    var requests: [CaptchaPendingRequest]
 
     var id: String { host }
-    var count: Int { keys.count }
+    var count: Int { requests.count }
+    var keys: [String] { requests.map(\.key) }
+    var caseNumbers: [String] { requests.map(\.caseNumber) }
+}
+
+struct CaptchaPendingRequest: Equatable, Identifiable {
+    var key: String
+    var caseNumber: String
+    var formURL: URL
+
+    var id: String { key }
 }
 
 struct CaptchaPendingQueue: Equatable {
@@ -42,24 +51,25 @@ struct CaptchaPendingQueue: Equatable {
         return groupsByHost[Self.normalizedHost(host)]
     }
 
-    mutating func add(key: String, caseNumber: String, host rawHost: String) {
+    func request(forKey key: String) -> CaptchaPendingRequest? {
+        groupsByHost.values.lazy.flatMap(\.requests).first { $0.key == key }
+    }
+
+    mutating func add(key: String, caseNumber: String, formURL: URL) {
         remove(key: key)
-        let host = Self.normalizedHost(rawHost)
-        var group = groupsByHost[host] ?? CaptchaPendingGroup(host: host, keys: [], caseNumbers: [])
-        group.keys.append(key)
-        group.caseNumbers.append(caseNumber)
+        let host = Self.normalizedHost(formURL.host ?? "")
+        var group = groupsByHost[host] ?? CaptchaPendingGroup(host: host, requests: [])
+        group.requests.append(CaptchaPendingRequest(
+            key: key, caseNumber: caseNumber, formURL: formURL))
         groupsByHost[host] = group
     }
 
     mutating func remove(key: String) {
         for host in groupsByHost.keys {
             guard var group = groupsByHost[host],
-                  let index = group.keys.firstIndex(of: key) else { continue }
-            group.keys.remove(at: index)
-            if group.caseNumbers.indices.contains(index) {
-                group.caseNumbers.remove(at: index)
-            }
-            groupsByHost[host] = group.keys.isEmpty ? nil : group
+                  let index = group.requests.firstIndex(where: { $0.key == key }) else { continue }
+            group.requests.remove(at: index)
+            groupsByHost[host] = group.requests.isEmpty ? nil : group
             return
         }
     }
@@ -153,6 +163,11 @@ final class RefreshCenter: ObservableObject {
 
     func captchaPendingCaseNumbers(forHost host: String?, limit: Int = 4) -> [String] {
         Array((captchaPending.group(forHost: host)?.caseNumbers ?? []).prefix(limit))
+    }
+
+    func captchaPendingRequest(forKey key: String?) -> CaptchaPendingRequest? {
+        guard let key else { return nil }
+        return captchaPending.request(forKey: key)
     }
 
     func retryPendingCaptcha(host: String) {
@@ -360,9 +375,8 @@ final class RefreshCenter: ObservableObject {
     }
 
     private func queueCaptcha(key: String, formURL: URL) {
-        guard let host = formURL.host,
-              let rec = store.record(forKey: key) else { return }
-        captchaPending.add(key: key, caseNumber: rec.caseNumber, host: host)
+        guard formURL.host != nil, let rec = store.record(forKey: key) else { return }
+        captchaPending.add(key: key, caseNumber: rec.caseNumber, formURL: formURL)
     }
 
     private func fail(_ key: String, _ text: String) {

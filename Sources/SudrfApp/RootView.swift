@@ -119,6 +119,28 @@ private struct ImportSheet: View {
                     Text(summary.text)
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !summary.captchaGroups.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Код с картинки")
+                                .font(.system(size: 12, weight: .semibold))
+                            ForEach(summary.captchaGroups) { group in
+                                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(group.courtTitle)
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text("\(group.count) \(group.count == 1 ? "карточка" : "карточки") · \(group.caseNumbers.prefix(3).joined(separator: ", "))")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Button("Ввести код") { router.beginRepairCaptcha(group) }
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+                    }
                     HStack {
                         Spacer()
                         Button("Готово") { router.dismissRepairSummary() }
@@ -130,6 +152,15 @@ private struct ImportSheet: View {
         }
         .padding(20)
         .frame(width: 440)
+        // Вложенный лист нужен именно поверх отчёта ремонта: верхний RootView
+        // уже показывает этот отчёт как sheet.
+        .sheet(item: $router.captcha) { ctx in
+            CaptchaAssistSheet(context: ctx,
+                               onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
+                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
+                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
+                               onCancel: { router.cancelCaptcha() })
+        }
     }
 }
 
@@ -192,7 +223,7 @@ private struct CaseCardHost: View {
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
                                onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
                                onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
-                               onCancel: { router.captcha = nil })
+                               onCancel: { router.cancelCaptcha() })
         }
     }
 
@@ -213,14 +244,29 @@ private struct CaseCardHost: View {
                     lastUpdated: router.movementFetchedAt,
                     isRefreshing: router.isRefreshingOpenCase,
                     refreshNote: router.refreshNote,
-                    onRefresh: { router.refreshOpenCase() })
+                    onRefresh: { router.refreshOpenCase() },
+                    hasPendingRefreshCaptcha: router.openCaseCaptchaRequest != nil,
+                    onSolvePendingRefreshCaptcha: { router.beginOpenCaseCaptcha() })
                     .frame(maxWidth: .infinity)
                 if !mv.acts.isEmpty {
                     LiveActsPane().frame(width: 400)
                 }
             }
         } else if let err = router.movementError {
-            CenterNote(title: "Не удалось загрузить карточку", caption: err)
+            VStack(spacing: 12) {
+                Text("Не удалось загрузить карточку")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(err).font(.caption).foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                if router.openCaseCaptchaRequest != nil {
+                    Button("Ввести код") { router.beginOpenCaseCaptcha() }
+                        .buttonStyle(.glassProminent).controlSize(.regular)
+                }
+            }
+            .frame(maxWidth: 420)
+            .padding(30)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             CenterNote(title: "Нет данных о движении дела",
                        caption: "Карточки инстанций по этому делу не найдены либо дело не обжаловалось.")

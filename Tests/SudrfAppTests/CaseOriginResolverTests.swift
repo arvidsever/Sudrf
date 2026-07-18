@@ -6,13 +6,20 @@ private actor OriginProviderStub: CaseProviding {
     var uidRows: [CaseSearchResult]
     var numberRows: [CaseSearchResult]
     var cards: [String: CaseCard]
+    var rowsByCartAndValue: [String: [CaseSearchResult]]
     var throwTransientOnUID: Bool
+    var captchaOnUIDURL: URL?
+    var captchaOnCardURL: URL?
     private(set) var fields: [SearchField] = []
 
     init(uidRows: [CaseSearchResult] = [], numberRows: [CaseSearchResult],
-         cards: [String: CaseCard], throwTransientOnUID: Bool = false) {
+         cards: [String: CaseCard], rowsByCartAndValue: [String: [CaseSearchResult]] = [:],
+         throwTransientOnUID: Bool = false, captchaOnUIDURL: URL? = nil,
+         captchaOnCardURL: URL? = nil) {
         self.uidRows = uidRows; self.numberRows = numberRows
-        self.cards = cards; self.throwTransientOnUID = throwTransientOnUID
+        self.cards = cards; self.rowsByCartAndValue = rowsByCartAndValue
+        self.throwTransientOnUID = throwTransientOnUID; self.captchaOnUIDURL = captchaOnUIDURL
+        self.captchaOnCardURL = captchaOnCardURL
     }
 
     func search(court: Court, cartoteka: Cartoteka,
@@ -22,11 +29,15 @@ private actor OriginProviderStub: CaseProviding {
             throw SudrfError.transientNetworkError(domain: court.domain,
                                                     code: .timedOut, attempt: 3)
         }
-        return field == .uid ? uidRows : numberRows
+        if field == .uid, let captchaOnUIDURL {
+            throw SudrfError.captchaRequired(formURL: captchaOnUIDURL)
+        }
+        return rowsByCartAndValue["\(cartoteka.id)|\(value)"] ?? (field == .uid ? uidRows : numberRows)
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard {
+        if let captchaOnCardURL { throw SudrfError.captchaRequired(formURL: captchaOnCardURL) }
         guard let card = cards[caseID] else { throw SudrfError.http(status: 404) }
         return card
     }
@@ -87,6 +98,32 @@ final class CaseOriginResolverTests: XCTestCase {
         XCTAssertEqual(fields, [.caseNumber])
     }
 
+    func testUIDRowsWithDifferentNumberFallBackToExactNumberSearch() async throws {
+        let noise = CaseSearchResult(caseNumber: "2-999/2026",
+                                     caseID: "noise", caseUID: "noise-guid")
+        let exact = CaseSearchResult(caseNumber: "13-98/2026",
+                                     caseID: "exact", caseUID: "exact-guid")
+        let provider = OriginProviderStub(
+            uidRows: [noise], numberRows: [exact],
+            cards: ["exact": CaseCard(rawText: "", actText: nil, uid: uid,
+                                       caseNumber: exact.caseNumber)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        var (context, card) = anchor(uid: uid)
+        context.caseNumber = "33-14101/2026"
+        card.caseNumber = context.caseNumber
+        card.lowerCourt = LowerCourtReference(
+            region: "Город Санкт-Петербург",
+            courtTitle: "Василеостровский районный суд",
+            caseNumber: exact.caseNumber)
+
+        let result = try await resolver.resolve(anchorContext: context, anchorCard: card)
+        let fields = await provider.fields
+
+        XCTAssertEqual(result.result.caseNumber, exact.caseNumber)
+        XCTAssertEqual(fields, [.uid, .caseNumber, .uid])
+    }
+
     func testTwoExactCardsAreAmbiguous() async throws {
         let a = CaseSearchResult(caseNumber: "2-7212/2025", caseID: "a", caseUID: "ga")
         let b = CaseSearchResult(caseNumber: "2-7212/2025", caseID: "b", caseUID: "gb")
@@ -121,6 +158,65 @@ final class CaseOriginResolverTests: XCTestCase {
         }
     }
 
+    func testUIDSearchCaptchaIsPropagatedForRetry() async throws {
+        let formURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo")!
+        let provider = OriginProviderStub(numberRows: [], cards: [:],
+                                          captchaOnUIDURL: formURL)
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = anchor(uid: uid)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: card)
+            XCTFail("captcha must be returned to the repair coordinator")
+        } catch let error as SudrfError {
+            guard case .captchaRequired(let receivedURL) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(receivedURL, formURL)
+        }
+    }
+
+    func testExactCardFetchCaptchaIsPropagatedForRetry() async throws {
+        let formURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo")!
+        let exact = CaseSearchResult(caseNumber: "2-7212/2025",
+                                     caseID: "exact", caseUID: "guid")
+        let provider = OriginProviderStub(uidRows: [exact], numberRows: [], cards: [:],
+                                          captchaOnCardURL: formURL)
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = anchor(uid: uid)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: card)
+            XCTFail("card captcha must be returned to the repair coordinator")
+        } catch let error as SudrfError {
+            guard case .captchaRequired(let receivedURL) = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(receivedURL, formURL)
+        }
+    }
+
+    func testExpectedUIDRejectsExactNumberCardWithoutPublishedUID() async throws {
+        let exact = CaseSearchResult(caseNumber: "2-7212/2025",
+                                     caseID: "exact", caseUID: "guid")
+        let provider = OriginProviderStub(
+            uidRows: [exact], numberRows: [],
+            cards: ["exact": CaseCard(rawText: "", actText: nil,
+                                       caseNumber: exact.caseNumber)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = anchor(uid: uid)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: card)
+            XCTFail("a number-only card must not satisfy an expected exact UID")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
     /// Районный admj ведёт вниз в adm только при подтверждённом мировом судье.
     /// Для RS-ветки сам admj является первым судебным якорем.
     func testFirstCartotekaForAdmjAnchor() throws {
@@ -141,6 +237,110 @@ final class CaseOriginResolverTests: XCTestCase {
             anchorID: "adm33", lowerNumber: "12-10/2018", level: .district).id, "admj")
         XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
             anchorID: "adm33", lowerNumber: "5-10/2026", level: .magistrate).id, "adm")
+    }
+
+    func testLowerNumberChoosesActualMaterialAndAppealCartotekas() throws {
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "g2", lowerNumber: "13-14/2026", level: .district).id, "m")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "u3", lowerNumber: "22К-7/2026", level: .subject).id, "u2")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "g3", lowerNumber: "33-7/2026", level: .subject).id, "g2")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "g3", lowerNumber: "11-7/2026", level: .district).id, "g2")
+    }
+
+    func testCourtTitleMatchesOnlyRegionalSuffix() {
+        XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
+            "Сыктывкарский городской суд Республики Коми",
+            "Сыктывкарский городской суд",
+            region: "Республика Коми"))
+        XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
+            "Василеостровский районный суд",
+            "Василеостровский районный суд",
+            region: "Город Санкт-Петербург"))
+        XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
+            "Условный районный суд Московской области",
+            "Условный районный суд",
+            region: "Московская область"))
+        XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
+            "Условный районный суд города Санкт-Петербурга",
+            "Условный районный суд",
+            region: "Город Санкт-Петербург"))
+        XCTAssertFalse(CaseOriginResolver.sameCourtTitle(
+            "Судебный участок № 10",
+            "Судебный участок № 1",
+            region: "Республика Коми"))
+        XCTAssertFalse(CaseOriginResolver.sameCourtTitle(
+            "Сыктывдинский районный суд Республики Коми",
+            "Сыктывкарский городской суд",
+            region: "Республика Коми"))
+    }
+
+    func test22KToStandaloneJudicialControlMaterialKeepsMaterialOrigin() async throws {
+        let material = CaseSearchResult(caseNumber: "3/12-4/2026", caseID: "m", caseUID: "gm")
+        let provider = OriginProviderStub(uidRows: [material], numberRows: [],
+            cards: ["m": CaseCard(rawText: "", actText: nil, uid: uid,
+                                  caseNumber: material.caseNumber)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        var context = anchor(uid: uid).0
+        context.cartotekaId = "u2"; context.caseNumber = "22К-1/2026"
+        context.baseInstanceLevelRaw = CaseInstance.Level.appeal.rawValue
+        let card = CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: context.caseNumber,
+                            lowerCourt: LowerCourtReference(courtTitle: courtOverride.court.title,
+                                                            caseNumber: material.caseNumber))
+        let origin = try await resolver.resolve(anchorContext: context, anchorCard: card)
+        XCTAssertEqual(origin.cartoteka.id, "m")
+        XCTAssertTrue(origin.intermediateCards.isEmpty)
+    }
+
+    func test33To13UsesVerifiedUIDParentAndRetainsMaterialIntermediate() async throws {
+        let material = CaseSearchResult(caseNumber: "13-4/2026", caseID: "m", caseUID: "gm")
+        let parent = CaseSearchResult(caseNumber: "2-7/2025", caseID: "p", caseUID: "gp")
+        let provider = OriginProviderStub(uidRows: [material], numberRows: [],
+            cards: ["m": CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: material.caseNumber,
+                                  lowerCourt: nil),
+                    "p": CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: parent.caseNumber)],
+            rowsByCartAndValue: ["m|\(uid)": [material], "g1|\(uid)": [parent]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        var context = anchor(uid: uid).0
+        context.cartotekaId = "g2"; context.caseNumber = "33-1/2026"
+        let card = CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: context.caseNumber,
+                            lowerCourt: LowerCourtReference(courtTitle: courtOverride.court.title,
+                                                            caseNumber: material.caseNumber))
+        let origin = try await resolver.resolve(anchorContext: context, anchorCard: card)
+        XCTAssertEqual(origin.cartoteka.id, "g1")
+        XCTAssertEqual(origin.card.caseNumber, parent.caseNumber)
+        XCTAssertEqual(origin.intermediateCards.map(\.card.caseNumber), [material.caseNumber])
+    }
+
+    func testSaved13MaterialRestoresParentDirectlyByExactUID() async throws {
+        let parent = CaseSearchResult(caseNumber: "2-2384/2024", caseID: "p", caseUID: "gp")
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["p": CaseCard(rawText: "", actText: nil, uid: uid,
+                                   caseNumber: parent.caseNumber)],
+            rowsByCartAndValue: ["g1|\(uid)": [parent]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд", courtLevelRaw: "district",
+            courtCode: "11RS0001", cartotekaId: "m", cartotekaLevelRaw: "district",
+            caseNumber: "13-128/2025", caseID: "m", caseUID: "gm")
+        context.judicialUID = uid
+        context.baseInstanceLevelRaw = CaseInstance.Level.material.rawValue
+        let material = CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: context.caseNumber)
+
+        let origin = try await resolver.resolve(anchorContext: context, anchorCard: material)
+
+        XCTAssertEqual(origin.cartoteka.id, "g1")
+        XCTAssertEqual(origin.card.caseNumber, parent.caseNumber)
+        XCTAssertEqual(origin.intermediateCards.map(\.card.caseNumber), [context.caseNumber])
     }
 
     func testHistoricalAdm33RSRequiresPreOctober2019Evidence() {

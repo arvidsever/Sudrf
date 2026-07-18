@@ -108,6 +108,37 @@ enum ProductionType: String, CaseIterable {
         }
     }
 
+    /// Безопасная классификация для «Моих дел». Картотека является главным
+    /// источником, кроме общей картотеки материалов `m`: внутри неё отрасль
+    /// определяется индексом, а неопределённые `М`, `15` и неизвестные номера
+    /// намеренно остаются без производственной группы.
+    static func classified(caseNumber: String, level: CourtLevel,
+                           branch: CourtBranch, cartotekaID: String?) -> ProductionType? {
+        let info = CaseIndexClassifier.classify(
+            caseNumber: caseNumber, courtLevel: level, branch: branch)
+        if info?.processKind == nil,
+           info?.cardRole == .preliminaryIntakeMaterial
+            || info?.cardRole == .otherMaterial {
+            return nil
+        }
+        if cartotekaID == "m" {
+            return info?.processKind.flatMap(ProductionType.init(processKind:))
+        }
+        if let cartotekaID, !cartotekaID.isEmpty {
+            return ProductionType(cartotekaId: cartotekaID)
+        }
+        return info?.processKind.flatMap(ProductionType.init(processKind:))
+    }
+
+    private init?(processKind: ProcessKind) {
+        switch processKind {
+        case .upk: self = .crim
+        case .koap: self = .koap
+        case .administrative: self = .kas
+        case .civil, .special: self = .civil
+        }
+    }
+
     /// Название группы/фильтра (сайдбар, группировка «По производствам»).
     var side: String {
         switch self {
@@ -303,7 +334,7 @@ struct TrackedCase: Identifiable {
     var court: String
     /// Вид производства, вычисленный при сборке строки с учётом звена суда
     /// (см. `productionType(for:)`). Читатели фильтров/счётчиков берут готовое.
-    var production: ProductionType
+    var production: ProductionType?
     var partiesShort: String
     /// Статьи подсудимого/привлекаемого — для строки «Списком» (ФИО ⟨щит⟩ статьи).
     var leadCharges: String?
@@ -385,9 +416,11 @@ final class AppRouter: ObservableObject {
     private let store = TrackedStore()
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
-    private let originResolver: CaseOriginResolver
     private let repairCoordinator: TrackedCaseRepairCoordinator
     @Published var repairSummary: CaseRepairSummary? = nil
+    /// Hosts, для которых captcha была открыта именно из отчёта ремонта.
+    /// Это отличает успешный ввод от обычной заглушки движения дела.
+    private var repairCaptchaHosts = Set<String>()
     /// Авто-солвер капчи для интерактивного пути `beginCaptcha(for:)`
     /// (per-instance заглушки в `CaseMovementView`). Создаётся здесь,
     /// чтобы `SearchModel` и `AppRouter` могли иметь разные инстансы
@@ -406,6 +439,10 @@ final class AppRouter: ObservableObject {
 
     var isRefreshingOpenCase: Bool {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
+    }
+
+    var openCaseCaptchaRequest: CaptchaPendingRequest? {
+        refreshCenter.captchaPendingRequest(forKey: openedKey)
     }
 
     init(captchaSettings: CaptchaSettings = .shared) {
@@ -447,9 +484,9 @@ final class AppRouter: ObservableObject {
         self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings
         let originResolver = CaseOriginResolver(client: client)
-        self.originResolver = originResolver
         self.repairCoordinator = TrackedCaseRepairCoordinator(
-            store: store, client: client, originResolver: originResolver)
+            store: store, client: client, originResolver: originResolver,
+            captchaSolver: configuredSolver, captchaSettings: captchaSettings)
         refreshCenter = RefreshCenter(store: store, client: client,
                                        captchaSolver: configuredSolver,
                                        captchaSettings: captchaSettings)
@@ -704,6 +741,27 @@ final class AppRouter: ObservableObject {
 
     func dismissRepairSummary() { repairSummary = nil }
 
+    /// Открывает одну форму на группу: токен привязан к host и разблокирует
+    /// все карточки этой группы, а не только первую в отчёте.
+    func beginRepairCaptcha(_ group: RepairCaptchaGroup) {
+        guard let formURL = group.formURL else { return }
+        repairCaptchaHosts.insert(group.host)
+        captcha = SearchModel.CaptchaContext(
+            formURL: formURL, uid: "", instanceID: group.id, level: .first,
+            courtTitle: group.courtTitle,
+            kind: SudrfHost.isMSudrfHost(group.host) ? .kcaptcha : .sudrfToken,
+            caseNumber: group.caseNumbers.first,
+            pendingCaseCount: group.count,
+            pendingCaseNumbers: group.caseNumbers)
+    }
+
+    func cancelCaptcha() {
+        if let host = captcha?.formURL.host.map(SudrfHost.moduleHost) {
+            repairCaptchaHosts.remove(host)
+        }
+        captcha = nil
+    }
+
     private func applyRepair(_ summary: CaseRepairSummary, presentReport: Bool = true) {
         guard summary.hasReport else { reload(); return }
         func remap(_ ids: Set<String>) -> Set<String> {
@@ -764,48 +822,6 @@ final class AppRouter: ObservableObject {
             importState = .running(done: i + 1, total: seeds.count)
         }
 
-        // Если в UID-группе нет первой инстанции, пробуем восстановить её по
-        // вкладке нижестоящего суда до построения плана.
-        var recoveredDown = 0
-        var ambiguous = 0
-        var unresolvedNumbers: [String] = []
-        let originalCount = fetched.count
-        for i in 0..<originalCount {
-            guard let card = fetched[i].card,
-                  fetched[i].instanceLevel == .appeal
-                    || fetched[i].instanceLevel == .cassation else { continue }
-            let uid = card.uid
-            let alreadyHasFirst = fetched.contains { other in
-                guard other.instanceLevel == .first else { return false }
-                if let uid, !uid.isEmpty,
-                   let otherUID = other.card?.uid, !otherUID.isEmpty {
-                    return TrackedStore.normalizedUID(otherUID)
-                        == TrackedStore.normalizedUID(uid)
-                }
-                guard let lower = card.lowerCourt?.caseNumber else { return false }
-                return CaseOriginResolver.sameCaseNumber(
-                    other.card?.caseNumber ?? other.seed.row.number, lower)
-            }
-            if alreadyHasFirst { continue }
-            let anchor = CaseImporter.makeContext(fetched[i], known: [])
-            do {
-                let origin = try await originResolver.resolve(anchorContext: anchor, anchorCard: card)
-                if fetched[i].card?.uid?.isEmpty != false {
-                    fetched[i].card?.uid = origin.card.uid
-                }
-                fetched.append(CaseImporter.originFetched(origin, linkedFrom: fetched[i]))
-                recoveredDown += 1
-            } catch is CaseOriginResolutionError {
-                ambiguous += 1
-                unresolvedNumbers.append(anchor.caseNumber)
-            } catch let error as SudrfError {
-                if case .transientNetworkError = error { transient += 1 }
-                else { parsing += 1 }
-            } catch {
-                transient += 1
-            }
-        }
-
         guard generation == importGeneration, !Task.isCancelled else { return }
         let plan = CaseImporter.plan(fetched)
         let df = DateFormatter()
@@ -825,14 +841,15 @@ final class AppRouter: ObservableObject {
         summary.stitched = plan.stitched
         summary.cold = plan.cold
         summary.stitchedExisting = repaired.merged
-        summary.recoveredDown = recoveredDown + repaired.reanchored
+        // Восстановление нижестоящей цепочки централизовано в repairCoordinator:
+        // импорт больше не выполняет тот же сетевой поиск второй раз.
+        summary.recoveredDown = repaired.reanchored
         summary.rerouted = repaired.rerouted
         summary.transient = transient + repaired.transient
         summary.parsing = parsing
         summary.withoutUID = withoutUID
-        summary.ambiguous = ambiguous + repaired.unresolved.count
-        summary.unresolvedNumbers = Array(NSOrderedSet(
-            array: unresolvedNumbers + repaired.unresolved).array.compactMap { $0 as? String })
+        summary.ambiguous = repaired.unresolved.count
+        summary.unresolvedNumbers = repaired.unresolved
         summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
         guard generation == importGeneration, !Task.isCancelled else { return }
         importState = .finished(summary)
@@ -914,6 +931,25 @@ final class AppRouter: ObservableObject {
         }
     }
 
+    /// Ручная CAPTCHA домашней карточки после фонового refresh. В отличие от
+    /// captcha-заглушки отдельной инстанции, здесь движение может состоять
+    /// только из старого кэша, поэтому кнопка живёт в общей строке ошибки.
+    func beginOpenCaseCaptcha() {
+        guard let request = openCaseCaptchaRequest,
+              let host = request.formURL.host else { return }
+        let context = openedKey.flatMap { store.record(forKey: $0)?.context }
+        captcha = SearchModel.CaptchaContext(
+            formURL: request.formURL,
+            uid: liveMovement?.uid ?? context?.judicialUID ?? "",
+            instanceID: "refresh-\(request.key)",
+            level: context?.baseInstanceLevel ?? .first,
+            courtTitle: context?.courtTitle ?? host,
+            kind: SudrfHost.isMSudrfHost(host) ? .kcaptcha : .sudrfToken,
+            caseNumber: request.caseNumber,
+            pendingCaseCount: refreshCenter.captchaPendingCount(forHost: host),
+            pendingCaseNumbers: refreshCenter.captchaPendingCaseNumbers(forHost: host))
+    }
+
     /// Построить `CaptchaContext` и открыть ручной лист.
     private func openManualCaptchaSheet(for inst: CaseInstance, url: URL, host: String) {
         captcha = SearchModel.CaptchaContext(formURL: url,
@@ -940,6 +976,7 @@ final class AppRouter: ObservableObject {
                 self.refreshCenter.retryPendingCaptcha(host: host)
                 self.pendingCaptchaRefresh = false
                 self.refreshOpenCase()
+                self.retryRepairAfterCaptchaIfNeeded(host: host)
             }
         }
     }
@@ -951,6 +988,24 @@ final class AppRouter: ObservableObject {
         refreshCenter.retryPendingCaptcha(host: host)
         pendingCaptchaRefresh = false
         refreshOpenCase()
+        retryRepairAfterCaptchaIfNeeded(host: host)
+    }
+
+    /// После ручной captcha снова запускаем именно repair: RefreshCenter
+    /// обновляет кэш, но не восстанавливает первую инстанцию/цепочку импорта.
+    private func retryRepairAfterCaptchaIfNeeded(host rawHost: String) {
+        let host = SudrfHost.moduleHost(rawHost)
+        guard repairCaptchaHosts.remove(host) != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let summary = await self.repairCoordinator.runAll()
+            if summary.hasReport {
+                self.applyRepair(summary)
+            } else {
+                self.repairSummary = nil
+                self.reload()
+            }
+        }
     }
 
     /// Принять HTML карточки из окна капчи и заменить заглушку реальной инстанцией
@@ -1126,14 +1181,13 @@ final class AppRouter: ObservableObject {
     /// по одному номеру. Домен для звена НЕ используем: эвристика по домену
     /// (`MovementService.courtLevel`) по умолчанию даёт `.subject` и спутала бы
     /// районные дела с делами суда субъекта.
-    private func productionType(for rec: TrackedCaseRecord) -> ProductionType {
-        if let cart = rec.context?.cartoteka {
-            return ProductionType(cartotekaId: cart.id)
-        }
-        if let level = rec.context?.courtLevel {
-            return ProductionType.of(rec.caseNumber, level: level)
-        }
-        return ProductionType.of(rec.caseNumber)
+    private func productionType(for rec: TrackedCaseRecord) -> ProductionType? {
+        // Старые записи с повреждённым/недекодируемым contextData всё ещё
+        // можно безопасно классифицировать по номеру, как до этой миграции.
+        guard let context = rec.context else { return ProductionType.of(rec.caseNumber) }
+        return ProductionType.classified(
+            caseNumber: rec.caseNumber, level: context.courtLevel,
+            branch: context.branch, cartotekaID: context.cartotekaId)
     }
 
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,

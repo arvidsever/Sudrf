@@ -48,6 +48,8 @@ struct CaseMovementView: View {
     var isRefreshing: Bool = false
     var refreshNote: String? = nil
     var onRefresh: (() -> Void)? = nil
+    var hasPendingRefreshCaptcha: Bool = false
+    var onSolvePendingRefreshCaptcha: (() -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -128,8 +130,15 @@ struct CaseMovementView: View {
                 }
             }
             if let refreshNote {
-                Text(refreshNote)
-                    .font(.caption2).foregroundStyle(.orange).lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(refreshNote)
+                        .font(.caption2).foregroundStyle(.orange).lineLimit(1)
+                    Spacer(minLength: 8)
+                    if hasPendingRefreshCaptcha, let onSolvePendingRefreshCaptcha {
+                        Button("Ввести код") { onSolvePendingRefreshCaptcha() }
+                            .buttonStyle(.glassProminent).controlSize(.small)
+                    }
+                }
             }
             HStack(spacing: 8) {
                 Text("Дело № \(movement.caseNumber) · движение")

@@ -3,6 +3,7 @@ import Foundation
 import Security
 import SudrfKit
 import SwiftUI
+@preconcurrency import Translation
 import UniformTypeIdentifiers
 
 enum AIProviderKind: String, CaseIterable, Identifiable, Sendable {
@@ -107,12 +108,15 @@ final class AISettings: ObservableObject {
         statusMessage = "Согласие отозвано. Новые акты не будут отправляться в облако."
     }
 
-    func prepareTranslationPair() {
+    func beginTranslationPreparation() {
         translationPairPrepared = false
         statusMessage = "Подготовка языковой пары русский ↔ английский…"
+    }
+
+    func completeTranslationPreparation() {
         Task {
             do {
-                try await InstalledTranslationPair.shared.prepare()
+                try await InstalledTranslationPair.shared.refreshInstalledSessions()
                 translationPairPrepared = true
                 statusMessage = "Языковая пара русский ↔ английский готова."
             } catch {
@@ -120,6 +124,16 @@ final class AISettings: ObservableObject {
                 statusMessage = "Не удалось подготовить перевод: \(error.localizedDescription)"
             }
         }
+    }
+
+    func failTranslationPreparation(_ error: Error) {
+        translationPairPrepared = false
+        statusMessage = "Не удалось подготовить перевод: \(error.localizedDescription)"
+    }
+
+    func markTranslationPairUnavailable() {
+        translationPairPrepared = false
+        statusMessage = "Языковая пара русский ↔ английский больше не установлена. Подготовьте её заново."
     }
 
     func testConnection() {
@@ -198,6 +212,7 @@ private extension JSONEncoder {
 
 struct AISettingsView: View {
     @StateObject private var settings = AISettings.shared
+    @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var confirmingCloudConsent = false
 
     var body: some View {
@@ -248,11 +263,15 @@ struct AISettingsView: View {
             Toggle("Apple через английский — экспериментально",
                    isOn: $settings.appleEnglishExperimental)
             Button(settings.translationPairPrepared
-                   ? "Языковая пара русский ↔ английский готова"
+                   ? "Проверить языковую пару русский ↔ английский"
                    : "Подготовить языковую пару русский ↔ английский") {
-                settings.prepareTranslationPair()
+                settings.beginTranslationPreparation()
+                var configuration = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: "ru"),
+                    target: Locale.Language(identifier: "en"))
+                configuration.invalidate()
+                translationConfiguration = configuration
             }
-            .disabled(settings.translationPairPrepared)
             Text("Режим выключен по умолчанию и сохраняет статус Experimental до отдельного go/no-go benchmark.")
                 .font(.caption).foregroundStyle(.secondary)
 
@@ -272,6 +291,31 @@ struct AISettingsView: View {
             Button("Отмена", role: .cancel) {}
         } message: {
             Text("Sudrf отправит только акт, для которого вы явно нажмёте «Создать сводку». Опубликованный текст может содержать персональные данные третьих лиц.")
+        }
+        .translationTask(translationConfiguration) { session in
+            do {
+                try await session.prepareTranslation()
+                let sourceCode = session.sourceLanguage?.languageCode?.identifier
+                if sourceCode == "ru" {
+                    await MainActor.run {
+                        var reverse = TranslationSession.Configuration(
+                            source: Locale.Language(identifier: "en"),
+                            target: Locale.Language(identifier: "ru"))
+                        reverse.invalidate()
+                        translationConfiguration = reverse
+                    }
+                } else {
+                    await MainActor.run {
+                        translationConfiguration = nil
+                        settings.completeTranslationPreparation()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    translationConfiguration = nil
+                    settings.failTranslationPreparation(error)
+                }
+            }
         }
     }
 }

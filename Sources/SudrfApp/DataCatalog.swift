@@ -1,6 +1,9 @@
 import Foundation
 import SudrfKit
 import SwiftData
+import os
+
+private let backupLog = Logger(subsystem: "ru.sudrf.app", category: "StoreBackup")
 
 // MARK: - SwiftData schema and shared container
 
@@ -157,30 +160,38 @@ struct SudrfStoreBootstrapError: LocalizedError {
 
 @MainActor
 enum SudrfPersistentStoreBackup {
-    /// Меняется вместе с target schema. Новая миграция обязана получить новый
-    /// marker и отдельный каталог, иначе старая отметка пропустит backup.
-    private static let schemaVersion = 3
-    private static var markerKey: String {
-        "swiftData.backupAndMigrationCompleted.schema-v\(schemaVersion)"
+    private static var currentSchemaVersion: String {
+        String(describing: SudrfSchemaV3.versionIdentifier)
+    }
+
+    private static func markerKey(schemaVersion: String) -> String {
+        "swiftData.backupAndMigrationCompleted.schema-\(schemaVersion)"
     }
 
     static func prepare(storeURL: URL,
                         backupRoot: URL? = nil,
-                        defaults: UserDefaults = .standard) throws -> URL? {
-        guard !defaults.bool(forKey: markerKey),
+                        defaults: UserDefaults = .standard,
+                        schemaVersion: String = currentSchemaVersion) throws -> URL? {
+        guard !defaults.bool(forKey: markerKey(schemaVersion: schemaVersion)),
               FileManager.default.fileExists(atPath: storeURL.path) else { return nil }
 
         let root = backupRoot ?? defaultBackupRoot()
         let destination = root.appendingPathComponent(
-            "pre-schema-v\(schemaVersion)", isDirectory: true)
+            "pre-schema-\(schemaVersion)", isDirectory: true)
         if FileManager.default.fileExists(atPath: destination.path) {
-            guard isUsableBackup(destination, storeURL: storeURL) else {
-                throw CocoaError(.fileReadCorruptFile)
+            if isUsableBackup(destination, storeURL: storeURL) {
+                return destination
             }
-            return destination
+            // Неполную копию не удаляем: сохраняем для диагностики и освобождаем
+            // canonical destination, после чего создаём новую полную копию.
+            let quarantine = root.appendingPathComponent(
+                "pre-schema-\(schemaVersion)-invalid-\(UUID().uuidString)",
+                isDirectory: true)
+            try FileManager.default.moveItem(at: destination, to: quarantine)
+            backupLog.error("Повреждённый backup перемещён в \(quarantine.path, privacy: .public)")
         }
 
-        let temporary = root.appendingPathComponent(".pre-schema-v\(schemaVersion)-\(UUID().uuidString)",
+        let temporary = root.appendingPathComponent(".pre-schema-\(schemaVersion)-\(UUID().uuidString)",
                                                      isDirectory: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         do {
@@ -198,10 +209,12 @@ enum SudrfPersistentStoreBackup {
                 if FileManager.default.fileExists(atPath: destination.path),
                    isUsableBackup(destination, storeURL: storeURL) {
                     try? FileManager.default.removeItem(at: temporary)
+                    backupLog.notice("Новый проверенный backup доступен в \(destination.path, privacy: .public)")
                     return destination
                 }
                 throw error
             }
+            backupLog.notice("Новый проверенный backup создан в \(destination.path, privacy: .public)")
             return destination
         } catch {
             try? FileManager.default.removeItem(at: temporary)
@@ -209,8 +222,9 @@ enum SudrfPersistentStoreBackup {
         }
     }
 
-    static func markMigrationCompleted(defaults: UserDefaults = .standard) {
-        defaults.set(true, forKey: markerKey)
+    static func markMigrationCompleted(defaults: UserDefaults = .standard,
+                                       schemaVersion: String = currentSchemaVersion) {
+        defaults.set(true, forKey: markerKey(schemaVersion: schemaVersion))
     }
 
     private static func defaultBackupRoot() -> URL {

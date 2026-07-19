@@ -97,27 +97,49 @@ actor InstalledTranslationPair {
     static let shared = InstalledTranslationPair()
     private let russian = Locale.Language(identifier: "ru")
     private let english = Locale.Language(identifier: "en")
-    private lazy var russianToEnglishSession = TranslationSession(
-        installedSource: russian, target: english)
-    private lazy var englishToRussianSession = TranslationSession(
-        installedSource: english, target: russian)
-    private var prepared = false
+    private var russianToEnglishSession: TranslationSession?
+    private var englishToRussianSession: TranslationSession?
 
-    func prepare() async throws {
-        guard !prepared else { return }
-        try await russianToEnglishSession.prepareTranslation()
-        try await englishToRussianSession.prepareTranslation()
-        prepared = true
+    /// Headless initializer умеет работать только с уже установленными
+    /// языками. Разрешение на загрузку всегда запрашивает SwiftUI
+    /// `.translationTask`; здесь мы лишь проверяем фактическую готовность.
+    func refreshInstalledSessions() async throws {
+        let forward = TranslationSession(installedSource: russian, target: english)
+        let reverse = TranslationSession(installedSource: english, target: russian)
+        guard await forward.isReady, await reverse.isReady else {
+            russianToEnglishSession = nil
+            englishToRussianSession = nil
+            throw AISummarizerError.translationLanguagesNotInstalled
+        }
+        russianToEnglishSession = forward
+        englishToRussianSession = reverse
     }
 
     func toEnglish(_ text: String) async throws -> String {
-        try await prepare()
+        try await ensureReady()
+        guard let russianToEnglishSession else {
+            throw AISummarizerError.providerUnavailable(
+                "Языковая пара русский → английский недоступна.")
+        }
         return try await russianToEnglishSession.translate(text).targetText
     }
 
     func toRussian(_ text: String) async throws -> String {
-        try await prepare()
+        try await ensureReady()
+        guard let englishToRussianSession else {
+            throw AISummarizerError.providerUnavailable(
+                "Языковая пара английский → русский недоступна.")
+        }
         return try await englishToRussianSession.translate(text).targetText
+    }
+
+    private func ensureReady() async throws {
+        if let russianToEnglishSession, let englishToRussianSession,
+           await russianToEnglishSession.isReady,
+           await englishToRussianSession.isReady {
+            return
+        }
+        try await refreshInstalledSessions()
     }
 }
 
@@ -144,7 +166,7 @@ enum LegalLiteralProtector {
             ("D", #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#),
             ("A", #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль|\.)?|₽|USD|EUR)"#),
             ("A", #"(?i)\b(?:(?:ноль|один|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|сто|двести|триста|четыреста|пятьсот|тысяч(?:а|и)?|миллион(?:а|ов)?)[\s-]+)+(?:руб(?:ль|ля|лей)|₽)\b"#),
-            ("D", #"(?i)\b\d+\s+(?:календарных\s+|рабочих\s+)?(?:дн(?:ей|я|ь)|месяц(?:а|ев)?|лет|года?|час(?:а|ов)?)\b"#),
+            ("D", #"(?i)\b(?:\d{1,4}\s+(?:календарных\s+|рабочих\s+)?дн(?:ей|я|ь)|\d{1,3}\s+(?:календарных\s+|рабочих\s+)?(?:месяц(?:а|ев)?|лет|года?|час(?:а|ов)?))\b"#),
             ("N", #"(?i)\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#),
             ("L", #"(?i)(?:стать(?:я|е|и|ю)|ст\.|част(?:ь|и|ью)|ч\.|пункт(?:а|е|ом|у)?|п\.|подпункт(?:а|е|ом|у)?|абзац(?:а|е|ем|у)?)\s*\d+(?:\.\d+)*"#),
             ("N", #"\b\d{1,3}[-–]\d+[A-Za-zА-Яа-я0-9/.-]*\b"#),
@@ -172,11 +194,13 @@ enum LegalLiteralProtector {
         return ProtectedTranslationDocument(paragraphs: values, literals: literals)
     }
 
-    static func placeholderIDs(in text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"⟦[A-Z]\d{3}⟧"#) else { return [] }
+    static func placeholderCounts(in text: String) -> [String: Int] {
+        guard let regex = try? NSRegularExpression(pattern: #"⟦[A-Z]\d{3}⟧"#) else { return [:] }
         let ns = text as NSString
         return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
-            .map { ns.substring(with: $0.range) }
+            .reduce(into: [:]) { counts, match in
+                counts[ns.substring(with: match.range), default: 0] += 1
+            }
     }
 }
 
@@ -195,8 +219,8 @@ struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
         for paragraph in protected.paragraphs {
             try Task.checkCancellation()
             let translated = try await russianToEnglish(paragraph.text)
-            guard LegalLiteralProtector.placeholderIDs(in: translated)
-                    == LegalLiteralProtector.placeholderIDs(in: paragraph.text) else {
+            guard LegalLiteralProtector.placeholderCounts(in: translated)
+                    == LegalLiteralProtector.placeholderCounts(in: paragraph.text) else {
                 throw AISummarizerError.providerUnavailable(
                     "Перевод изменил защищённые юридические реквизиты; экспериментальный результат отклонён.")
             }
@@ -226,8 +250,8 @@ struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
             var result: [SummaryClaim] = []
             for claim in claims {
                 let translatedClaim = try await englishToRussian(claim.text)
-                guard LegalLiteralProtector.placeholderIDs(in: translatedClaim)
-                        == LegalLiteralProtector.placeholderIDs(in: claim.text) else {
+                guard LegalLiteralProtector.placeholderCounts(in: translatedClaim)
+                        == LegalLiteralProtector.placeholderCounts(in: claim.text) else {
                     throw AISummarizerError.providerUnavailable(
                         "Обратный перевод изменил защищённые юридические реквизиты; результат не показан.")
                 }

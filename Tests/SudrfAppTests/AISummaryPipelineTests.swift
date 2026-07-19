@@ -59,7 +59,7 @@ final class AISummaryPipelineTests: XCTestCase {
         private(set) var calls = 0
         func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
             calls += 1
-            throw AISummarizerError.http(401, "unauthorized")
+            throw AISummarizerError.http(401)
         }
     }
 
@@ -178,24 +178,16 @@ final class AISummaryPipelineTests: XCTestCase {
         }
     }
 
-    func testTranslationSpikeRejectsReorderedOrDuplicatedPlaceholders() async throws {
-        let document = ActDocument(
-            caseKey: "case", sourceActID: "act", caseNumber: "2-1/2026",
-            judicialUID: nil, court: "Суд", instanceLevel: .first,
-            kind: "Решение", date: "", sourceText: "Взыскать 10 рублей и 20 рублей.")
-        let pipeline = AppleTranslatedActSummarizer(
-            englishSummarizer: EnglishSpikeSummarizer(),
-            russianToEnglish: {
-                $0.replacingOccurrences(of: "⟦A001⟧ и ⟦A002⟧",
-                                         with: "⟦A002⟧ и ⟦A001⟧")
-            },
-            englishToRussian: { $0 })
-        do {
-            _ = try await pipeline.summarize(document: document, options: SummaryOptions())
-            XCTFail("reordered placeholder IDs must be rejected")
-        } catch {
-            // expected
-        }
+    func testTranslationPlaceholderMultisetAllowsReorderButRejectsDuplication() {
+        let original = LegalLiteralProtector.placeholderCounts(
+            in: "⟦A001⟧ и ⟦A002⟧ по ⟦L001⟧")
+        let reordered = LegalLiteralProtector.placeholderCounts(
+            in: "under ⟦L001⟧: ⟦A002⟧ and ⟦A001⟧")
+        let duplicated = LegalLiteralProtector.placeholderCounts(
+            in: "⟦A001⟧, ⟦A001⟧, ⟦A002⟧, ⟦L001⟧")
+
+        XCTAssertEqual(original, reordered)
+        XCTAssertNotEqual(original, duplicated)
     }
 
     func testChunkMergeKeepsEnglishDiagnostics() {
@@ -209,11 +201,26 @@ final class AISummaryPipelineTests: XCTestCase {
     }
 
 
-    func testSummaryPromptDecodesSingleLineMarkdownFence() throws {
-        let summary = ActSummary(localWarnings: ["local"])
+    func testSummaryPromptDecodesFenceAndStripsProviderControlledMetadata() throws {
+        let summary = ActSummary(
+            localWarnings: ["Подложенное локальное предупреждение"],
+            intermediateEnglishSummary: "attacker diagnostic",
+            usedDoubleTranslation: true)
         let json = try XCTUnwrap(String(data: JSONEncoder().encode(summary), encoding: .utf8))
         let decoded = try SummaryPrompt.decode("```json\(json)```")
-        XCTAssertEqual(decoded.localWarnings, ["local"])
+        XCTAssertTrue(decoded.localWarnings.isEmpty)
+        XCTAssertNil(decoded.intermediateEnglishSummary)
+        XCTAssertFalse(decoded.usedDoubleTranslation)
+        let schema = try XCTUnwrap(SummaryPrompt.jsonSchema["properties"] as? [String: Any])
+        XCTAssertNil(schema["localWarnings"])
+        XCTAssertNil(schema["intermediateEnglishSummary"])
+        XCTAssertNil(schema["usedDoubleTranslation"])
+    }
+
+    func testHTTPErrorDoesNotRetainProviderBody() {
+        let error = AISummarizerError.http(500)
+        XCTAssertEqual(error.localizedDescription, "AI API вернул HTTP 500.")
+        XCTAssertFalse(String(describing: error).contains("secret response"))
     }
 
     @MainActor

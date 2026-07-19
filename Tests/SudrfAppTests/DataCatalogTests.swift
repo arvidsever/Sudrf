@@ -104,10 +104,66 @@ final class DataCatalogTests: XCTestCase {
                        Data("shm".utf8))
         XCTAssertEqual(try SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults), backup)
+        XCTAssertEqual(backup.lastPathComponent, "pre-schema-3.0.0")
 
         SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
         XCTAssertNil(try SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults))
+
+        // Следующая schema-version получает независимые marker и каталог.
+        let next = try XCTUnwrap(SudrfPersistentStoreBackup.prepare(
+            storeURL: storeURL, backupRoot: backups, defaults: defaults,
+            schemaVersion: "4.0.0"))
+        XCTAssertEqual(next.lastPathComponent, "pre-schema-4.0.0")
+    }
+
+    @MainActor
+    func testCorruptBackupIsQuarantinedAndReplaced() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SudrfCorruptBackup-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let backups = root.appendingPathComponent("backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let corrupt = backups.appendingPathComponent("pre-schema-3.0.0", isDirectory: true)
+        try FileManager.default.createDirectory(at: corrupt, withIntermediateDirectories: true)
+        try Data("incomplete".utf8).write(to: corrupt.appendingPathComponent("orphan-wal"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = source.appendingPathComponent("default.store")
+        try Data("valid-store".utf8).write(to: storeURL)
+        let suite = "SudrfCorruptBackupTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let replacement = try XCTUnwrap(SudrfPersistentStoreBackup.prepare(
+            storeURL: storeURL, backupRoot: backups, defaults: defaults))
+        XCTAssertEqual(try Data(contentsOf: replacement.appendingPathComponent("default.store")),
+                       Data("valid-store".utf8))
+        let quarantined = try FileManager.default.contentsOfDirectory(
+            at: backups, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("pre-schema-3.0.0-invalid-") }
+        XCTAssertEqual(quarantined.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: quarantined[0].appendingPathComponent("orphan-wal").path))
+        let secondLaunch = try XCTUnwrap(SudrfPersistentStoreBackup.prepare(
+            storeURL: storeURL, backupRoot: backups, defaults: defaults))
+        XCTAssertEqual(secondLaunch.standardizedFileURL, replacement.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: secondLaunch.appendingPathComponent("default.store")),
+                       Data("valid-store".utf8))
+    }
+
+    @MainActor
+    func testExplicitStoreURLIsUsedByModelContainer() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SudrfExplicitStore-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("chosen.store")
+
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: storeURL)
+        XCTAssertEqual(container.configurations.first?.url.standardizedFileURL,
+                       storeURL.standardizedFileURL)
     }
 
     @MainActor
@@ -148,6 +204,13 @@ final class DataCatalogTests: XCTestCase {
         let acts = try await catalog.acts(caseKey: context.key)
 
         XCTAssertEqual(cases.count, 1)
+        var metadataOnlyContext = context
+        metadataOnlyContext.judicialUID = "77RS0001-01-2026-999999-10"
+        store.upsert(context: metadataOnlyContext, snapshot: nil, movement: nil,
+                     collections: ["Клиент"])
+        let metadataUpdatedAct = try await catalog.act(id: acts[0].document.id)
+        XCTAssertEqual(metadataUpdatedAct?.document.judicialUID,
+                       TrackedStore.normalizedUID("77RS0001-01-2026-999999-10"))
         XCTAssertEqual(cases[0].parties, ["Истец", "Ответчик"])
         XCTAssertEqual(cases[0].judges, ["Иванова И.И."])
         XCTAssertEqual(acts.count, 1)

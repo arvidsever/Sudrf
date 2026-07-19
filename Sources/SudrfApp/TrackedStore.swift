@@ -188,6 +188,25 @@ final class TrackedStore {
         return (try? context.fetch(descriptor))?.first?.id
     }
 
+    enum DeepLinkRoute: Equatable {
+        case caseRecord(key: String, staleAct: Bool)
+        case courtAct(caseKey: String, sourceActID: String)
+        case missing
+    }
+
+    func route(for link: SudrfDeepLink) -> DeepLinkRoute {
+        switch link {
+        case .caseRecord(let key):
+            return record(forKey: key) == nil
+                ? .missing : .caseRecord(key: key, staleAct: false)
+        case .courtAct(let caseKey, let sourceActID):
+            guard record(forKey: caseKey) != nil else { return .missing }
+            return courtActID(caseKey: caseKey, sourceActID: sourceActID) == nil
+                ? .caseRecord(key: caseKey, staleAct: true)
+                : .courtAct(caseKey: caseKey, sourceActID: sourceActID)
+        }
+    }
+
     func records(forJudicialUID uid: String) -> [TrackedCaseRecord] {
         let normalized = Self.normalizedUID(uid)
         return all().filter { ($0.judicialUID ?? "") == normalized }
@@ -201,6 +220,8 @@ final class TrackedStore {
         let snapData = snap.flatMap { try? JSONEncoder().encode($0) }
         let mvData = mv.flatMap { try? JSONEncoder().encode($0) }
         if let existing = record(forKey: key) {
+            let oldCaseNumber = existing.caseNumber
+            let oldJudicialUID = existing.judicialUID
             existing.contextData = ctxData
             if snapData != nil { existing.snapshotData = snapData }
             if mvData != nil {
@@ -212,6 +233,10 @@ final class TrackedStore {
             existing.displayDomain = ctx.displayDomain
             if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
                 existing.judicialUID = Self.normalizedUID(uid)
+            }
+            if mvData == nil,
+               oldCaseNumber != existing.caseNumber || oldJudicialUID != existing.judicialUID {
+                synchronizeCourtActMetadata(caseKey: existing.key)
             }
             save(rebuildProjection: mvData != nil)
             return existing
@@ -251,6 +276,18 @@ final class TrackedStore {
     func save(rebuildProjection: Bool = false) -> Bool {
         if rebuildProjection { rebuildCourtActProjection() }
         return saveContext()
+    }
+
+    /// Обновляет только денормализованные реквизиты существующих актов. Тексты,
+    /// sourceHash, paragraph snapshots и summary при reroute не затрагиваются.
+    func synchronizeCourtActMetadata(caseKey: String) {
+        guard let tracked = record(forKey: caseKey) else { return }
+        let descriptor = FetchDescriptor<CourtActRecord>(
+            predicate: #Predicate { $0.caseKey == caseKey })
+        for act in (try? context.fetch(descriptor)) ?? [] {
+            act.caseNumber = tracked.caseNumber
+            act.judicialUID = tracked.judicialUID
+        }
     }
 
     private func saveContext() -> Bool {

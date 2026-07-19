@@ -221,10 +221,11 @@ public enum ActSummaryValidator {
             // Реквизит должен находиться именно в процитированных абзацах, а
             // не где-нибудь в другом месте документа. Boundary-aware поиск не
             // принимает 100 внутри 1100 или 3 дня внутри 23 дней.
-            let citedSource = claim.citations.compactMap { paragraphs[$0.paragraphID] }
-                .joined(separator: "\n")
+            let citedParagraphs = claim.citations.compactMap { paragraphs[$0.paragraphID] }
             for literal in protectedLiterals(in: claim.text) {
-                guard containsLiteral(literal, in: citedSource) else {
+                guard citedParagraphs.contains(where: { containsLiteral(literal, in: $0) })
+                        || containsEquivalentCalendarLiteral(
+                            literal, in: citedParagraphs) else {
                     throw ActSummaryValidationError.unsupportedLiteral(literal)
                 }
             }
@@ -237,7 +238,7 @@ public enum ActSummaryValidator {
             #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#,
             #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль|\.)?|₽|USD|EUR)"#,
             #"(?i)\b(?:(?:ноль|один|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|одиннадцать|двенадцать|тринадцать|четырнадцать|пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|тысяч(?:а|и)?|миллион(?:а|ов)?|миллиард(?:а|ов)?)[\s-]+)+(?:руб(?:ль|ля|лей)|₽)\b"#,
-            #"(?i)\b\d+\s+(?:календарных\s+|рабочих\s+)?(?:дн(?:ей|я|ь)|месяц(?:а|ев)?|лет|года?|час(?:а|ов)?)\b"#,
+            #"(?i)\b(?:\d{1,4}\s+(?:календарных\s+|рабочих\s+)?дн(?:ей|я|ь)|\d{1,3}\s+(?:календарных\s+|рабочих\s+)?(?:месяц(?:а|ев)?|лет|года?|час(?:а|ов)?))\b"#,
             #"(?i)\b(?:в\s+)?(?:январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4}\s*(?:года|г\.)?)?\b"#,
             #"(?i)\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#,
             #"\b\d{1,3}[-–]\d+[A-Za-zА-Яа-я0-9/.-]*\b"#,
@@ -279,5 +280,95 @@ public enum ActSummaryValidator {
         return regex.firstMatch(
             in: haystack,
             range: NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)) != nil
+    }
+
+    /// Календарные даты допускают только эквивалентное представление: например,
+    /// «в июне» подтверждается `05.06.2024`, но не датой другого месяца. Для
+    /// указанного моделью дня/года соответствующие компоненты обязательны.
+    private static func containsEquivalentCalendarLiteral(
+        _ literal: String, in paragraphs: [String]
+    ) -> Bool {
+        guard let expected = calendarLiterals(in: literal)
+            .max(by: { $0.specificity < $1.specificity }) else { return false }
+        return paragraphs.lazy
+            .flatMap { calendarLiterals(in: $0) }
+            .contains(where: { $0.supports(expected) })
+    }
+
+    private struct CalendarLiteral: Hashable {
+        let day: Int?
+        let month: Int
+        let year: Int?
+
+        var specificity: Int { (day == nil ? 0 : 1) + (year == nil ? 0 : 1) }
+
+        func supports(_ expected: CalendarLiteral) -> Bool {
+            guard month == expected.month else { return false }
+            if let day = expected.day, self.day != day { return false }
+            if let year = expected.year, self.year != year { return false }
+            return true
+        }
+    }
+
+    private static let monthNumbers: [String: Int] = [
+        "январь": 1, "января": 1, "январе": 1,
+        "февраль": 2, "февраля": 2, "феврале": 2,
+        "март": 3, "марта": 3, "марте": 3,
+        "апрель": 4, "апреля": 4, "апреле": 4,
+        "май": 5, "мая": 5, "мае": 5,
+        "июнь": 6, "июня": 6, "июне": 6,
+        "июль": 7, "июля": 7, "июле": 7,
+        "август": 8, "августа": 8, "августе": 8,
+        "сентябрь": 9, "сентября": 9, "сентябре": 9,
+        "октябрь": 10, "октября": 10, "октябре": 10,
+        "ноябрь": 11, "ноября": 11, "ноябре": 11,
+        "декабрь": 12, "декабря": 12, "декабре": 12,
+    ]
+
+    private static func calendarLiterals(in text: String) -> [CalendarLiteral] {
+        var result = Set<CalendarLiteral>()
+        let ns = text as NSString
+
+        func matches(_ pattern: String, _ transform: (NSTextCheckingResult) -> CalendarLiteral?) {
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive]) else { return }
+            for match in regex.matches(
+                in: text, range: NSRange(location: 0, length: ns.length)) {
+                if let value = transform(match) { result.insert(value) }
+            }
+        }
+
+        func integer(_ match: NSTextCheckingResult, _ group: Int) -> Int? {
+            let range = match.range(at: group)
+            guard range.location != NSNotFound else { return nil }
+            return Int(ns.substring(with: range))
+        }
+
+        func normalizedYear(_ value: Int?) -> Int? {
+            guard let value else { return nil }
+            return value < 100 ? 2_000 + value : value
+        }
+
+        matches(#"\b(\d{1,2})[./](\d{1,2})[./](\d{2,4})\b"#) { match in
+            guard let day = integer(match, 1), (1...31).contains(day),
+                  let month = integer(match, 2), (1...12).contains(month) else { return nil }
+            return CalendarLiteral(day: day, month: month,
+                                   year: normalizedYear(integer(match, 3)))
+        }
+
+        let monthWords = monthNumbers.keys.sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        matches("\\b(?:(\\d{1,2})\\s+)?(\(monthWords))(?:\\s+(\\d{4}))?(?:\\s*(?:года|г\\.))?\\b") { match in
+            let monthRange = match.range(at: 2)
+            guard monthRange.location != NSNotFound,
+                  let month = monthNumbers[ns.substring(with: monthRange).lowercased()] else {
+                return nil
+            }
+            let day = integer(match, 1)
+            if let day, !(1...31).contains(day) { return nil }
+            return CalendarLiteral(day: day, month: month,
+                                   year: normalizedYear(integer(match, 3)))
+        }
+        return Array(result)
     }
 }

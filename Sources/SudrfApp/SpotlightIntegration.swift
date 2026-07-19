@@ -147,7 +147,9 @@ struct CourtActEntity: IndexedEntity, Sendable, Hashable {
 
     var fingerprint: String {
         ActParagraphizer.sourceHash(for: [document.sourceHash, document.caseNumber,
-                                          document.court, document.kind, document.date]
+                                          document.judicialUID, document.court,
+                                          document.kind, document.date]
+            .compactMap { $0 }
             .joined(separator: "\n"))
     }
 }
@@ -272,7 +274,9 @@ actor SpotlightManifestStore {
     }
 }
 
-actor SpotlightPreferenceStore {
+/// UserDefaults документирован как thread-safe; синхронное хранилище позволяет
+/// применить preference revision без actor-reentrancy между проверкой и записью.
+final class SpotlightPreferenceStore: @unchecked Sendable {
     static let key = "spotlight.systemIndexEnabled"
     private let defaults: UserDefaults
 
@@ -297,6 +301,9 @@ actor SpotlightIndexer {
     private let manifestStore: SpotlightManifestStore
     private let preferenceStore: SpotlightPreferenceStore
     private var scheduledTask: Task<Void, Never>?
+    private var writeTail: Task<Void, Never>?
+    private var writeSequence: UInt64 = 0
+    private var latestPreferenceRevision: UInt64 = 0
 
     init(catalog: CaseCatalog,
          writer: any SpotlightIndexWriting = SystemSpotlightWriter(),
@@ -308,15 +315,15 @@ actor SpotlightIndexer {
         self.preferenceStore = preferenceStore
     }
 
-    func setEnabled(_ enabled: Bool) async throws {
-        await preferenceStore.setEnabled(enabled)
+    func setEnabled(_ enabled: Bool, revision: UInt64) async throws {
+        guard revision >= latestPreferenceRevision else { return }
+        latestPreferenceRevision = revision
+        preferenceStore.setEnabled(enabled)
+        scheduledTask?.cancel()
         if enabled {
             try await synchronize()
         } else {
-            // Не доверяем локальному manifest как доказательству отсутствия
-            // записей в системном индексе: он мог быть удалён/повреждён.
-            try await writer.deleteAll()
-            await manifestStore.save(SpotlightManifest())
+            try await enqueuePurge()
         }
     }
 
@@ -330,41 +337,97 @@ actor SpotlightIndexer {
     }
 
     func synchronize() async throws {
-        guard await preferenceStore.isEnabled() else {
-            try await writer.deleteAll()
-            await manifestStore.save(SpotlightManifest())
-            return
-        }
+        guard preferenceStore.isEnabled() else { return try await enqueuePurge() }
         let cases = try await catalog.cases().map(CaseEntity.init(snapshot:))
         let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
-        let previous = await manifestStore.load()
         let next = SpotlightManifest(
             cases: Dictionary(uniqueKeysWithValues: cases.map { ($0.id, $0.fingerprint) }),
             acts: Dictionary(uniqueKeysWithValues: acts.map { ($0.id, $0.fingerprint) }))
+        let writer = self.writer
+        let manifestStore = self.manifestStore
+        let preferenceStore = self.preferenceStore
+        try await enqueueWrite {
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            let previous = await manifestStore.load()
+            let changedCases = cases.filter { previous.cases[$0.id] != $0.fingerprint }
+            let changedActs = acts.filter { previous.acts[$0.id] != $0.fingerprint }
+            let removedCases = Array(previous.cases.keys.filter { next.cases[$0] == nil })
+            let removedActs = Array(previous.acts.keys.filter { next.acts[$0] == nil })
 
-        let changedCases = cases.filter { previous.cases[$0.id] != $0.fingerprint }
-        let changedActs = acts.filter { previous.acts[$0.id] != $0.fingerprint }
-        let removedCases = Array(previous.cases.keys.filter { next.cases[$0] == nil })
-        let removedActs = Array(previous.acts.keys.filter { next.acts[$0] == nil })
-
-        try await writer.delete(caseIDs: removedCases, actIDs: removedActs)
-        try await writer.index(cases: changedCases, acts: changedActs)
-        await manifestStore.save(next)
+            try await writer.delete(caseIDs: removedCases, actIDs: removedActs)
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            try await writer.index(cases: changedCases, acts: changedActs)
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            await manifestStore.save(next)
+        }
     }
 
     func rebuild() async throws {
-        guard await preferenceStore.isEnabled() else {
-            try await writer.deleteAll()
-            await manifestStore.save(SpotlightManifest())
-            return
-        }
+        guard preferenceStore.isEnabled() else { return try await enqueuePurge() }
         let cases = try await catalog.cases().map(CaseEntity.init(snapshot:))
         let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
-        try await writer.deleteAll()
-        try await writer.index(cases: cases, acts: acts)
-        await manifestStore.save(SpotlightManifest(
+        let next = SpotlightManifest(
             cases: Dictionary(uniqueKeysWithValues: cases.map { ($0.id, $0.fingerprint) }),
-            acts: Dictionary(uniqueKeysWithValues: acts.map { ($0.id, $0.fingerprint) })))
+            acts: Dictionary(uniqueKeysWithValues: acts.map { ($0.id, $0.fingerprint) }))
+        let writer = self.writer
+        let manifestStore = self.manifestStore
+        let preferenceStore = self.preferenceStore
+        try await enqueueWrite {
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            try await writer.deleteAll()
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            try await writer.index(cases: cases, acts: acts)
+            guard preferenceStore.isEnabled() else {
+                return try await Self.purge(writer: writer, manifestStore: manifestStore)
+            }
+            await manifestStore.save(next)
+        }
+    }
+
+    private func enqueuePurge() async throws {
+        let writer = self.writer
+        let manifestStore = self.manifestStore
+        try await enqueueWrite {
+            try await Self.purge(writer: writer, manifestStore: manifestStore)
+        }
+    }
+
+    /// Все системные writes и соответствующий manifest образуют одну FIFO.
+    /// Следующая операция начинается только после фактического завершения
+    /// предыдущей, включая асинхронный CSSearchableIndex callback.
+    private func enqueueWrite(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        let previous = writeTail
+        writeSequence &+= 1
+        let sequence = writeSequence
+        let queued = Task {
+            await previous?.value
+            try await operation()
+        }
+        writeTail = Task { _ = try? await queued.value }
+        let result = await queued.result
+        if writeSequence == sequence { writeTail = nil }
+        try result.get()
+    }
+
+    private nonisolated static func purge(
+        writer: any SpotlightIndexWriting,
+        manifestStore: SpotlightManifestStore
+    ) async throws {
+        // Не доверяем manifest как доказательству отсутствия системных записей.
+        try await writer.deleteAll()
+        await manifestStore.save(SpotlightManifest())
     }
 }
 

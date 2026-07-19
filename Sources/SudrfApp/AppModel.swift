@@ -383,6 +383,7 @@ final class AppRouter: ObservableObject {
     @Published var globalSearching = false
     @Published var globalSearchError: String? = nil
     @Published private(set) var spotlightEnabled = true
+    private var spotlightPreferenceRevision: UInt64 = 0
     // Вся лента внутри «Обзора»
     @Published var feedFilter: FeedTypeFilter = .all
     @Published var feedUnreadOnly = false
@@ -594,12 +595,18 @@ final class AppRouter: ObservableObject {
 
     func handleDeepLink(_ url: URL) {
         guard let link = SudrfDeepLink(url: url) else { return }
-        switch link {
-        case .caseRecord(let key):
+        switch store.route(for: link) {
+        case .caseRecord(let key, let staleAct):
             section = .cases
             openCase(key: key)
+            if staleAct {
+                refreshNote = "Судебный акт ещё не загружен или ссылка устарела. Дело открыто и поставлено на обновление."
+                NSApp.activate(ignoringOtherApps: true)
+            }
         case .courtAct(let caseKey, let sourceActID):
             _ = intentOpenAct(caseKey: caseKey, sourceActID: sourceActID)
+        case .missing:
+            break
         }
     }
 
@@ -618,14 +625,14 @@ final class AppRouter: ObservableObject {
 
     func setSpotlightEnabled(_ enabled: Bool) {
         spotlightEnabled = enabled
-        // Фиксируем последнее намерение синхронно. Каждая последующая actor-задача
-        // перечитывает это значение, поэтому быстрые toggle не могут оставить
-        // индекс в состоянии, соответствующем устаревшему клику.
-        UserDefaults.standard.set(enabled, forKey: SpotlightPreferenceStore.key)
+        spotlightPreferenceRevision &+= 1
+        let revision = spotlightPreferenceRevision
         if !enabled { clearSpotlightSearch() }
         Task { [weak self] in
             guard let self else { return }
-            do { try await self.spotlightIndexer.synchronize() }
+            do {
+                try await self.spotlightIndexer.setEnabled(enabled, revision: revision)
+            }
             catch { self.globalSearchError = error.localizedDescription }
         }
     }
@@ -1161,6 +1168,10 @@ final class AppRouter: ObservableObject {
                 self.summaryGenerating = false
             } catch {
                 guard !Task.isCancelled else { return }
+                if let aiError = error as? AISummarizerError,
+                   case .translationLanguagesNotInstalled = aiError {
+                    AISettings.shared.markTranslationPairUnavailable()
+                }
                 self.summaryGenerating = false
                 self.summaryError = error.localizedDescription
             }

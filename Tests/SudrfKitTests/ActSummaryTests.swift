@@ -69,6 +69,43 @@ final class ActSummaryTests: XCTestCase {
         XCTAssertThrowsError(try ActSummaryValidator.validate(invalid, against: source))
     }
 
+    func testValidatorMatchesCalendarMonthAcrossNumericAndTextForms() throws {
+        let source = ActDocument(
+            caseKey: "case", sourceActID: "a", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: "Заседание назначено на 05.06.2024.")
+        let citation = SummaryCitation(paragraphID: "¶1", evidenceQuote: "05.06.2024")
+        let valid = ActSummary(dates: [SummaryClaim(
+            text: "Заседание состоится в июне 2024 года.", citations: [citation])])
+        XCTAssertNoThrow(try ActSummaryValidator.validate(valid, against: source))
+
+        let wrongMonth = ActSummary(dates: [SummaryClaim(
+            text: "Заседание состоится в августе 2024 года.", citations: [citation])])
+        XCTAssertThrowsError(try ActSummaryValidator.validate(wrongMonth, against: source))
+
+        let wrongYear = ActSummary(dates: [SummaryClaim(
+            text: "Заседание состоится в июне 2025 года.", citations: [citation])])
+        XCTAssertThrowsError(try ActSummaryValidator.validate(wrongYear, against: source))
+
+        let wrongDay = ActSummary(dates: [SummaryClaim(
+            text: "Заседание состоится 06 июня 2024 года.", citations: [citation])])
+        XCTAssertThrowsError(try ActSummaryValidator.validate(wrongDay, against: source))
+    }
+
+    func testValidatorRejectsLiteralAssembledAcrossParagraphBoundary() {
+        let source = ActDocument(
+            caseKey: "case", sourceActID: "a", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: "Взыскать 100\n\nрублей с ответчика.")
+        let summary = ActSummary(disposition: [SummaryClaim(
+            text: "Взыскать 100 рублей.",
+            citations: [
+                SummaryCitation(paragraphID: "¶1", evidenceQuote: "100"),
+                SummaryCitation(paragraphID: "¶2", evidenceQuote: "рублей"),
+            ])])
+        XCTAssertThrowsError(try ActSummaryValidator.validate(summary, against: source))
+    }
+
     func testModelWarningsRequireCitationsAndValidation() throws {
         let warning = SummaryClaim(text: "Срок составляет 3 дня.", citations: [])
         XCTAssertThrowsError(try ActSummaryValidator.validate(

@@ -5,9 +5,10 @@ enum AISummarizerError: LocalizedError, Sendable {
     case cloudConsentRequired
     case missingCredential
     case concreteModelRequired
+    case translationLanguagesNotInstalled
     case providerUnavailable(String)
     case invalidResponse
-    case http(Int, String)
+    case http(Int)
 
     var errorDescription: String? {
         switch self {
@@ -15,9 +16,11 @@ enum AISummarizerError: LocalizedError, Sendable {
             "Сначала разрешите облачную обработку выбранного акта в Настройки → AI."
         case .missingCredential: "API-ключ не найден в Keychain."
         case .concreteModelRequired: "Укажите конкретный model ID в Настройки → AI."
+        case .translationLanguagesNotInstalled:
+            "Языковая пара русский ↔ английский не установлена. Подготовьте её в Настройки → AI."
         case .providerUnavailable(let reason): reason
         case .invalidResponse: "Провайдер вернул ответ, не соответствующий ActSummary."
-        case .http(let status, _): "AI API вернул HTTP \(status). Ответ провайдера скрыт из соображений безопасности."
+        case .http(let status): "AI API вернул HTTP \(status)."
         }
     }
 }
@@ -236,7 +239,9 @@ enum HTTPJSON {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AISummarizerError.invalidResponse }
         guard 200..<300 ~= http.statusCode else {
-            throw AISummarizerError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            // Тело ошибки может содержать отражённый prompt или провайдерские
+            // диагностические данные. Не удерживаем его даже внутри Error.
+            throw AISummarizerError.http(http.statusCode)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AISummarizerError.invalidResponse
@@ -246,6 +251,52 @@ enum HTTPJSON {
 }
 
 enum SummaryPrompt {
+    /// Единственная форма JSON, которую разрешено заполнять внешней модели.
+    /// Локальная диагностика и признаки translation pipeline намеренно здесь
+    /// отсутствуют: schema-less provider не может подложить их как доверенные.
+    private struct ProviderActSummaryPayload: Decodable {
+        let claims: [SummaryClaim]
+        let partyPositions: [SummaryClaim]
+        let circumstances: [SummaryClaim]
+        let reasoning: [SummaryClaim]
+        let disposition: [SummaryClaim]
+        let amounts: [SummaryClaim]
+        let dates: [SummaryClaim]
+        let deadlines: [SummaryClaim]
+        let appeal: [SummaryClaim]
+        let warnings: [SummaryClaim]
+
+        private enum CodingKeys: String, CodingKey {
+            case claims, partyPositions, circumstances, reasoning, disposition
+            case amounts, dates, deadlines, appeal, warnings
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            claims = try values.decodeIfPresent([SummaryClaim].self, forKey: .claims) ?? []
+            partyPositions = try values.decodeIfPresent(
+                [SummaryClaim].self, forKey: .partyPositions) ?? []
+            circumstances = try values.decodeIfPresent(
+                [SummaryClaim].self, forKey: .circumstances) ?? []
+            reasoning = try values.decodeIfPresent([SummaryClaim].self, forKey: .reasoning) ?? []
+            disposition = try values.decodeIfPresent(
+                [SummaryClaim].self, forKey: .disposition) ?? []
+            amounts = try values.decodeIfPresent([SummaryClaim].self, forKey: .amounts) ?? []
+            dates = try values.decodeIfPresent([SummaryClaim].self, forKey: .dates) ?? []
+            deadlines = try values.decodeIfPresent([SummaryClaim].self, forKey: .deadlines) ?? []
+            appeal = try values.decodeIfPresent([SummaryClaim].self, forKey: .appeal) ?? []
+            warnings = try values.decodeIfPresent([SummaryClaim].self, forKey: .warnings) ?? []
+        }
+
+        var summary: ActSummary {
+            ActSummary(
+                claims: claims, partyPositions: partyPositions,
+                circumstances: circumstances, reasoning: reasoning,
+                disposition: disposition, amounts: amounts, dates: dates,
+                deadlines: deadlines, appeal: appeal, warnings: warnings)
+        }
+    }
+
     static func messages(document: ActDocument) -> [[String: String]] {
         let paragraphs = document.paragraphs.map { "[\($0.id)] \($0.text)" }.joined(separator: "\n\n")
         return [
@@ -286,12 +337,9 @@ enum SummaryPrompt {
             ($0, ["type": "array", "items": claimSchema] as [String: Any])
         })
         properties["warnings"] = ["type": "array", "items": claimSchema]
-        properties["intermediateEnglishSummary"] = ["type": ["string", "null"]]
-        properties["usedDoubleTranslation"] = ["type": "boolean"]
         return ["type": "object", "additionalProperties": false,
                 "properties": properties,
-                "required": sectionNames + ["warnings", "intermediateEnglishSummary",
-                                               "usedDoubleTranslation"]]
+                "required": sectionNames + ["warnings"]]
     }
 
     static func decode(_ text: String) throws -> ActSummary {
@@ -309,9 +357,10 @@ enum SummaryPrompt {
             }
         }
         guard let data = candidate.data(using: .utf8),
-              let result = try? JSONDecoder().decode(ActSummary.self, from: data) else {
+              let payload = try? JSONDecoder().decode(
+                ProviderActSummaryPayload.self, from: data) else {
             throw AISummarizerError.invalidResponse
         }
-        return result
+        return payload.summary
     }
 }

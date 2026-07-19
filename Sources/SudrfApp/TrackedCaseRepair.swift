@@ -222,6 +222,7 @@ final class TrackedCaseRepairCoordinator {
                     rec.judicialUID = TrackedStore.normalizedUID(uid)
                 }
                 rec.movementFetchedAt = nil
+                store.synchronizeCourtActMetadata(caseKey: rec.key)
                 _ = store.save()
                 summary.rerouted += 1
             }
@@ -369,7 +370,11 @@ final class TrackedCaseRepairCoordinator {
             let normalized = normalizedKoAPContext(context, card: nil)
             guard normalized.changed else { continue }
             rec.context = normalized.context
+            if let uid = normalized.context.judicialUID, !uid.isEmpty {
+                rec.judicialUID = TrackedStore.normalizedUID(uid)
+            }
             rec.movementFetchedAt = nil
+            store.synchronizeCourtActMetadata(caseKey: rec.key)
             changedCount += 1
         }
         if changedCount > 0 { _ = store.save() }

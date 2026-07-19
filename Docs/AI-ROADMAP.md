@@ -73,7 +73,10 @@
 3. Сохранить изоляцию: UI/SwiftData/настройки — `@MainActor`; сеть, OCR,
    индексация, перевод и AI — actor; межакторные значения — `Sendable`.
 4. Поддерживать обязательную стабильную сборку Xcode 26/macOS 26 и сборку
-   новых API Xcode 27/macOS 27.
+   новых API Xcode 27/macOS 27. Пока hosted runner не содержит Xcode 27,
+   стабильная линия блокирует merge, Xcode 27 проверяется вручную, а
+   opportunistic CI-job явно сообщает `not executed` и автоматически начинает
+   сборку при появлении SDK — без тихой подмены Xcode 26.
 5. После macOS 27 RC сделать Xcode 27 основной средой, не повышая deployment
    target до миграции тестеров.
 

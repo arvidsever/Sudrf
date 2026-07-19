@@ -1,7 +1,6 @@
-# v0.40.1 — Swift Concurrency для CaptchaSolver (draft)
+# 0.40.2 — Swift Concurrency для CaptchaSolver
 
-> Branch draft. Финальная версия назначается при merge/release; release-changelog,
-> `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в feature-работе не меняются.
+> Alpha, build 82.
 
 ## Исправлено
 

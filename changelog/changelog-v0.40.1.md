@@ -1,7 +1,6 @@
-# v0.40.1 — сохранение карточки при недоступности суда (draft)
+# 0.40.1 — Сохранение карточки при недоступности суда
 
-> Branch draft. Финальная версия назначается при merge/release; release-changelog,
-> `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в feature-работе не меняются.
+> Alpha, build 81.
 
 ## Исправлено
 
@@ -12,3 +11,8 @@
   после восстановления сайта суда.
 - Добавлены регрессионные тесты распознавания заглушки и неизменности сохранённой
   карточки после неудачного обновления.
+
+## Проверка
+
+- `swift test --filter 'CaseCardParserTests|RefreshCenterTests'` — 22 теста,
+  0 ошибок; CI `build-test` и `package-app` зелёные.

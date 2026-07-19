@@ -11,16 +11,12 @@ import Foundation
 /// стаб, чтобы не зависеть от Vision и сети.
 final class AutoCaptchaSolverTests: XCTestCase {
 
-    /// Подменяем `CaptchaSolverLog.shared` на tmp-dir логгер, чтобы
-    /// тесты не засоряли реальный `~/Library/Application Support/Sudrf/captcha-solve.log`
-    /// (235+ example.test строк до фикса). Иначе пользовательский
-    /// лог показывал сотни строк тестового шума при анализе.
-    /// Pattern из `CaptchaSolverLogTests` (Tests/CaptchaSolverTests/).
+    /// Передаём tmp-dir логгер каждому `CaptchaSolver`, чтобы тесты не
+    /// засоряли реальный `~/Library/Application Support/Sudrf/captcha-solve.log`.
     private var tmpDir: URL!
     private var logFile: URL!
     private var failuresDir: URL!
     private var log: CaptchaSolverLog!
-    private var originalShared: CaptchaSolverLog!
     private var session: URLSession!
 
     override func setUpWithError() throws {
@@ -32,8 +28,6 @@ final class AutoCaptchaSolverTests: XCTestCase {
         failuresDir = tmpDir.appendingPathComponent("captcha-failures")
         try FileManager.default.createDirectory(at: failuresDir, withIntermediateDirectories: true)
         log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir)
-        originalShared = CaptchaSolverLog.shared
-        CaptchaSolverLog.shared = log
         AutoCaptchaFormStub.reset()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AutoCaptchaFormStub.self]
@@ -43,16 +37,15 @@ final class AutoCaptchaSolverTests: XCTestCase {
     override func tearDownWithError() throws {
         session.invalidateAndCancel()
         session = nil
-        CaptchaSolverLog.shared = originalShared
         try? FileManager.default.removeItem(at: tmpDir)
         try super.tearDownWithError()
     }
 
     /// Стаб, который возвращает заранее заданные `CaptchaAttempt` по
     /// индексу вызова.
-    final class StubProvider: CaptchaSolvingProvider {
-        var results: [CaptchaAttempt]
-        var callCount = 0
+    actor StubProvider: CaptchaSolvingProvider {
+        let results: [CaptchaAttempt]
+        private var callCount = 0
         init(results: [CaptchaAttempt]) { self.results = results }
         func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
             let i = min(callCount, results.count - 1)
@@ -68,7 +61,7 @@ final class AutoCaptchaSolverTests: XCTestCase {
     func testReturnsNilWhenDisabled() async throws {
         let solver = CaptchaSolver(provider: StubProvider(results: [
             CaptchaAttempt(value: "12345", confidence: 0.9, duration: 0)
-        ]))
+        ]), log: log)
         // Без клиента и формы — даже уверенный солвер не поможет, потому
         // что client.fetchForm вернёт ошибку. Этот тест проверяет, что
         // путь «solver есть, settings нет» возвращает nil-токен.
@@ -144,6 +137,7 @@ final class AutoCaptchaSolverTests: XCTestCase {
         XCTAssertEqual(accepted.token?.id, "test-captcha-id")
     }
 
+    @MainActor
     func testCaptchaSettingsBuildsAutoSolverSettingsAndClampsMaxAttempts() {
         let settings = CaptchaSettings.shared
         let savedMinConfidence = settings.minConfidence

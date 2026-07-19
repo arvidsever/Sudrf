@@ -12,7 +12,7 @@ import os.log
 /// отладки точности и обнаружения регрессий.
 public final class CaptchaSolverLog: @unchecked Sendable {
 
-    public static var shared: CaptchaSolverLog = {
+    public static let shared: CaptchaSolverLog = {
         // Default: production instance, writes to
         // ~/Library/Application Support/Sudrf/.
         CaptchaSolverLog()

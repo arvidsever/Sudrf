@@ -1,6 +1,6 @@
 import Foundation
 import CoreImage
-import CoreML
+@preconcurrency import CoreML
 import Vision
 
 /// Стратегия распознавания на основе CoreML-модели, обученной на
@@ -39,10 +39,10 @@ import Vision
 /// как «expected», что стало основой FIXPLAN A4. В действительности
 /// captcha всегда 5-значная, а Vision просто не справляется с
 /// rotated/struck-through стилями.
-public struct CoreMLCaptchaStrategy: CaptchaSolvingProvider {
+public actor CoreMLCaptchaStrategy: CaptchaSolvingProvider {
 
-    public let modelURL: URL
-    public let kind: CaptchaKind
+    public nonisolated let modelURL: URL
+    public nonisolated let kind: CaptchaKind
     private let compiledModel: MLModel
     private let inputName: String
     private let outputName: String

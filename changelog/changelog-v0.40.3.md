@@ -1,7 +1,6 @@
-# v0.40.3 — стабилизация флаки-теста троттла VSRF (draft)
+# 0.40.3 — Стабилизация флаки-теста троттла VSRF
 
-> Branch draft. Финальная версия назначается при merge/release; release-changelog,
-> `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в feature-работе не меняются.
+> Alpha, build 83.
 
 ## Исправлено
 
@@ -15,3 +14,8 @@
   устойчив к джиттеру за счёт взаимной компенсации соседних лагов.
 - Продакшн-код `VSRFClient` не менялся: слоты троттла резервируются атомарно
   внутри actor до `await`, реализация корректна.
+
+## Проверка
+
+- CI `build-test` и `package-app` (macos-26) на PR #40 — зелёные,
+  включая `VSRFClientThrottleTests`.

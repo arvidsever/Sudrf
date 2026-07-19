@@ -1,0 +1,33 @@
+{
+  "sourceLanguage" : "ru",
+  "strings" : {
+    "Добавить дело в подборку" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Add case to collection" } } }
+    },
+    "Ближайшие заседания" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Upcoming hearings" } } }
+    },
+    "Обновить дело" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh case" } } }
+    },
+    "Обновить судебное дело" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh court case" } } }
+    },
+    "Открыть дело" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Open case" } } }
+    },
+    "Открыть судебное дело" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Open court case" } } }
+    },
+    "Открыть судебный акт" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Open court decision" } } }
+    },
+    "Показать ближайшие заседания" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Show upcoming hearings" } } }
+    },
+    "Экспортировать судебный акт в PDF" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Export court decision as PDF" } } }
+    }
+  },
+  "version" : "1.0"
+}

@@ -1,0 +1,260 @@
+import Foundation
+import FoundationModels
+import SudrfKit
+@preconcurrency import Translation
+
+enum AppleModelSupport {
+    @MainActor
+    static func isAvailable(localeIdentifier: String) -> Bool {
+#if arch(x86_64)
+        false
+#else
+        let model = SystemLanguageModel.default
+        return model.availability == .available
+            && model.supportsLocale(Locale(identifier: localeIdentifier))
+#endif
+    }
+}
+
+@Generable(description: "A verbatim citation from one numbered paragraph")
+private struct AppleCitationOutput {
+    @Guide(description: "Paragraph ID exactly as supplied, for example ¶12")
+    var paragraphID: String
+    @Guide(description: "Short verbatim quote from that paragraph")
+    var evidenceQuote: String
+}
+
+@Generable(description: "One factual or legal conclusion with evidence")
+private struct AppleClaimOutput {
+    var text: String
+    var citations: [AppleCitationOutput]
+}
+
+@Generable(description: "Structured summary of a court decision")
+private struct AppleSummaryOutput {
+    var claims: [AppleClaimOutput]
+    var partyPositions: [AppleClaimOutput]
+    var circumstances: [AppleClaimOutput]
+    var reasoning: [AppleClaimOutput]
+    var disposition: [AppleClaimOutput]
+    var amounts: [AppleClaimOutput]
+    var dates: [AppleClaimOutput]
+    var deadlines: [AppleClaimOutput]
+    var appeal: [AppleClaimOutput]
+    var warnings: [String]
+}
+
+actor AppleDirectActSummarizer: ActSummarizing {
+    private let requiredLocaleIdentifier: String
+
+    init(requiredLocaleIdentifier: String = "ru_RU") {
+        self.requiredLocaleIdentifier = requiredLocaleIdentifier
+    }
+
+    func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+        let model = SystemLanguageModel.default
+        guard model.availability == .available else {
+            throw AISummarizerError.providerUnavailable(
+                "Apple Intelligence недоступен, выключен или модель ещё не загружена.")
+        }
+        let requiredLocale = Locale(identifier: requiredLocaleIdentifier)
+        guard model.supportsLocale(requiredLocale) else {
+            throw AISummarizerError.providerUnavailable(
+                "Системная модель официально не поддерживает locale \(requiredLocaleIdentifier).")
+        }
+        let session = LanguageModelSession(
+            model: model,
+            instructions: "Не додумывай факты. Каждый вывод подтверждай дословной цитатой и ¶ID.")
+        let paragraphs = document.paragraphs.map { "[\($0.id)] \($0.text)" }
+            .joined(separator: "\n\n")
+        let response = try await session.respond(
+            to: "Составь структурированную сводку судебного акта:\n\n\(paragraphs)",
+            generating: AppleSummaryOutput.self)
+        return Self.convert(response.content)
+    }
+
+    private static func convert(_ value: AppleSummaryOutput) -> ActSummary {
+        func claims(_ source: [AppleClaimOutput]) -> [SummaryClaim] {
+            source.map { value in
+                SummaryClaim(text: value.text, citations: value.citations.map {
+                    SummaryCitation(paragraphID: $0.paragraphID,
+                                    evidenceQuote: $0.evidenceQuote)
+                })
+            }
+        }
+        return ActSummary(
+            claims: claims(value.claims), partyPositions: claims(value.partyPositions),
+            circumstances: claims(value.circumstances), reasoning: claims(value.reasoning),
+            disposition: claims(value.disposition), amounts: claims(value.amounts),
+            dates: claims(value.dates), deadlines: claims(value.deadlines),
+            appeal: claims(value.appeal), warnings: value.warnings)
+    }
+}
+
+/// TranslationSession не объявлен Sendable, поэтому обе сессии создаются и
+/// используются только внутри actor; наружу выходят лишь строки.
+actor InstalledTranslationPair {
+    private let russian = Locale.Language(identifier: "ru")
+    private let english = Locale.Language(identifier: "en")
+    private lazy var russianToEnglishSession = TranslationSession(
+        installedSource: russian, target: english)
+    private lazy var englishToRussianSession = TranslationSession(
+        installedSource: english, target: russian)
+    private var prepared = false
+
+    func prepare() async throws {
+        guard !prepared else { return }
+        try await russianToEnglishSession.prepareTranslation()
+        try await englishToRussianSession.prepareTranslation()
+        prepared = true
+    }
+
+    func toEnglish(_ text: String) async throws -> String {
+        try await prepare()
+        return try await russianToEnglishSession.translate(text).targetText
+    }
+
+    func toRussian(_ text: String) async throws -> String {
+        try await prepare()
+        return try await englishToRussianSession.translate(text).targetText
+    }
+}
+
+struct ProtectedLegalLiteral: Sendable, Codable, Hashable {
+    let id: String
+    let original: String
+}
+
+struct ProtectedTranslationDocument: Sendable, Hashable {
+    let paragraphs: [ActParagraph]
+    let literals: [ProtectedLegalLiteral]
+
+    func restoring(_ text: String) -> String {
+        literals.reduce(text) { value, literal in
+            value.replacingOccurrences(of: "⟦\(literal.id)⟧", with: literal.original)
+        }
+    }
+}
+
+enum LegalLiteralProtector {
+    static func protect(_ document: ActDocument) -> ProtectedTranslationDocument {
+        let patterns: [(String, String)] = [
+            ("D", #"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"#),
+            ("D", #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#),
+            ("A", #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль)?\.?|₽|USD|EUR)"#),
+            ("D", #"(?i)\b\d+\s+(?:календарных\s+|рабочих\s+)?(?:дн(?:ей|я|ь)|месяц(?:а|ев)?|лет|года?|час(?:а|ов)?)\b"#),
+            ("N", #"(?i)\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#),
+            ("L", #"(?i)(?:стать(?:я|е|и|ю)|ст\.|част(?:ь|и|ью)|ч\.|пункт(?:а|е|ом|у)?|п\.|подпункт(?:а|е|ом|у)?|абзац(?:а|е|ем|у)?)\s*\d+(?:\.\d+)*"#),
+            ("N", #"\b\d{1,3}[-–]\d+[A-Za-zА-Яа-я0-9/.-]*\b"#),
+        ]
+        var literals: [ProtectedLegalLiteral] = []
+        var counters: [String: Int] = [:]
+        let values = document.paragraphs.map { paragraph -> ActParagraph in
+            var text = paragraph.text
+            for (prefix, pattern) in patterns {
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                while true {
+                    let ns = text as NSString
+                    guard let match = regex.firstMatch(
+                        in: text, range: NSRange(location: 0, length: ns.length)) else { break }
+                    let original = ns.substring(with: match.range)
+                    counters[prefix, default: 0] += 1
+                    let id = String(format: "%@%03d", prefix, counters[prefix]!)
+                    literals.append(ProtectedLegalLiteral(id: id, original: original))
+                    text = ns.replacingCharacters(in: match.range, with: "⟦\(id)⟧")
+                }
+            }
+            return ActParagraph(ordinal: paragraph.ordinal, text: text)
+        }
+        return ProtectedTranslationDocument(paragraphs: values, literals: literals)
+    }
+
+    static func placeholderIDs(in text: String) -> Set<String> {
+        guard let regex = try? NSRegularExpression(pattern: #"⟦[A-Z]\d{3}⟧"#) else { return [] }
+        let ns = text as NSString
+        return Set(regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range) })
+    }
+}
+
+/// Тестируемое ядро translation spike. Реальные TranslationSession передаются
+/// с UI-границы Translation framework; IDs живут вне переводимого текста.
+struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
+    typealias Translator = @Sendable (String) async throws -> String
+
+    let englishSummarizer: English
+    let russianToEnglish: Translator
+    let englishToRussian: Translator
+
+    func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+        let protected = LegalLiteralProtector.protect(document)
+        var englishParagraphs: [ActParagraph] = []
+        for paragraph in protected.paragraphs {
+            try Task.checkCancellation()
+            let translated = try await russianToEnglish(paragraph.text)
+            guard LegalLiteralProtector.placeholderIDs(in: translated)
+                    == LegalLiteralProtector.placeholderIDs(in: paragraph.text) else {
+                throw AISummarizerError.providerUnavailable(
+                    "Перевод изменил защищённые юридические реквизиты; экспериментальный результат отклонён.")
+            }
+            englishParagraphs.append(ActParagraph(
+                ordinal: paragraph.ordinal,
+                text: translated))
+        }
+        let englishDocument = ActDocument(
+            id: document.id, caseKey: document.caseKey, sourceActID: document.sourceActID,
+            caseNumber: document.caseNumber, judicialUID: document.judicialUID,
+            court: document.court, instanceLevel: document.instanceLevel,
+            kind: document.kind, date: document.date,
+            sourceText: englishParagraphs.map(\.text).joined(separator: "\n\n"),
+            sourceHash: document.sourceHash,
+            paragraphizerVersion: document.paragraphizerVersion,
+            paragraphs: englishParagraphs)
+        let english = try await englishSummarizer.summarize(
+            document: englishDocument, options: options)
+        let originals = Dictionary(uniqueKeysWithValues: document.paragraphs.map { ($0.id, $0.text) })
+
+        func translateClaims(_ claims: [SummaryClaim]) async throws -> [SummaryClaim] {
+            var result: [SummaryClaim] = []
+            for claim in claims {
+                let translatedClaim = try await englishToRussian(claim.text)
+                guard LegalLiteralProtector.placeholderIDs(in: translatedClaim)
+                        == LegalLiteralProtector.placeholderIDs(in: claim.text) else {
+                    throw AISummarizerError.providerUnavailable(
+                        "Обратный перевод изменил защищённые юридические реквизиты; результат не показан.")
+                }
+                let translated = protected.restoring(translatedClaim)
+                let citations = claim.citations.compactMap { citation -> SummaryCitation? in
+                    guard let original = originals[citation.paragraphID] else { return nil }
+                    // Цитата никогда не проходит round trip: русский оригинал
+                    // целиком является проверяемым evidence для spike.
+                    return SummaryCitation(paragraphID: citation.paragraphID,
+                                           evidenceQuote: original)
+                }
+                result.append(SummaryClaim(text: translated, citations: citations))
+            }
+            return result
+        }
+
+        let diagnostic = try? JSONEncoder().encode(english)
+        let claims = try await translateClaims(english.claims)
+        let partyPositions = try await translateClaims(english.partyPositions)
+        let circumstances = try await translateClaims(english.circumstances)
+        let reasoning = try await translateClaims(english.reasoning)
+        let disposition = try await translateClaims(english.disposition)
+        let amounts = try await translateClaims(english.amounts)
+        let dates = try await translateClaims(english.dates)
+        let deadlines = try await translateClaims(english.deadlines)
+        let appeal = try await translateClaims(english.appeal)
+        let result = ActSummary(
+            claims: claims, partyPositions: partyPositions,
+            circumstances: circumstances, reasoning: reasoning,
+            disposition: disposition, amounts: amounts, dates: dates,
+            deadlines: deadlines, appeal: appeal,
+            warnings: english.warnings + ["Экспериментальная сводка через двойной перевод."],
+            intermediateEnglishSummary: diagnostic.flatMap { String(data: $0, encoding: .utf8) },
+            usedDoubleTranslation: true)
+        try ActSummaryValidator.validate(result, against: document)
+        return result
+    }
+}

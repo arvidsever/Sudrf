@@ -54,6 +54,10 @@ targets:
         NSHighResolutionCapable: true
         CFBundleDevelopmentRegion: ru
         LSApplicationCategoryType: public.app-category.productivity
+        CFBundleURLTypes:
+          - CFBundleURLName: ru.sudrf.app
+            CFBundleURLSchemes:
+              - sudrf
         # ATS-исключения для доменов судов: у части «винтажных» серверов
         # (Воронеж и др.) TLS не дотягивает до требований App Transport
         # Security (TLS ≥1.2, forward secrecy) — рукопожатие рвалось с -1200,
@@ -87,6 +91,11 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: YES
+        # Swift 6 включён явно и для app-таргета XcodeGen. Complete checking
+        # оставляем явным, чтобы ослабление режима не прошло незаметно при
+        # смене Xcode или настроек проекта.
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
 
 # Shared-схема app-бандла. Без неё Xcode после регенерации делает активной
 # авто-схему executable-продукта пакета (SudrfApp) — «Run» запускает голый

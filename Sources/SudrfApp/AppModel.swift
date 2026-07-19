@@ -18,6 +18,8 @@ import AppKit
 import Combine
 import SudrfKit
 import CaptchaSolver
+import SwiftData
+import AppIntents
 
 // MARK: - Палитра разделов
 
@@ -374,6 +376,16 @@ final class AppRouter: ObservableObject {
     /// Живой фильтр таблицы: номер + стороны + подборки + суд.
     @Published var query: String = ""
     @Published var sortBy: CaseSort = .activity
+    /// Отдельный от быстрого фильтра `query` глобальный поиск по локальному
+    /// Spotlight-индексу, включая полный текст опубликованных актов.
+    @Published var globalQuery = ""
+    @Published var globalSearchResults: [SpotlightSearchHit] = []
+    @Published var globalSearching = false
+    @Published var globalSearchError: String? = nil
+    /// Непусто только если persistent store не открылся. В этом состоянии UI
+    /// перекрывается блокирующим экраном; временное хранилище не выдаётся за
+    /// рабочую пользовательскую базу.
+    @Published private(set) var storageStartupError: String? = nil
 
     // Вся лента внутри «Обзора»
     @Published var feedFilter: FeedTypeFilter = .all
@@ -403,8 +415,27 @@ final class AppRouter: ObservableObject {
     @Published var liveMovement: CaseMovement? = nil
     @Published var loadingMovement = false
     @Published var movementError: String? = nil
-    @Published var selectedActID: String? = nil
+    @Published var selectedActID: String? = nil {
+        didSet {
+            if oldValue != selectedActID {
+                highlightedParagraphID = nil
+                selectedActDocument = nil
+                selectedSummary = nil
+                selectedSummaryIsStale = false
+                summaryError = nil
+                summaryGenerating = false
+                summaryTask?.cancel()
+            }
+            updateCurrentEntityActivity()
+        }
+    }
+    @Published var highlightedParagraphID: String? = nil
+    @Published var selectedActDocument: ActDocument? = nil
     @Published var captcha: SearchModel.CaptchaContext? = nil
+    @Published var selectedSummary: ActSummary? = nil
+    @Published var selectedSummaryIsStale = false
+    @Published var summaryGenerating = false
+    @Published var summaryError: String? = nil
     /// Когда открытая карточка в последний раз получена с портала.
     @Published var movementFetchedAt: Date? = nil
     /// Тихая ошибка фонового обновления (кэш при этом остаётся на экране).
@@ -413,7 +444,11 @@ final class AppRouter: ObservableObject {
     /// только при совпадении ключа (карточку могли закрыть/сменить).
     private var openedKey: String? = nil
 
-    private let store = TrackedStore()
+    private let store: TrackedStore
+    let modelContainer: ModelContainer
+    let caseCatalog: CaseCatalog
+    let spotlightIndexer: SpotlightIndexer
+    private let spotlightSearch = SpotlightSearchSession()
     private let client = SudrfClient()
     let refreshCenter: RefreshCenter
     private let repairCoordinator: TrackedCaseRepairCoordinator
@@ -430,6 +465,8 @@ final class AppRouter: ObservableObject {
     private let captchaSolver: CaptchaSolver
     private let captchaSettings: CaptchaSettings
     private var refreshCenterSink: AnyCancellable? = nil
+    private var currentEntityActivity: NSUserActivity?
+    private var summaryTask: Task<Void, Never>?
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
     private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
     /// Уже виденные id ленты — чтобы уведомлять только о реально новых записях.
@@ -445,7 +482,29 @@ final class AppRouter: ObservableObject {
         refreshCenter.captchaPendingRequest(forKey: openedKey)
     }
 
-    init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil) {
+    init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
+         modelContainer suppliedModelContainer: ModelContainer? = nil) {
+        let store: TrackedStore
+        let storageStartupError: String?
+        if let suppliedModelContainer {
+            store = TrackedStore(container: suppliedModelContainer)
+            storageStartupError = nil
+        } else {
+            do {
+                store = TrackedStore(container: try SudrfModelContainerFactory.makeProduction())
+                storageStartupError = nil
+            } catch {
+                // Контейнер нужен для безопасного построения объекта и экрана
+                // ошибки, но весь основной UI перекрыт и запись недоступна.
+                store = TrackedStore(inMemory: true)
+                storageStartupError = error.localizedDescription
+            }
+        }
+        self.store = store
+        self.storageStartupError = storageStartupError
+        self.modelContainer = store.container
+        self.caseCatalog = CaseCatalog(container: store.container)
+        self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
         let captchaSettings = suppliedCaptchaSettings ?? .shared
         // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
         // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
@@ -514,8 +573,11 @@ final class AppRouter: ObservableObject {
             self?.openCase(key: key)
         }
         reload()
+        SudrfIntentRuntime.shared.install(self)
         Task { [weak self] in
             guard let self else { return }
+            await CaseCatalogRegistry.shared.install(self.caseCatalog)
+            guard self.storageStartupError == nil else { return }
             let summary = await self.repairCoordinator.runAll()
             self.applyRepair(summary)
             self.refreshCenter.start()
@@ -542,6 +604,41 @@ final class AppRouter: ObservableObject {
         open(rec)
     }
 
+    func handleDeepLink(_ url: URL) {
+        guard let link = SudrfDeepLink(url: url) else { return }
+        switch link {
+        case .caseRecord(let key):
+            section = .cases
+            openCase(key: key)
+        case .courtAct(let caseKey, let sourceActID):
+            section = .cases
+            openCase(key: caseKey)
+            selectedActID = sourceActID
+        }
+    }
+
+    func searchSpotlight() {
+        globalSearchResults = []
+        globalSearchError = nil
+        globalSearching = !globalQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        spotlightSearch.search(globalQuery) { [weak self] batch in
+            guard let self else { return }
+            var known = Set(self.globalSearchResults.map(\.id))
+            self.globalSearchResults.append(contentsOf: batch.filter { known.insert($0.id).inserted })
+        } onCompletion: { [weak self] error in
+            self?.globalSearching = false
+            self?.globalSearchError = error?.localizedDescription
+        }
+    }
+
+    func clearSpotlightSearch() {
+        spotlightSearch.cancel()
+        globalQuery = ""
+        globalSearchResults = []
+        globalSearching = false
+        globalSearchError = nil
+    }
+
     /// Открытие по номеру дела — для мест, где ключа нет (лента, календарь).
     func openCase(_ number: String) {
         guard let rec = recordFor(number: number) else { return }
@@ -566,6 +663,7 @@ final class AppRouter: ObservableObject {
             loadingMovement = true
         }
         refreshCenter.refresh(key: rec.key)   // SWR: перезапрос всегда
+        updateCurrentEntityActivity()
     }
 
     func openFeedEntry(_ entry: FeedEntry, preferAct: Bool = false) {
@@ -589,8 +687,93 @@ final class AppRouter: ObservableObject {
         liveMovement = nil; loadingMovement = false; movementError = nil
         selectedActID = nil; captcha = nil
         openedKey = nil; movementFetchedAt = nil; refreshNote = nil
+        currentEntityActivity?.invalidate()
+        currentEntityActivity = nil
+        summaryTask?.cancel(); summaryTask = nil
+        selectedSummary = nil; selectedSummaryIsStale = false; summaryError = nil
         // Задачу обновления в полёте не отменяем: её результат всё равно
         // нужен спискам/календарю; к UI он не применится (проверка ключа).
+    }
+
+    /// Контекст открытого экрана для Siri onscreen awareness. Юридические
+    /// сущности связываются с собственными AppEntity, без Assistant Schema.
+    private func updateCurrentEntityActivity() {
+        guard let key = openedKey, let rec = store.record(forKey: key) else {
+            currentEntityActivity?.invalidate()
+            currentEntityActivity = nil
+            return
+        }
+
+        let activity: NSUserActivity
+        if let actID = selectedActID,
+           let act = liveMovement?.acts.first(where: { $0.id == actID }) {
+            activity = NSUserActivity(activityType: "ru.sudrf.court-act")
+            activity.title = "\(act.title) по делу № \(rec.caseNumber)"
+            activity.appEntityIdentifier = EntityIdentifier(
+                for: CourtActEntity.self,
+                identifier: store.courtActID(caseKey: key, sourceActID: actID)
+                    ?? "\(key)#\(actID)")
+            activity.webpageURL = SudrfDeepLink.courtAct(caseKey: key, sourceActID: actID).url
+        } else {
+            activity = NSUserActivity(activityType: "ru.sudrf.case")
+            activity.title = "Дело № \(rec.caseNumber)"
+            activity.appEntityIdentifier = EntityIdentifier(for: CaseEntity.self, identifier: key)
+            activity.webpageURL = SudrfDeepLink.caseRecord(key: key).url
+        }
+        activity.isEligibleForSearch = true
+        activity.persistentIdentifier = NSUserActivityPersistentIdentifier(activity.appEntityIdentifier!.description)
+        currentEntityActivity?.invalidate()
+        currentEntityActivity = activity
+        activity.becomeCurrent()
+    }
+
+    // MARK: App Intents bridge
+
+    func intentOpenCase(key: String) -> Bool {
+        guard store.record(forKey: key) != nil else { return false }
+        section = .cases
+        openCase(key: key)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func intentOpenAct(caseKey: String, sourceActID: String) -> Bool {
+        guard store.record(forKey: caseKey) != nil else { return false }
+        section = .cases
+        openCase(key: caseKey)
+        selectedActID = sourceActID
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func intentRefreshCase(key: String) async -> CaseRefreshOutcome {
+        await refreshCenter.refreshForIntent(key: key)
+    }
+
+    func intentAddCase(key: String, collection: String) -> Bool {
+        let normalized = collection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, normalized != "Все дела",
+              store.record(forKey: key) != nil else { return false }
+        if !knownCollections.contains(normalized) { knownCollections.append(normalized) }
+        add(caseKey: key, to: normalized)
+        return true
+    }
+
+    func intentUpcomingHearings(limit: Int = 10) -> String {
+        let today = DateUtil.startOfDay(Date())
+        let values = hearings.filter { $0.date >= today }
+            .sorted { ($0.date, $0.time) < ($1.date, $1.time) }
+            .prefix(limit)
+        guard !values.isEmpty else { return "Ближайших заседаний нет." }
+        return values.map {
+            "\($0.dateLabel), \($0.time) — дело № \($0.caseNumber), \($0.court)"
+        }.joined(separator: "\n")
+    }
+
+    func intentActText(caseKey: String, sourceActID: String) -> (caseNumber: String, text: String)? {
+        guard let rec = store.record(forKey: caseKey),
+              let text = rec.movement?.actBodies[sourceActID], !text.isEmpty else { return nil }
+        return (rec.caseNumber, text)
     }
 
     func openCalendar(date: Date?) {
@@ -885,7 +1068,79 @@ final class AppRouter: ObservableObject {
     }
 
     func selectAct(_ id: String) { selectedActID = id }
+    func highlightSelectedActParagraph(_ id: String) { highlightedParagraphID = id }
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
+
+    func loadSelectedActSummary() {
+        summaryTask?.cancel()
+        summaryError = nil
+        guard let sourceActID = selectedActID, let caseKey = openedKey else {
+            selectedSummary = nil; selectedSummaryIsStale = false
+            return
+        }
+        summaryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let document = try await self.caseCatalog.acts(caseKey: caseKey).first {
+                    $0.document.sourceActID == sourceActID
+                }?.document
+                guard let document else {
+                    self.selectedActDocument = nil
+                    self.selectedSummary = nil; self.selectedSummaryIsStale = false
+                    return
+                }
+                let saved = try await self.caseCatalog.summary(documentID: document.id)
+                guard !Task.isCancelled,
+                      self.selectedActID == sourceActID,
+                      self.openedKey == caseKey else { return }
+                self.selectedActDocument = document
+                self.selectedSummary = saved?.summary
+                self.selectedSummaryIsStale = saved?.isStale(for: document) ?? false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.summaryError = error.localizedDescription
+            }
+        }
+    }
+
+    func generateSelectedActSummary() {
+        summaryTask?.cancel()
+        summaryGenerating = true; summaryError = nil
+        guard let sourceActID = selectedActID, let caseKey = openedKey else {
+            summaryGenerating = false; summaryError = "Сначала выберите опубликованный акт."
+            return
+        }
+        let configured: ConfiguredActSummarizer
+        do { configured = try ActSummarizerFactory.configured() }
+        catch { summaryGenerating = false; summaryError = error.localizedDescription; return }
+
+        summaryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let document = try await self.caseCatalog.acts(caseKey: caseKey).first(where: {
+                    $0.document.sourceActID == sourceActID
+                })?.document else { throw AISummarizerError.invalidResponse }
+                self.selectedActDocument = document
+                let summary = try await configured.summarizer.summarize(
+                    document: document, options: configured.options)
+                try await self.caseCatalog.saveSummary(
+                    document: document, summary: summary,
+                    provider: configured.provider, model: configured.model,
+                    promptVersion: configured.options.promptVersion,
+                    pipelineVersion: configured.pipelineVersion)
+                guard !Task.isCancelled,
+                      self.selectedActID == sourceActID,
+                      self.openedKey == caseKey else { return }
+                self.selectedSummary = summary
+                self.selectedSummaryIsStale = false
+                self.summaryGenerating = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.summaryGenerating = false
+                self.summaryError = error.localizedDescription
+            }
+        }
+    }
 
     /// Открыть окно ввода кода для инстанции-заглушки. Сначала пробует
     /// авто-солвер (Vision, on-device). На успех токен сохраняется в
@@ -1158,6 +1413,7 @@ final class AppRouter: ObservableObject {
         stageCounts = buildStageCounts(cs)
         lastOverviewRefreshAt = recs.compactMap(\.movementFetchedAt).max()
         reconcileFeed(notify: notifyNew)
+        Task { await spotlightIndexer.scheduleSynchronization() }
     }
 
     /// Уведомления о новых записях ленты + бейдж дока. Уведомляем только на

@@ -211,6 +211,17 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(stored?.value, "12345")
     }
 
+    func testIntentRefreshReportsSuccessAfterAutoSolve() async throws {
+        let token = CaptchaToken(value: "12345", id: "intent-success")
+        let center = makeCenter { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: token, png: Data())
+        }
+
+        let outcome = await center.refreshForIntent(key: store.all()[0].key)
+
+        XCTAssertEqual(outcome, .refreshed)
+    }
+
     func testBackgroundAutoSolveUsesCaptchaSettings() async throws {
         let settings = CaptchaSettings.shared
         settings.minConfidence = 0.95
@@ -249,6 +260,32 @@ final class RefreshCenterTests: XCTestCase {
                         "ошибка должна быть записана в lastErrors")
         let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertNil(stored, "без токена стор должен остаться пустым")
+    }
+
+    func testIntentRefreshReportsCaptchaInsteadOfTryingToPresentIt() async throws {
+        let center = makeCenter { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let outcome = await center.refreshForIntent(key: store.all()[0].key)
+
+        XCTAssertEqual(outcome, .captchaRequired)
+        XCTAssertEqual(center.captchaPendingGroups.count, 1)
+    }
+
+    func testIntentRefreshDistinguishesNotFoundAndNetworkFailure() async throws {
+        let missingCenter = RefreshCenter(store: store, client: SudrfClient())
+        let missingOutcome = await missingCenter.refreshForIntent(key: "missing")
+        XCTAssertEqual(missingOutcome, .notFound)
+
+        let unavailable = UnavailableMovement()
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in unavailable })
+        let outcome = await center.refreshForIntent(key: store.all()[0].key)
+        guard case .failed(let message) = outcome else {
+            return XCTFail("ожидалась отдельная сетевая ошибка, получено \(outcome)")
+        }
+        XCTAssertFalse(message.isEmpty)
     }
 
     func testStaleWalkGenerationCannotUpdateNewProgress() {

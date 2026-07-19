@@ -79,6 +79,16 @@ struct CaptchaPendingQueue: Equatable {
     }
 }
 
+/// Проверяемый результат точечного обновления из App Intent. Shortcuts не
+/// умеет показать интерактивную CAPTCHA, поэтому этот API явно отличает её от
+/// сетевой ошибки и не выдаёт сохранённый кэш за свежие данные.
+enum CaseRefreshOutcome: Sendable, Equatable {
+    case refreshed
+    case captchaRequired
+    case failed(String)
+    case notFound
+}
+
 @MainActor
 final class RefreshCenter: ObservableObject {
 
@@ -287,6 +297,16 @@ final class RefreshCenter: ObservableObject {
         }
         tasks[key] = task
         return task
+    }
+
+    /// Дожидается той же задачи, которой пользуется UI (включая попытку
+    /// авто-солва), и классифицирует итог для Shortcuts.
+    func refreshForIntent(key: String) async -> CaseRefreshOutcome {
+        guard let task = refresh(key: key) else { return .notFound }
+        await task.value
+        if captchaPending.request(forKey: key) != nil { return .captchaRequired }
+        if let message = lastErrors[key] { return .failed(message) }
+        return .refreshed
     }
 
     private func performRefresh(key: String) async {

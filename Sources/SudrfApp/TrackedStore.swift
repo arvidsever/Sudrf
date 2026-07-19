@@ -93,33 +93,28 @@ final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
 
-    convenience init() {
-        self.init(inMemory: false)
-    }
-
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
-    /// Продовый init (`inMemory: false`) создаёт постоянное хранилище; при
-    /// сбое (несовместимая миграция и т. п.) — откат в память, чтобы
-    /// приложение не падало на старте.
-    init(inMemory: Bool) {
+    /// Этот initializer предназначен для тестов. Production-контейнер
+    /// открывает `SudrfModelContainerFactory.makeProduction()`: там выполняются
+    /// versioned migration и предмиграционный backup.
+    convenience init(inMemory: Bool) {
         do {
-            let config: ModelConfiguration = inMemory
-                ? ModelConfiguration(isStoredInMemoryOnly: true)
-                : ModelConfiguration()
-            container = try ModelContainer(for: TrackedCaseRecord.self,
-                                           configurations: config)
+            let resolved = try SudrfModelContainerFactory.make(inMemory: inMemory)
+            self.init(container: resolved)
         } catch {
-            storeLog.error("Хранилище не открылось, откат в память: \(error, privacy: .public)")
-            do {
-                container = try ModelContainer(for: TrackedCaseRecord.self,
-                                configurations: ModelConfiguration(isStoredInMemoryOnly: true))
-            } catch {
-                fatalError("SwiftData не смог создать даже in-memory хранилище: \(error)")
-            }
+            fatalError("SwiftData не смог создать \(inMemory ? "in-memory" : "persistent") хранилище: \(error)")
         }
+    }
+
+    /// Позволяет UI, Spotlight, App Intents и тестам использовать один явно
+    /// созданный контейнер вместо скрытого экземпляра внутри `TrackedStore`.
+    init(container: ModelContainer) {
+        self.container = container
         migrateFolders()
         migrateJudicialUIDs()
+        rebuildCourtActProjection()
+        _ = saveContext()
     }
 
     /// Одноразовый посев подборок из legacy-папок (до v20): непустая папка
@@ -166,6 +161,15 @@ final class TrackedStore {
 
     func isTracked(key: String) -> Bool { record(forKey: key) != nil }
 
+    func courtActID(caseKey: String, sourceActID: String) -> String? {
+        var descriptor = FetchDescriptor<CourtActRecord>(
+            predicate: #Predicate {
+                $0.caseKey == caseKey && $0.sourceActID == sourceActID
+            })
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first?.id
+    }
+
     func records(forJudicialUID uid: String) -> [TrackedCaseRecord] {
         let normalized = Self.normalizedUID(uid)
         return all().filter { ($0.judicialUID ?? "") == normalized }
@@ -211,6 +215,7 @@ final class TrackedStore {
 
     func remove(key: String) {
         guard let rec = record(forKey: key) else { return }
+        deleteCourtActs(caseKey: key)
         context.delete(rec)
         save()
     }
@@ -226,6 +231,11 @@ final class TrackedStore {
     /// чтобы repair никогда не оставил базу в полуслитом состоянии.
     @discardableResult
     func save() -> Bool {
+        rebuildCourtActProjection()
+        return saveContext()
+    }
+
+    private func saveContext() -> Bool {
         do {
             try context.save()
             return true
@@ -233,6 +243,108 @@ final class TrackedStore {
             context.rollback()
             storeLog.error("Не удалось сохранить хранилище: \(error, privacy: .public)")
             return false
+        }
+    }
+
+    // MARK: - Перестраиваемая проекция актов
+
+    private func rebuildCourtActProjection() {
+        let descriptor = FetchDescriptor<CourtActRecord>()
+        let stored = (try? context.fetch(descriptor)) ?? []
+        var unmatched = stored
+        var desiredIDs = Set<String>()
+
+        for tracked in all() {
+            guard let movement = tracked.movement else { continue }
+            for act in movement.acts {
+                let instance = movement.instances.first {
+                    $0.actID == act.id || $0.level == act.instanceLevel
+                }
+                let document = ActDocument(
+                    caseKey: tracked.key,
+                    sourceActID: act.id,
+                    caseNumber: movement.caseNumber.isEmpty ? tracked.caseNumber : movement.caseNumber,
+                    judicialUID: tracked.judicialUID ?? (movement.uid.isEmpty ? nil : movement.uid),
+                    court: instance?.court ?? act.courtShort,
+                    instanceLevel: act.instanceLevel,
+                    kind: act.title,
+                    date: act.date,
+                    sourceText: movement.actBodies[act.id] ?? ""
+                )
+                let semanticKey = Self.courtActSemanticKey(
+                    caseKey: tracked.key, level: act.instanceLevel,
+                    court: instance?.court ?? act.courtShort,
+                    kind: act.title, date: act.date)
+                let exactMatches = unmatched.filter {
+                    $0.caseKey == tracked.key && $0.sourceActID == act.id
+                }
+                let semanticMatches = unmatched.filter {
+                    $0.caseKey == tracked.key && $0.semanticKey == semanticKey
+                }
+                let hashMatches = unmatched.filter {
+                    $0.caseKey == tracked.key && $0.sourceHash == document.sourceHash
+                }
+                let existing = exactMatches.first
+                    ?? (semanticMatches.count == 1 ? semanticMatches[0] : nil)
+                    ?? (hashMatches.count == 1 ? hashMatches[0] : nil)
+                let fetchedAt = tracked.movementFetchedAt ?? tracked.addedAt
+                if let existing {
+                    desiredIDs.insert(existing.id)
+                    existing.update(from: document, semanticKey: semanticKey,
+                                    fetchedAt: fetchedAt)
+                    unmatched.removeAll { $0 === existing }
+                } else {
+                    var stableID = document.id
+                    if desiredIDs.contains(stableID) {
+                        stableID += "#\(document.sourceHash.prefix(12))"
+                    }
+                    let stableDocument = ActDocument(
+                        caseKey: document.caseKey, sourceActID: document.sourceActID,
+                        caseNumber: document.caseNumber, judicialUID: document.judicialUID,
+                        court: document.court, instanceLevel: document.instanceLevel,
+                        kind: document.kind, date: document.date,
+                        sourceText: document.sourceText, documentID: stableID)
+                    desiredIDs.insert(stableID)
+                    context.insert(CourtActRecord(document: stableDocument,
+                                                  semanticKey: semanticKey,
+                                                  fetchedAt: fetchedAt))
+                }
+            }
+        }
+
+        for stale in unmatched where !desiredIDs.contains(stale.id) {
+            deleteSummary(documentID: stale.id)
+            context.delete(stale)
+        }
+    }
+
+    private nonisolated static func courtActSemanticKey(
+        caseKey: String, level: CaseInstance.Level, court: String,
+        kind: String, date: String
+    ) -> String {
+        [caseKey, level.rawValue, court, kind, date]
+            .map {
+                $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                    .replacingOccurrences(of: "[^a-zа-яё0-9]+", with: "",
+                                          options: .regularExpression)
+            }
+            .joined(separator: "|")
+    }
+
+    private func deleteCourtActs(caseKey: String) {
+        let descriptor = FetchDescriptor<CourtActRecord>(
+            predicate: #Predicate { $0.caseKey == caseKey })
+        for act in (try? context.fetch(descriptor)) ?? [] {
+            deleteSummary(documentID: act.id)
+            context.delete(act)
+        }
+    }
+
+    private func deleteSummary(documentID: String) {
+        let descriptor = FetchDescriptor<ActSummaryRecord>(
+            predicate: #Predicate { $0.documentID == documentID })
+        for summary in (try? context.fetch(descriptor)) ?? [] {
+            context.delete(summary)
         }
     }
 }

@@ -64,7 +64,7 @@ final class SudrfClientTransientErrorTests: XCTestCase {
     /// `requestCount == 3` (3 попытки = 2 повтора), НЕ transient
     /// (isTransient для обоих false), проброс исходного URLError.
     private func assertFatalURLErrorNotMarkedTransient(code: URLError.Code,
-                                                        file: StaticString = #file,
+                                                        file: StaticString = #filePath,
                                                         line: UInt = #line) async throws {
         TransientErrorStub.failureCode = code
         let client = SudrfClient(session: session)

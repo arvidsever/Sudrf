@@ -66,6 +66,17 @@ enum ActPDFExporter {
         write(to: url, text: text)
     }
 
+    /// Без UI-панели — для ExportCourtActPDFIntent. Возвращает байты, чтобы
+    /// App Intents сам управлял временным файлом и его временем жизни.
+    @MainActor
+    static func renderData(text: String) -> Data? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Sudrf-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        write(to: url, text: text)
+        return try? Data(contentsOf: url)
+    }
+
     @MainActor
     private static func write(to url: URL, text: String) {
         let printInfo = NSPrintInfo()

@@ -212,13 +212,13 @@ private final class CaptchaRejectionStub: URLProtocol {
     /// теста. Доступ через `CaptchaRejectionStub.responseBody = ...`.
     nonisolated(unsafe) static var responseBody: String = ""
 
-    nonisolated(unsafe) static let court = Court(
+    static let court = Court(
         domain: "spb.sudrf.ru",
         title: "Санкт-Петербургский городской суд",
         level: .district
     )
 
-    nonisolated(unsafe) static let cartoteka = Cartoteka(
+    static let cartoteka = Cartoteka(
         id: "g1",
         title: "Гражданское, 1-я инстанция",
         prefixes: ["2"],

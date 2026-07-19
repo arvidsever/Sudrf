@@ -106,17 +106,17 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
     // MARK: UNUserNotificationCenterDelegate
 
     /// Показывать баннер даже когда приложение активно (мониторинг часто открыт).
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
 
     /// Клик по уведомлению — поднять окно и открыть дело.
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
         if let key = response.notification.request.content.userInfo["recordKey"] as? String {
-            onOpen?(key)
+            await MainActor.run { onOpen?(key) }
         }
     }
 }

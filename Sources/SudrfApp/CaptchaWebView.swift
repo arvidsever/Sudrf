@@ -564,7 +564,7 @@ struct CaptchaWebView: NSViewRepresentable {
         // заблокирует навигацию.
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             defer { decisionHandler(.allow) }
 
             let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? false

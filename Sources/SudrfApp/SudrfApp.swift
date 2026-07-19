@@ -60,5 +60,9 @@ struct SudrfApp: App {
                 ActWindowView(payload: payload)
             }
         }
+
+        Settings {
+            AISettingsView()
+        }
     }
 }

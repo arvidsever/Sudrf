@@ -35,12 +35,13 @@ final class CaptchaSolverLogTests: XCTestCase {
     func testAppendAccumulatesAllLines() {
         let group = DispatchGroup()
         let queue = DispatchQueue(label: "test-write-queue")
+        let log = self.log!
 
         for i in 0..<5 {
             group.enter()
             queue.async {
-                self.log.logSkip(host: "court-\(i).sudrf.ru", kind: .sudrfToken,
-                                 reason: "low confidence on attempt \(i)")
+                log.logSkip(host: "court-\(i).sudrf.ru", kind: .sudrfToken,
+                            reason: "low confidence on attempt \(i)")
                 group.leave()
             }
         }

@@ -47,12 +47,14 @@ struct RootView: View {
         }
         .ignoresSafeArea()
         .background(WindowChrome())
+        .modelContainer(router.modelContainer)
         .frame(minWidth: 1180, minHeight: 720)
         .animation(.easeOut(duration: 0.18), value: router.section)
         .animation(.easeOut(duration: 0.18), value: router.openedCase)
         .onReceive(NotificationCenter.default.publisher(for: .sudrfImportCases)) { _ in
             pickCSVAndImport()
         }
+        .onOpenURL { router.handleDeepLink($0) }
         .sheet(isPresented: Binding(
             get: { router.importState != nil || router.repairSummary != nil },
             set: { shown in
@@ -64,6 +66,11 @@ struct RootView: View {
             })) {
             ImportSheet()
                 .environmentObject(router)
+        }
+        .overlay {
+            if let error = router.storageStartupError {
+                StorageStartupFailureView(message: error)
+            }
         }
     }
 
@@ -78,6 +85,33 @@ struct RootView: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         router.beginImport(csvText: text)
+    }
+}
+
+private struct StorageStartupFailureView: View {
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("База Sudrf не открыта", systemImage: "externaldrive.badge.exclamationmark")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.red)
+            Text("Чтобы не потерять отслеживаемые дела, приложение остановило работу с базой.")
+                .font(.system(size: 13, weight: .semibold))
+            Text(message)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
+            Text("Закройте Sudrf перед восстановлением файлов.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .frame(maxWidth: 620, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.red.opacity(0.25)))
+        .shadow(radius: 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.98))
     }
 }
 
@@ -279,9 +313,16 @@ private struct CaseCardHost: View {
 private struct LiveActsPane: View {
     @EnvironmentObject var router: AppRouter
     @Environment(\.openWindow) private var openWindow
+    @State private var showingSummary = false
 
     private var acts: [CaseAct] { router.liveMovement?.acts ?? [] }
     private var body0: String? { router.selectedActText }
+    private var selectedParagraphs: [ActParagraph]? {
+        guard let document = router.selectedActDocument,
+              document.sourceActID == router.selectedActID,
+              document.sourceHash == body0.map(ActParagraphizer.sourceHash) else { return nil }
+        return document.paragraphs
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -302,6 +343,11 @@ private struct LiveActsPane: View {
                                                 text: body0 ?? "")
                         } label: { Image(systemName: "square.and.arrow.down") }
                         .help("Сохранить в PDF").disabled(body0 == nil)
+                        Button {
+                            router.loadSelectedActSummary()
+                            showingSummary = true
+                        } label: { Image(systemName: "sparkles") }
+                        .help("AI-сводка судебного акта").disabled(body0 == nil)
                     }
                     .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
                     }
@@ -333,10 +379,18 @@ private struct LiveActsPane: View {
 
             Group {
                 if let txt = body0 {
-                    ScrollView {
-                        ActTextView(text: txt)
-                            .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            ActTextView(text: txt,
+                                        highlightedParagraphID: router.highlightedParagraphID,
+                                        paragraphs: selectedParagraphs)
+                                .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .onChange(of: router.highlightedParagraphID) { _, paragraphID in
+                            guard let paragraphID else { return }
+                            withAnimation { proxy.scrollTo(paragraphID, anchor: .center) }
+                        }
                     }
                 } else {
                     CenterNote(title: "Тексты актов не опубликованы",
@@ -352,6 +406,9 @@ private struct LiveActsPane: View {
         .frame(maxHeight: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
         .padding(10)
+        .sheet(isPresented: $showingSummary) {
+            ActSummarySheet().environmentObject(router)
+        }
     }
 }
 

@@ -23,26 +23,29 @@ final class VSRFClientThrottleTests: XCTestCase {
         let minInterval = 0.15
         let client = VSRFClient(session: session, minInterval: minInterval)
 
+        let clock = ContinuousClock()
+        let launched = clock.now
         async let first = client.searchByName("Иванов")
         async let second = client.searchByName("Петров")
         async let third = client.searchByName("Сидоров")
         _ = try await [first, second, third]
+        let elapsed = clock.now - launched
 
         let starts = VSRFThrottleStub.requestStarts()
         XCTAssertEqual(starts.count, 3)
-        let sorted = starts.sorted()
-        // Тест меряет не слоты троттла, а `startLoading` в URLProtocol —
-        // слот + джиттер доставки (oversleep Task.sleep, планировщик,
-        // диспатч URLSession). Лаг одного запроса сжимает соседний
-        // наблюдаемый интервал, поэтому высокий порог на отдельный
-        // интервал флакует на CI (0.091 < 0.11 при исправном троттле).
-        // Ловим регрессию «резервация после await»: без неё все три
-        // запроса стартуют почти одновременно, интервалы ~0–5мс.
-        XCTAssertGreaterThanOrEqual(sorted[1].timeIntervalSince(sorted[0]), minInterval / 3)
-        XCTAssertGreaterThanOrEqual(sorted[2].timeIntervalSince(sorted[1]), minInterval / 3)
-        // Суммарный разбег устойчивее отдельных интервалов: джиттер
-        // соседних запросов взаимно компенсируется.
-        XCTAssertGreaterThanOrEqual(sorted[2].timeIntervalSince(sorted[0]), minInterval)
+        // Интервалы между `startLoading` в URLProtocol проверять нельзя:
+        // это слот троттла + джиттер доставки (планировщик, диспатч
+        // URLSession), и на CI лаг одного запроса достигает полного
+        // minInterval — соседний наблюдаемый интервал сжимается вплоть
+        // до нуля при исправном троттле (наблюдалось 0.091с и 0.0003с).
+        // Вместо этого меряем монотонными часами суммарное время всех
+        // трёх await: резервация слотов до `await` гарантирует, что
+        // третий запрос спит до T0 + 2×minInterval, а `Task.sleep`
+        // никогда не просыпается раньше срока. Регрессия «резервация
+        // после await» даёт elapsed в единицы миллисекунд. Запас 0.9 —
+        // на расхождение wall-clock (Date в throttle) и монотонных часов.
+        XCTAssertGreaterThanOrEqual(elapsed, .seconds(2 * minInterval * 0.9),
+                                    "три запроса должны занять не меньше двух слотов троттла")
     }
 }
 

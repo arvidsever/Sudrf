@@ -42,6 +42,13 @@ final class RefreshCenterTests: XCTestCase {
                       cartoteka: Cartoteka) async throws -> CaseMovement { value }
     }
 
+    private actor UnavailableMovement: MovementProviding {
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw SudrfError.caseCardTemporarilyUnavailable
+        }
+    }
+
     /// `CaptchaSolvingProvider`-стаб, который `RefreshCenter` не должен
     /// вызывать: шаг авто-решения капчи в тестах перекрыт `autoSolve`-
     /// замыканием в init. Нужен только потому, что `CaptchaSolver`
@@ -269,5 +276,31 @@ final class RefreshCenterTests: XCTestCase {
 
         XCTAssertNil(rec.seenAt, "новый акт должен вернуть бейдж «обновлено»")
         XCTAssertEqual(rec.snapshot?.actsFingerprint?.count, 1)
+    }
+
+    func testUnavailableCourtDoesNotOverwriteSavedCard() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let savedMovement = successMV!
+        let savedSnapshot = MovementDerivation.snapshot(from: savedMovement, context: ctx)
+        let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.movement = savedMovement
+        rec.snapshot = savedSnapshot
+        rec.movementFetchedAt = savedFetchedAt
+
+        let unavailable = UnavailableMovement()
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in unavailable })
+
+        await center.refresh(key: key)?.value
+
+        XCTAssertEqual(rec.movement, savedMovement,
+                       "недоступная карточка суда не должна затирать сохранённое движение")
+        XCTAssertEqual(rec.snapshot, savedSnapshot,
+                       "недоступная карточка суда не должна затирать снимок")
+        XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt,
+                       "неудачная попытка не должна выглядеть успешным обновлением")
+        XCTAssertNotNil(center.lastErrors[key])
     }
 }

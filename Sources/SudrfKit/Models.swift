@@ -172,6 +172,10 @@ public enum SudrfError: Error, CustomStringConvertible {
     case parsing(String)
     case invalidValue(String)
     case unknownCartoteka(String)
+    /// Сервер вернул штатную HTML-заглушку вместо карточки дела. HTTP-запрос
+    /// формально успешен, но разбирать такую страницу как пустую карточку нельзя:
+    /// фоновое обновление иначе затрёт уже сохранённые движение, УИД и акты.
+    case caseCardTemporarilyUnavailable
     /// Ни один известный вариант поискового URL не дал ни выдачи, ни валидной
     /// пустой страницы — суд отвечает в неизвестном формате (другая версия
     /// интерфейса, JS-защита, заглушка). Пустоту в этом случае показывать нельзя.
@@ -200,6 +204,9 @@ public enum SudrfError: Error, CustomStringConvertible {
             return "Значение нельзя представить в cp1251: «\(v)»."
         case .unknownCartoteka(let id):
             return "Неизвестная картотека: «\(id)»."
+        case .caseCardTemporarilyUnavailable:
+            return "Карточка дела временно недоступна на сайте суда. "
+                 + "Сохранённые данные оставлены без изменений; попробуйте обновить позже."
         case .searchModuleUnavailable(let domain):
             return "Поисковый модуль суда \(domain) не отвечает в известных форматах "
                  + "(возможно, JS-защита или нестандартный интерфейс). "

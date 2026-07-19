@@ -36,6 +36,19 @@ public enum CaseCardParser {
         let body: Element? = doc.body() ?? doc
         let rawText = body.map { normalize(blockText($0)) } ?? ""
 
+        // Некоторые sudrf-серверы отвечают HTTP 200 и общей оболочкой сайта,
+        // но вместо карточки кладут штатную заглушку «Информация временно
+        // недоступна… Попробуйте обратиться позже». Без этой проверки parser
+        // возвращал валидный CaseCard с пустыми полями, а RefreshCenter считал
+        // fetch успешным и затирал сохранённые УИД, движение, стороны и акты.
+        // Два маркера уменьшают риск принять обычное уведомление в chrome за
+        // недоступную карточку.
+        let lowerText = rawText.lowercased()
+        if lowerText.contains("информация временно недоступна"),
+           lowerText.contains("попробуйте обратиться позже") {
+            throw SudrfError.caseCardTemporarilyUnavailable
+        }
+
         // «Винтажная» версия модуля (VNKOD-суды: Воронеж, Ульяновск, Амур и др.)
         // рисует карточку совсем иначе: вкладки tab_content_* вместо cont{N}.
         if isVintage(doc) {

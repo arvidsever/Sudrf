@@ -7,6 +7,23 @@ import XCTest
 /// трём инстанциям. Фикстуры лежат в Tests/SudrfKitTests/Fixtures.
 final class CaseCardParserTests: XCTestCase {
 
+    func testTemporaryUnavailablePageIsNotParsedAsEmptyCard() throws {
+        let html = """
+        <html><body>
+          <main>
+            Информация временно недоступна. Приносим свои извинения.
+            Попробуйте обратиться позже или обратитесь непосредственно в суд.
+          </main>
+        </body></html>
+        """
+
+        XCTAssertThrowsError(try CaseCardParser.parse(html: html)) { error in
+            guard case SudrfError.caseCardTemporarilyUnavailable = error else {
+                return XCTFail("ожидалась caseCardTemporarilyUnavailable, получено: \(error)")
+            }
+        }
+    }
+
     func testSearchExcerptBarePersonsMarkerMeansThirdPartiesOnly() {
         let split = CaseParties.split(essence: "ИСТЕЦ: Иванов И.И. ОТВЕТЧИК: ФСИН России ЛИЦА: Рыжкова Е.А.")
         XCTAssertEqual(split.parties?.defendants, ["ФСИН России"])

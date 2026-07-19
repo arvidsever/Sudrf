@@ -38,9 +38,13 @@ final class SpotlightIntegrationTests: XCTestCase {
             .courtAct(caseKey: "court.example/2-1/2026", sourceActID: "act?id=1&x=2"),
         ]
         for link in links {
-            XCTAssertEqual(SudrfDeepLink(url: link.url), link)
+            XCTAssertEqual(SudrfDeepLink(url: try XCTUnwrap(link.url)), link)
         }
         XCTAssertNil(SudrfDeepLink(url: try XCTUnwrap(URL(string: "https://example.com"))))
+        XCTAssertNil(SudrfDeepLink(url: try XCTUnwrap(
+            URL(string: "sudrf://case?id=first&id=second"))))
+        XCTAssertNil(SudrfDeepLink(url: try XCTUnwrap(
+            URL(string: "sudrf://act?case=one&act=a&act=b"))))
     }
 
     @MainActor
@@ -57,8 +61,10 @@ final class SpotlightIntegrationTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let preference = SpotlightPreferenceStore(suiteName: suite)
         let indexer = SpotlightIndexer(catalog: catalog, writer: writer,
-                                       manifestStore: manifest)
+                                       manifestStore: manifest,
+                                       preferenceStore: preference)
 
         try await indexer.synchronize()
         var state = await writer.snapshot()
@@ -87,6 +93,15 @@ final class SpotlightIntegrationTests: XCTestCase {
         try await indexer.rebuild()
         state = await writer.snapshot()
         XCTAssertEqual(state.deleteAllCount, 1)
+
+        try await indexer.setEnabled(false)
+        state = await writer.snapshot()
+        XCTAssertEqual(state.deleteAllCount, 2)
+        store.upsert(context: context, snapshot: nil, movement: original,
+                     collections: ["Доверитель"])
+        try await indexer.synchronize()
+        let disabledState = await writer.snapshot()
+        XCTAssertEqual(disabledState.indexedCaseIDs.count, state.indexedCaseIDs.count)
     }
 
     @MainActor

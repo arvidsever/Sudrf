@@ -157,7 +157,12 @@ struct SudrfStoreBootstrapError: LocalizedError {
 
 @MainActor
 enum SudrfPersistentStoreBackup {
-    private static let markerKey = "swiftData.schemaV2BackupAndMigrationCompleted"
+    /// Меняется вместе с target schema. Новая миграция обязана получить новый
+    /// marker и отдельный каталог, иначе старая отметка пропустит backup.
+    private static let schemaVersion = 3
+    private static var markerKey: String {
+        "swiftData.backupAndMigrationCompleted.schema-v\(schemaVersion)"
+    }
 
     static func prepare(storeURL: URL,
                         backupRoot: URL? = nil,
@@ -166,10 +171,16 @@ enum SudrfPersistentStoreBackup {
               FileManager.default.fileExists(atPath: storeURL.path) else { return nil }
 
         let root = backupRoot ?? defaultBackupRoot()
-        let destination = root.appendingPathComponent("pre-schema-v2", isDirectory: true)
-        if FileManager.default.fileExists(atPath: destination.path) { return destination }
+        let destination = root.appendingPathComponent(
+            "pre-schema-v\(schemaVersion)", isDirectory: true)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            guard isUsableBackup(destination, storeURL: storeURL) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return destination
+        }
 
-        let temporary = root.appendingPathComponent(".pre-schema-v2-\(UUID().uuidString)",
+        let temporary = root.appendingPathComponent(".pre-schema-v\(schemaVersion)-\(UUID().uuidString)",
                                                      isDirectory: true)
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         do {
@@ -178,7 +189,19 @@ enum SudrfPersistentStoreBackup {
                 try FileManager.default.copyItem(
                     at: source, to: temporary.appendingPathComponent(source.lastPathComponent))
             }
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            do {
+                try FileManager.default.moveItem(at: temporary, to: destination)
+            } catch {
+                // Два процесса могли одновременно подготовить одну и ту же
+                // schema-specific копию. Принимаем победившую только после
+                // проверки наличия основного store-файла.
+                if FileManager.default.fileExists(atPath: destination.path),
+                   isUsableBackup(destination, storeURL: storeURL) {
+                    try? FileManager.default.removeItem(at: temporary)
+                    return destination
+                }
+                throw error
+            }
             return destination
         } catch {
             try? FileManager.default.removeItem(at: temporary)
@@ -203,15 +226,26 @@ enum SudrfPersistentStoreBackup {
          URL(fileURLWithPath: storeURL.path + "-wal"),
          URL(fileURLWithPath: storeURL.path + "-shm")]
     }
+
+    private static func isUsableBackup(_ directory: URL, storeURL: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(storeURL.lastPathComponent).path)
+    }
 }
 
 @MainActor
 enum SudrfModelContainerFactory {
-    static func make(inMemory: Bool) throws -> ModelContainer {
+    static func make(inMemory: Bool, storeURL: URL? = nil) throws -> ModelContainer {
         let schema = Schema(versionedSchema: SudrfSchemaV3.self)
-        let configuration = ModelConfiguration(
-            nil, schema: schema, isStoredInMemoryOnly: inMemory,
-            cloudKitDatabase: .none)
+        let configuration: ModelConfiguration
+        if let storeURL {
+            configuration = ModelConfiguration(
+                "Sudrf", schema: schema, url: storeURL, cloudKitDatabase: .none)
+        } else {
+            configuration = ModelConfiguration(
+                nil, schema: schema, isStoredInMemoryOnly: inMemory,
+                cloudKitDatabase: .none)
+        }
         return try ModelContainer(for: schema, migrationPlan: SudrfSchemaMigrationPlan.self,
                                   configurations: configuration)
     }
@@ -221,7 +255,9 @@ enum SudrfModelContainerFactory {
         var backup: URL?
         do {
             backup = try SudrfPersistentStoreBackup.prepare(storeURL: defaultURL)
-            let container = try make(inMemory: false)
+            // Backup и контейнер получают один и тот же URL, а не вычисляют
+            // default location независимо друг от друга.
+            let container = try make(inMemory: false, storeURL: defaultURL)
             SudrfPersistentStoreBackup.markMigrationCompleted()
             return container
         } catch {

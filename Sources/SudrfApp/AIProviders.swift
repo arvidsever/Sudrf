@@ -17,7 +17,7 @@ enum AISummarizerError: LocalizedError, Sendable {
         case .concreteModelRequired: "Укажите конкретный model ID в Настройки → AI."
         case .providerUnavailable(let reason): reason
         case .invalidResponse: "Провайдер вернул ответ, не соответствующий ActSummary."
-        case .http(let status, let body): "AI API вернул HTTP \(status): \(body.prefix(300))"
+        case .http(let status, _): "AI API вернул HTTP \(status). Ответ провайдера скрыт из соображений безопасности."
         }
     }
 }
@@ -30,7 +30,7 @@ struct MockActSummarizer: ActSummarizing {
         return ActSummary(
             circumstances: [SummaryClaim(
                 text: "Тестовая локальная сводка по первому абзацу.", citations: [citation])],
-            warnings: ["Mock-провайдер не выполняет юридический анализ."])
+            localWarnings: ["Mock-провайдер не выполняет юридический анализ."])
     }
 }
 
@@ -123,7 +123,10 @@ actor GroqActSummarizer: ActSummarizing {
                                 "schema": SummaryPrompt.jsonSchema],
             ],
         ]
-        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/chat/completions")!)
+        guard let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
+            throw AISummarizerError.invalidResponse
+        }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -157,7 +160,10 @@ actor GigaChatActSummarizer: ActSummarizing {
             "response_format": ["type": "json_schema", "schema": SummaryPrompt.jsonSchema,
                                 "strict": true],
         ]
-        var request = URLRequest(url: URL(string: "https://api.giga.chat/v1/chat/completions")!)
+        guard let endpoint = URL(string: "https://api.giga.chat/v1/chat/completions") else {
+            throw AISummarizerError.invalidResponse
+        }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -173,7 +179,10 @@ actor GigaChatActSummarizer: ActSummarizing {
         if let cachedToken, cachedToken.expiresAt > Date().addingTimeInterval(60) {
             return cachedToken.value
         }
-        var request = URLRequest(url: URL(string: "https://api.giga.chat/api/v2/oauth")!)
+        guard let endpoint = URL(string: "https://api.giga.chat/api/v2/oauth") else {
+            throw AISummarizerError.invalidResponse
+        }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Basic \(authorizationKey)", forHTTPHeaderField: "Authorization")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "RqUID")
@@ -203,7 +212,11 @@ actor YandexGPTActSummarizer: ActSummarizing {
             "completionOptions": ["stream": false, "temperature": 0],
             "messages": SummaryPrompt.messages(document: document),
         ]
-        var request = URLRequest(url: URL(string: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion")!)
+        guard let endpoint = URL(
+            string: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion") else {
+            throw AISummarizerError.invalidResponse
+        }
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Api-Key \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(folderID, forHTTPHeaderField: "x-folder-id")
@@ -239,6 +252,7 @@ enum SummaryPrompt {
             ["role": "system", "content": """
             Ты анализируешь судебный акт. Верни только JSON по заданной схеме. Не додумывай факты.
             Каждый непустой вывод обязан иметь citations; evidenceQuote — дословная подстрока указанного абзаца.
+            Предупреждения модели в warnings подчиняются тем же правилам: каждое содержит text и citations.
             Числа, даты, суммы, номера дел и нормы права копируй только из оригинала.
             """],
             ["role": "user", "content": """
@@ -271,7 +285,7 @@ enum SummaryPrompt {
         var properties: [String: Any] = Dictionary(uniqueKeysWithValues: sectionNames.map {
             ($0, ["type": "array", "items": claimSchema] as [String: Any])
         })
-        properties["warnings"] = ["type": "array", "items": ["type": "string"]]
+        properties["warnings"] = ["type": "array", "items": claimSchema]
         properties["intermediateEnglishSummary"] = ["type": ["string", "null"]]
         properties["usedDoubleTranslation"] = ["type": "boolean"]
         return ["type": "object", "additionalProperties": false,
@@ -282,9 +296,17 @@ enum SummaryPrompt {
 
     static func decode(_ text: String) throws -> ActSummary {
         var candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if candidate.hasPrefix("```"), let firstNewline = candidate.firstIndex(of: "\n") {
-            candidate = String(candidate[candidate.index(after: firstNewline)...])
-            if candidate.hasSuffix("```") { candidate.removeLast(3) }
+        if candidate.hasPrefix("```") {
+            candidate.removeFirst(3)
+            candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidate.lowercased().hasPrefix("json") {
+                candidate.removeFirst(4)
+                candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if candidate.hasSuffix("```") {
+                candidate.removeLast(3)
+                candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
         }
         guard let data = candidate.data(using: .utf8),
               let result = try? JSONDecoder().decode(ActSummary.self, from: data) else {

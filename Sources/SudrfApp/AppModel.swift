@@ -382,11 +382,7 @@ final class AppRouter: ObservableObject {
     @Published var globalSearchResults: [SpotlightSearchHit] = []
     @Published var globalSearching = false
     @Published var globalSearchError: String? = nil
-    /// Непусто только если persistent store не открылся. В этом состоянии UI
-    /// перекрывается блокирующим экраном; временное хранилище не выдаётся за
-    /// рабочую пользовательскую базу.
-    @Published private(set) var storageStartupError: String? = nil
-
+    @Published private(set) var spotlightEnabled = true
     // Вся лента внутри «Обзора»
     @Published var feedFilter: FeedTypeFilter = .all
     @Published var feedUnreadOnly = false
@@ -483,28 +479,21 @@ final class AppRouter: ObservableObject {
     }
 
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
-         modelContainer suppliedModelContainer: ModelContainer? = nil) {
+         modelContainer suppliedModelContainer: ModelContainer? = nil) throws {
         let store: TrackedStore
-        let storageStartupError: String?
         if let suppliedModelContainer {
             store = TrackedStore(container: suppliedModelContainer)
-            storageStartupError = nil
         } else {
-            do {
-                store = TrackedStore(container: try SudrfModelContainerFactory.makeProduction())
-                storageStartupError = nil
-            } catch {
-                // Контейнер нужен для безопасного построения объекта и экрана
-                // ошибки, но весь основной UI перекрыт и запись недоступна.
-                store = TrackedStore(inMemory: true)
-                storageStartupError = error.localizedDescription
-            }
+            store = TrackedStore(container: try SudrfModelContainerFactory.makeProduction())
         }
         self.store = store
-        self.storageStartupError = storageStartupError
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
         self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
+        if UserDefaults.standard.object(forKey: SpotlightPreferenceStore.key) != nil {
+            self.spotlightEnabled = UserDefaults.standard.bool(
+                forKey: SpotlightPreferenceStore.key)
+        }
         let captchaSettings = suppliedCaptchaSettings ?? .shared
         // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
         // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
@@ -577,7 +566,6 @@ final class AppRouter: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await CaseCatalogRegistry.shared.install(self.caseCatalog)
-            guard self.storageStartupError == nil else { return }
             let summary = await self.repairCoordinator.runAll()
             self.applyRepair(summary)
             self.refreshCenter.start()
@@ -611,13 +599,44 @@ final class AppRouter: ObservableObject {
             section = .cases
             openCase(key: key)
         case .courtAct(let caseKey, let sourceActID):
-            section = .cases
-            openCase(key: caseKey)
-            selectedActID = sourceActID
+            _ = intentOpenAct(caseKey: caseKey, sourceActID: sourceActID)
+        }
+    }
+
+    func handleSpotlightItem(identifier: String) {
+        if store.record(forKey: identifier) != nil {
+            _ = intentOpenCase(key: identifier)
+            return
+        }
+        Task { [weak self] in
+            guard let self,
+                  let act = try? await self.caseCatalog.act(id: identifier) else { return }
+            _ = self.intentOpenAct(caseKey: act.document.caseKey,
+                                   sourceActID: act.document.sourceActID)
+        }
+    }
+
+    func setSpotlightEnabled(_ enabled: Bool) {
+        spotlightEnabled = enabled
+        // Фиксируем последнее намерение синхронно. Каждая последующая actor-задача
+        // перечитывает это значение, поэтому быстрые toggle не могут оставить
+        // индекс в состоянии, соответствующем устаревшему клику.
+        UserDefaults.standard.set(enabled, forKey: SpotlightPreferenceStore.key)
+        if !enabled { clearSpotlightSearch() }
+        Task { [weak self] in
+            guard let self else { return }
+            do { try await self.spotlightIndexer.synchronize() }
+            catch { self.globalSearchError = error.localizedDescription }
         }
     }
 
     func searchSpotlight() {
+        guard spotlightEnabled else {
+            globalSearchResults = []
+            globalSearchError = "Системный Spotlight отключён для Sudrf."
+            globalSearching = false
+            return
+        }
         globalSearchResults = []
         globalSearchError = nil
         globalSearching = !globalQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -721,7 +740,10 @@ final class AppRouter: ObservableObject {
             activity.webpageURL = SudrfDeepLink.caseRecord(key: key).url
         }
         activity.isEligibleForSearch = true
-        activity.persistentIdentifier = NSUserActivityPersistentIdentifier(activity.appEntityIdentifier!.description)
+        if let identifier = activity.appEntityIdentifier {
+            activity.persistentIdentifier = NSUserActivityPersistentIdentifier(
+                identifier.description)
+        }
         currentEntityActivity?.invalidate()
         currentEntityActivity = activity
         activity.becomeCurrent()
@@ -738,7 +760,10 @@ final class AppRouter: ObservableObject {
     }
 
     func intentOpenAct(caseKey: String, sourceActID: String) -> Bool {
-        guard store.record(forKey: caseKey) != nil else { return false }
+        guard store.record(forKey: caseKey) != nil,
+              store.courtActID(caseKey: caseKey, sourceActID: sourceActID) != nil else {
+            return false
+        }
         section = .cases
         openCase(key: caseKey)
         selectedActID = sourceActID
@@ -1285,7 +1310,7 @@ final class AppRouter: ObservableObject {
             rec.movement = MovementCachePolicy.stripped(forPersist: updated)
             rec.snapshot = MovementDerivation.preservingConfirmedDeadlines(
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
-            store.save()
+            store.save(rebuildProjection: true)
             reload()
         }
 

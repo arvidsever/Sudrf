@@ -49,7 +49,12 @@ public struct ActSummary: Sendable, Codable, Hashable {
     public var dates: [SummaryClaim]
     public var deadlines: [SummaryClaim]
     public var appeal: [SummaryClaim]
-    public var warnings: [String]
+    /// Предупреждения, сформированные моделью. Это такие же проверяемые claims:
+    /// они обязаны иметь citations и проходят literal validation.
+    public var warnings: [SummaryClaim]
+    /// Диагностика, добавленная самим приложением (mock/experimental status).
+    /// Провайдер не может записать сюда данные через structured-output schema.
+    public var localWarnings: [String]
     public var intermediateEnglishSummary: String?
     public var usedDoubleTranslation: Bool
 
@@ -57,7 +62,8 @@ public struct ActSummary: Sendable, Codable, Hashable {
                 circumstances: [SummaryClaim] = [], reasoning: [SummaryClaim] = [],
                 disposition: [SummaryClaim] = [], amounts: [SummaryClaim] = [],
                 dates: [SummaryClaim] = [], deadlines: [SummaryClaim] = [],
-                appeal: [SummaryClaim] = [], warnings: [String] = [],
+                appeal: [SummaryClaim] = [], warnings: [SummaryClaim] = [],
+                localWarnings: [String] = [],
                 intermediateEnglishSummary: String? = nil,
                 usedDoubleTranslation: Bool = false) {
         self.claims = claims
@@ -70,13 +76,14 @@ public struct ActSummary: Sendable, Codable, Hashable {
         self.deadlines = deadlines
         self.appeal = appeal
         self.warnings = warnings
+        self.localWarnings = localWarnings
         self.intermediateEnglishSummary = intermediateEnglishSummary
         self.usedDoubleTranslation = usedDoubleTranslation
     }
 
     public var allClaims: [SummaryClaim] {
         claims + partyPositions + circumstances + reasoning + disposition
-            + amounts + dates + deadlines + appeal
+            + amounts + dates + deadlines + appeal + warnings
     }
 
     public static func merging(_ values: [ActSummary]) -> ActSummary {
@@ -91,10 +98,72 @@ public struct ActSummary: Sendable, Codable, Hashable {
             dates: values.flatMap(\.dates),
             deadlines: values.flatMap(\.deadlines),
             appeal: values.flatMap(\.appeal),
-            warnings: Array(Set(values.flatMap(\.warnings))).sorted(),
+            warnings: uniqueClaims(values.flatMap(\.warnings)),
+            localWarnings: Array(Set(values.flatMap(\.localWarnings))).sorted(),
             intermediateEnglishSummary: diagnostics.isEmpty
                 ? nil : diagnostics.joined(separator: "\n\n--- chunk ---\n\n"),
             usedDoubleTranslation: values.contains(where: \.usedDoubleTranslation))
+    }
+
+    private static func uniqueClaims(_ claims: [SummaryClaim]) -> [SummaryClaim] {
+        claims.reduce(into: []) { result, claim in
+            guard !result.contains(where: {
+                $0.text == claim.text && $0.citations == claim.citations
+            }) else { return }
+            result.append(claim)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case claims, partyPositions, circumstances, reasoning, disposition
+        case amounts, dates, deadlines, appeal, warnings, localWarnings
+        case intermediateEnglishSummary, usedDoubleTranslation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        claims = try values.decodeIfPresent([SummaryClaim].self, forKey: .claims) ?? []
+        partyPositions = try values.decodeIfPresent([SummaryClaim].self, forKey: .partyPositions) ?? []
+        circumstances = try values.decodeIfPresent([SummaryClaim].self, forKey: .circumstances) ?? []
+        reasoning = try values.decodeIfPresent([SummaryClaim].self, forKey: .reasoning) ?? []
+        disposition = try values.decodeIfPresent([SummaryClaim].self, forKey: .disposition) ?? []
+        amounts = try values.decodeIfPresent([SummaryClaim].self, forKey: .amounts) ?? []
+        dates = try values.decodeIfPresent([SummaryClaim].self, forKey: .dates) ?? []
+        deadlines = try values.decodeIfPresent([SummaryClaim].self, forKey: .deadlines) ?? []
+        appeal = try values.decodeIfPresent([SummaryClaim].self, forKey: .appeal) ?? []
+        if let cited = try? values.decode([SummaryClaim].self, forKey: .warnings) {
+            warnings = cited
+            localWarnings = try values.decodeIfPresent([String].self, forKey: .localWarnings) ?? []
+        } else {
+            // Совместимость с сохранёнными до перехода на cited warnings
+            // сводками: прежний свободный текст становится только локальной
+            // непроверенной диагностикой и больше не считается выводом модели.
+            warnings = []
+            let legacy = (try? values.decode([String].self, forKey: .warnings)) ?? []
+            localWarnings = legacy
+                + (try values.decodeIfPresent([String].self, forKey: .localWarnings) ?? [])
+        }
+        intermediateEnglishSummary = try values.decodeIfPresent(
+            String.self, forKey: .intermediateEnglishSummary)
+        usedDoubleTranslation = try values.decodeIfPresent(
+            Bool.self, forKey: .usedDoubleTranslation) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(claims, forKey: .claims)
+        try values.encode(partyPositions, forKey: .partyPositions)
+        try values.encode(circumstances, forKey: .circumstances)
+        try values.encode(reasoning, forKey: .reasoning)
+        try values.encode(disposition, forKey: .disposition)
+        try values.encode(amounts, forKey: .amounts)
+        try values.encode(dates, forKey: .dates)
+        try values.encode(deadlines, forKey: .deadlines)
+        try values.encode(appeal, forKey: .appeal)
+        try values.encode(warnings, forKey: .warnings)
+        try values.encode(localWarnings, forKey: .localWarnings)
+        try values.encodeIfPresent(intermediateEnglishSummary, forKey: .intermediateEnglishSummary)
+        try values.encode(usedDoubleTranslation, forKey: .usedDoubleTranslation)
     }
 }
 
@@ -142,19 +211,22 @@ public enum ActSummaryValidator {
                 guard let original = paragraphs[citation.paragraphID] else {
                     throw ActSummaryValidationError.unknownParagraph(citation.paragraphID)
                 }
-                let quote = citation.evidenceQuote.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !quote.isEmpty, original.localizedCaseInsensitiveContains(quote) else {
+                let quote = canonicalEvidenceText(citation.evidenceQuote)
+                guard !quote.isEmpty,
+                      canonicalEvidenceText(original).contains(quote) else {
                     throw ActSummaryValidationError.evidenceNotVerbatim(citation.paragraphID)
                 }
             }
-        }
 
-        // Числа, даты, номера дел и ссылки на нормы нельзя принимать, если их
-        // нет в русском оригинале. Проверяется именно текст claims, не warnings.
-        let source = canonicalLiteralText(ActParagraphizer.normalizedText(document.sourceText))
-        for literal in protectedLiterals(in: summary.allClaims.map(\.text).joined(separator: "\n")) {
-            guard source.contains(canonicalLiteralText(literal)) else {
-                throw ActSummaryValidationError.unsupportedLiteral(literal)
+            // Реквизит должен находиться именно в процитированных абзацах, а
+            // не где-нибудь в другом месте документа. Boundary-aware поиск не
+            // принимает 100 внутри 1100 или 3 дня внутри 23 дней.
+            let citedSource = claim.citations.compactMap { paragraphs[$0.paragraphID] }
+                .joined(separator: "\n")
+            for literal in protectedLiterals(in: claim.text) {
+                guard containsLiteral(literal, in: citedSource) else {
+                    throw ActSummaryValidationError.unsupportedLiteral(literal)
+                }
             }
         }
     }
@@ -163,8 +235,10 @@ public enum ActSummaryValidator {
         let patterns = [
             #"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"#,
             #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#,
-            #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль)?\.?|₽|USD|EUR)"#,
+            #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль|\.)?|₽|USD|EUR)"#,
+            #"(?i)\b(?:(?:ноль|один|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|одиннадцать|двенадцать|тринадцать|четырнадцать|пятнадцать|шестнадцать|семнадцать|восемнадцать|девятнадцать|двадцать|тридцать|сорок|пятьдесят|шестьдесят|семьдесят|восемьдесят|девяносто|сто|двести|триста|четыреста|пятьсот|шестьсот|семьсот|восемьсот|девятьсот|тысяч(?:а|и)?|миллион(?:а|ов)?|миллиард(?:а|ов)?)[\s-]+)+(?:руб(?:ль|ля|лей)|₽)\b"#,
             #"(?i)\b\d+\s+(?:календарных\s+|рабочих\s+)?(?:дн(?:ей|я|ь)|месяц(?:а|ев)?|лет|года?|час(?:а|ов)?)\b"#,
+            #"(?i)\b(?:в\s+)?(?:январе|феврале|марте|апреле|мае|июне|июле|августе|сентябре|октябре|ноябре|декабре|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4}\s*(?:года|г\.)?)?\b"#,
             #"(?i)\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#,
             #"\b\d{1,3}[-–]\d+[A-Za-zА-Яа-я0-9/.-]*\b"#,
             #"(?i)\b(?:стать(?:я|е|и|ю)|ст\.|част(?:ь|и|ью)|ч\.|пункт(?:а|е|ом|у)?|п\.|подпункт(?:а|е|ом|у)?|абзац(?:а|е|ем|у)?)\s*\d+(?:\.\d+)*\b"#,
@@ -186,5 +260,24 @@ public enum ActSummaryValidator {
             .replacingOccurrences(of: "\u{202F}", with: " ")
             .replacingOccurrences(of: "–", with: "-")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    private static func canonicalEvidenceText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "\u{202F}", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func containsLiteral(_ literal: String, in source: String) -> Bool {
+        let value = canonicalLiteralText(literal)
+        let haystack = canonicalLiteralText(source)
+        guard !value.isEmpty else { return true }
+        let escaped = NSRegularExpression.escapedPattern(for: value)
+        let pattern = "(?<![\\p{L}\\p{N}])\(escaped)(?![\\p{L}\\p{N}])"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        return regex.firstMatch(
+            in: haystack,
+            range: NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)) != nil
     }
 }

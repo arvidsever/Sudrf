@@ -3,7 +3,6 @@ import Foundation
 import Security
 import SudrfKit
 import SwiftUI
-@preconcurrency import Translation
 import UniformTypeIdentifiers
 
 enum AIProviderKind: String, CaseIterable, Identifiable, Sendable {
@@ -81,12 +80,11 @@ final class AISettings: ObservableObject {
     @AppStorage("ai.appleEnglishExperimental") var appleEnglishExperimental = false
     @AppStorage("ai.yandexFolderID") var yandexFolderID = ""
     @AppStorage("ai.gigachatScope") var gigaChatScope = "GIGACHAT_API_PERS"
-    @AppStorage("ai.translationPairPrepared") var translationPairPrepared = false
+    @Published private(set) var translationPairPrepared = false
     @Published var draftKey = ""
     @Published var statusMessage: String?
     @Published var connectionTestRunning = false
     @Published var benchmarkRunning = false
-    private var preparedTranslationDirections = Set<String>()
     private var benchmarkTask: Task<Void, Never>?
 
     private init() {}
@@ -109,23 +107,19 @@ final class AISettings: ObservableObject {
         statusMessage = "Согласие отозвано. Новые акты не будут отправляться в облако."
     }
 
-    func beginTranslationPreparation() {
-        preparedTranslationDirections.removeAll()
+    func prepareTranslationPair() {
         translationPairPrepared = false
         statusMessage = "Подготовка языковой пары русский ↔ английский…"
-    }
-
-    func markTranslationPrepared(direction: String) {
-        preparedTranslationDirections.insert(direction)
-        if preparedTranslationDirections == ["ru-en", "en-ru"] {
-            translationPairPrepared = true
-            statusMessage = "Языковая пара русский ↔ английский готова."
+        Task {
+            do {
+                try await InstalledTranslationPair.shared.prepare()
+                translationPairPrepared = true
+                statusMessage = "Языковая пара русский ↔ английский готова."
+            } catch {
+                translationPairPrepared = false
+                statusMessage = "Не удалось подготовить перевод: \(error.localizedDescription)"
+            }
         }
-    }
-
-    func markTranslationFailed(_ error: Error) {
-        translationPairPrepared = false
-        statusMessage = "Не удалось подготовить перевод: \(error.localizedDescription)"
     }
 
     func testConnection() {
@@ -204,8 +198,6 @@ private extension JSONEncoder {
 
 struct AISettingsView: View {
     @StateObject private var settings = AISettings.shared
-    @State private var russianToEnglishConfiguration: TranslationSession.Configuration?
-    @State private var englishToRussianConfiguration: TranslationSession.Configuration?
     @State private var confirmingCloudConsent = false
 
     var body: some View {
@@ -256,16 +248,11 @@ struct AISettingsView: View {
             Toggle("Apple через английский — экспериментально",
                    isOn: $settings.appleEnglishExperimental)
             Button(settings.translationPairPrepared
-                   ? "Переустановить языковую пару русский ↔ английский"
+                   ? "Языковая пара русский ↔ английский готова"
                    : "Подготовить языковую пару русский ↔ английский") {
-                settings.beginTranslationPreparation()
-                russianToEnglishConfiguration = TranslationSession.Configuration(
-                    source: Locale.Language(identifier: "ru"),
-                    target: Locale.Language(identifier: "en"))
-                englishToRussianConfiguration = TranslationSession.Configuration(
-                    source: Locale.Language(identifier: "en"),
-                    target: Locale.Language(identifier: "ru"))
+                settings.prepareTranslationPair()
             }
+            .disabled(settings.translationPairPrepared)
             Text("Режим выключен по умолчанию и сохраняет статус Experimental до отдельного go/no-go benchmark.")
                 .font(.caption).foregroundStyle(.secondary)
 
@@ -285,22 +272,6 @@ struct AISettingsView: View {
             Button("Отмена", role: .cancel) {}
         } message: {
             Text("Sudrf отправит только акт, для которого вы явно нажмёте «Создать сводку». Опубликованный текст может содержать персональные данные третьих лиц.")
-        }
-        .translationTask(russianToEnglishConfiguration) { session in
-            do {
-                try await session.prepareTranslation()
-                await MainActor.run { settings.markTranslationPrepared(direction: "ru-en") }
-            } catch {
-                await MainActor.run { settings.markTranslationFailed(error) }
-            }
-        }
-        .translationTask(englishToRussianConfiguration) { session in
-            do {
-                try await session.prepareTranslation()
-                await MainActor.run { settings.markTranslationPrepared(direction: "en-ru") }
-            } catch {
-                await MainActor.run { settings.markTranslationFailed(error) }
-            }
         }
     }
 }

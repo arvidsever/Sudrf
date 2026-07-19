@@ -65,11 +65,7 @@ enum ActSummarizerFactory {
                 throw AISummarizerError.providerUnavailable(
                     "Включите «Apple через английский — экспериментально» в Настройки → AI.")
             }
-            guard settings.translationPairPrepared else {
-                throw AISummarizerError.providerUnavailable(
-                    "Сначала подготовьте языковую пару русский ↔ английский в Настройки → AI.")
-            }
-            let pair = InstalledTranslationPair()
+            let pair = InstalledTranslationPair.shared
             let translated = AppleTranslatedActSummarizer(
                 englishSummarizer: AppleDirectActSummarizer(
                     requiredLocaleIdentifier: "en_US"),
@@ -202,8 +198,21 @@ private struct SummarySections: View {
                     }
                 }
             }
-            ForEach(summary.warnings, id: \.self) {
-                Label($0, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+            ForEach(summary.warnings) { warning in
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(warning.text, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    HStack(spacing: 6) {
+                        ForEach(Array(Set(warning.citations.map(\.paragraphID))).sorted(),
+                                id: \.self) { paragraphID in
+                            Button(paragraphID) { onCitation(paragraphID) }
+                                .buttonStyle(.link).font(.caption)
+                        }
+                    }
+                }
+            }
+            ForEach(summary.localWarnings, id: \.self) {
+                Label($0, systemImage: "info.circle").foregroundStyle(.secondary)
             }
             if let english = summary.intermediateEnglishSummary {
                 DisclosureGroup("Диагностика: английская промежуточная сводка") {

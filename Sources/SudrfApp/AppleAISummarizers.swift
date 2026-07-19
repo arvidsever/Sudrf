@@ -41,7 +41,7 @@ private struct AppleSummaryOutput {
     var dates: [AppleClaimOutput]
     var deadlines: [AppleClaimOutput]
     var appeal: [AppleClaimOutput]
-    var warnings: [String]
+    var warnings: [AppleClaimOutput]
 }
 
 actor AppleDirectActSummarizer: ActSummarizing {
@@ -87,13 +87,14 @@ actor AppleDirectActSummarizer: ActSummarizing {
             circumstances: claims(value.circumstances), reasoning: claims(value.reasoning),
             disposition: claims(value.disposition), amounts: claims(value.amounts),
             dates: claims(value.dates), deadlines: claims(value.deadlines),
-            appeal: claims(value.appeal), warnings: value.warnings)
+            appeal: claims(value.appeal), warnings: claims(value.warnings))
     }
 }
 
 /// TranslationSession не объявлен Sendable, поэтому обе сессии создаются и
 /// используются только внутри actor; наружу выходят лишь строки.
 actor InstalledTranslationPair {
+    static let shared = InstalledTranslationPair()
     private let russian = Locale.Language(identifier: "ru")
     private let english = Locale.Language(identifier: "en")
     private lazy var russianToEnglishSession = TranslationSession(
@@ -141,7 +142,8 @@ enum LegalLiteralProtector {
         let patterns: [(String, String)] = [
             ("D", #"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"#),
             ("D", #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#),
-            ("A", #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль)?\.?|₽|USD|EUR)"#),
+            ("A", #"(?i)[0-9][0-9 \x{00A0}.,]*(?:руб(?:лей|ля|ль|\.)?|₽|USD|EUR)"#),
+            ("A", #"(?i)\b(?:(?:ноль|один|одна|одно|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|сто|двести|триста|четыреста|пятьсот|тысяч(?:а|и)?|миллион(?:а|ов)?)[\s-]+)+(?:руб(?:ль|ля|лей)|₽)\b"#),
             ("D", #"(?i)\b\d+\s+(?:календарных\s+|рабочих\s+)?(?:дн(?:ей|я|ь)|месяц(?:а|ев)?|лет|года?|час(?:а|ов)?)\b"#),
             ("N", #"(?i)\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#),
             ("L", #"(?i)(?:стать(?:я|е|и|ю)|ст\.|част(?:ь|и|ью)|ч\.|пункт(?:а|е|ом|у)?|п\.|подпункт(?:а|е|ом|у)?|абзац(?:а|е|ем|у)?)\s*\d+(?:\.\d+)*"#),
@@ -158,8 +160,9 @@ enum LegalLiteralProtector {
                     guard let match = regex.firstMatch(
                         in: text, range: NSRange(location: 0, length: ns.length)) else { break }
                     let original = ns.substring(with: match.range)
-                    counters[prefix, default: 0] += 1
-                    let id = String(format: "%@%03d", prefix, counters[prefix]!)
+                    let next = (counters[prefix] ?? 0) + 1
+                    counters[prefix] = next
+                    let id = String(format: "%@%03d", prefix, next)
                     literals.append(ProtectedLegalLiteral(id: id, original: original))
                     text = ns.replacingCharacters(in: match.range, with: "⟦\(id)⟧")
                 }
@@ -169,11 +172,11 @@ enum LegalLiteralProtector {
         return ProtectedTranslationDocument(paragraphs: values, literals: literals)
     }
 
-    static func placeholderIDs(in text: String) -> Set<String> {
+    static func placeholderIDs(in text: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: #"⟦[A-Z]\d{3}⟧"#) else { return [] }
         let ns = text as NSString
-        return Set(regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
-            .map { ns.substring(with: $0.range) })
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range) }
     }
 }
 
@@ -212,6 +215,11 @@ struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
             paragraphs: englishParagraphs)
         let english = try await englishSummarizer.summarize(
             document: englishDocument, options: options)
+        // Сначала проверяем вывод модели против фактически переданного
+        // английского документа. Русская remap-проверка не может заменить
+        // эту границу, потому что evidence на spike затем становится целым
+        // исходным абзацем.
+        try ActSummaryValidator.validate(english, against: englishDocument)
         let originals = Dictionary(uniqueKeysWithValues: document.paragraphs.map { ($0.id, $0.text) })
 
         func translateClaims(_ claims: [SummaryClaim]) async throws -> [SummaryClaim] {
@@ -246,12 +254,13 @@ struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
         let dates = try await translateClaims(english.dates)
         let deadlines = try await translateClaims(english.deadlines)
         let appeal = try await translateClaims(english.appeal)
+        let warnings = try await translateClaims(english.warnings)
         let result = ActSummary(
             claims: claims, partyPositions: partyPositions,
             circumstances: circumstances, reasoning: reasoning,
             disposition: disposition, amounts: amounts, dates: dates,
-            deadlines: deadlines, appeal: appeal,
-            warnings: english.warnings + ["Экспериментальная сводка через двойной перевод."],
+            deadlines: deadlines, appeal: appeal, warnings: warnings,
+            localWarnings: ["Экспериментальная сводка через двойной перевод."],
             intermediateEnglishSummary: diagnostic.flatMap { String(data: $0, encoding: .utf8) },
             usedDoubleTranslation: true)
         try ActSummaryValidator.validate(result, against: document)

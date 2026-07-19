@@ -388,7 +388,7 @@ final class RefreshCenter: ObservableObject {
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != key { rec.seenAt = nil }
-        store.save()
+        store.save(rebuildProjection: true)
         captchaPending.remove(key: key)
         lastErrors[key] = nil
         onRefreshed?(key, merged)

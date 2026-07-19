@@ -27,6 +27,9 @@ jobs:
       - name: Build app product
         run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
 
+      - name: Build CLI product
+        run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
+
       - name: Run tests
         run: swift test -Xswiftc -strict-concurrency=complete
 
@@ -62,6 +65,10 @@ jobs:
       - name: Build with Xcode 27 SDK and macOS 26 deployment target
         if: steps.xcode27.outputs.available == 'true'
         run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
+
+      - name: Build CLI with Xcode 27 SDK
+        if: steps.xcode27.outputs.available == 'true'
+        run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
 
       - name: Run tests with Xcode 27
         if: steps.xcode27.outputs.available == 'true'

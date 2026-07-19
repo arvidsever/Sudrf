@@ -9,7 +9,7 @@ enum SudrfDeepLink: Sendable, Equatable {
     case caseRecord(key: String)
     case courtAct(caseKey: String, sourceActID: String)
 
-    var url: URL {
+    var url: URL? {
         var components = URLComponents()
         components.scheme = "sudrf"
         switch self {
@@ -23,7 +23,7 @@ enum SudrfDeepLink: Sendable, Equatable {
                 URLQueryItem(name: "act", value: sourceActID),
             ]
         }
-        return components.url!
+        return components.url
     }
 
     init?(url: URL) {
@@ -31,17 +31,19 @@ enum SudrfDeepLink: Sendable, Equatable {
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
-        let values = Dictionary(uniqueKeysWithValues:
-            (components.queryItems ?? []).compactMap { item in
-                item.value.map { (item.name, $0) }
-            })
+        let queryItems = components.queryItems ?? []
+        func uniqueValue(_ name: String) -> String? {
+            let matches = queryItems.filter { $0.name == name }.compactMap(\.value)
+            guard matches.count == 1 else { return nil }
+            return matches[0]
+        }
         switch components.host {
         case "case":
-            guard let key = values["id"], !key.isEmpty else { return nil }
+            guard let key = uniqueValue("id"), !key.isEmpty else { return nil }
             self = .caseRecord(key: key)
         case "act":
-            guard let caseKey = values["case"], !caseKey.isEmpty,
-                  let sourceActID = values["act"], !sourceActID.isEmpty else { return nil }
+            guard let caseKey = uniqueValue("case"), !caseKey.isEmpty,
+                  let sourceActID = uniqueValue("act"), !sourceActID.isEmpty else { return nil }
             self = .courtAct(caseKey: caseKey, sourceActID: sourceActID)
         default:
             return nil
@@ -270,18 +272,52 @@ actor SpotlightManifestStore {
     }
 }
 
+actor SpotlightPreferenceStore {
+    static let key = "spotlight.systemIndexEnabled"
+    private let defaults: UserDefaults
+
+    init(suiteName: String? = nil) {
+        defaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+    }
+
+    func isEnabled() -> Bool {
+        defaults.object(forKey: Self.key) == nil
+            ? true
+            : defaults.bool(forKey: Self.key)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: Self.key)
+    }
+}
+
 actor SpotlightIndexer {
     private let catalog: CaseCatalog
     private let writer: any SpotlightIndexWriting
     private let manifestStore: SpotlightManifestStore
+    private let preferenceStore: SpotlightPreferenceStore
     private var scheduledTask: Task<Void, Never>?
 
     init(catalog: CaseCatalog,
          writer: any SpotlightIndexWriting = SystemSpotlightWriter(),
-         manifestStore: SpotlightManifestStore = SpotlightManifestStore()) {
+         manifestStore: SpotlightManifestStore = SpotlightManifestStore(),
+         preferenceStore: SpotlightPreferenceStore = SpotlightPreferenceStore()) {
         self.catalog = catalog
         self.writer = writer
         self.manifestStore = manifestStore
+        self.preferenceStore = preferenceStore
+    }
+
+    func setEnabled(_ enabled: Bool) async throws {
+        await preferenceStore.setEnabled(enabled)
+        if enabled {
+            try await synchronize()
+        } else {
+            // Не доверяем локальному manifest как доказательству отсутствия
+            // записей в системном индексе: он мог быть удалён/повреждён.
+            try await writer.deleteAll()
+            await manifestStore.save(SpotlightManifest())
+        }
     }
 
     func scheduleSynchronization() {
@@ -294,6 +330,11 @@ actor SpotlightIndexer {
     }
 
     func synchronize() async throws {
+        guard await preferenceStore.isEnabled() else {
+            try await writer.deleteAll()
+            await manifestStore.save(SpotlightManifest())
+            return
+        }
         let cases = try await catalog.cases().map(CaseEntity.init(snapshot:))
         let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
         let previous = await manifestStore.load()
@@ -312,6 +353,11 @@ actor SpotlightIndexer {
     }
 
     func rebuild() async throws {
+        guard await preferenceStore.isEnabled() else {
+            try await writer.deleteAll()
+            await manifestStore.save(SpotlightManifest())
+            return
+        }
         let cases = try await catalog.cases().map(CaseEntity.init(snapshot:))
         let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
         try await writer.deleteAll()

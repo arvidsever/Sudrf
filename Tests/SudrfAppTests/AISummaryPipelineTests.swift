@@ -14,8 +14,11 @@ final class AISummaryPipelineTests: XCTestCase {
                 disposition: [SummaryClaim(
                     text: "Award ⟦A001⟧ under ⟦L001⟧ and ⟦L002⟧ on ⟦D001⟧.",
                     citations: [SummaryCitation(paragraphID: "¶1",
-                                                evidenceQuote: "translated evidence")])],
-                warnings: ["English diagnostic"])
+                                                evidenceQuote: document.paragraphs[0].text)])],
+                warnings: [SummaryClaim(
+                    text: "Check ⟦A001⟧.",
+                    citations: [SummaryCitation(paragraphID: "¶1",
+                                                evidenceQuote: document.paragraphs[0].text)])])
         }
     }
 
@@ -175,25 +178,71 @@ final class AISummaryPipelineTests: XCTestCase {
         }
     }
 
+    func testTranslationSpikeRejectsReorderedOrDuplicatedPlaceholders() async throws {
+        let document = ActDocument(
+            caseKey: "case", sourceActID: "act", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: "Взыскать 10 рублей и 20 рублей.")
+        let pipeline = AppleTranslatedActSummarizer(
+            englishSummarizer: EnglishSpikeSummarizer(),
+            russianToEnglish: {
+                $0.replacingOccurrences(of: "⟦A001⟧ и ⟦A002⟧",
+                                         with: "⟦A002⟧ и ⟦A001⟧")
+            },
+            englishToRussian: { $0 })
+        do {
+            _ = try await pipeline.summarize(document: document, options: SummaryOptions())
+            XCTFail("reordered placeholder IDs must be rejected")
+        } catch {
+            // expected
+        }
+    }
+
     func testChunkMergeKeepsEnglishDiagnostics() {
-        let first = ActSummary(warnings: ["one"], intermediateEnglishSummary: "chunk 1",
+        let first = ActSummary(localWarnings: ["one"], intermediateEnglishSummary: "chunk 1",
                                usedDoubleTranslation: true)
-        let second = ActSummary(warnings: ["two"], intermediateEnglishSummary: "chunk 2",
+        let second = ActSummary(localWarnings: ["two"], intermediateEnglishSummary: "chunk 2",
                                 usedDoubleTranslation: true)
         let merged = ActSummary.merging([first, second])
         XCTAssertTrue(merged.intermediateEnglishSummary?.contains("chunk 1") == true)
         XCTAssertTrue(merged.intermediateEnglishSummary?.contains("chunk 2") == true)
     }
 
+
+    func testSummaryPromptDecodesSingleLineMarkdownFence() throws {
+        let summary = ActSummary(localWarnings: ["local"])
+        let json = try XCTUnwrap(String(data: JSONEncoder().encode(summary), encoding: .utf8))
+        let decoded = try SummaryPrompt.decode("```json\(json)```")
+        XCTAssertEqual(decoded.localWarnings, ["local"])
+    }
+
+    @MainActor
     func testGroqRequestContainsOnlySelectedActAndUsesPinnedModel() async throws {
         GroqRequestStub.reset()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [GroqRequestStub.self]
         let session = URLSession(configuration: configuration)
-        let document = ActDocument(
-            caseKey: "selected", sourceActID: "act", caseNumber: "2-7/2026",
-            judicialUID: nil, court: "Суд", instanceLevel: .first,
-            kind: "Решение", date: "", sourceText: "ТОЛЬКО ВЫБРАННЫЙ АКТ")
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-7/2026")
+        let selected = CaseAct(id: "selected", title: "Решение", date: "",
+                               courtShort: "Суд", instanceLevel: .first)
+        let foreign = CaseAct(id: "foreign", title: "Определение", date: "",
+                              courtShort: "Суд", instanceLevel: .appeal)
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [], complaints: [:], acts: [selected, foreign],
+            actBodies: [selected.id: "ТОЛЬКО ВЫБРАННЫЙ АКТ",
+                        foreign.id: "РЕАЛЬНЫЙ ПОСТОРОННИЙ АКТ"],
+            category: nil, parties: CaseParties())
+        store.upsert(context: context, snapshot: nil, movement: movement, collections: [])
+        let documents = try await CaseCatalog(container: store.container).acts()
+        let document = try XCTUnwrap(
+            documents.first(where: { $0.document.sourceActID == selected.id })?.document)
 
         _ = try await GroqActSummarizer(
             key: "test-secret", model: AISettings.personalModelID, session: session)
@@ -205,7 +254,7 @@ final class AISummaryPipelineTests: XCTestCase {
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
         let prompt = messages.compactMap { $0["content"] }.joined(separator: "\n")
         XCTAssertTrue(prompt.contains("ТОЛЬКО ВЫБРАННЫЙ АКТ"))
-        XCTAssertFalse(prompt.contains("ПОСТОРОННИЙ АКТ"))
+        XCTAssertFalse(prompt.contains("РЕАЛЬНЫЙ ПОСТОРОННИЙ АКТ"))
         XCTAssertFalse(String(data: body, encoding: .utf8)?.contains("test-secret") == true)
     }
 

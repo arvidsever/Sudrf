@@ -70,11 +70,29 @@ final class TrackedCaseRecord {
     }
     var snapshot: CaseSnapshot? {
         get { snapshotData.flatMap { Self.decode(CaseSnapshot.self, from: $0, what: "snapshot") } }
-        set { snapshotData = newValue.flatMap { try? JSONEncoder().encode($0) } }
+        set {
+            guard let newValue else {
+                snapshotData = nil
+                return
+            }
+            do { snapshotData = try JSONEncoder().encode(newValue) }
+            catch {
+                storeLog.error("Не удалось закодировать snapshot; прежние данные сохранены: \(error, privacy: .public)")
+            }
+        }
     }
     var movement: CaseMovement? {
         get { movementData.flatMap { Self.decode(CaseMovement.self, from: $0, what: "movement") } }
-        set { movementData = newValue.flatMap { try? JSONEncoder().encode($0) } }
+        set {
+            guard let newValue else {
+                movementData = nil
+                return
+            }
+            do { movementData = try JSONEncoder().encode(newValue) }
+            catch {
+                storeLog.error("Не удалось закодировать movement; прежние данные сохранены: \(error, privacy: .public)")
+            }
+        }
     }
 
     private static func decode<T: Decodable>(_ type: T.Type, from data: Data, what: String) -> T? {
@@ -195,7 +213,7 @@ final class TrackedStore {
             if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
                 existing.judicialUID = Self.normalizedUID(uid)
             }
-            save()
+            save(rebuildProjection: mvData != nil)
             return existing
         }
         let rec = TrackedCaseRecord(key: key, collections: collections, caseNumber: ctx.caseNumber,
@@ -209,7 +227,7 @@ final class TrackedStore {
             rec.movementFetchedAt = Date()
         }
         context.insert(rec)
-        save()
+        save(rebuildProjection: mvData != nil)
         return rec
     }
 
@@ -230,8 +248,8 @@ final class TrackedStore {
     /// ошибке откатываем и изменения выжившей записи, и отложенные удаления,
     /// чтобы repair никогда не оставил базу в полуслитом состоянии.
     @discardableResult
-    func save() -> Bool {
-        rebuildCourtActProjection()
+    func save(rebuildProjection: Bool = false) -> Bool {
+        if rebuildProjection { rebuildCourtActProjection() }
         return saveContext()
     }
 
@@ -251,11 +269,29 @@ final class TrackedStore {
     private func rebuildCourtActProjection() {
         let descriptor = FetchDescriptor<CourtActRecord>()
         let stored = (try? context.fetch(descriptor)) ?? []
-        var unmatched = stored
+        var unmatched = Set(stored.map(ObjectIdentifier.init))
+        let byExact = Dictionary(grouping: stored) {
+            Self.projectionLookupKey($0.caseKey, $0.sourceActID)
+        }
+        let bySemantic = Dictionary(grouping: stored) {
+            Self.projectionLookupKey($0.caseKey, $0.semanticKey)
+        }
+        let byHash = Dictionary(grouping: stored) {
+            Self.projectionLookupKey($0.caseKey, $0.sourceHash)
+        }
         var desiredIDs = Set<String>()
+        var undecodableCaseKeys = Set<String>()
 
         for tracked in all() {
-            guard let movement = tracked.movement else { continue }
+            guard let movement = tracked.movement else {
+                // Непустой blob, который текущая версия не смогла прочитать,
+                // нельзя трактовать как удаление источника истины. Сохраняем
+                // последнюю проекцию и её сводки до явного успешного refresh.
+                if tracked.movementData != nil {
+                    undecodableCaseKeys.insert(tracked.key)
+                }
+                continue
+            }
             for act in movement.acts {
                 let instance = movement.instances.first {
                     $0.actID == act.id || $0.level == act.instanceLevel
@@ -275,15 +311,15 @@ final class TrackedStore {
                     caseKey: tracked.key, level: act.instanceLevel,
                     court: instance?.court ?? act.courtShort,
                     kind: act.title, date: act.date)
-                let exactMatches = unmatched.filter {
-                    $0.caseKey == tracked.key && $0.sourceActID == act.id
+                func available(_ values: [CourtActRecord]?) -> [CourtActRecord] {
+                    (values ?? []).filter { unmatched.contains(ObjectIdentifier($0)) }
                 }
-                let semanticMatches = unmatched.filter {
-                    $0.caseKey == tracked.key && $0.semanticKey == semanticKey
-                }
-                let hashMatches = unmatched.filter {
-                    $0.caseKey == tracked.key && $0.sourceHash == document.sourceHash
-                }
+                let exactMatches = available(byExact[
+                    Self.projectionLookupKey(tracked.key, act.id)])
+                let semanticMatches = available(bySemantic[
+                    Self.projectionLookupKey(tracked.key, semanticKey)])
+                let hashMatches = available(byHash[
+                    Self.projectionLookupKey(tracked.key, document.sourceHash)])
                 let existing = exactMatches.first
                     ?? (semanticMatches.count == 1 ? semanticMatches[0] : nil)
                     ?? (hashMatches.count == 1 ? hashMatches[0] : nil)
@@ -292,7 +328,7 @@ final class TrackedStore {
                     desiredIDs.insert(existing.id)
                     existing.update(from: document, semanticKey: semanticKey,
                                     fetchedAt: fetchedAt)
-                    unmatched.removeAll { $0 === existing }
+                    unmatched.remove(ObjectIdentifier(existing))
                 } else {
                     var stableID = document.id
                     if desiredIDs.contains(stableID) {
@@ -312,7 +348,10 @@ final class TrackedStore {
             }
         }
 
-        for stale in unmatched where !desiredIDs.contains(stale.id) {
+        for stale in stored
+            where unmatched.contains(ObjectIdentifier(stale))
+                && !desiredIDs.contains(stale.id)
+                && !undecodableCaseKeys.contains(stale.caseKey) {
             deleteSummary(documentID: stale.id)
             context.delete(stale)
         }
@@ -329,6 +368,11 @@ final class TrackedStore {
                                           options: .regularExpression)
             }
             .joined(separator: "|")
+    }
+
+    private nonisolated static func projectionLookupKey(_ caseKey: String,
+                                                         _ value: String) -> String {
+        "\(caseKey.utf8.count):\(caseKey)\(value)"
     }
 
     private func deleteCourtActs(caseKey: String) {

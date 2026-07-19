@@ -137,7 +137,9 @@ public enum ActParagraphizer {
         let sentencePattern = "(?<=[.!?])\\s+(?=[А-ЯЁA-Z0-9«])"
         // `components(separatedBy:)` не принимает regex. Ниже — стабильный
         // проход по найденным границам без Foundation NLP.
-        let regex = try! NSRegularExpression(pattern: sentencePattern)
+        guard let regex = try? NSRegularExpression(pattern: sentencePattern) else {
+            return hardChunks(text)
+        }
         let nsText = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
         guard !matches.isEmpty else { return hardChunks(text) }

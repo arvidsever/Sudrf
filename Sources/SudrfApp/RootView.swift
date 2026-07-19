@@ -8,10 +8,43 @@
 
 import SwiftUI
 import SudrfKit
+import CoreSpotlight
 import UniformTypeIdentifiers
 
+@MainActor
+private final class AppBootstrap: ObservableObject {
+    let router: AppRouter?
+    let errorMessage: String?
+
+    init() {
+        do {
+            router = try AppRouter()
+            errorMessage = nil
+        } catch {
+            router = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 struct RootView: View {
-    @StateObject private var router = AppRouter()
+    @StateObject private var bootstrap = AppBootstrap()
+
+    var body: some View {
+        if let router = bootstrap.router {
+            OperationalRootView(router: router)
+        } else {
+            StorageStartupFailureView(
+                message: bootstrap.errorMessage ?? "Неизвестная ошибка открытия базы.")
+        }
+    }
+}
+
+/// Рабочее дерево создаётся только после успешного открытия persistent store.
+/// В аварийном состоянии нет ни ModelContainer, ни меню/обработчиков импорта,
+/// поэтому записать данные во временную базу невозможно.
+private struct OperationalRootView: View {
+    @ObservedObject var router: AppRouter
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -55,6 +88,11 @@ struct RootView: View {
             pickCSVAndImport()
         }
         .onOpenURL { router.handleDeepLink($0) }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier]
+                    as? String else { return }
+            router.handleSpotlightItem(identifier: identifier)
+        }
         .sheet(isPresented: Binding(
             get: { router.importState != nil || router.repairSummary != nil },
             set: { shown in
@@ -66,11 +104,6 @@ struct RootView: View {
             })) {
             ImportSheet()
                 .environmentObject(router)
-        }
-        .overlay {
-            if let error = router.storageStartupError {
-                StorageStartupFailureView(message: error)
-            }
         }
     }
 

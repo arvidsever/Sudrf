@@ -92,9 +92,16 @@ struct MyCasesView: View {
             .frame(width: 245, height: 26)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.045)))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
+            .disabled(!router.spotlightEnabled)
             .popover(isPresented: $globalSearchPresented, arrowEdge: .bottom) {
                 globalSearchPopover
             }
+            Toggle("Spotlight", isOn: Binding(
+                get: { router.spotlightEnabled },
+                set: { router.setSpotlightEnabled($0) }))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Индексировать в системном Spotlight реквизиты, стороны и полный текст актов. Включено по умолчанию; при отключении индекс Sudrf удаляется.")
             Text(refreshStatus).font(.system(size: 11)).foregroundStyle(.tertiary)
             Menu {
                 Picker("Интервал обновления", selection: $ttlHours) {

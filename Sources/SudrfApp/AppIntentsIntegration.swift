@@ -18,7 +18,7 @@ final class SudrfIntentRuntime {
     func install(_ router: AppRouter) { self.router = router }
 
     func requireRouter() throws -> AppRouter {
-        guard let router, router.storageStartupError == nil else {
+        guard let router else {
             throw SudrfIntentError.applicationUnavailable
         }
         return router
@@ -150,7 +150,9 @@ struct ShowUpcomingHearingsIntent: AppIntent {
 struct ExportCourtActPDFIntent: AppIntent {
     static let title: LocalizedStringResource = "Экспортировать судебный акт в PDF"
     static let description = IntentDescription("Создаёт PDF выбранного судебного акта локально.")
-    static var supportedModes: IntentModes { .background }
+    /// PDF использует AppKit print stack и поэтому требует foreground app
+    /// lifecycle; headless/background запуск намеренно не поддерживается.
+    static var supportedModes: IntentModes { .foreground(.immediate) }
 
     @Parameter(title: "Судебный акт") var courtAct: CourtActEntity
 

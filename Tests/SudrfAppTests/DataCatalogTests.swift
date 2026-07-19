@@ -102,6 +102,8 @@ final class DataCatalogTests: XCTestCase {
                        Data("wal".utf8))
         XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("default.store-shm")),
                        Data("shm".utf8))
+        XCTAssertEqual(try SudrfPersistentStoreBackup.prepare(
+            storeURL: storeURL, backupRoot: backups, defaults: defaults), backup)
 
         SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
         XCTAssertNil(try SudrfPersistentStoreBackup.prepare(
@@ -187,6 +189,19 @@ final class DataCatalogTests: XCTestCase {
         let savedSummary = try await catalog.summary(documentID: finalDocument.id)
         XCTAssertNotNil(savedSummary)
 
+        // Второй ModelContext видит refresh главного context: запись summary
+        // сохраняется, но становится stale. Затем удаление дела из mainContext
+        // обязано удалить её без merge-конфликта.
+        var finalRevision = renumbered
+        finalRevision.actBodies[renumberedAct.id] = "Новая редакция после сводки."
+        store.upsert(context: context, snapshot: nil, movement: finalRevision,
+                     collections: ["Клиент"])
+        let staleSummary = try await catalog.summary(documentID: finalDocument.id)
+        let refreshedAct = try await catalog.act(id: finalDocument.id)
+        let refreshedDocument = try XCTUnwrap(refreshedAct?.document)
+        XCTAssertTrue(try XCTUnwrap(staleSummary).isStale(
+            for: refreshedDocument))
+
         store.remove(key: context.key)
         let casesAfterRemoval = try await catalog.cases()
         let actsAfterRemoval = try await catalog.acts()
@@ -194,5 +209,44 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertTrue(actsAfterRemoval.isEmpty)
         let removedSummary = try await catalog.summary(documentID: finalDocument.id)
         XCTAssertNil(removedSummary)
+    }
+
+    @MainActor
+    func testCorruptMovementBlobPreservesProjectionAndSummary() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-8/2026")
+        let act = CaseAct(id: "act-1", title: "Решение", date: "01.07.2026",
+                          courtShort: "Тестовый суд", instanceLevel: .first)
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [], complaints: [:], acts: [act],
+            actBodies: [act.id: "Сохранённый текст акта."],
+            category: nil, parties: CaseParties())
+        let record = store.upsert(context: context, snapshot: nil, movement: movement,
+                                  collections: [])
+        let catalog = CaseCatalog(container: store.container)
+        let projectedActs = try await catalog.acts()
+        let document = try XCTUnwrap(projectedActs.first?.document)
+        try await catalog.saveSummary(
+            document: document,
+            summary: ActSummary(disposition: [SummaryClaim(
+                text: "Сохранённый текст акта.",
+                citations: [SummaryCitation(paragraphID: "¶1",
+                                             evidenceQuote: "Сохранённый текст акта.")])]),
+            provider: "test", model: "test", promptVersion: "v1", pipelineVersion: "v1")
+
+        record.movementData = Data("not-json".utf8)
+        XCTAssertTrue(store.save(rebuildProjection: true))
+
+        let preservedActs = try await catalog.acts()
+        let preservedSummary = try await catalog.summary(documentID: document.id)
+        XCTAssertEqual(preservedActs.map(\.document.id), [document.id])
+        XCTAssertNotNil(preservedSummary)
+        XCTAssertEqual(record.movementData, Data("not-json".utf8))
     }
 }

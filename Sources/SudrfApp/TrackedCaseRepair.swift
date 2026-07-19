@@ -508,7 +508,7 @@ final class TrackedCaseRepairCoordinator {
             survivor.snapshot = snapshot
         }
         for rec in duplicates { store.deleteWithoutSaving(rec) }
-        guard store.save() else { return nil }
+        guard store.save(rebuildProjection: true) else { return nil }
         return Dictionary(uniqueKeysWithValues: oldKeys.filter { $0 != survivor.key }
             .map { ($0, survivor.key) })
     }
@@ -642,14 +642,18 @@ final class TrackedCaseRepairCoordinator {
         if let source = ctx.sourceKnownCard { return source }
         guard let url = ctx.cardURLString.flatMap(URL.init(string:)) else { return nil }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let params = Dictionary(uniqueKeysWithValues: items.compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
-        guard let id = params["case_id"], let guid = params["case_uid"] else { return nil }
+        func uniqueValue(_ name: String) -> String? {
+            let matches = items.filter { $0.name == name }.compactMap(\.value)
+            guard matches.count == 1 else { return nil }
+            return matches[0]
+        }
+        guard let id = uniqueValue("case_id"), let guid = uniqueValue("case_uid") else {
+            return nil
+        }
         return KnownCard(domain: ctx.searchDomain, courtTitle: ctx.courtTitle,
                          caseID: id, caseUID: guid,
-                         deloID: params["delo_id"] ?? ctx.cartoteka?.deloID ?? "",
-                         new: params["new"] ?? ctx.cartoteka?.new ?? "0",
+                         deloID: uniqueValue("delo_id") ?? ctx.cartoteka?.deloID ?? "",
+                         new: uniqueValue("new") ?? ctx.cartoteka?.new ?? "0",
                          caseNumber: ctx.caseNumber,
                          levelRaw: ctx.baseInstanceLevel.rawValue,
                          cartotekaID: ctx.cartotekaId)

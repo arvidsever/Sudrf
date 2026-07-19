@@ -1,7 +1,6 @@
-# v0.40.4 — детерминированный тест троттла VSRF (draft)
+# 0.40.4 — Детерминированный тест троттла VSRF
 
-> Branch draft. Финальная версия назначается при merge/release; release-changelog,
-> `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в feature-работе не меняются.
+> Alpha, build 84.
 
 ## Исправлено
 
@@ -19,3 +18,8 @@
   составляет единицы миллисекунд. Лаги CI только увеличивают elapsed и
   ложный фейл невозможен.
 - Продакшн-код `VSRFClient` по-прежнему не менялся.
+
+## Проверка
+
+- CI `build-test` и `package-app` (macos-26) на PR #41 — зелёные,
+  включая `VSRFClientThrottleTests`.

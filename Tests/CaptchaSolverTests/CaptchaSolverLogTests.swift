@@ -10,7 +10,6 @@ final class CaptchaSolverLogTests: XCTestCase {
     private var logFile: URL!
     private var failuresDir: URL!
     private var log: CaptchaSolverLog!
-    private var originalShared: CaptchaSolverLog!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -21,16 +20,9 @@ final class CaptchaSolverLogTests: XCTestCase {
         failuresDir = tmpDir.appendingPathComponent("captcha-failures")
         try FileManager.default.createDirectory(at: failuresDir, withIntermediateDirectories: true)
         log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir)
-        // Подменяем глобальный shared, чтобы тесты
-        // `AutoCaptchaSolverTests.testReturnsNilWhenDisabled`
-        // и любой другой код, использующий `CaptchaSolverLog.shared`,
-        // не писали в реальный `~/Library/Application Support/Sudrf/`.
-        originalShared = CaptchaSolverLog.shared
-        CaptchaSolverLog.shared = log
     }
 
     override func tearDownWithError() throws {
-        CaptchaSolverLog.shared = originalShared
         try? FileManager.default.removeItem(at: tmpDir)
         try super.tearDownWithError()
     }

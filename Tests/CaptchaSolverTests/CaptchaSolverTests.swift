@@ -57,21 +57,22 @@ final class CaptchaSolverTests: XCTestCase {
     /// Live-флаг preprocess меняется между вызовами: один и тот же
     /// PNG обрабатывается и как raw, и как preprocessed без
     /// пересоздания солвера. Это основной контракт тоггла в меню.
+    @MainActor
     func testPreprocessLiveProviderToggle() async throws {
         let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
         var strategy = VisionOCRStrategy()
-        var preprocessorOn = false
-        strategy.preprocessingProvider = { preprocessorOn }
+        let flag = PreprocessingFlag(false)
+        strategy.preprocessingProvider = { flag.value }
         let solver = CaptchaSolver(provider: strategy)
         // raw
         let (_, offPre) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
         XCTAssertFalse(offPre)
         // переключаем
-        preprocessorOn = true
+        flag.value = true
         let (_, onPre) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
         XCTAssertTrue(onPre)
         // обратно
-        preprocessorOn = false
+        flag.value = false
         let (_, offPre2) = await solver.topCandidates(pngData: png, kind: .sudrfToken, n: 3)
         XCTAssertFalse(offPre2)
     }
@@ -90,15 +91,16 @@ final class CaptchaSolverTests: XCTestCase {
         XCTAssertTrue(pre1)
     }
 
-    func testPreprocessLiveProviderRespectsHostAllowlist() {
+    @MainActor
+    func testPreprocessLiveProviderRespectsHostAllowlist() async {
         let png = SyntheticCaptcha.makePNG(width: 100, height: 30, digits: "12345", hasBorder: true)
         var strategy = VisionOCRStrategy(preprocessorHosts: ["a.sudrf.ru"])
         strategy.preprocessingProvider = { true }
 
-        let (_, allowedPreprocessed) = strategy.resolveEffectiveData(
+        let (_, allowedPreprocessed) = await strategy.resolveEffectiveData(
             pngData: png, host: "A.SUDRF.RU"
         )
-        let (_, blockedPreprocessed) = strategy.resolveEffectiveData(
+        let (_, blockedPreprocessed) = await strategy.resolveEffectiveData(
             pngData: png, host: "b.sudrf.ru"
         )
 
@@ -113,6 +115,7 @@ final class CaptchaSolverTests: XCTestCase {
     /// preprocess. Тест грузит реальный PNG из `captcha-failures/`
     /// (если есть) и проверяет структуру файла. Делаем XCTSkip, если
     /// папка пуста.
+    @MainActor
     func testCandidatesDiagnosticForRealPNG() async throws {
         guard let item = RealCaptchaFixture.loadAll().first else {
             throw XCTSkip("no real captcha PNG in captcha-failures/")
@@ -129,8 +132,8 @@ final class CaptchaSolverTests: XCTestCase {
         let log = CaptchaSolverLog(fileURL: logFile, failuresDir: failures, diagnosticsDir: diagnostics)
 
         var strategy = VisionOCRStrategy()
-        var preprocessorOn = false
-        strategy.preprocessingProvider = { preprocessorOn }
+        let flag = PreprocessingFlag(false)
+        strategy.preprocessingProvider = { flag.value }
         let solver = CaptchaSolver(provider: strategy)
         let host = item.host
 
@@ -139,7 +142,7 @@ final class CaptchaSolverTests: XCTestCase {
         )
         XCTAssertFalse(offPre, "preprocess should be off when provider returns false")
 
-        preprocessorOn = true
+        flag.value = true
         let (on, onPre) = await solver.topCandidates(
             pngData: item.png, kind: .sudrfToken, host: host, n: 3
         )
@@ -162,5 +165,14 @@ final class CaptchaSolverTests: XCTestCase {
         XCTAssertTrue(content.contains("preprocessed=no"),
             "diagnostic must mark preprocessed=no")
         _ = on
+    }
+}
+
+@MainActor
+private final class PreprocessingFlag {
+    var value: Bool
+
+    init(_ value: Bool) {
+        self.value = value
     }
 }

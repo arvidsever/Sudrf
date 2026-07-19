@@ -25,7 +25,6 @@ final class VisionOCRStrategyTests: XCTestCase {
     ///   - см. v0.39.16.md
 
     func testPicksLongestMatchingCandidate() async throws {
-        let strategy = VisionOCRStrategy()
         let tuples: [(text: String, confidence: Float)] = [
             ("кот9", 0.9),
             ("кот9а", 0.6),
@@ -89,4 +88,3 @@ final class VisionOCRStrategyTests: XCTestCase {
         XCTAssertEqual(attempt, CaptchaAttempt.empty)
     }
 }
-

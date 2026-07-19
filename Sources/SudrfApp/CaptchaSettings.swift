@@ -6,6 +6,7 @@ import CaptchaSolver
 /// `RefreshCenter.tryAutoSolve` и пунктом меню «Captcha» в системном
 /// меню (см. `CaptchaMenu`). Дефолт — солвер включён
 /// (плановая позиция из задачи: opt-out).
+@MainActor
 final class CaptchaSettings: ObservableObject {
 
     static let shared = CaptchaSettings()

@@ -24,7 +24,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
     /// при каждом вызове `solve` — позволяет пользователю переключать
     /// preprocess в меню без пересоздания солвера. Если `nil`,
     /// используется фиксированное `preprocessingEnabled` из инициализатора.
-    public var preprocessingProvider: (() -> Bool)?
+    public var preprocessingProvider: (@MainActor @Sendable () -> Bool)?
 
     /// Возвращает топ-N кандидатов, прошедших регулярку `kind.regex`,
     /// отсортированных по (длина ↓, уверенность ↓). Используется для
@@ -32,7 +32,8 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
     /// чтобы при ручной разборке видеть «что ещё увидел Vision».
     /// Второй элемент кортежа — был ли применён preprocess.
     public func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int = 3) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
-        let (effectiveData, preprocessed) = resolveEffectiveData(pngData: pngData, host: host)
+        let (effectiveData, preprocessed) = await resolveEffectiveData(
+            pngData: pngData, host: host)
         let observations = try await performVision(data: effectiveData, kind: kind)
         let tuples = observations.flatMap { obs -> [(String, Float)] in
             obs.topCandidates(n).map { ($0.string, $0.confidence) }
@@ -55,7 +56,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
 
     public init(preprocessingEnabled: Bool = false,
                 preprocessorHosts: Set<String> = [],
-                preprocessingProvider: (() -> Bool)? = nil) {
+                preprocessingProvider: (@MainActor @Sendable () -> Bool)? = nil) {
         self.preprocessingEnabled = preprocessingEnabled
         self.preprocessorHosts = preprocessorHosts
         self.preprocessingProvider = preprocessingProvider
@@ -76,7 +77,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         //       - false  → preprocess выключен глобально.
         //       - true + preprocessorHosts = ∅   → preprocess для всех.
         //       - true + preprocessorHosts = {...} → только эти хосты.
-        let liveFlag = preprocessingProvider?() ?? preprocessingEnabled
+        let liveFlag = await livePreprocessingEnabled()
         let shouldPreprocess: Bool = {
             guard liveFlag else { return false }
             guard !preprocessorHosts.isEmpty else { return true }
@@ -100,8 +101,8 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
     /// возвращает (effectiveData, didPreprocess). Используется
     /// `topCandidates` для диагностики, чтобы файл-лог отражал то же
     /// изображение, что и распознавание.
-    func resolveEffectiveData(pngData: Data, host: String?) -> (Data, Bool) {
-        let liveFlag = preprocessingProvider?() ?? preprocessingEnabled
+    func resolveEffectiveData(pngData: Data, host: String?) async -> (Data, Bool) {
+        let liveFlag = await livePreprocessingEnabled()
         let shouldPreprocess: Bool = {
             guard liveFlag else { return false }
             guard !preprocessorHosts.isEmpty else { return true }
@@ -112,6 +113,11 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
             return (preprocessed, true)
         }
         return (pngData, false)
+    }
+
+    private func livePreprocessingEnabled() async -> Bool {
+        guard let preprocessingProvider else { return preprocessingEnabled }
+        return await preprocessingProvider()
     }
 
     /// Прогоняет PNG через `VNRecognizeTextRequest` с настройками под
@@ -133,12 +139,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         case .kcaptcha:
             request.recognitionLanguages = ["ru-RU", "en-US"]
         }
-        let handler: VNImageRequestHandler
-        do {
-            handler = try VNImageRequestHandler(data: data, options: [:])
-        } catch {
-            throw CaptchaSolverError.visionFailed("handler init: \(error.localizedDescription)")
-        }
+        let handler = VNImageRequestHandler(data: data, options: [:])
         do {
             try handler.perform([request])
         } catch {

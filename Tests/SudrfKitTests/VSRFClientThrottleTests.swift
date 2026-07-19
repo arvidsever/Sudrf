@@ -20,7 +20,8 @@ final class VSRFClientThrottleTests: XCTestCase {
     }
 
     func testConcurrentRequestsReserveSeparateThrottleSlots() async throws {
-        let client = VSRFClient(session: session, minInterval: 0.15)
+        let minInterval = 0.15
+        let client = VSRFClient(session: session, minInterval: minInterval)
 
         async let first = client.searchByName("Иванов")
         async let second = client.searchByName("Петров")
@@ -30,8 +31,18 @@ final class VSRFClientThrottleTests: XCTestCase {
         let starts = VSRFThrottleStub.requestStarts()
         XCTAssertEqual(starts.count, 3)
         let sorted = starts.sorted()
-        XCTAssertGreaterThanOrEqual(sorted[1].timeIntervalSince(sorted[0]), 0.11)
-        XCTAssertGreaterThanOrEqual(sorted[2].timeIntervalSince(sorted[1]), 0.11)
+        // Тест меряет не слоты троттла, а `startLoading` в URLProtocol —
+        // слот + джиттер доставки (oversleep Task.sleep, планировщик,
+        // диспатч URLSession). Лаг одного запроса сжимает соседний
+        // наблюдаемый интервал, поэтому высокий порог на отдельный
+        // интервал флакует на CI (0.091 < 0.11 при исправном троттле).
+        // Ловим регрессию «резервация после await»: без неё все три
+        // запроса стартуют почти одновременно, интервалы ~0–5мс.
+        XCTAssertGreaterThanOrEqual(sorted[1].timeIntervalSince(sorted[0]), minInterval / 3)
+        XCTAssertGreaterThanOrEqual(sorted[2].timeIntervalSince(sorted[1]), minInterval / 3)
+        // Суммарный разбег устойчивее отдельных интервалов: джиттер
+        // соседних запросов взаимно компенсируется.
+        XCTAssertGreaterThanOrEqual(sorted[2].timeIntervalSince(sorted[0]), minInterval)
     }
 }
 

@@ -1,0 +1,177 @@
+# 0.41.0 — Swift 6 и AI roadmap (этапы S6-0B–APPLE-6)
+
+> Alpha, build 85.
+
+Связанные этапы: `S6-0B`, `DATA-1`, `SPOT-2`, `INTENT-3`, `AI-4`,
+`SUMMARY-5`, `APPLE-6`.
+
+## Добавлено
+
+- Каноническая дорожная карта `Docs/AI-ROADMAP.md` со стабильными ID этапов,
+  критериями готовности и правилами обновления после merge.
+- `DATA-1`: общая SwiftData-схема с перестраиваемой `CourtActRecord`,
+  `CaseCatalog` actor и `Sendable`-снимками.
+- `DATA-1`: `ActDocument`, стабильные `¶ID`, SHA-256 исходного текста и общий
+  paragraphizer для экрана и PDF.
+- `DATA-1`: versioned migration, резервная копия store/WAL/SHM до миграции и
+  блокирующая видимая ошибка вместо тихой рабочей сессии в памяти.
+- `DATA-1`: сохранение snapshot абзацев и версии segmenter, reconciliation
+  нестабильного sourceActID с сохранением логического ID.
+- `SPOT-2`: локальные `CaseEntity`/`CourtActEntity`, инкрементальный Core
+  Spotlight indexer, полная переиндексация, deep links и отдельный глобальный
+  семантический поиск без замены быстрого фильтра списка.
+- `INTENT-3`: шесть App Intents, русские и английские App Shortcuts,
+  `NSUserActivity.appEntityIdentifier` для открытых дела/акта и PDF-экспорт.
+- `INTENT-3`: обновление из Shortcuts ждёт авто-солвер; оставшаяся CAPTCHA,
+  сетевая ошибка и отсутствие дела возвращаются как разные исходы. CAPTCHA в
+  Shortcuts не показывается, сохранённый кэш не объявляется свежим.
+- `AI-4`: typed `ActSummary`/`ActSummarizing`, строгие paragraph citations,
+  локальная проверка цитат и критических реквизитов, chunking и один retry.
+- `AI-4`: Keychain, явное cloud/PII-согласие, mock и единственный текущий
+  cloud-adapter Groq BYOK; GigaChat и YandexGPT остаются будущими
+  benchmark-кандидатами и отсутствуют в factory/settings.
+- Для первого личного прогона UI фиксирует Groq BYOK и
+  `openai/gpt-oss-120b`; проверка соединения использует только синтетическую
+  фразу. Выбор провайдера отложен до сравнительного benchmark. Официальная
+  документация Groq подтверждает strict structured outputs для этой модели:
+  <https://console.groq.com/docs/structured-outputs> (проверено 20.07.2026).
+- Добавлен локальный `SummaryBenchmarkRunner`, считающий корректность цитат,
+  критических реквизитов и полноту разделов; реальный корпус опубликованных
+  судами актов остаётся вне Git без повторного обезличивания.
+- Каталог `nejib1/Free-LLM` принят как discovery-источник, но не как источник
+  истины: кандидаты проходят official-docs privacy/geography/schema gate и
+  benchmark на уже опубликованных судами актах; бесплатные community routers
+  исключены.
+- `SUMMARY-5`: кнопка и окно сводки выбранного акта, persisted metadata/cache,
+  stale-индикация и обязательное предупреждение о проверке оригинала.
+- `SUMMARY-5`: ссылки `¶ID` интерактивны, закрывают сводку, прокручивают русский
+  оригинал к сохранённой границе абзаца и подсвечивают её.
+- `APPLE-6`: прямой Foundation Models adapter проверяет availability/locale;
+  translation spike защищает даты, суммы, номера и нормы, сохраняет `¶ID`,
+  переводит обратно только человекочитаемые поля и хранит английскую
+  диагностику. Языковая пара готовится через Translation UI.
+
+## Изменено
+
+- Проект переводится в Swift 6 language mode во всех путях сборки.
+- По adversarial review устранён crash внешнего deep link с повторяющимися
+  query-параметрами; одинаковая fail-closed логика применена к repair URL.
+- Аварийный bootstrap больше не создаёт рабочий in-memory `AppRouter`: при
+  ошибке базы отсутствуют ModelContainer, import handlers и mutation paths.
+- Первый кадр приложения всегда показывает подготовку. Backup, V1→V2→V3
+  migration и полная projection выполняются до создания router и вне MainActor;
+  V2 была намеренной внутренней промежуточной схемой и публично не выпускалась.
+- Повреждённый `movementData` сохраняет последнюю проекцию актов и сводки;
+  setters не стирают старый JSON при ошибке кодирования. Rebuild запускается
+  только при изменении движения и использует индексированные lookup-таблицы.
+- AI evidence теперь проверяется case-sensitive, критические реквизиты — с
+  token boundaries в каждом процитированном абзаце отдельно; даты допускают
+  эквивалентные числовую/словесную формы месяца. Предупреждения модели стали
+  cited claims, а отдельный provider payload не позволяет schema-less
+  провайдеру подложить local notices, English diagnostic или pipeline flags.
+- Translation spike валидирует английский результат до обратного перевода и
+  сверяет multiset placeholder IDs: перестановка допустима, потеря/дублирование
+  запрещены. Загрузка языков снова привязана к SwiftUI `translationTask`, а
+  shared actor использует только проверенные установленные модели.
+- Spotlight по решению продукта включён по умолчанию с opt-out; отключение
+  удаляет весь индекс Sudrf. Writes и manifest сериализованы FIFO, поэтому
+  in-flight index не может пережить disable; revision защищает быстрые toggle.
+- До первой индексации показывается одноразовый disclosure с включённым по
+  умолчанию тумблером. До «Продолжить» indexer не получает writes; OFF выполняет
+  purge и сохраняется, а управление после onboarding остаётся в настройках.
+- Refresh/upsert/CAPTCHA теперь перестраивают только затронутые проекции;
+  repair удаляет старые ключи и строит новый. Spotlight debounce объединяет
+  case-scopes, full rebuild остаётся для bootstrap/recovery, а manifest хранит
+  caseKey каждого акта для корректного targeted delete после reroute.
+- Генерация сводки управляется одной UUID-операцией load/generate на выбранный
+  акт: повторное открытие sheet сохраняет текущую генерацию, смена цели отменяет
+  её, а stale completion не может изменить новое состояние.
+- Retry и validation перенесены внутрь каждого чанка. На чанк приходится не
+  более двух provider-вызовов; итог валидируется по полному документу без
+  перезапуска успешно обработанных чанков. 429 учитывает `Retry-After` до 15
+  секунд, кратковременный 5xx — одну отменяемую задержку.
+- `RefreshCenter` возвращает typed terminal result вместе с effectiveKey после
+  reroute; App Intent больше не ищет исход в словарях по устаревшему ключу.
+- Benchmark считает метрики только по успешным фикстурам, отдельно выводит IDs
+  ошибок и не проходит gate при пустом или частично упавшем корпусе.
+- Legal literal protector отклоняет исходный текст с зарезервированными
+  placeholders; Intel fallback находится в реальном Apple provider path.
+- Keychain update не удаляет прежний ключ при ошибке, PDF filenames проходят
+  общий sanitizer, App Intent metadata-query не выполняет полнотекстовый поиск,
+  а SHA/paragraphs выбранного акта кэшируются вне SwiftUI body.
+- Xcode 27 CI выбирает toolchain семантически stable → RC → beta и всегда пишет
+  выбранную версию либо причину пропуска в job summary.
+- PDF App Intent переведён в foreground, `sudrf-cli` добавлен в обе CI-линии,
+  HTTP error body больше не сохраняется даже внутри значения ошибки.
+- Backup namespace выводится из текущей версии SwiftData-схемы; повреждённая
+  предсуществующая копия карантинируется без удаления и заменяется валидной.
+  Snapshot-only смена УИД точечно обновляет проекцию актов, а stale act deep
+  link открывает само дело с понятным сообщением. Fingerprint Spotlight акта
+  включает обновляемые номер дела и УИД, поэтому metadata-only upsert реально
+  вызывает его переиндексацию.
+
+## Проверка
+
+- `swift build --product SudrfApp -Xswiftc -strict-concurrency=complete` и
+  `swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete` —
+  успешно под Xcode 26.6 и Xcode 27.0 beta.
+- `swift test -Xswiftc -strict-concurrency=complete` — 513 тестов, 0 ошибок под
+  Xcode 26.6; те же 513 тестов успешно пройдены toolchain Xcode 27.0 beta.
+- `AISummaryPipelineTests` — 10 тестов: chunking/retry, translation literals,
+  benchmark-пороги и HTTP-контракт Groq «только выбранный акт».
+- Новые `ActDocumentTests`, `ActSummaryTests`, `DataCatalogTests`,
+  `SpotlightIntegrationTests` и `AISummaryPipelineTests` — 40 тестов, успешно.
+- Схема Sudrf через Xcode 26.6 и Xcode 27.0 beta (SDK 27.0) с deployment target
+  macOS 26.0 — успешно после corrective diff.
+- `CorrectivePassTests` — 14 тестов: lifecycle/stale completion, общий retry
+  budget, безопасная HTTP-ошибка, benchmark denominator/gate, точечная
+  projection и сохранение document ID при reroute, fail-closed bootstrap,
+  Keychain, PDF и translation collision.
+- Hosted runner `macos-26` пока не содержит Xcode 27. CI явно помечает вторую
+  линию как неисполненную и автоматически включает её при появлении SDK;
+  отсутствие beta SDK не маскируется запуском Xcode 26 под другим именем.
+- Проверена lightweight migration базы со схемы только `TrackedCaseRecord` на
+  схему с `CourtActRecord`, без потери исходной записи.
+- На текущей macOS 27 headless-проверка через Xcode 26.6 видит ru↔en готовой,
+  а через Xcode 27.0 beta — неготовой. Код fail-closed с понятной ошибкой;
+  загрузка через Settings и отдельная macOS 26 машина остаются ручной матрицей.
+- В открытом PR сначала публикуется AI self-review автора; затем обязателен
+  независимый adversarial code review коллеги, устранение принятых замечаний и
+  повторный прогон затронутых проверок.
+- PR #42 — разовое интеграционное исключение для общего фундамента
+  `S6-0B`–`APPLE-6`; после него этапы снова идут отдельными PR. До merge все эти
+  статусы остаются `in_progress`; после merge `S6-0B`–`SUMMARY-5` меняются только
+  вместе с зафиксированными результатами, а `APPLE-6` ждёт ручной go/no-go.
+
+## AI self-review перед adversarial review
+
+- Проверены migration/backup и запрет рабочего in-memory fallback, сохранение
+  logical act ID и `¶ID`, инвалидирование и удаление orphan-сводок.
+- Проверены actor/MainActor-границы, отмена генерации при смене выбранного акта,
+  отсутствие retry для HTTP/auth/cancellation и отсутствие секретов в diff.
+- Проверены privacy-границы Groq: ключ только в Authorization header, запрос
+  содержит конкретную модель и данные только выбранного акта; connection test
+  использует синтетический документ.
+- Проверены негативные AI-сценарии: неизвестный абзац, недословная цитата,
+  выдуманный критический реквизит, повреждение literal IDs при переводе и
+  повторно невалидный structured output завершаются ошибкой.
+- Первые три self-review оказались недостаточно adversarial. Помимо ранее
+  пропущенных provider-field injection и Spotlight race, третий проход не нашёл
+  lifecycle генерации, reroute результата Refresh Intent, O(N²)-перестроения
+  проекций/индекса и синхронный bootstrap. Эти выводы явно отозваны; после
+  corrective commit требуется self-review №4 и новый независимый проход коллеги.
+- Уточнено прежнее неточное утверждение про GigaChat: текущие chat endpoint и
+  JSON Schema документированы Сбером, но OAuth URL в удалённом адаптере
+  действительно был неверен. Адаптер не ремонтируется, а удалён как не входящий
+  в Groq-only пилот; его возможное возвращение проходит отдельный docs/benchmark
+  gate.
+- Ручными ограничениями остаются реальный вызов Groq с пользовательским ключом,
+  системная приёмка Spotlight/App Intents/Siri, UI-загрузка ru↔en на macOS 26 и
+  27, полный benchmark 50–100 актов и go/no-go Translation/Foundation Models.
+
+## Финальный merge-gate
+
+- Независимый adversarial review head `4e094fe` выполнен и зафиксирован в PR #42:
+  проверены исправления всех пяти обязательных замечаний предыдущего review,
+  блокирующих находок нет; четыре некритичных дефекта приняты как follow-up.
+  Merge-commit `09dac6d`.

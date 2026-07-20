@@ -41,13 +41,13 @@
 | Этап | Статус | Результат |
 |---|---|---|
 | `S6-0A` | `completed` | PR #39: concurrency-границы CaptchaSolver |
-| `S6-0B` | `in_progress` | Swift 6 language mode для всего проекта |
-| `DATA-1` | `in_progress` | Единые сущности дел и актов; ждёт review/merge |
-| `SPOT-2` | `in_progress` | Реализация и тесты готовы; ждёт self/adversarial review и merge |
-| `INTENT-3` | `in_progress` | Шесть интентов, Shortcuts и onscreen awareness; ждёт review/merge |
-| `AI-4` | `in_progress` | Typed pipeline, privacy/Keychain и фиксированный пилот Groq готовы; ждёт review/merge |
-| `SUMMARY-5` | `in_progress` | UI, проверка и кэш сводки готовы; ждёт review/merge |
-| `APPLE-6` | `in_progress` | Прямой adapter и translation spike готовы; ручной go/no-go ещё не пройден |
+| `S6-0B` | `completed` | PR #42 (v0.41.0): Swift 6 language mode и complete concurrency во всех продуктах и CI |
+| `DATA-1` | `completed` | PR #42 (v0.41.0): versioned migration с backup, проекция `CourtActRecord`, стабильные ¶ID |
+| `SPOT-2` | `completed` | PR #42 (v0.41.0): инкрементальный Spotlight, deep links, disclosure и opt-out |
+| `INTENT-3` | `completed` | PR #42 (v0.41.0): шесть интентов и Shortcuts; системная приёмка Siri/Shortcuts — вручную |
+| `AI-4` | `completed` | PR #42 (v0.41.0): typed pipeline, Keychain, cloud-согласие, пилот Groq BYOK |
+| `SUMMARY-5` | `completed` | PR #42 (v0.41.0): сводка акта с проверяемыми ¶-цитатами, кэш, stale-индикация |
+| `APPLE-6` | `in_progress` | Adapters и translation spike смержены в v0.41.0; ручной go/no-go не пройден |
 | `CASEAI-7` | `planned` | На продуктовой паузе до завершения APPLE-6 |
 | `PUBLIC-8` | `planned` | На продуктовой паузе до завершения APPLE-6 |
 

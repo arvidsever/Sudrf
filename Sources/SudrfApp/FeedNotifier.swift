@@ -99,8 +99,8 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
         lastBadgeLabel = label
         // `NSApp` равен nil в SwiftPM-тестах (нет бандла приложения) —
         // молча пропускаем, иначе force-unwrap упадёт.
-        guard available else { return }
-        NSApp.dockTile.badgeLabel = label
+        guard available, let app = NSApp else { return }
+        app.dockTile.badgeLabel = label
     }
 
     // MARK: UNUserNotificationCenterDelegate

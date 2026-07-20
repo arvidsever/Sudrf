@@ -358,6 +358,39 @@ struct TrackedCase: Identifiable {
 
 // MARK: - Роутер приложения (навигация + единое состояние мониторинга)
 
+enum SummaryOperationKind: Equatable { case load, generate }
+
+struct SummaryOperation: Equatable {
+    let id: UUID
+    let kind: SummaryOperationKind
+    let caseKey: String
+    let sourceActID: String
+}
+
+struct SummaryOperationState {
+    private(set) var current: SummaryOperation?
+
+    func preservesCurrentLoad(caseKey: String, sourceActID: String) -> Bool {
+        current?.caseKey == caseKey && current?.sourceActID == sourceActID
+    }
+
+    mutating func begin(kind: SummaryOperationKind, caseKey: String,
+                        sourceActID: String) -> SummaryOperation {
+        let operation = SummaryOperation(
+            id: UUID(), kind: kind, caseKey: caseKey, sourceActID: sourceActID)
+        current = operation
+        return operation
+    }
+
+    mutating func finish(_ operation: SummaryOperation) -> Bool {
+        guard current == operation else { return false }
+        current = nil
+        return true
+    }
+
+    mutating func cancel() { current = nil }
+}
+
 @MainActor
 final class AppRouter: ObservableObject {
 
@@ -383,6 +416,8 @@ final class AppRouter: ObservableObject {
     @Published var globalSearching = false
     @Published var globalSearchError: String? = nil
     @Published private(set) var spotlightEnabled = true
+    @Published private(set) var spotlightOnboardingRequired = false
+    @Published var spotlightOnboardingDraft = true
     private var spotlightPreferenceRevision: UInt64 = 0
     // Вся лента внутри «Обзора»
     @Published var feedFilter: FeedTypeFilter = .all
@@ -417,17 +452,18 @@ final class AppRouter: ObservableObject {
             if oldValue != selectedActID {
                 highlightedParagraphID = nil
                 selectedActDocument = nil
+                selectedActParagraphs = nil
                 selectedSummary = nil
                 selectedSummaryIsStale = false
                 summaryError = nil
-                summaryGenerating = false
-                summaryTask?.cancel()
+                cancelSummaryOperation()
             }
             updateCurrentEntityActivity()
         }
     }
     @Published var highlightedParagraphID: String? = nil
     @Published var selectedActDocument: ActDocument? = nil
+    @Published private(set) var selectedActParagraphs: [ActParagraph]? = nil
     @Published var captcha: SearchModel.CaptchaContext? = nil
     @Published var selectedSummary: ActSummary? = nil
     @Published var selectedSummaryIsStale = false
@@ -461,8 +497,11 @@ final class AppRouter: ObservableObject {
     /// на оба пути.
     private let captchaSolver: CaptchaSolver
     private let captchaSettings: CaptchaSettings
+    private let summaryConfigurationProvider: @MainActor @Sendable () throws
+        -> ConfiguredActSummarizer
     private var refreshCenterSink: AnyCancellable? = nil
     private var currentEntityActivity: NSUserActivity?
+    private var summaryOperationState = SummaryOperationState()
     private var summaryTask: Task<Void, Never>?
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
     private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
@@ -480,21 +519,25 @@ final class AppRouter: ObservableObject {
     }
 
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
-         modelContainer suppliedModelContainer: ModelContainer? = nil) throws {
-        let store: TrackedStore
-        if let suppliedModelContainer {
-            store = TrackedStore(container: suppliedModelContainer)
-        } else {
-            store = TrackedStore(container: try SudrfModelContainerFactory.makeProduction())
-        }
+         modelContainer suppliedModelContainer: ModelContainer,
+         modelContainerIsPrepared: Bool = false,
+         summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
+            -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() }) throws {
+        let store = TrackedStore(container: suppliedModelContainer,
+                                 prepared: modelContainerIsPrepared)
         self.store = store
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
         self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
-        if UserDefaults.standard.object(forKey: SpotlightPreferenceStore.key) != nil {
-            self.spotlightEnabled = UserDefaults.standard.bool(
-                forKey: SpotlightPreferenceStore.key)
-        }
+        self.summaryConfigurationProvider = summaryConfigurationProvider
+        let savedSpotlightEnabled = UserDefaults.standard.object(
+            forKey: SpotlightPreferenceStore.key).map { _ in
+                UserDefaults.standard.bool(forKey: SpotlightPreferenceStore.key)
+            } ?? true
+        self.spotlightEnabled = savedSpotlightEnabled
+        self.spotlightOnboardingDraft = savedSpotlightEnabled
+        self.spotlightOnboardingRequired = !UserDefaults.standard.bool(
+            forKey: SpotlightPreferenceStore.onboardingKey)
         let captchaSettings = suppliedCaptchaSettings ?? .shared
         // Один общий `CaptchaSolver` с конфигурацией из `CaptchaSettings`.
         // `preprocessingEnabled` и `preprocessorHosts` в `solverConfiguration`
@@ -567,6 +610,9 @@ final class AppRouter: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await CaseCatalogRegistry.shared.install(self.caseCatalog)
+            if !self.spotlightOnboardingRequired {
+                await self.spotlightIndexer.scheduleSynchronization(scope: .full)
+            }
             let summary = await self.repairCoordinator.runAll()
             self.applyRepair(summary)
             self.refreshCenter.start()
@@ -625,6 +671,11 @@ final class AppRouter: ObservableObject {
 
     func setSpotlightEnabled(_ enabled: Bool) {
         spotlightEnabled = enabled
+        if spotlightOnboardingRequired {
+            spotlightOnboardingDraft = enabled
+            SpotlightPreferenceStore().setEnabled(enabled)
+            return
+        }
         spotlightPreferenceRevision &+= 1
         let revision = spotlightPreferenceRevision
         if !enabled { clearSpotlightSearch() }
@@ -635,6 +686,12 @@ final class AppRouter: ObservableObject {
             }
             catch { self.globalSearchError = error.localizedDescription }
         }
+    }
+
+    func completeSpotlightOnboarding() {
+        UserDefaults.standard.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+        spotlightOnboardingRequired = false
+        setSpotlightEnabled(spotlightOnboardingDraft)
     }
 
     func searchSpotlight() {
@@ -715,7 +772,8 @@ final class AppRouter: ObservableObject {
         openedKey = nil; movementFetchedAt = nil; refreshNote = nil
         currentEntityActivity?.invalidate()
         currentEntityActivity = nil
-        summaryTask?.cancel(); summaryTask = nil
+        cancelSummaryOperation()
+        selectedActDocument = nil; selectedActParagraphs = nil
         selectedSummary = nil; selectedSummaryIsStale = false; summaryError = nil
         // Задачу обновления в полёте не отменяем: её результат всё равно
         // нужен спискам/календарю; к UI он не применится (проверка ключа).
@@ -874,13 +932,13 @@ final class AppRouter: ObservableObject {
         store.upsert(context: ctx, snapshot: snap,
                      movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
                      collections: collections)
-        reload()
+        reload(spotlightScope: .cases([ctx.key]))
     }
     func untrack(recordKey: String) {
         guard store.record(forKey: recordKey) != nil else { return }
         store.remove(key: recordKey)
         if openedKey == recordKey { closeCase() }
-        reload()
+        reload(spotlightScope: .cases([recordKey]))
     }
     func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(key: ctx.key) }
     func isTracked(number: String, displayDomain: String) -> Bool {
@@ -998,7 +1056,10 @@ final class AppRouter: ObservableObject {
             if new != openedKey { self.openedKey = new }
         }
         if presentReport { repairSummary = summary }
-        reload()
+        let affectedKeys = summary.affectedCaseKeys
+            .union(summary.keyRemaps.keys)
+            .union(summary.keyRemaps.values)
+        reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
     }
 
     private func runImport(rows: [ImportedRow], generation: Int) async {
@@ -1048,7 +1109,11 @@ final class AppRouter: ObservableObject {
                          collections: [collection])
         }
         let repaired = await repairCoordinator.runAll()
-        reload()
+        let importedKeys = Set(plan.records.map { $0.context.key })
+            .union(repaired.keyRemaps.keys)
+            .union(repaired.keyRemaps.values)
+            .union(repaired.affectedCaseKeys)
+        reload(spotlightScope: .cases(importedKeys))
 
         var summary = ImportSummary()
         summary.total = rows.count
@@ -1077,7 +1142,7 @@ final class AppRouter: ObservableObject {
     /// здесь — перестройка списков и (если это открытое дело) подмена карточки.
     /// reload() навигацию не трогает — открытая карточка не сбрасывается.
     private func applyRefreshed(key: String, movement mv: CaseMovement) {
-        reload(notifyNew: true)
+        reload(notifyNew: true, spotlightScope: .cases([key]))
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv
@@ -1087,6 +1152,7 @@ final class AppRouter: ObservableObject {
         selectedActID = keepAct.flatMap { id in mv.acts.contains { $0.id == id } ? id : nil }
             ?? mv.acts.first(where: { $0.instanceLevel == .first })?.id
             ?? mv.acts.first?.id
+        invalidateCachedActIfNeeded()
     }
 
     private func applyRefreshFailed(key: String, error text: String) {
@@ -1104,12 +1170,21 @@ final class AppRouter: ObservableObject {
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
 
     func loadSelectedActSummary() {
-        summaryTask?.cancel()
-        summaryError = nil
         guard let sourceActID = selectedActID, let caseKey = openedKey else {
+            cancelSummaryOperation()
             selectedSummary = nil; selectedSummaryIsStale = false
             return
         }
+        if summaryOperationState.preservesCurrentLoad(
+            caseKey: caseKey, sourceActID: sourceActID) {
+            // Повторное открытие sheet не прерывает ни загрузку, ни особенно
+            // долгую генерацию того же акта.
+            return
+        }
+        cancelSummaryOperation()
+        summaryError = nil
+        let operation = summaryOperationState.begin(
+            kind: .load, caseKey: caseKey, sourceActID: sourceActID)
         summaryTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1117,65 +1192,118 @@ final class AppRouter: ObservableObject {
                     $0.document.sourceActID == sourceActID
                 }?.document
                 guard let document else {
+                    guard self.isCurrentSummaryOperation(operation) else { return }
                     self.selectedActDocument = nil
+                    self.selectedActParagraphs = nil
                     self.selectedSummary = nil; self.selectedSummaryIsStale = false
+                    self.finishSummaryOperation(operation)
                     return
                 }
                 let saved = try await self.caseCatalog.summary(documentID: document.id)
-                guard !Task.isCancelled,
-                      self.selectedActID == sourceActID,
-                      self.openedKey == caseKey else { return }
-                self.selectedActDocument = document
+                guard !Task.isCancelled, self.isCurrentSummaryOperation(operation) else { return }
+                self.cacheSelectedActDocument(document)
                 self.selectedSummary = saved?.summary
                 self.selectedSummaryIsStale = saved?.isStale(for: document) ?? false
+                self.finishSummaryOperation(operation)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard self.isCurrentSummaryOperation(operation) else { return }
+                if Task.isCancelled {
+                    self.finishSummaryOperation(operation)
+                    return
+                }
                 self.summaryError = error.localizedDescription
+                self.finishSummaryOperation(operation)
             }
         }
     }
 
     func generateSelectedActSummary() {
-        summaryTask?.cancel()
-        summaryGenerating = true; summaryError = nil
+        cancelSummaryOperation()
+        summaryError = nil
         guard let sourceActID = selectedActID, let caseKey = openedKey else {
             summaryGenerating = false; summaryError = "Сначала выберите опубликованный акт."
             return
         }
         let configured: ConfiguredActSummarizer
-        do { configured = try ActSummarizerFactory.configured() }
+        do { configured = try summaryConfigurationProvider() }
         catch { summaryGenerating = false; summaryError = error.localizedDescription; return }
 
+        let operation = summaryOperationState.begin(
+            kind: .generate, caseKey: caseKey, sourceActID: sourceActID)
+        summaryGenerating = true
         summaryTask = Task { [weak self] in
             guard let self else { return }
             do {
                 guard let document = try await self.caseCatalog.acts(caseKey: caseKey).first(where: {
                     $0.document.sourceActID == sourceActID
                 })?.document else { throw AISummarizerError.invalidResponse }
-                self.selectedActDocument = document
+                guard self.isCurrentSummaryOperation(operation) else { return }
+                self.cacheSelectedActDocument(document)
                 let summary = try await configured.summarizer.summarize(
                     document: document, options: configured.options)
+                try Task.checkCancellation()
                 try await self.caseCatalog.saveSummary(
                     document: document, summary: summary,
                     provider: configured.provider, model: configured.model,
                     promptVersion: configured.options.promptVersion,
                     pipelineVersion: configured.pipelineVersion)
-                guard !Task.isCancelled,
-                      self.selectedActID == sourceActID,
-                      self.openedKey == caseKey else { return }
+                guard !Task.isCancelled, self.isCurrentSummaryOperation(operation) else { return }
                 self.selectedSummary = summary
                 self.selectedSummaryIsStale = false
-                self.summaryGenerating = false
+                self.finishSummaryOperation(operation)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard self.isCurrentSummaryOperation(operation) else { return }
+                if Task.isCancelled {
+                    self.finishSummaryOperation(operation)
+                    return
+                }
                 if let aiError = error as? AISummarizerError,
                    case .translationLanguagesNotInstalled = aiError {
                     AISettings.shared.markTranslationPairUnavailable()
                 }
-                self.summaryGenerating = false
                 self.summaryError = error.localizedDescription
+                self.finishSummaryOperation(operation)
             }
         }
+    }
+
+    private func isCurrentSummaryOperation(_ operation: SummaryOperation) -> Bool {
+        summaryOperationState.current == operation
+            && selectedActID == operation.sourceActID
+            && openedKey == operation.caseKey
+    }
+
+    private func finishSummaryOperation(_ operation: SummaryOperation) {
+        guard summaryOperationState.finish(operation) else { return }
+        summaryTask = nil
+        summaryGenerating = false
+    }
+
+    private func cancelSummaryOperation() {
+        summaryTask?.cancel()
+        summaryTask = nil
+        summaryOperationState.cancel()
+        summaryGenerating = false
+    }
+
+    private func cacheSelectedActDocument(_ document: ActDocument) {
+        selectedActDocument = document
+        let currentHash = selectedActText.map(ActParagraphizer.sourceHash)
+        selectedActParagraphs = currentHash == document.sourceHash ? document.paragraphs : nil
+    }
+
+    private func invalidateCachedActIfNeeded() {
+        guard let document = selectedActDocument,
+              document.sourceActID == selectedActID else { return }
+        let currentHash = selectedActText.map(ActParagraphizer.sourceHash)
+        guard currentHash != document.sourceHash else {
+            selectedActParagraphs = document.paragraphs
+            return
+        }
+        selectedActDocument = nil
+        selectedActParagraphs = nil
+        selectedSummary = nil
+        selectedSummaryIsStale = false
     }
 
     /// Открыть окно ввода кода для инстанции-заглушки. Сначала пробует
@@ -1321,8 +1449,8 @@ final class AppRouter: ObservableObject {
             rec.movement = MovementCachePolicy.stripped(forPersist: updated)
             rec.snapshot = MovementDerivation.preservingConfirmedDeadlines(
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
-            store.save(rebuildProjection: true)
-            reload()
+            store.save(projection: .cases([key]))
+            reload(spotlightScope: .cases([key]))
         }
 
         // Пара captcha/captchaid сохранена — перезапрашиваем движение: другие
@@ -1373,7 +1501,8 @@ final class AppRouter: ObservableObject {
 
     // MARK: Сборка производных наборов из хранилища
 
-    func reload(notifyNew: Bool = false) {
+    func reload(notifyNew: Bool = false,
+                spotlightScope: SpotlightSyncScope? = nil) {
         let recs = store.all()
         let today = DateUtil.today
 
@@ -1449,7 +1578,9 @@ final class AppRouter: ObservableObject {
         stageCounts = buildStageCounts(cs)
         lastOverviewRefreshAt = recs.compactMap(\.movementFetchedAt).max()
         reconcileFeed(notify: notifyNew)
-        Task { await spotlightIndexer.scheduleSynchronization() }
+        if let spotlightScope, !spotlightOnboardingRequired {
+            Task { await spotlightIndexer.scheduleSynchronization(scope: spotlightScope) }
+        }
     }
 
     /// Уведомления о новых записях ленты + бейдж дока. Уведомляем только на
@@ -1731,14 +1862,14 @@ final class AppRouter: ObservableObject {
               !rec.collectionNames.contains(name) else { return }
         rec.collectionNames.append(name)
         store.save()
-        reload()
+        reload(spotlightScope: .cases([key]))
     }
     func remove(caseKey key: String, from name: String) {
         guard let rec = store.record(forKey: key),
               rec.collectionNames.contains(name) else { return }
         rec.collectionNames.removeAll { $0 == name }
         store.save()
-        reload()
+        reload(spotlightScope: .cases([key]))
     }
 
     private func recordFor(number: String) -> TrackedCaseRecord? {

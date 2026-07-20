@@ -41,23 +41,41 @@ struct SummaryBenchmarkReport: Codable, Sendable {
     let provider: String
     let model: String
     let generatedAt: Date
+    let requestedFixtureCount: Int
     let results: [SummaryBenchmarkResult]
 
-    var citationAccuracy: Double { ratio(\.validCitationCount, over: \.citationCount) }
-    var criticalAccuracy: Double { ratio(\.foundCriticalCount, over: \.expectedCriticalCount) }
-    var sectionCompleteness: Double { ratio(\.completedSectionCount, over: \.requiredSectionCount) }
+    var successfulFixtureCount: Int { successfulResults.count }
+    var failedFixtureIDs: [String] {
+        results.compactMap { $0.error == nil ? nil : $0.fixtureID }
+    }
+    var citationAccuracy: Double {
+        ratio(\.validCitationCount, over: \.citationCount)
+    }
+    var criticalAccuracy: Double {
+        ratio(\.foundCriticalCount, over: \.expectedCriticalCount)
+    }
+    var sectionCompleteness: Double {
+        ratio(\.completedSectionCount, over: \.requiredSectionCount)
+    }
     var passed: Bool {
-        results.allSatisfy { $0.error == nil }
+        !results.isEmpty
+            && results.count == requestedFixtureCount
+            && failedFixtureIDs.isEmpty
             && citationAccuracy == 1
             && criticalAccuracy >= 0.95
             && sectionCompleteness >= 0.90
     }
 
+    private var successfulResults: [SummaryBenchmarkResult] {
+        results.filter { $0.error == nil }
+    }
+
     private func ratio(_ numerator: KeyPath<SummaryBenchmarkResult, Int>,
                        over denominator: KeyPath<SummaryBenchmarkResult, Int>) -> Double {
-        let total = results.reduce(0) { $0 + $1[keyPath: denominator] }
+        guard !successfulResults.isEmpty else { return 0 }
+        let total = successfulResults.reduce(0) { $0 + $1[keyPath: denominator] }
         guard total > 0 else { return 1 }
-        let value = results.reduce(0) { $0 + $1[keyPath: numerator] }
+        let value = successfulResults.reduce(0) { $0 + $1[keyPath: numerator] }
         return Double(value) / Double(total)
     }
 }
@@ -98,14 +116,15 @@ actor SummaryBenchmarkRunner {
                     completedSectionCount: completed, error: nil))
             } catch {
                 results.append(SummaryBenchmarkResult(
-                    fixtureID: fixture.id, citationCount: 1, validCitationCount: 0,
-                    expectedCriticalCount: fixture.expectedCriticalValues.count,
-                    foundCriticalCount: 0, requiredSectionCount: fixture.requiredSections.count,
+                    fixtureID: fixture.id, citationCount: 0, validCitationCount: 0,
+                    expectedCriticalCount: 0,
+                    foundCriticalCount: 0, requiredSectionCount: 0,
                     completedSectionCount: 0, error: error.localizedDescription))
             }
         }
-        return SummaryBenchmarkReport(provider: configured.provider, model: configured.model,
-                                      generatedAt: Date(), results: results)
+        return SummaryBenchmarkReport(
+            provider: configured.provider, model: configured.model,
+            generatedAt: Date(), requestedFixtureCount: fixtures.count, results: results)
     }
 
     private func claims(in section: BenchmarkSummarySection,

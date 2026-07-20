@@ -11,6 +11,8 @@ extension Notification.Name {
     /// доступа к environment-роутеру окна, поэтому — через NotificationCenter;
     /// слушает RootView (там живут роутер и панель выбора файла).
     static let sudrfImportCases = Notification.Name("sudrfImportCases")
+    static let sudrfSpotlightPreferenceChanged = Notification.Name(
+        "sudrfSpotlightPreferenceChanged")
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

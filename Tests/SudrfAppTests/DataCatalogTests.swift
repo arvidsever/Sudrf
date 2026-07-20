@@ -304,7 +304,7 @@ final class DataCatalogTests: XCTestCase {
             provider: "test", model: "test", promptVersion: "v1", pipelineVersion: "v1")
 
         record.movementData = Data("not-json".utf8)
-        XCTAssertTrue(store.save(rebuildProjection: true))
+        XCTAssertTrue(store.save(projection: .full))
 
         let preservedActs = try await catalog.acts()
         let preservedSummary = try await catalog.summary(documentID: document.id)

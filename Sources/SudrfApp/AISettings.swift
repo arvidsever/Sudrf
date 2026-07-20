@@ -9,8 +9,6 @@ import UniformTypeIdentifiers
 enum AIProviderKind: String, CaseIterable, Identifiable, Sendable {
     case mock
     case groq
-    case gigaChat
-    case yandexGPT
     case appleDirect
     case appleTranslated
 
@@ -19,33 +17,60 @@ enum AIProviderKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .mock: "Тестовый (без сети)"
         case .groq: "Groq BYOK"
-        case .gigaChat: "GigaChat BYOK"
-        case .yandexGPT: "YandexGPT BYOK"
         case .appleDirect: "Apple на устройстве"
         case .appleTranslated: "Apple через английский — экспериментально"
         }
     }
-    var isCloud: Bool { [.groq, .gigaChat, .yandexGPT].contains(self) }
+    var isCloud: Bool { self == .groq }
 
 }
 
 enum AIKeychain {
     private static let service = "ru.sudrf.app.ai-provider-key"
 
-    static func save(_ value: String, provider: AIProviderKind) throws {
+    protocol Writing {
+        func update(_ query: CFDictionary, attributes: CFDictionary) -> OSStatus
+        func add(_ attributes: CFDictionary) -> OSStatus
+        func delete(_ query: CFDictionary) -> OSStatus
+    }
+
+    struct SystemWriter: Writing {
+        func update(_ query: CFDictionary, attributes: CFDictionary) -> OSStatus {
+            SecItemUpdate(query, attributes)
+        }
+        func add(_ attributes: CFDictionary) -> OSStatus { SecItemAdd(attributes, nil) }
+        func delete(_ query: CFDictionary) -> OSStatus { SecItemDelete(query) }
+    }
+
+    static func save(_ value: String, provider: AIProviderKind,
+                     writer: any Writing = SystemWriter()) throws {
         let account = provider.rawValue
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
-        guard !value.isEmpty else { return }
+        if value.isEmpty {
+            let status = writer.delete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw KeychainError(status: status)
+            }
+            return
+        }
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(value.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updateStatus = writer.update(query as CFDictionary,
+                                         attributes: attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainError(status: updateStatus)
+        }
         var add = query
-        add[kSecValueData as String] = Data(value.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KeychainError(status: status) }
+        attributes.forEach { add[$0.key] = $0.value }
+        let addStatus = writer.add(add as CFDictionary)
+        guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
     }
 
     static func load(provider: AIProviderKind) throws -> String? {
@@ -79,8 +104,6 @@ final class AISettings: ObservableObject {
 
     @AppStorage("ai.cloudConsent") var cloudConsent = false
     @AppStorage("ai.appleEnglishExperimental") var appleEnglishExperimental = false
-    @AppStorage("ai.yandexFolderID") var yandexFolderID = ""
-    @AppStorage("ai.gigachatScope") var gigaChatScope = "GIGACHAT_API_PERS"
     @Published private(set) var translationPairPrepared = false
     @Published var draftKey = ""
     @Published var statusMessage: String?
@@ -185,9 +208,10 @@ final class AISettings: ObservableObject {
                     try output.write(to: outputURL, options: .atomic)
                 }
                 statusMessage = String(format:
-                    "Benchmark: citations %.1f%%, реквизиты %.1f%%, разделы %.1f%% — %@.",
+                    "Benchmark: citations %.1f%%, реквизиты %.1f%%, разделы %.1f%%; ошибок %d — %@.",
                     report.citationAccuracy * 100, report.criticalAccuracy * 100,
-                    report.sectionCompleteness * 100, report.passed ? "пройден" : "не пройден")
+                    report.sectionCompleteness * 100, report.failedFixtureIDs.count,
+                    report.passed ? "пройден" : "не пройден")
             } catch is CancellationError {
                 statusMessage = "Benchmark отменён."
             } catch {
@@ -222,14 +246,10 @@ struct AISettingsView: View {
             Text("Для первого личного прогона провайдер и model ID зафиксированы. Выбор вернётся после сравнительного benchmark.")
                 .font(.caption).foregroundStyle(.secondary)
 
+            SpotlightSettingsToggle()
+
             if settings.credentialProvider.isCloud {
                 SecureField("API/authorization key", text: $settings.draftKey)
-                if settings.credentialProvider == .yandexGPT {
-                    TextField("Yandex Cloud folder ID", text: $settings.yandexFolderID)
-                }
-                if settings.credentialProvider == .gigaChat {
-                    TextField("GigaChat scope", text: $settings.gigaChatScope)
-                }
                 Button("Сохранить ключ в Keychain") { settings.saveKey() }
                 Toggle("Разрешить облачную обработку выбранного акта", isOn: Binding(
                     get: { settings.cloudConsent },
@@ -317,5 +337,24 @@ struct AISettingsView: View {
                 }
             }
         }
+    }
+}
+
+private struct SpotlightSettingsToggle: View {
+    @State private var enabled: Bool
+
+    init() {
+        _enabled = State(initialValue: SpotlightPreferenceStore().isEnabled())
+    }
+
+    var body: some View {
+        Toggle("Индексировать дела и акты в системном Spotlight", isOn: $enabled)
+            .onChange(of: enabled) { _, value in
+                SpotlightPreferenceStore().setEnabled(value)
+                NotificationCenter.default.post(
+                    name: .sudrfSpotlightPreferenceChanged, object: value)
+            }
+        Text("Индекс содержит реквизиты, стороны и полный текст опубликованных актов. При отключении записи Sudrf удаляются.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 }

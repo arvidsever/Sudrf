@@ -7,22 +7,40 @@
 //  (та же CaseMovementView, что и в поиске) + панель судебных актов справа.
 
 import SwiftUI
+import SwiftData
 import SudrfKit
 import CoreSpotlight
 import UniformTypeIdentifiers
 
 @MainActor
-private final class AppBootstrap: ObservableObject {
-    let router: AppRouter?
-    let errorMessage: String?
+final class AppBootstrap: ObservableObject {
+    enum State {
+        case loading
+        case ready(AppRouter)
+        case failed(String)
+    }
 
-    init() {
+    @Published private(set) var state: State = .loading
+    private var started = false
+    private let loader: @Sendable () async throws -> ModelContainer
+
+    init(loader: @escaping @Sendable () async throws -> ModelContainer = {
+        try await Task.detached(priority: .userInitiated) {
+            try PersistentStoreBootstrapper().prepareProduction()
+        }.value
+    }) {
+        self.loader = loader
+    }
+
+    func start() async {
+        guard !started else { return }
+        started = true
         do {
-            router = try AppRouter()
-            errorMessage = nil
+            let container = try await loader()
+            state = .ready(try AppRouter(
+                modelContainer: container, modelContainerIsPrepared: true))
         } catch {
-            router = nil
-            errorMessage = error.localizedDescription
+            state = .failed(error.localizedDescription)
         }
     }
 }
@@ -31,12 +49,27 @@ struct RootView: View {
     @StateObject private var bootstrap = AppBootstrap()
 
     var body: some View {
-        if let router = bootstrap.router {
+        switch bootstrap.state {
+        case .loading:
+            StorageStartupLoadingView()
+                .task { await bootstrap.start() }
+        case .ready(let router):
             OperationalRootView(router: router)
-        } else {
-            StorageStartupFailureView(
-                message: bootstrap.errorMessage ?? "Неизвестная ошибка открытия базы.")
+        case .failed(let message):
+            StorageStartupFailureView(message: message)
         }
+    }
+}
+
+private struct StorageStartupLoadingView: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text("Подготовка базы Sudrf…").font(.headline)
+            Text("Проверяем резервную копию, миграцию и каталог судебных актов.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 680, minHeight: 440)
     }
 }
 
@@ -87,6 +120,11 @@ private struct OperationalRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sudrfImportCases)) { _ in
             pickCSVAndImport()
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .sudrfSpotlightPreferenceChanged)) { note in
+            guard let enabled = note.object as? Bool else { return }
+            router.setSpotlightEnabled(enabled)
+        }
         .onOpenURL { router.handleDeepLink($0) }
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier]
@@ -105,6 +143,13 @@ private struct OperationalRootView: View {
             ImportSheet()
                 .environmentObject(router)
         }
+        .sheet(isPresented: Binding(
+            get: { router.spotlightOnboardingRequired },
+            set: { _ in })) {
+            SpotlightOnboardingView()
+                .environmentObject(router)
+                .interactiveDismissDisabled()
+        }
     }
 
     /// Меню «Файл → Импортировать дела из CSV…»: выбор файла и запуск импорта.
@@ -118,6 +163,32 @@ private struct OperationalRootView: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         router.beginImport(csvText: text)
+    }
+}
+
+private struct SpotlightOnboardingView: View {
+    @EnvironmentObject var router: AppRouter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Поиск Sudrf через Spotlight", systemImage: "sparkle.magnifyingglass")
+                .font(.title2.bold())
+            Text("macOS может индексировать реквизиты, стороны и полный текст опубликованных судебных актов, чтобы находить их из Spotlight и Shortcuts. Индекс хранится локально в системном Spotlight.")
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Включить системный Spotlight для Sudrf",
+                   isOn: $router.spotlightOnboardingDraft)
+                .toggleStyle(.switch)
+            Text("Настройку можно изменить позднее в разделе «Мои дела» и в настройках приложения. При отключении Sudrf удаляет свой системный индекс целиком.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Продолжить") { router.completeSpotlightOnboarding() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(26)
+        .frame(width: 540)
     }
 }
 
@@ -350,12 +421,7 @@ private struct LiveActsPane: View {
 
     private var acts: [CaseAct] { router.liveMovement?.acts ?? [] }
     private var body0: String? { router.selectedActText }
-    private var selectedParagraphs: [ActParagraph]? {
-        guard let document = router.selectedActDocument,
-              document.sourceActID == router.selectedActID,
-              document.sourceHash == body0.map(ActParagraphizer.sourceHash) else { return nil }
-        return document.paragraphs
-    }
+    private var selectedParagraphs: [ActParagraph]? { router.selectedActParagraphs }
 
     var body: some View {
         VStack(spacing: 0) {

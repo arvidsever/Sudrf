@@ -257,6 +257,72 @@ final class SpotlightIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testCaseScopedSynchronizationDoesNotReindexUnrelatedCase() async throws {
+        let store = TrackedStore(inMemory: true)
+        let first = makeContext()
+        var second = first
+        second.displayDomain = "second.msk.sudrf.ru"
+        second.searchDomain = "second--msk.sudrf.ru"
+        second.caseNumber = "2-2/2026"
+        store.upsert(context: first, snapshot: nil,
+                     movement: makeMovement(text: "Первый акт."), collections: [])
+        store.upsert(context: second, snapshot: nil,
+                     movement: makeMovement(text: "Второй акт."), collections: [])
+        let writer = RecordingSpotlightWriter()
+        let suite = "SpotlightScopedTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: SpotlightManifestStore(suiteName: suite, key: "manifest"),
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        try await indexer.synchronize()
+        var state = await writer.snapshot()
+        XCTAssertEqual(state.indexedActIDs.count, 2)
+
+        store.upsert(context: first, snapshot: nil,
+                     movement: makeMovement(text: "Первый акт изменён."), collections: [])
+        try await indexer.synchronize(scope: .cases([first.key]))
+        state = await writer.snapshot()
+        XCTAssertEqual(state.indexedActIDs.count, 3)
+        XCTAssertEqual(state.indexedCaseIDs.count, 2)
+    }
+
+    @MainActor
+    func testLegacyManifestForcesPurgeAndFullRebuild() async throws {
+        struct LegacyManifest: Codable {
+            let cases: [String: String]
+            let acts: [String: String]
+        }
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        store.upsert(context: context, snapshot: nil,
+                     movement: makeMovement(text: "Актуальный акт."), collections: [])
+        let suite = "SpotlightLegacyManifestTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(try JSONEncoder().encode(LegacyManifest(
+            cases: ["stale": "old"], acts: ["stale#act": "old"])),
+            forKey: "manifest")
+        let writer = RecordingSpotlightWriter()
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        try await indexer.synchronize(scope: .cases([context.key]))
+
+        let state = await writer.snapshot()
+        XCTAssertEqual(state.deleteAllCount, 1)
+        XCTAssertEqual(state.currentCaseIDs, [context.key])
+        XCTAssertEqual(state.currentActIDs, ["\(context.key)#act-1"])
+        let saved = await manifest.loadSnapshot()
+        XCTAssertFalse(saved.requiresFullRebuild)
+    }
+
+    @MainActor
     func testFastOffThenOnLeavesSpotlightPopulated() async throws {
         let fixture = try makeToggleFixture()
         let off = Task { try await fixture.indexer.setEnabled(false, revision: 1) }

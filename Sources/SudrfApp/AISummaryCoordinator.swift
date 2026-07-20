@@ -44,17 +44,6 @@ enum ActSummarizerFactory {
             let key = try requiredKey(kind)
             return wrap(GroqActSummarizer(key: key, model: model),
                         provider: kind.rawValue, model: model, budget: 18_000)
-        case .gigaChat:
-            let key = try requiredKey(kind)
-            return wrap(GigaChatActSummarizer(
-                authorizationKey: key, scope: settings.gigaChatScope, model: model),
-                provider: kind.rawValue, model: model, budget: 18_000)
-        case .yandexGPT:
-            let key = try requiredKey(kind)
-            guard !settings.yandexFolderID.isEmpty else { throw AISummarizerError.missingCredential }
-            return wrap(YandexGPTActSummarizer(
-                apiKey: key, folderID: settings.yandexFolderID, model: model),
-                provider: kind.rawValue, model: model, budget: 18_000)
         case .appleDirect:
             let osBuild = Self.osBuildCacheComponent
             return wrap(AppleDirectActSummarizer(), provider: kind.rawValue,
@@ -94,7 +83,8 @@ enum ActSummarizerFactory {
                                                  model: String, budget: Int,
                                                  pipelineVersion: String = "summary-pipeline-v1")
         -> ConfiguredActSummarizer {
-        let pipeline = ValidatedActSummarizer(base: ChunkingActSummarizer(base: base))
+        let chunks = ChunkingActSummarizer(base: ValidatedActSummarizer(base: base))
+        let pipeline = FinalValidatedActSummarizer(base: chunks)
         return ConfiguredActSummarizer(
             provider: provider, model: model,
             options: SummaryOptions(maxInputCharacters: budget),

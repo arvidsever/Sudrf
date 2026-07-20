@@ -158,7 +158,6 @@ struct SudrfStoreBootstrapError: LocalizedError {
     }
 }
 
-@MainActor
 enum SudrfPersistentStoreBackup {
     private static var currentSchemaVersion: String {
         String(describing: SudrfSchemaV3.versionIdentifier)
@@ -247,7 +246,6 @@ enum SudrfPersistentStoreBackup {
     }
 }
 
-@MainActor
 enum SudrfModelContainerFactory {
     static func make(inMemory: Bool, storeURL: URL? = nil) throws -> ModelContainer {
         let schema = Schema(versionedSchema: SudrfSchemaV3.self)
@@ -272,6 +270,28 @@ enum SudrfModelContainerFactory {
             // Backup и контейнер получают один и тот же URL, а не вычисляют
             // default location независимо друг от друга.
             let container = try make(inMemory: false, storeURL: defaultURL)
+            SudrfPersistentStoreBackup.markMigrationCompleted()
+            return container
+        } catch {
+            throw SudrfStoreBootstrapError(underlying: error, backupDirectory: backup)
+        }
+    }
+}
+
+/// Production bootstrap использует отдельный ModelContext внутри actor. До
+/// возврата контейнера выполнены backup, schema migration, legacy-поля и полная
+/// проекция актов; UI получает только полностью подготовленное хранилище.
+actor PersistentStoreBootstrapper {
+    func prepareProduction() throws -> ModelContainer {
+        let storeURL = ModelConfiguration().url
+        var backup: URL?
+        do {
+            backup = try SudrfPersistentStoreBackup.prepare(storeURL: storeURL)
+            let container = try SudrfModelContainerFactory.make(
+                inMemory: false, storeURL: storeURL)
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            try TrackedStorePreparation.prepare(context: context)
             SudrfPersistentStoreBackup.markMigrationCompleted()
             return container
         } catch {

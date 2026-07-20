@@ -49,6 +49,15 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor CaptchaMovement: MovementProviding {
+        let url: URL
+        init(url: URL) { self.url = url }
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw SudrfError.captchaRequired(formURL: url)
+        }
+    }
+
     /// `CaptchaSolvingProvider`-стаб, который `RefreshCenter` не должен
     /// вызывать: шаг авто-решения капчи в тестах перекрыт `autoSolve`-
     /// замыканием в init. Нужен только потому, что `CaptchaSolver`
@@ -164,11 +173,57 @@ final class RefreshCenterTests: XCTestCase {
             return canonical.key
         }
 
-        await center.refresh(key: old.key)?.value
+        let execution = await center.refresh(key: old.key)?.value
 
         XCTAssertNil(store.record(forKey: old.key))
         XCTAssertNotNil(store.record(forKey: canonical.key)?.movement)
         XCTAssertEqual(callbackKey, canonical.key)
+        XCTAssertEqual(execution?.effectiveKey, canonical.key)
+        XCTAssertEqual(execution?.outcome, .refreshed)
+    }
+
+    func testIntentRefreshClassifiesFailureUnderReroutedKey() async throws {
+        let old = makeContext()
+        var canonical = old
+        canonical.displayDomain = "canonical.komi.sudrf.ru"
+        canonical.searchDomain = "canonical--komi.sudrf.ru"
+        canonical.caseNumber = "2-201/2026"
+        let unavailable = UnavailableMovement()
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in unavailable })
+        center.repairBeforeRefresh = { [store] _ in
+            store?.upsert(context: canonical, snapshot: nil, collections: [])
+            store?.remove(key: old.key)
+            return canonical.key
+        }
+
+        let outcome = await center.refreshForIntent(key: old.key)
+
+        guard case .failed = outcome else {
+            return XCTFail("reroute network failure нельзя выдавать за refreshed")
+        }
+        XCTAssertNotNil(center.lastErrors[canonical.key])
+    }
+
+    func testIntentRefreshClassifiesCaptchaUnderReroutedKey() async throws {
+        let old = makeContext()
+        var canonical = old
+        canonical.displayDomain = "canonical.komi.sudrf.ru"
+        canonical.searchDomain = "canonical--komi.sudrf.ru"
+        canonical.caseNumber = "2-202/2026"
+        let captcha = CaptchaMovement(url: formURL)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in captcha })
+        center.repairBeforeRefresh = { [store] _ in
+            store?.upsert(context: canonical, snapshot: nil, collections: [])
+            store?.remove(key: old.key)
+            return canonical.key
+        }
+
+        let outcome = await center.refreshForIntent(key: old.key)
+
+        XCTAssertEqual(outcome, .captchaRequired)
+        XCTAssertNotNil(center.captchaPendingRequest(forKey: canonical.key))
     }
 
     // MARK: - A1: inline retry
@@ -188,7 +243,7 @@ final class RefreshCenterTests: XCTestCase {
         center.onRefreshed = { key, _ in refreshedKeys.append(key) }
 
         let key = store.all()[0].key
-        await center.refresh(key: key)?.value
+        _ = await center.refresh(key: key)?.value
 
         let calls = await scripted.calls
         XCTAssertEqual(calls.count, 2,
@@ -233,7 +288,7 @@ final class RefreshCenterTests: XCTestCase {
         }
 
         let key = store.all()[0].key
-        await center.refresh(key: key)?.value
+        _ = await center.refresh(key: key)?.value
 
         let actualSettings = try XCTUnwrap(receivedSettings)
         XCTAssertEqual(actualSettings.minConfidence, 0.95, accuracy: 0.001)
@@ -249,7 +304,7 @@ final class RefreshCenterTests: XCTestCase {
             AutoCaptchaSolver.SolveResult(token: nil, png: nil)
         }
         let key = store.all()[0].key
-        await center.refresh(key: key)?.value
+        _ = await center.refresh(key: key)?.value
 
         let calls = await scripted.calls
         XCTAssertEqual(calls.count, 1,
@@ -309,7 +364,7 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in service })
 
-        await center.refresh(key: key)?.value
+        _ = await center.refresh(key: key)?.value
 
         XCTAssertNil(rec.seenAt, "новый акт должен вернуть бейдж «обновлено»")
         XCTAssertEqual(rec.snapshot?.actsFingerprint?.count, 1)
@@ -330,7 +385,7 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in unavailable })
 
-        await center.refresh(key: key)?.value
+        _ = await center.refresh(key: key)?.value
 
         XCTAssertEqual(rec.movement, savedMovement,
                        "недоступная карточка суда не должна затирать сохранённое движение")

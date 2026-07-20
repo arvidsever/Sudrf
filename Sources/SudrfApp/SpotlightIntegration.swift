@@ -207,7 +207,7 @@ struct CourtActEntityQuery: EntityStringQuery {
         return try await CaseCatalogRegistry.shared.courtActEntities().filter { entity in
             let text = ([entity.document.caseNumber, entity.document.judicialUID,
                          entity.document.court, entity.document.kind,
-                         entity.document.sourceText].compactMap { $0 }).joined(separator: "\n")
+                         entity.document.date].compactMap { $0 }).joined(separator: "\n")
             return text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
                 .contains(needle)
         }
@@ -249,12 +249,37 @@ actor SystemSpotlightWriter: SpotlightIndexWriting {
     }
 }
 
+struct SpotlightActManifestEntry: Sendable, Codable, Equatable {
+    let fingerprint: String
+    let caseKey: String
+}
+
 struct SpotlightManifest: Sendable, Codable, Equatable {
     var cases: [String: String] = [:]
-    var acts: [String: String] = [:]
+    var acts: [String: SpotlightActManifestEntry] = [:]
+}
+
+enum SpotlightSyncScope: Sendable, Equatable {
+    case cases(Set<String>)
+    case full
+
+    func merging(_ other: Self) -> Self {
+        switch (self, other) {
+        case (.full, _), (_, .full): .full
+        case (.cases(let lhs), .cases(let rhs)): .cases(lhs.union(rhs))
+        }
+    }
 }
 
 actor SpotlightManifestStore {
+    private struct Envelope: Codable {
+        let version: Int
+        let manifest: SpotlightManifest
+    }
+    struct Snapshot: Sendable {
+        let manifest: SpotlightManifest
+        let requiresFullRebuild: Bool
+    }
     private let defaults: UserDefaults
     private let key: String
 
@@ -263,14 +288,24 @@ actor SpotlightManifestStore {
         self.key = key
     }
 
-    func load() -> SpotlightManifest {
-        guard let data = defaults.data(forKey: key) else { return SpotlightManifest() }
-        return (try? JSONDecoder().decode(SpotlightManifest.self, from: data))
-            ?? SpotlightManifest()
+    func loadSnapshot() -> Snapshot {
+        guard let data = defaults.data(forKey: key) else {
+            return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: false)
+        }
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
+              envelope.version == 2 else {
+            // v1/corrupt manifest не является основанием оставлять возможные
+            // stale записи в системном индексе: следующий sync делает purge.
+            return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: true)
+        }
+        return Snapshot(manifest: envelope.manifest, requiresFullRebuild: false)
     }
 
+    func load() -> SpotlightManifest { loadSnapshot().manifest }
+
     func save(_ manifest: SpotlightManifest) {
-        defaults.set(try? JSONEncoder().encode(manifest), forKey: key)
+        defaults.set(try? JSONEncoder().encode(Envelope(version: 2, manifest: manifest)),
+                     forKey: key)
     }
 }
 
@@ -278,6 +313,7 @@ actor SpotlightManifestStore {
 /// применить preference revision без actor-reentrancy между проверкой и записью.
 final class SpotlightPreferenceStore: @unchecked Sendable {
     static let key = "spotlight.systemIndexEnabled"
+    static let onboardingKey = "spotlight.systemIndexDisclosure.v1"
     private let defaults: UserDefaults
 
     init(suiteName: String? = nil) {
@@ -301,6 +337,7 @@ actor SpotlightIndexer {
     private let manifestStore: SpotlightManifestStore
     private let preferenceStore: SpotlightPreferenceStore
     private var scheduledTask: Task<Void, Never>?
+    private var pendingScope: SpotlightSyncScope?
     private var writeTail: Task<Void, Never>?
     private var writeSequence: UInt64 = 0
     private var latestPreferenceRevision: UInt64 = 0
@@ -320,29 +357,33 @@ actor SpotlightIndexer {
         latestPreferenceRevision = revision
         preferenceStore.setEnabled(enabled)
         scheduledTask?.cancel()
+        pendingScope = nil
         if enabled {
-            try await synchronize()
+            try await synchronize(scope: .full)
         } else {
             try await enqueuePurge()
         }
     }
 
-    func scheduleSynchronization() {
+    func scheduleSynchronization(scope: SpotlightSyncScope) {
+        pendingScope = pendingScope.map { $0.merging(scope) } ?? scope
         scheduledTask?.cancel()
         scheduledTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            try? await self?.synchronize()
+            try? await self?.runScheduledSynchronization()
         }
     }
 
     func synchronize() async throws {
+        try await synchronize(scope: .full)
+    }
+
+    func synchronize(scope: SpotlightSyncScope) async throws {
         guard preferenceStore.isEnabled() else { return try await enqueuePurge() }
-        let cases = try await catalog.cases().map(CaseEntity.init(snapshot:))
-        let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
-        let next = SpotlightManifest(
-            cases: Dictionary(uniqueKeysWithValues: cases.map { ($0.id, $0.fingerprint) }),
-            acts: Dictionary(uniqueKeysWithValues: acts.map { ($0.id, $0.fingerprint) }))
+        let loadedBeforeFetch = await manifestStore.loadSnapshot()
+        let effectiveScope: SpotlightSyncScope = loadedBeforeFetch.requiresFullRebuild ? .full : scope
+        let entities = try await entities(for: effectiveScope)
         let writer = self.writer
         let manifestStore = self.manifestStore
         let preferenceStore = self.preferenceStore
@@ -350,11 +391,44 @@ actor SpotlightIndexer {
             guard preferenceStore.isEnabled() else {
                 return try await Self.purge(writer: writer, manifestStore: manifestStore)
             }
-            let previous = await manifestStore.load()
-            let changedCases = cases.filter { previous.cases[$0.id] != $0.fingerprint }
-            let changedActs = acts.filter { previous.acts[$0.id] != $0.fingerprint }
-            let removedCases = Array(previous.cases.keys.filter { next.cases[$0] == nil })
-            let removedActs = Array(previous.acts.keys.filter { next.acts[$0] == nil })
+            let loaded = await manifestStore.loadSnapshot()
+            var previous = loaded.manifest
+            if loaded.requiresFullRebuild {
+                try await writer.deleteAll()
+                previous = SpotlightManifest()
+            }
+            var next = previous
+            let affectedKeys: Set<String>
+            switch effectiveScope {
+            case .full:
+                affectedKeys = Set(previous.cases.keys)
+                    .union(previous.acts.values.map(\.caseKey))
+                    .union(entities.cases.map(\.id))
+                    .union(entities.acts.map { $0.document.caseKey })
+                next = SpotlightManifest()
+            case .cases(let keys):
+                affectedKeys = keys
+                keys.forEach { next.cases[$0] = nil }
+                next.acts = next.acts.filter { !keys.contains($0.value.caseKey) }
+            }
+            entities.cases.forEach { next.cases[$0.id] = $0.fingerprint }
+            entities.acts.forEach {
+                next.acts[$0.id] = SpotlightActManifestEntry(
+                    fingerprint: $0.fingerprint, caseKey: $0.document.caseKey)
+            }
+            let changedCases = entities.cases.filter {
+                previous.cases[$0.id] != $0.fingerprint
+            }
+            let changedActs = entities.acts.filter {
+                previous.acts[$0.id]?.fingerprint != $0.fingerprint
+                    || previous.acts[$0.id]?.caseKey != $0.document.caseKey
+            }
+            let removedCases = Array(previous.cases.keys.filter {
+                affectedKeys.contains($0) && next.cases[$0] == nil
+            })
+            let removedActs = Array(previous.acts.filter {
+                affectedKeys.contains($0.value.caseKey) && next.acts[$0.key] == nil
+            }.keys)
 
             try await writer.delete(caseIDs: removedCases, actIDs: removedActs)
             guard preferenceStore.isEnabled() else {
@@ -374,7 +448,10 @@ actor SpotlightIndexer {
         let acts = try await catalog.acts().map { CourtActEntity(document: $0.document) }
         let next = SpotlightManifest(
             cases: Dictionary(uniqueKeysWithValues: cases.map { ($0.id, $0.fingerprint) }),
-            acts: Dictionary(uniqueKeysWithValues: acts.map { ($0.id, $0.fingerprint) }))
+            acts: Dictionary(uniqueKeysWithValues: acts.map {
+                ($0.id, SpotlightActManifestEntry(
+                    fingerprint: $0.fingerprint, caseKey: $0.document.caseKey))
+            }))
         let writer = self.writer
         let manifestStore = self.manifestStore
         let preferenceStore = self.preferenceStore
@@ -399,6 +476,35 @@ actor SpotlightIndexer {
         let manifestStore = self.manifestStore
         try await enqueueWrite {
             try await Self.purge(writer: writer, manifestStore: manifestStore)
+        }
+    }
+
+    private func runScheduledSynchronization() async throws {
+        guard let scope = pendingScope else { return }
+        pendingScope = nil
+        scheduledTask = nil
+        try await synchronize(scope: scope)
+    }
+
+    private func entities(for scope: SpotlightSyncScope) async throws
+        -> (cases: [CaseEntity], acts: [CourtActEntity]) {
+        switch scope {
+        case .full:
+            return (
+                try await catalog.cases().map(CaseEntity.init(snapshot:)),
+                try await catalog.acts().map { CourtActEntity(document: $0.document) })
+        case .cases(let keys):
+            var cases: [CaseEntity] = []
+            var acts: [CourtActEntity] = []
+            for key in keys.sorted() {
+                if let value = try await catalog.caseSnapshot(id: key) {
+                    cases.append(CaseEntity(snapshot: value))
+                }
+                acts += try await catalog.acts(caseKey: key).map {
+                    CourtActEntity(document: $0.document)
+                }
+            }
+            return (cases, acts)
         }
     }
 

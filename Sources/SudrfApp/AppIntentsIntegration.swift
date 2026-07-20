@@ -165,8 +165,9 @@ struct ExportCourtActPDFIntent: AppIntent {
         guard let data = await ActPDFExporter.renderData(text: document.sourceText) else {
             throw SudrfIntentError.applicationUnavailable
         }
-        let safeNumber = document.caseNumber.replacingOccurrences(of: "/", with: "-")
-        let file = IntentFile(data: data, filename: "Дело № \(safeNumber).pdf", type: .pdf)
+        let file = IntentFile(data: data,
+                              filename: ActPDFExporter.filename(caseNumber: document.caseNumber),
+                              type: .pdf)
         return .result(value: file, dialog: "PDF создан локально.")
     }
 }

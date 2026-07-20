@@ -3,19 +3,6 @@ import FoundationModels
 import SudrfKit
 @preconcurrency import Translation
 
-enum AppleModelSupport {
-    @MainActor
-    static func isAvailable(localeIdentifier: String) -> Bool {
-#if arch(x86_64)
-        false
-#else
-        let model = SystemLanguageModel.default
-        return model.availability == .available
-            && model.supportsLocale(Locale(identifier: localeIdentifier))
-#endif
-    }
-}
-
 @Generable(description: "A verbatim citation from one numbered paragraph")
 private struct AppleCitationOutput {
     @Guide(description: "Paragraph ID exactly as supplied, for example ¶12")
@@ -52,6 +39,10 @@ actor AppleDirectActSummarizer: ActSummarizing {
     }
 
     func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+#if arch(x86_64)
+        throw AISummarizerError.providerUnavailable(
+            "Apple Intelligence недоступен на Mac с процессором Intel. Используйте Groq BYOK.")
+#else
         let model = SystemLanguageModel.default
         guard model.availability == .available else {
             throw AISummarizerError.providerUnavailable(
@@ -71,6 +62,7 @@ actor AppleDirectActSummarizer: ActSummarizing {
             to: "Составь структурированную сводку судебного акта:\n\n\(paragraphs)",
             generating: AppleSummaryOutput.self)
         return Self.convert(response.content)
+#endif
     }
 
     private static func convert(_ value: AppleSummaryOutput) -> ActSummary {
@@ -160,7 +152,13 @@ struct ProtectedTranslationDocument: Sendable, Hashable {
 }
 
 enum LegalLiteralProtector {
-    static func protect(_ document: ActDocument) -> ProtectedTranslationDocument {
+    static func protect(_ document: ActDocument) throws -> ProtectedTranslationDocument {
+        guard !document.paragraphs.contains(where: {
+            !$0.text.isEmpty && !placeholderCounts(in: $0.text).isEmpty
+        }) else {
+            throw AISummarizerError.providerUnavailable(
+                "Исходный акт содержит зарезервированный translation placeholder; экспериментальный перевод остановлен.")
+        }
         let patterns: [(String, String)] = [
             ("D", #"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"#),
             ("D", #"(?i)\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}\s*(?:года|г\.)?"#),
@@ -214,7 +212,7 @@ struct AppleTranslatedActSummarizer<English: ActSummarizing>: ActSummarizing {
     let englishToRussian: Translator
 
     func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
-        let protected = LegalLiteralProtector.protect(document)
+        let protected = try LegalLiteralProtector.protect(document)
         var englishParagraphs: [ActParagraph] = []
         for paragraph in protected.paragraphs {
             try Task.checkCancellation()

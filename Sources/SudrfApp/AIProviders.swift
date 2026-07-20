@@ -8,7 +8,8 @@ enum AISummarizerError: LocalizedError, Sendable {
     case translationLanguagesNotInstalled
     case providerUnavailable(String)
     case invalidResponse
-    case http(Int)
+    case invalidResponseField(String)
+    case http(Int, retryAfterSeconds: Int? = nil)
 
     var errorDescription: String? {
         switch self {
@@ -20,7 +21,18 @@ enum AISummarizerError: LocalizedError, Sendable {
             "Языковая пара русский ↔ английский не установлена. Подготовьте её в Настройки → AI."
         case .providerUnavailable(let reason): reason
         case .invalidResponse: "Провайдер вернул ответ, не соответствующий ActSummary."
-        case .http(let status): "AI API вернул HTTP \(status)."
+        case .invalidResponseField(let path):
+            "Провайдер вернул неверный тип или значение в поле \(path)."
+        case .http(let status, let retryAfterSeconds):
+            if status == 429 {
+                if let retryAfterSeconds {
+                    "Лимит AI API исчерпан. Повторите через \(retryAfterSeconds) сек."
+                } else {
+                    "Лимит AI API исчерпан. Повторите запрос позднее."
+                }
+            } else {
+                "AI API вернул HTTP \(status)."
+            }
         }
     }
 }
@@ -77,32 +89,57 @@ struct ChunkingActSummarizer<Base: ActSummarizing>: ActSummarizing {
     }
 }
 
-/// Один автоматический retry разрешён только для invalid structured output или
-/// локальной проверки. Второй сомнительный результат никогда не показывается.
+/// На один fragment разрешён ровно один общий retry: либо после invalid
+/// structured output/локальной проверки, либо после кратковременного HTTP
+/// сбоя. Таким образом один chunk никогда не создаёт больше двух запросов.
 struct ValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
     let base: Base
 
     func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
         var lastError: Error?
-        for _ in 0..<2 {
+        for attempt in 0..<2 {
             do {
                 let value = try await base.summarize(document: document, options: options)
                 try ActSummaryValidator.validate(value, against: document)
                 return value
             } catch {
                 if error is CancellationError { throw error }
-                guard isRetryable(error) else { throw error }
+                guard attempt == 0 else { throw error }
+                guard let delay = retryDelay(error) else { throw error }
                 lastError = error
+                if delay > .zero {
+                    try await Task.sleep(for: delay)
+                }
             }
         }
         throw lastError ?? AISummarizerError.invalidResponse
     }
 
-    private func isRetryable(_ error: Error) -> Bool {
-        if error is ActSummaryValidationError { return true }
+    private func retryDelay(_ error: Error) -> Duration? {
+        if error is ActSummaryValidationError { return .zero }
         if let summarizerError = error as? AISummarizerError,
-           case .invalidResponse = summarizerError { return true }
-        return false
+           case .invalidResponse = summarizerError { return .zero }
+        if let summarizerError = error as? AISummarizerError,
+           case .invalidResponseField = summarizerError { return .zero }
+        guard let summarizerError = error as? AISummarizerError,
+              case .http(let status, let retryAfter) = summarizerError else { return nil }
+        if status == 429 {
+            let seconds = retryAfter ?? 1
+            return seconds <= 15 ? .seconds(seconds) : nil
+        }
+        return (500...599).contains(status) ? .seconds(1) : nil
+    }
+}
+
+/// После слияния чанков проверяем результат против полного документа, но не
+/// повторяем уже успешно обработанные chunks.
+struct FinalValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
+    let base: Base
+
+    func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+        let value = try await base.summarize(document: document, options: options)
+        try ActSummaryValidator.validate(value, against: document)
+        return value
     }
 }
 
@@ -142,98 +179,6 @@ actor GroqActSummarizer: ActSummarizing {
     }
 }
 
-actor GigaChatActSummarizer: ActSummarizing {
-    let authorizationKey: String
-    let scope: String
-    let model: String
-    private let session: URLSession
-    private var cachedToken: (value: String, expiresAt: Date)?
-
-    init(authorizationKey: String, scope: String, model: String,
-         session: URLSession = .shared) {
-        self.authorizationKey = authorizationKey; self.scope = scope
-        self.model = model; self.session = session
-    }
-
-    func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
-        let token = try await accessToken()
-        let body: [String: Any] = [
-            "model": model,
-            "messages": SummaryPrompt.messages(document: document),
-            "response_format": ["type": "json_schema", "schema": SummaryPrompt.jsonSchema,
-                                "strict": true],
-        ]
-        guard let endpoint = URL(string: "https://api.giga.chat/v1/chat/completions") else {
-            throw AISummarizerError.invalidResponse
-        }
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let json = try await HTTPJSON.send(request, session: session)
-        guard let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else { throw AISummarizerError.invalidResponse }
-        return try SummaryPrompt.decode(content)
-    }
-
-    private func accessToken() async throws -> String {
-        if let cachedToken, cachedToken.expiresAt > Date().addingTimeInterval(60) {
-            return cachedToken.value
-        }
-        guard let endpoint = URL(string: "https://api.giga.chat/api/v2/oauth") else {
-            throw AISummarizerError.invalidResponse
-        }
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Basic \(authorizationKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "RqUID")
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("scope=\(scope)".utf8)
-        let json = try await HTTPJSON.send(request, session: session)
-        guard let token = json["access_token"] as? String else { throw AISummarizerError.invalidResponse }
-        let milliseconds = json["expires_at"] as? Double ?? (Date().timeIntervalSince1970 + 1_800) * 1_000
-        cachedToken = (token, Date(timeIntervalSince1970: milliseconds / 1_000))
-        return token
-    }
-}
-
-actor YandexGPTActSummarizer: ActSummarizing {
-    let apiKey: String
-    let folderID: String
-    let model: String
-    private let session: URLSession
-
-    init(apiKey: String, folderID: String, model: String, session: URLSession = .shared) {
-        self.apiKey = apiKey; self.folderID = folderID; self.model = model; self.session = session
-    }
-
-    func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
-        let body: [String: Any] = [
-            "modelUri": "gpt://\(folderID)/\(model)",
-            "completionOptions": ["stream": false, "temperature": 0],
-            "messages": SummaryPrompt.messages(document: document),
-        ]
-        guard let endpoint = URL(
-            string: "https://llm.api.cloud.yandex.net/foundationModels/v1/completion") else {
-            throw AISummarizerError.invalidResponse
-        }
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Api-Key \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue(folderID, forHTTPHeaderField: "x-folder-id")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let json = try await HTTPJSON.send(request, session: session)
-        guard let result = json["result"] as? [String: Any],
-              let alternatives = result["alternatives"] as? [[String: Any]],
-              let message = alternatives.first?["message"] as? [String: Any],
-              let text = message["text"] as? String else { throw AISummarizerError.invalidResponse }
-        return try SummaryPrompt.decode(text)
-    }
-}
-
 enum HTTPJSON {
     static func send(_ request: URLRequest, session: URLSession) async throws -> [String: Any] {
         let (data, response) = try await session.data(for: request)
@@ -241,12 +186,27 @@ enum HTTPJSON {
         guard 200..<300 ~= http.statusCode else {
             // Тело ошибки может содержать отражённый prompt или провайдерские
             // диагностические данные. Не удерживаем его даже внутри Error.
-            throw AISummarizerError.http(http.statusCode)
+            let retryAfter = retryAfterSeconds(
+                http.value(forHTTPHeaderField: "Retry-After"))
+            throw AISummarizerError.http(http.statusCode, retryAfterSeconds: retryAfter)
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AISummarizerError.invalidResponse
         }
         return json
+    }
+
+    private static func retryAfterSeconds(_ raw: String?) -> Int? {
+        guard let raw else { return nil }
+        if let seconds = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return max(0, seconds)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        guard let date = formatter.date(from: raw) else { return nil }
+        return max(0, Int(ceil(date.timeIntervalSinceNow)))
     }
 }
 
@@ -356,11 +316,32 @@ enum SummaryPrompt {
                 candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
-        guard let data = candidate.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(
-                ProviderActSummaryPayload.self, from: data) else {
+        guard let data = candidate.data(using: .utf8) else {
+            throw AISummarizerError.invalidResponse
+        }
+        let payload: ProviderActSummaryPayload
+        do {
+            payload = try JSONDecoder().decode(ProviderActSummaryPayload.self, from: data)
+        } catch let error as DecodingError {
+            throw AISummarizerError.invalidResponseField(safeCodingPath(error))
+        } catch {
             throw AISummarizerError.invalidResponse
         }
         return payload.summary
+    }
+
+    private static func safeCodingPath(_ error: DecodingError) -> String {
+        var path: [any CodingKey]
+        switch error {
+        case .typeMismatch(_, let context), .valueNotFound(_, let context),
+             .dataCorrupted(let context):
+            path = context.codingPath
+        case .keyNotFound(let key, let context):
+            path = context.codingPath + [key]
+        @unknown default:
+            return "<root>"
+        }
+        let value = path.map(\.stringValue).joined(separator: ".")
+        return value.isEmpty ? "<root>" : value
     }
 }

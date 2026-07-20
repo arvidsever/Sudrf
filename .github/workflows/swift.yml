@@ -41,19 +41,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Locate Xcode 27 beta or RC
+      - name: Locate newest Xcode 27 (stable > RC > beta)
         id: xcode27
         run: |
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
+          XCODE_PATH=""
+          BEST_SCORE=-1
+          for candidate in /Applications/Xcode*.app; do
+            [[ -d "$candidate" ]] || continue
+            version="$($candidate/Contents/Developer/usr/bin/xcodebuild -version | awk 'NR == 1 { print $2 }')"
+            numeric="${version%%[^0-9.]*}"
+            IFS=. read -r major minor patch <<< "$numeric"
+            major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
+            [[ "$major" == "27" ]] || continue
+            lower="$(basename "$candidate" | tr '[:upper:]' '[:lower:]')"
+            channel=3
+            [[ "$lower" == *"rc"* ]] && channel=2
+            [[ "$lower" == *"beta"* ]] && channel=1
+            score=$((channel * 1000000 + major * 10000 + minor * 100 + patch))
+            if (( score > BEST_SCORE )); then
+              BEST_SCORE=$score
+              XCODE_PATH="$candidate"
+            fi
+          done
           if [[ -z "$XCODE_PATH" ]]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Xcode 27 is not installed on this hosted runner; the Xcode 27 line was not executed."
             echo "### Xcode 27 line not executed" >> "$GITHUB_STEP_SUMMARY"
-            echo "The current hosted macOS image does not contain Xcode 27 beta/RC. Stable Xcode 26 checks remain mandatory; Xcode 27 was verified manually on the development Mac." >> "$GITHUB_STEP_SUMMARY"
+            echo "The current hosted macOS image does not contain Xcode 27 beta/RC. Stable Xcode 26 checks remain mandatory; Xcode 27 requires the documented manual development-Mac check." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "available=true" >> "$GITHUB_OUTPUT"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          SELECTED_VERSION="$(xcodebuild -version | tr '\n' ' ')"
+          echo "### Xcode 27 line" >> "$GITHUB_STEP_SUMMARY"
+          echo "Selected \`$XCODE_PATH\`: $SELECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
           xcodebuild -version
 
       - name: Fetch CoreML model

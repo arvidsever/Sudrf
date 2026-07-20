@@ -16,8 +16,11 @@ import SudrfKit
 enum CourtActFormatter {
 
     struct IdentifiedBlock: Identifiable, Equatable {
-        let id: String
+        let blockID: String
+        let paragraphID: String
         let block: Block
+
+        var id: String { blockID }
     }
 
     enum Block: Equatable {
@@ -36,8 +39,9 @@ enum CourtActFormatter {
                                 paragraphs: [ActParagraph]? = nil) -> [IdentifiedBlock] {
         (paragraphs ?? ActParagraphizer.paragraphs(in: text)).flatMap { paragraph in
             classify(paragraph.text).enumerated().map { index, block in
-                IdentifiedBlock(id: index == 0 ? paragraph.id : "\(paragraph.id).\(index)",
-                                block: block)
+                IdentifiedBlock(
+                    blockID: index == 0 ? paragraph.id : "\(paragraph.id).\(index)",
+                    paragraphID: paragraph.id, block: block)
             }
         }
     }
@@ -97,7 +101,7 @@ struct ActTextView: View {
                     .padding(.horizontal, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 5)
-                            .fill(item.id == highlightedParagraphID
+                            .fill(item.paragraphID == highlightedParagraphID
                                   ? Color.yellow.opacity(0.28) : .clear))
             }
         }

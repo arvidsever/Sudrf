@@ -14,6 +14,166 @@ import os
 /// глотаются молча — всё уходит в unified logging (Console.app).
 private let storeLog = Logger(subsystem: "ru.sudrf.app", category: "TrackedStore")
 
+enum ProjectionScope: Sendable, Equatable {
+    case none
+    case cases(Set<String>)
+    case full
+}
+
+/// Общая реализация подготовки store. Она не привязана к mainContext и может
+/// выполняться как production bootstrap в actor с собственным ModelContext.
+enum TrackedStorePreparation {
+    static func prepare(context: ModelContext) throws {
+        try migrateFolders(context: context)
+        try migrateJudicialUIDs(context: context)
+        try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
+        try context.save()
+    }
+
+    private static func migrateFolders(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        for rec in records where !rec.folderName.isEmpty {
+            if rec.folderName != "Без папки", rec.collectionNames.isEmpty {
+                rec.collectionNames = [rec.folderName]
+            }
+            rec.folderName = ""
+        }
+    }
+
+    private static func migrateJudicialUIDs(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        for rec in records where (rec.judicialUID ?? "").isEmpty {
+            let uid = rec.context?.judicialUID ?? rec.movement?.uid
+            guard let uid, !uid.isEmpty else { continue }
+            rec.judicialUID = TrackedStore.normalizedUID(uid)
+        }
+    }
+}
+
+enum CourtActProjectionSynchronizer {
+    static func synchronize(context: ModelContext, scope: ProjectionScope) throws {
+        let tracked: [TrackedCaseRecord]
+        let stored: [CourtActRecord]
+        switch scope {
+        case .none:
+            return
+        case .full:
+            tracked = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+            stored = try context.fetch(FetchDescriptor<CourtActRecord>())
+        case .cases(let caseKeys):
+            tracked = try caseKeys.compactMap { key in
+                var descriptor = FetchDescriptor<TrackedCaseRecord>(
+                    predicate: #Predicate { $0.key == key })
+                descriptor.fetchLimit = 1
+                return try context.fetch(descriptor).first
+            }
+            stored = try caseKeys.flatMap { caseKey in
+                try context.fetch(FetchDescriptor<CourtActRecord>(
+                    predicate: #Predicate { $0.caseKey == caseKey }))
+            }
+        }
+        var unmatched = Set(stored.map(ObjectIdentifier.init))
+        let byExact = Dictionary(grouping: stored) {
+            lookupKey($0.caseKey, $0.sourceActID)
+        }
+        let bySemantic = Dictionary(grouping: stored) {
+            lookupKey($0.caseKey, $0.semanticKey)
+        }
+        let byHash = Dictionary(grouping: stored) {
+            lookupKey($0.caseKey, $0.sourceHash)
+        }
+        var desiredIDs = Set<String>()
+        var undecodableCaseKeys = Set<String>()
+
+        for trackedRecord in tracked {
+            guard let movement = trackedRecord.movement else {
+                if trackedRecord.movementData != nil {
+                    undecodableCaseKeys.insert(trackedRecord.key)
+                }
+                continue
+            }
+            for act in movement.acts {
+                let instance = movement.instances.first {
+                    $0.actID == act.id || $0.level == act.instanceLevel
+                }
+                let document = ActDocument(
+                    caseKey: trackedRecord.key, sourceActID: act.id,
+                    caseNumber: movement.caseNumber.isEmpty
+                        ? trackedRecord.caseNumber : movement.caseNumber,
+                    judicialUID: trackedRecord.judicialUID
+                        ?? (movement.uid.isEmpty ? nil : movement.uid),
+                    court: instance?.court ?? act.courtShort,
+                    instanceLevel: act.instanceLevel, kind: act.title, date: act.date,
+                    sourceText: movement.actBodies[act.id] ?? "")
+                let semanticKey = semanticKey(
+                    caseKey: trackedRecord.key, level: act.instanceLevel,
+                    court: instance?.court ?? act.courtShort,
+                    kind: act.title, date: act.date)
+                func available(_ values: [CourtActRecord]?) -> [CourtActRecord] {
+                    (values ?? []).filter { unmatched.contains(ObjectIdentifier($0)) }
+                }
+                let exact = available(byExact[lookupKey(trackedRecord.key, act.id)])
+                let semantic = available(bySemantic[lookupKey(trackedRecord.key, semanticKey)])
+                let hash = available(byHash[lookupKey(trackedRecord.key, document.sourceHash)])
+                let existing = exact.first
+                    ?? (semantic.count == 1 ? semantic[0] : nil)
+                    ?? (hash.count == 1 ? hash[0] : nil)
+                let fetchedAt = trackedRecord.movementFetchedAt ?? trackedRecord.addedAt
+                if let existing {
+                    desiredIDs.insert(existing.id)
+                    existing.update(from: document, semanticKey: semanticKey,
+                                    fetchedAt: fetchedAt)
+                    unmatched.remove(ObjectIdentifier(existing))
+                } else {
+                    var stableID = document.id
+                    if desiredIDs.contains(stableID) {
+                        stableID += "#\(document.sourceHash.prefix(12))"
+                    }
+                    let stableDocument = ActDocument(
+                        caseKey: document.caseKey, sourceActID: document.sourceActID,
+                        caseNumber: document.caseNumber, judicialUID: document.judicialUID,
+                        court: document.court, instanceLevel: document.instanceLevel,
+                        kind: document.kind, date: document.date,
+                        sourceText: document.sourceText, documentID: stableID)
+                    desiredIDs.insert(stableID)
+                    context.insert(CourtActRecord(document: stableDocument,
+                                                  semanticKey: semanticKey,
+                                                  fetchedAt: fetchedAt))
+                }
+            }
+        }
+
+        for stale in stored where unmatched.contains(ObjectIdentifier(stale))
+            && !desiredIDs.contains(stale.id)
+            && !undecodableCaseKeys.contains(stale.caseKey) {
+            try deleteSummary(documentID: stale.id, context: context)
+            context.delete(stale)
+        }
+    }
+
+    private static func semanticKey(caseKey: String, level: CaseInstance.Level,
+                                    court: String, kind: String, date: String) -> String {
+        [caseKey, level.rawValue, court, kind, date]
+            .map {
+                $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                    .replacingOccurrences(of: "[^a-zа-яё0-9]+", with: "",
+                                          options: .regularExpression)
+            }
+            .joined(separator: "|")
+    }
+
+    private static func lookupKey(_ caseKey: String, _ value: String) -> String {
+        "\(caseKey.utf8.count):\(caseKey)\(value)"
+    }
+
+    private static func deleteSummary(documentID: String,
+                                      context: ModelContext) throws {
+        let descriptor = FetchDescriptor<ActSummaryRecord>(
+            predicate: #Predicate { $0.documentID == documentID })
+        for summary in try context.fetch(descriptor) { context.delete(summary) }
+    }
+}
+
 @Model
 final class TrackedCaseRecord {
     /// Ключ дедупликации: «<отображаемый домен>/<№ дела>».
@@ -127,39 +287,15 @@ final class TrackedStore {
 
     /// Позволяет UI, Spotlight, App Intents и тестам использовать один явно
     /// созданный контейнер вместо скрытого экземпляра внутри `TrackedStore`.
-    init(container: ModelContainer) {
+    init(container: ModelContainer, prepared: Bool = false) {
         self.container = container
-        migrateFolders()
-        migrateJudicialUIDs()
-        rebuildCourtActProjection()
-        _ = saveContext()
-    }
-
-    /// Одноразовый посев подборок из legacy-папок (до v20): непустая папка
-    /// «доверителя» становится подборкой, после чего поле очищается.
-    private func migrateFolders() {
-        var changed = false
-        for rec in all() where !rec.folderName.isEmpty {
-            if rec.folderName != "Без папки", rec.collectionNames.isEmpty {
-                rec.collectionNames = [rec.folderName]
-            }
-            rec.folderName = ""
-            changed = true
+        guard !prepared else { return }
+        do {
+            try TrackedStorePreparation.prepare(context: context)
+        } catch {
+            context.rollback()
+            storeLog.error("Не удалось подготовить хранилище: \(error, privacy: .public)")
         }
-        if changed { save() }
-    }
-
-    /// Наполняет новый денормализованный индекс из JSON-контекста/кэша без сети.
-    /// Идемпотентно; дубли пока допустимы и будут сведены repair-координатором.
-    private func migrateJudicialUIDs() {
-        var changed = false
-        for rec in all() where (rec.judicialUID ?? "").isEmpty {
-            let uid = rec.context?.judicialUID ?? rec.movement?.uid
-            guard let uid, !uid.isEmpty else { continue }
-            rec.judicialUID = Self.normalizedUID(uid)
-            changed = true
-        }
-        if changed { save() }
     }
 
     nonisolated static func normalizedUID(_ raw: String) -> String {
@@ -238,7 +374,7 @@ final class TrackedStore {
                oldCaseNumber != existing.caseNumber || oldJudicialUID != existing.judicialUID {
                 synchronizeCourtActMetadata(caseKey: existing.key)
             }
-            save(rebuildProjection: mvData != nil)
+            save(projection: mvData == nil ? .none : .cases([key]))
             return existing
         }
         let rec = TrackedCaseRecord(key: key, collections: collections, caseNumber: ctx.caseNumber,
@@ -252,7 +388,7 @@ final class TrackedStore {
             rec.movementFetchedAt = Date()
         }
         context.insert(rec)
-        save(rebuildProjection: mvData != nil)
+        save(projection: mvData == nil ? .none : .cases([key]))
         return rec
     }
 
@@ -273,8 +409,14 @@ final class TrackedStore {
     /// ошибке откатываем и изменения выжившей записи, и отложенные удаления,
     /// чтобы repair никогда не оставил базу в полуслитом состоянии.
     @discardableResult
-    func save(rebuildProjection: Bool = false) -> Bool {
-        if rebuildProjection { rebuildCourtActProjection() }
+    func save(projection: ProjectionScope = .none) -> Bool {
+        do {
+            try CourtActProjectionSynchronizer.synchronize(context: context, scope: projection)
+        } catch {
+            context.rollback()
+            storeLog.error("Не удалось обновить проекцию актов: \(error, privacy: .public)")
+            return false
+        }
         return saveContext()
     }
 
@@ -290,6 +432,30 @@ final class TrackedStore {
         }
     }
 
+    /// Перед repair-проекцией переносит уникальные логические акты на новый
+    /// caseKey, сохраняя documentID и связанную ActSummaryRecord. Если в
+    /// destination уже есть тот же source/semantic/hash, приоритет у него, а
+    /// старый дубль удалит обычная scoped reconciliation.
+    func prepareCourtActsForReroute(from oldKeys: [String], to newKey: String) {
+        let destinationDescriptor = FetchDescriptor<CourtActRecord>(
+            predicate: #Predicate { $0.caseKey == newKey })
+        var destination = (try? context.fetch(destinationDescriptor)) ?? []
+        for oldKey in oldKeys where oldKey != newKey {
+            let descriptor = FetchDescriptor<CourtActRecord>(
+                predicate: #Predicate { $0.caseKey == oldKey })
+            for act in (try? context.fetch(descriptor)) ?? [] {
+                let collides = destination.contains {
+                    $0.sourceActID == act.sourceActID
+                        || $0.semanticKey == act.semanticKey
+                        || $0.sourceHash == act.sourceHash
+                }
+                guard !collides else { continue }
+                act.caseKey = newKey
+                destination.append(act)
+            }
+        }
+    }
+
     private func saveContext() -> Bool {
         do {
             try context.save()
@@ -302,115 +468,6 @@ final class TrackedStore {
     }
 
     // MARK: - Перестраиваемая проекция актов
-
-    private func rebuildCourtActProjection() {
-        let descriptor = FetchDescriptor<CourtActRecord>()
-        let stored = (try? context.fetch(descriptor)) ?? []
-        var unmatched = Set(stored.map(ObjectIdentifier.init))
-        let byExact = Dictionary(grouping: stored) {
-            Self.projectionLookupKey($0.caseKey, $0.sourceActID)
-        }
-        let bySemantic = Dictionary(grouping: stored) {
-            Self.projectionLookupKey($0.caseKey, $0.semanticKey)
-        }
-        let byHash = Dictionary(grouping: stored) {
-            Self.projectionLookupKey($0.caseKey, $0.sourceHash)
-        }
-        var desiredIDs = Set<String>()
-        var undecodableCaseKeys = Set<String>()
-
-        for tracked in all() {
-            guard let movement = tracked.movement else {
-                // Непустой blob, который текущая версия не смогла прочитать,
-                // нельзя трактовать как удаление источника истины. Сохраняем
-                // последнюю проекцию и её сводки до явного успешного refresh.
-                if tracked.movementData != nil {
-                    undecodableCaseKeys.insert(tracked.key)
-                }
-                continue
-            }
-            for act in movement.acts {
-                let instance = movement.instances.first {
-                    $0.actID == act.id || $0.level == act.instanceLevel
-                }
-                let document = ActDocument(
-                    caseKey: tracked.key,
-                    sourceActID: act.id,
-                    caseNumber: movement.caseNumber.isEmpty ? tracked.caseNumber : movement.caseNumber,
-                    judicialUID: tracked.judicialUID ?? (movement.uid.isEmpty ? nil : movement.uid),
-                    court: instance?.court ?? act.courtShort,
-                    instanceLevel: act.instanceLevel,
-                    kind: act.title,
-                    date: act.date,
-                    sourceText: movement.actBodies[act.id] ?? ""
-                )
-                let semanticKey = Self.courtActSemanticKey(
-                    caseKey: tracked.key, level: act.instanceLevel,
-                    court: instance?.court ?? act.courtShort,
-                    kind: act.title, date: act.date)
-                func available(_ values: [CourtActRecord]?) -> [CourtActRecord] {
-                    (values ?? []).filter { unmatched.contains(ObjectIdentifier($0)) }
-                }
-                let exactMatches = available(byExact[
-                    Self.projectionLookupKey(tracked.key, act.id)])
-                let semanticMatches = available(bySemantic[
-                    Self.projectionLookupKey(tracked.key, semanticKey)])
-                let hashMatches = available(byHash[
-                    Self.projectionLookupKey(tracked.key, document.sourceHash)])
-                let existing = exactMatches.first
-                    ?? (semanticMatches.count == 1 ? semanticMatches[0] : nil)
-                    ?? (hashMatches.count == 1 ? hashMatches[0] : nil)
-                let fetchedAt = tracked.movementFetchedAt ?? tracked.addedAt
-                if let existing {
-                    desiredIDs.insert(existing.id)
-                    existing.update(from: document, semanticKey: semanticKey,
-                                    fetchedAt: fetchedAt)
-                    unmatched.remove(ObjectIdentifier(existing))
-                } else {
-                    var stableID = document.id
-                    if desiredIDs.contains(stableID) {
-                        stableID += "#\(document.sourceHash.prefix(12))"
-                    }
-                    let stableDocument = ActDocument(
-                        caseKey: document.caseKey, sourceActID: document.sourceActID,
-                        caseNumber: document.caseNumber, judicialUID: document.judicialUID,
-                        court: document.court, instanceLevel: document.instanceLevel,
-                        kind: document.kind, date: document.date,
-                        sourceText: document.sourceText, documentID: stableID)
-                    desiredIDs.insert(stableID)
-                    context.insert(CourtActRecord(document: stableDocument,
-                                                  semanticKey: semanticKey,
-                                                  fetchedAt: fetchedAt))
-                }
-            }
-        }
-
-        for stale in stored
-            where unmatched.contains(ObjectIdentifier(stale))
-                && !desiredIDs.contains(stale.id)
-                && !undecodableCaseKeys.contains(stale.caseKey) {
-            deleteSummary(documentID: stale.id)
-            context.delete(stale)
-        }
-    }
-
-    private nonisolated static func courtActSemanticKey(
-        caseKey: String, level: CaseInstance.Level, court: String,
-        kind: String, date: String
-    ) -> String {
-        [caseKey, level.rawValue, court, kind, date]
-            .map {
-                $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-                    .replacingOccurrences(of: "[^a-zа-яё0-9]+", with: "",
-                                          options: .regularExpression)
-            }
-            .joined(separator: "|")
-    }
-
-    private nonisolated static func projectionLookupKey(_ caseKey: String,
-                                                         _ value: String) -> String {
-        "\(caseKey.utf8.count):\(caseKey)\(value)"
-    }
 
     private func deleteCourtActs(caseKey: String) {
         let descriptor = FetchDescriptor<CourtActRecord>(

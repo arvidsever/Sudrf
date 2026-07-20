@@ -391,6 +391,39 @@ struct SummaryOperationState {
     mutating func cancel() { current = nil }
 }
 
+/// Собирает контекст открытого дела для onscreen awareness. `webpageURL`
+/// намеренно не задаётся: Foundation принимает там только web URL и бросает
+/// NSInvalidArgumentException для зарегистрированной схемы `sudrf://`.
+@MainActor
+enum CurrentEntityActivityFactory {
+    static func caseActivity(caseNumber: String, identifier: String) -> NSUserActivity {
+        make(
+            activityType: "ru.sudrf.case",
+            title: "Дело № \(caseNumber)",
+            entityIdentifier: EntityIdentifier(for: CaseEntity.self, identifier: identifier))
+    }
+
+    static func courtActActivity(title: String, caseNumber: String,
+                                 identifier: String) -> NSUserActivity {
+        make(
+            activityType: "ru.sudrf.court-act",
+            title: "\(title) по делу № \(caseNumber)",
+            entityIdentifier: EntityIdentifier(
+                for: CourtActEntity.self, identifier: identifier))
+    }
+
+    private static func make(activityType: String, title: String,
+                             entityIdentifier: EntityIdentifier) -> NSUserActivity {
+        let activity = NSUserActivity(activityType: activityType)
+        activity.title = title
+        activity.appEntityIdentifier = entityIdentifier
+        activity.persistentIdentifier = NSUserActivityPersistentIdentifier(
+            entityIdentifier.description)
+        activity.isEligibleForSearch = true
+        return activity
+    }
+}
+
 @MainActor
 final class AppRouter: ObservableObject {
 
@@ -791,23 +824,14 @@ final class AppRouter: ObservableObject {
         let activity: NSUserActivity
         if let actID = selectedActID,
            let act = liveMovement?.acts.first(where: { $0.id == actID }) {
-            activity = NSUserActivity(activityType: "ru.sudrf.court-act")
-            activity.title = "\(act.title) по делу № \(rec.caseNumber)"
-            activity.appEntityIdentifier = EntityIdentifier(
-                for: CourtActEntity.self,
+            activity = CurrentEntityActivityFactory.courtActActivity(
+                title: act.title,
+                caseNumber: rec.caseNumber,
                 identifier: store.courtActID(caseKey: key, sourceActID: actID)
                     ?? "\(key)#\(actID)")
-            activity.webpageURL = SudrfDeepLink.courtAct(caseKey: key, sourceActID: actID).url
         } else {
-            activity = NSUserActivity(activityType: "ru.sudrf.case")
-            activity.title = "Дело № \(rec.caseNumber)"
-            activity.appEntityIdentifier = EntityIdentifier(for: CaseEntity.self, identifier: key)
-            activity.webpageURL = SudrfDeepLink.caseRecord(key: key).url
-        }
-        activity.isEligibleForSearch = true
-        if let identifier = activity.appEntityIdentifier {
-            activity.persistentIdentifier = NSUserActivityPersistentIdentifier(
-                identifier.description)
+            activity = CurrentEntityActivityFactory.caseActivity(
+                caseNumber: rec.caseNumber, identifier: key)
         }
         currentEntityActivity?.invalidate()
         currentEntityActivity = activity

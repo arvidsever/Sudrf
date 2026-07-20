@@ -7,11 +7,77 @@
 //  (та же CaseMovementView, что и в поиске) + панель судебных актов справа.
 
 import SwiftUI
+import SwiftData
 import SudrfKit
+import CoreSpotlight
 import UniformTypeIdentifiers
 
+@MainActor
+final class AppBootstrap: ObservableObject {
+    enum State {
+        case loading
+        case ready(AppRouter)
+        case failed(String)
+    }
+
+    @Published private(set) var state: State = .loading
+    private var started = false
+    private let loader: @Sendable () async throws -> ModelContainer
+
+    init(loader: @escaping @Sendable () async throws -> ModelContainer = {
+        try await Task.detached(priority: .userInitiated) {
+            try PersistentStoreBootstrapper().prepareProduction()
+        }.value
+    }) {
+        self.loader = loader
+    }
+
+    func start() async {
+        guard !started else { return }
+        started = true
+        do {
+            let container = try await loader()
+            state = .ready(try AppRouter(
+                modelContainer: container, modelContainerIsPrepared: true))
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+}
+
 struct RootView: View {
-    @StateObject private var router = AppRouter()
+    @StateObject private var bootstrap = AppBootstrap()
+
+    var body: some View {
+        switch bootstrap.state {
+        case .loading:
+            StorageStartupLoadingView()
+                .task { await bootstrap.start() }
+        case .ready(let router):
+            OperationalRootView(router: router)
+        case .failed(let message):
+            StorageStartupFailureView(message: message)
+        }
+    }
+}
+
+private struct StorageStartupLoadingView: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            ProgressView().controlSize(.large)
+            Text("Подготовка базы Sudrf…").font(.headline)
+            Text("Проверяем резервную копию, миграцию и каталог судебных актов.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(minWidth: 680, minHeight: 440)
+    }
+}
+
+/// Рабочее дерево создаётся только после успешного открытия persistent store.
+/// В аварийном состоянии нет ни ModelContainer, ни меню/обработчиков импорта,
+/// поэтому записать данные во временную базу невозможно.
+private struct OperationalRootView: View {
+    @ObservedObject var router: AppRouter
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -47,11 +113,23 @@ struct RootView: View {
         }
         .ignoresSafeArea()
         .background(WindowChrome())
+        .modelContainer(router.modelContainer)
         .frame(minWidth: 1180, minHeight: 720)
         .animation(.easeOut(duration: 0.18), value: router.section)
         .animation(.easeOut(duration: 0.18), value: router.openedCase)
         .onReceive(NotificationCenter.default.publisher(for: .sudrfImportCases)) { _ in
             pickCSVAndImport()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .sudrfSpotlightPreferenceChanged)) { note in
+            guard let enabled = note.object as? Bool else { return }
+            router.setSpotlightEnabled(enabled)
+        }
+        .onOpenURL { router.handleDeepLink($0) }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            guard let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier]
+                    as? String else { return }
+            router.handleSpotlightItem(identifier: identifier)
         }
         .sheet(isPresented: Binding(
             get: { router.importState != nil || router.repairSummary != nil },
@@ -64,6 +142,13 @@ struct RootView: View {
             })) {
             ImportSheet()
                 .environmentObject(router)
+        }
+        .sheet(isPresented: Binding(
+            get: { router.spotlightOnboardingRequired },
+            set: { _ in })) {
+            SpotlightOnboardingView()
+                .environmentObject(router)
+                .interactiveDismissDisabled()
         }
     }
 
@@ -78,6 +163,59 @@ struct RootView: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         router.beginImport(csvText: text)
+    }
+}
+
+private struct SpotlightOnboardingView: View {
+    @EnvironmentObject var router: AppRouter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Поиск Sudrf через Spotlight", systemImage: "sparkle.magnifyingglass")
+                .font(.title2.bold())
+            Text("macOS может индексировать реквизиты, стороны и полный текст опубликованных судебных актов, чтобы находить их из Spotlight и Shortcuts. Индекс хранится локально в системном Spotlight.")
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Включить системный Spotlight для Sudrf",
+                   isOn: $router.spotlightOnboardingDraft)
+                .toggleStyle(.switch)
+            Text("Настройку можно изменить позднее в разделе «Мои дела» и в настройках приложения. При отключении Sudrf удаляет свой системный индекс целиком.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Продолжить") { router.completeSpotlightOnboarding() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(26)
+        .frame(width: 540)
+    }
+}
+
+private struct StorageStartupFailureView: View {
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("База Sudrf не открыта", systemImage: "externaldrive.badge.exclamationmark")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.red)
+            Text("Чтобы не потерять отслеживаемые дела, приложение остановило работу с базой.")
+                .font(.system(size: 13, weight: .semibold))
+            Text(message)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
+            Text("Закройте Sudrf перед восстановлением файлов.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .frame(maxWidth: 620, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.red.opacity(0.25)))
+        .shadow(radius: 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.98))
     }
 }
 
@@ -279,9 +417,11 @@ private struct CaseCardHost: View {
 private struct LiveActsPane: View {
     @EnvironmentObject var router: AppRouter
     @Environment(\.openWindow) private var openWindow
+    @State private var showingSummary = false
 
     private var acts: [CaseAct] { router.liveMovement?.acts ?? [] }
     private var body0: String? { router.selectedActText }
+    private var selectedParagraphs: [ActParagraph]? { router.selectedActParagraphs }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -302,6 +442,11 @@ private struct LiveActsPane: View {
                                                 text: body0 ?? "")
                         } label: { Image(systemName: "square.and.arrow.down") }
                         .help("Сохранить в PDF").disabled(body0 == nil)
+                        Button {
+                            router.loadSelectedActSummary()
+                            showingSummary = true
+                        } label: { Image(systemName: "sparkles") }
+                        .help("AI-сводка судебного акта").disabled(body0 == nil)
                     }
                     .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
                     }
@@ -333,10 +478,18 @@ private struct LiveActsPane: View {
 
             Group {
                 if let txt = body0 {
-                    ScrollView {
-                        ActTextView(text: txt)
-                            .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            ActTextView(text: txt,
+                                        highlightedParagraphID: router.highlightedParagraphID,
+                                        paragraphs: selectedParagraphs)
+                                .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .onChange(of: router.highlightedParagraphID) { _, paragraphID in
+                            guard let paragraphID else { return }
+                            withAnimation { proxy.scrollTo(paragraphID, anchor: .center) }
+                        }
                     }
                 } else {
                     CenterNote(title: "Тексты актов не опубликованы",
@@ -352,6 +505,9 @@ private struct LiveActsPane: View {
         .frame(maxHeight: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
         .padding(10)
+        .sheet(isPresented: $showingSummary) {
+            ActSummarySheet().environmentObject(router)
+        }
     }
 }
 

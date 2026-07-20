@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -49,7 +49,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "SudrfApp",
-            dependencies: ["SudrfKit", "CaptchaSolver"]
+            dependencies: ["SudrfKit", "CaptchaSolver"],
+            resources: [.process("Resources")]
         ),
         .target(name: "CaptchaSolver"),
         .testTarget(
@@ -68,5 +69,6 @@ let package = Package(
             dependencies: ["CaptchaSolver", "SudrfKit"],
             resources: [.copy("Fixtures")]
         )
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

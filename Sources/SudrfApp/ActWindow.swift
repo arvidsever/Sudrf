@@ -5,6 +5,26 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+enum SafeFilename {
+    static func component(_ raw: String, fallback: String = "Судебный акт",
+                          maxLength: Int = 120) -> String {
+        let forbidden = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+            .union(.controlCharacters)
+        let mapped = String(raw.unicodeScalars.map {
+            forbidden.contains($0) ? "-" : Character(String($0))
+        })
+        let collapsed = mapped
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"-+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines
+                .union(CharacterSet(charactersIn: ".")))
+        let limited = String(collapsed.prefix(maxLength))
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines
+                .union(CharacterSet(charactersIn: ".")))
+        return limited.isEmpty ? fallback : limited
+    }
+}
+
 // MARK: - Полезная нагрузка отдельного окна
 //  openWindow(value:) требует Codable & Hashable — передаём снимок, а не модель.
 
@@ -60,10 +80,25 @@ enum ActPDFExporter {
     static func save(caseNumber: String, text: String) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue =
-            "Дело № \(caseNumber.replacingOccurrences(of: "/", with: "-")).pdf"
+        panel.nameFieldStringValue = filename(caseNumber: caseNumber)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         write(to: url, text: text)
+    }
+
+    static func filename(caseNumber: String) -> String {
+        SafeFilename.component(
+            "Дело № \(caseNumber)", fallback: "Судебный акт", maxLength: 116) + ".pdf"
+    }
+
+    /// Без UI-панели — для ExportCourtActPDFIntent. Возвращает байты, чтобы
+    /// App Intents сам управлял временным файлом и его временем жизни.
+    @MainActor
+    static func renderData(text: String) -> Data? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Sudrf-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        write(to: url, text: text)
+        return try? Data(contentsOf: url)
     }
 
     @MainActor

@@ -79,6 +79,21 @@ struct CaptchaPendingQueue: Equatable {
     }
 }
 
+/// Проверяемый результат точечного обновления из App Intent. Shortcuts не
+/// умеет показать интерактивную CAPTCHA, поэтому этот API явно отличает её от
+/// сетевой ошибки и не выдаёт сохранённый кэш за свежие данные.
+enum CaseRefreshOutcome: Sendable, Equatable {
+    case refreshed
+    case captchaRequired
+    case failed(String)
+    case notFound
+}
+
+struct RefreshExecution: Sendable, Equatable {
+    let effectiveKey: String
+    let outcome: CaseRefreshOutcome
+}
+
 @MainActor
 final class RefreshCenter: ObservableObject {
 
@@ -119,7 +134,7 @@ final class RefreshCenter: ObservableObject {
     /// `MovementService` через `ctx.makeService(...)`; подменяется в тестах,
     /// чтобы скриптовать `service.movement(...)` без сети.
     private let serviceBuilder: (MovementContext) -> any MovementProviding
-    private var tasks: [String: Task<Void, Never>] = [:]
+    private var tasks: [String: Task<RefreshExecution, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
     /// своим завершением сбросить walkTask/walkProgress нового обхода.
@@ -245,7 +260,7 @@ final class RefreshCenter: ObservableObject {
                     group.addTask { [weak self] in
                         for key in courtKeys {
                             if Task.isCancelled { return }
-                            await self?.refresh(key: key)?.value
+                            _ = await self?.refresh(key: key)?.value
                             await self?.bumpWalkProgress(total: total, generation: gen)
                         }
                     }
@@ -275,32 +290,42 @@ final class RefreshCenter: ObservableObject {
 
     /// Запускает (или возвращает уже идущее) обновление дела по ключу записи.
     @discardableResult
-    func refresh(key: String) -> Task<Void, Never>? {
+    func refresh(key: String) -> Task<RefreshExecution, Never>? {
         if let existing = tasks[key] { return existing }
         guard store.record(forKey: key) != nil else { return nil }
 
         refreshing.insert(key)
         let task = Task { [weak self] in
-            await self?.performRefresh(key: key)
-            self?.refreshing.remove(key)
-            self?.tasks[key] = nil
+            guard let self else {
+                return RefreshExecution(effectiveKey: key, outcome: .notFound)
+            }
+            let execution = await self.performRefresh(key: key)
+            self.refreshing.remove(key)
+            self.tasks[key] = nil
+            return execution
         }
         tasks[key] = task
         return task
     }
 
-    private func performRefresh(key: String) async {
+    /// Дожидается той же задачи, которой пользуется UI (включая попытку
+    /// авто-солва), и классифицирует итог для Shortcuts.
+    func refreshForIntent(key: String) async -> CaseRefreshOutcome {
+        guard let task = refresh(key: key) else { return .notFound }
+        return await task.value.outcome
+    }
+
+    private func performRefresh(key: String) async -> RefreshExecution {
         let effectiveKey = await repairBeforeRefresh?(key) ?? key
         guard let rec = store.record(forKey: effectiveKey),
               let ctx = rec.context, let cart = ctx.cartoteka else {
-            fail(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
-            return
+            return failure(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
         }
         let service = serviceBuilder(ctx)
         do {
             let mv = try await service.movement(for: ctx.baseResult,
                                                 court: ctx.searchCourt, cartoteka: cart)
-            applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
+            return applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
         } catch SudrfError.captchaRequired(let url) {
             // Сначала пробуем авто-солвер. Если он вернёт уверенный
             // ответ и токен попадёт в CaptchaTokenStore, повторный
@@ -317,8 +342,9 @@ final class RefreshCenter: ObservableObject {
                   let settings = captchaSettings,
                   settings.isEffectivelyEnabled else {
                 queueCaptcha(key: effectiveKey, formURL: url)
-                fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
-                return
+                let message = "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)"
+                fail(effectiveKey, message)
+                return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
             }
             let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
             if let token = result.token {
@@ -331,23 +357,29 @@ final class RefreshCenter: ObservableObject {
                     let mv = try await service.movement(for: ctx.baseResult,
                                                         court: ctx.searchCourt,
                                                         cartoteka: cart)
-                    applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
+                    return applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
                 } catch SudrfError.captchaRequired(let url2) {
                     queueCaptcha(key: effectiveKey, formURL: url2)
-                    fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)")
+                    let message = "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)"
+                    fail(effectiveKey, message)
+                    return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
                 } catch let e as SudrfError {
-                    fail(effectiveKey, e.description)
+                    return failure(effectiveKey, e.description)
                 } catch {
-                    fail(effectiveKey, "Не удалось собрать движение дела: \(error.localizedDescription)")
+                    return failure(effectiveKey,
+                                   "Не удалось собрать движение дела: \(error.localizedDescription)")
                 }
             } else {
                 queueCaptcha(key: effectiveKey, formURL: url)
-                fail(effectiveKey, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                let message = "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)"
+                fail(effectiveKey, message)
+                return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
             }
         } catch let e as SudrfError {
-            fail(effectiveKey, e.description)
+            return failure(effectiveKey, e.description)
         } catch {
-            fail(effectiveKey, "Не удалось собрать движение дела: \(error.localizedDescription)")
+            return failure(effectiveKey,
+                           "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
     }
 
@@ -356,8 +388,11 @@ final class RefreshCenter: ObservableObject {
     /// выполнял и обычный happy path, и inline-retry после успешного
     /// авто-солва капчи (A1). Guard на удалённую запись сохранён: пока
     /// шёл сетевой вызов, пользователь мог удалить дело.
-    private func applyMovement(key: String, ctx: MovementContext, mv: CaseMovement) {
-        guard let rec = store.record(forKey: key) else { return }
+    private func applyMovement(key: String, ctx: MovementContext,
+                               mv: CaseMovement) -> RefreshExecution {
+        guard let rec = store.record(forKey: key) else {
+            return RefreshExecution(effectiveKey: key, outcome: .notFound)
+        }
         let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
             MovementDerivation.snapshot(from: merged, context: ctx), old: rec.snapshot)
@@ -368,10 +403,11 @@ final class RefreshCenter: ObservableObject {
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != key { rec.seenAt = nil }
-        store.save()
+        store.save(projection: .cases([key]))
         captchaPending.remove(key: key)
         lastErrors[key] = nil
         onRefreshed?(key, merged)
+        return RefreshExecution(effectiveKey: key, outcome: .refreshed)
     }
 
     private func queueCaptcha(key: String, formURL: URL) {
@@ -382,5 +418,10 @@ final class RefreshCenter: ObservableObject {
     private func fail(_ key: String, _ text: String) {
         lastErrors[key] = text
         onRefreshFailed?(key, text)
+    }
+
+    private func failure(_ key: String, _ text: String) -> RefreshExecution {
+        fail(key, text)
+        return RefreshExecution(effectiveKey: key, outcome: .failed(text))
     }
 }

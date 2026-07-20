@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Сбрасывает HTML-ответы и сопутствующие данные на диск при
 /// нештатных путях поиска — для отладки изменений в HTML судов,
@@ -39,7 +40,7 @@ public enum SearchDiagnostics {
     /// Каталог для записи диагностических HTML-ответов. По умолчанию —
     /// `~/Library/Application Support/Sudrf/diagnostics/`. Тесты могут
     /// подменить на temp-dir через `setDirForTesting(_:)`.
-    private static var dir: URL = {
+    private static let directory = Mutex<URL>({
         let fm = FileManager.default
         let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -47,17 +48,19 @@ public enum SearchDiagnostics {
             .appendingPathComponent("diagnostics", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
-    }()
+    }())
 
     /// Подмена каталога для тестов. Возвращает предыдущее значение
     /// для восстановления в `tearDown`.
     @discardableResult
     static func setDirForTesting(_ url: URL?) -> URL {
-        let previous = dir
-        if let url {
-            dir = url
+        directory.withLock { directory in
+            let previous = directory
+            if let url {
+                directory = url
+            }
+            return previous
         }
-        return previous
     }
 
     /// Сохранить HTML-ответ, на котором `SearchPageClassifier` вернул
@@ -116,7 +119,7 @@ public enum SearchDiagnostics {
         save(data: responseData, kind: "solver-mismatch", host: host, suffix: nil)
         // Дополнительно — сохраняем PNG, чтобы можно было посмотреть
         // глазами на ту капчу, которую солвер не угадал.
-        let dir = self.dir
+        let dir = directory.withLock { $0 }
         let safeHost = host.replacingOccurrences(of: "/", with: "_")
                             .replacingOccurrences(of: ":", with: "")
         let url = dir.appendingPathComponent(
@@ -131,7 +134,7 @@ public enum SearchDiagnostics {
     /// зарезервировано под будущее).
     private static func save(data: Data, kind: String, host: String, suffix: String?) {
         guard enabled else { return }
-        let dir = self.dir
+        let dir = directory.withLock { $0 }
         let safeHost = host.replacingOccurrences(of: "/", with: "_")
                             .replacingOccurrences(of: ":", with: "")
         let tag = suffix.map { "_\($0)" } ?? ""

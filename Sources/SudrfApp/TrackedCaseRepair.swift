@@ -36,6 +36,10 @@ struct CaseRepairSummary: Equatable {
     var ambiguous: [String] = []
     var transient = 0
     var keyRemaps: [String: String] = [:]
+    /// Ключи, чьи реквизиты/маршрут изменились без обязательной смены key.
+    /// Потребители объединяют их со старыми и новыми ключами keyRemaps для
+    /// точечного обновления projection и Spotlight.
+    var affectedCaseKeys: Set<String> = []
     /// Отдельно от `unresolved`: captcha — действие пользователя, а не
     /// невозможность сопоставления карточки.
     var captchaRequests: [RepairCaptchaRequest] = []
@@ -161,7 +165,9 @@ final class TrackedCaseRepairCoordinator {
 
     private func runAllPass() async -> CaseRepairSummary {
         var summary = CaseRepairSummary()
-        summary.rerouted += normalizeStoredKoAPRoutes()
+        let normalized = normalizeStoredKoAPRoutes()
+        summary.rerouted += normalized.count
+        summary.affectedCaseKeys.formUnion(normalized.keys)
         mergeKnownUIDDuplicates(into: &summary)
 
         // Снимок ключей после локального слияния: сеть не должна работать с уже
@@ -187,7 +193,9 @@ final class TrackedCaseRepairCoordinator {
             return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
         }
         var summary = CaseRepairSummary()
-        summary.rerouted += normalizeStoredKoAPRoutes()
+        let normalized = normalizeStoredKoAPRoutes()
+        summary.rerouted += normalized.count
+        summary.affectedCaseKeys.formUnion(normalized.keys)
         mergeKnownUIDDuplicates(into: &summary)
         let localKey = summary.effectiveKey(for: key)
         guard let rec = store.record(forKey: localKey),
@@ -222,8 +230,10 @@ final class TrackedCaseRepairCoordinator {
                     rec.judicialUID = TrackedStore.normalizedUID(uid)
                 }
                 rec.movementFetchedAt = nil
+                store.synchronizeCourtActMetadata(caseKey: rec.key)
                 _ = store.save()
                 summary.rerouted += 1
+                summary.affectedCaseKeys.insert(rec.key)
             }
             if normalized.role == .authorityJudicialReview
                 || normalized.role == .firstInstance {
@@ -252,6 +262,8 @@ final class TrackedCaseRepairCoordinator {
             }
             clearRetry(key: key)
             summary.keyRemaps.merge(remaps) { _, new in new }
+            summary.affectedCaseKeys.formUnion(remaps.keys)
+            summary.affectedCaseKeys.formUnion(remaps.values)
             if canonical.baseInstanceLevel == .material {
                 summary.restoredMaterials += 1
             } else {
@@ -335,6 +347,8 @@ final class TrackedCaseRepairCoordinator {
             guard let remaps = merge(survivor: survivor, duplicates: duplicates,
                                      canonicalContext: canonical, canonicalCard: nil) else { continue }
             summary.keyRemaps.merge(remaps) { _, new in new }
+            summary.affectedCaseKeys.formUnion(remaps.keys)
+            summary.affectedCaseKeys.formUnion(remaps.values)
             summary.merged += duplicates.count
         }
     }
@@ -362,18 +376,24 @@ final class TrackedCaseRepairCoordinator {
 
     /// Исправляет сохранённые уровни и точные цели без сети. Записи admj без
     /// УИД остаются кандидатами сетевого прохода, где роль уточняется по карточке.
-    private func normalizeStoredKoAPRoutes() -> Int {
+    private func normalizeStoredKoAPRoutes() -> (count: Int, keys: Set<String>) {
         var changedCount = 0
+        var changedKeys = Set<String>()
         for rec in store.all() {
             guard let context = rec.context, context.cartotekaId.hasPrefix("adm") else { continue }
             let normalized = normalizedKoAPContext(context, card: nil)
             guard normalized.changed else { continue }
             rec.context = normalized.context
+            if let uid = normalized.context.judicialUID, !uid.isEmpty {
+                rec.judicialUID = TrackedStore.normalizedUID(uid)
+            }
             rec.movementFetchedAt = nil
+            store.synchronizeCourtActMetadata(caseKey: rec.key)
             changedCount += 1
+            changedKeys.insert(rec.key)
         }
         if changedCount > 0 { _ = store.save() }
-        return changedCount
+        return (changedCount, changedKeys)
     }
 
     private func normalizedKoAPContext(_ original: MovementContext, card: CaseCard?)
@@ -508,7 +528,8 @@ final class TrackedCaseRepairCoordinator {
             survivor.snapshot = snapshot
         }
         for rec in duplicates { store.deleteWithoutSaving(rec) }
-        guard store.save() else { return nil }
+        store.prepareCourtActsForReroute(from: oldKeys, to: survivor.key)
+        guard store.save(projection: .cases(Set(oldKeys + [survivor.key]))) else { return nil }
         return Dictionary(uniqueKeysWithValues: oldKeys.filter { $0 != survivor.key }
             .map { ($0, survivor.key) })
     }
@@ -642,14 +663,18 @@ final class TrackedCaseRepairCoordinator {
         if let source = ctx.sourceKnownCard { return source }
         guard let url = ctx.cardURLString.flatMap(URL.init(string:)) else { return nil }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let params = Dictionary(uniqueKeysWithValues: items.compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
-        guard let id = params["case_id"], let guid = params["case_uid"] else { return nil }
+        func uniqueValue(_ name: String) -> String? {
+            let matches = items.filter { $0.name == name }.compactMap(\.value)
+            guard matches.count == 1 else { return nil }
+            return matches[0]
+        }
+        guard let id = uniqueValue("case_id"), let guid = uniqueValue("case_uid") else {
+            return nil
+        }
         return KnownCard(domain: ctx.searchDomain, courtTitle: ctx.courtTitle,
                          caseID: id, caseUID: guid,
-                         deloID: params["delo_id"] ?? ctx.cartoteka?.deloID ?? "",
-                         new: params["new"] ?? ctx.cartoteka?.new ?? "0",
+                         deloID: uniqueValue("delo_id") ?? ctx.cartoteka?.deloID ?? "",
+                         new: uniqueValue("new") ?? ctx.cartoteka?.new ?? "0",
                          caseNumber: ctx.caseNumber,
                          levelRaw: ctx.baseInstanceLevel.rawValue,
                          cartotekaID: ctx.cartotekaId)

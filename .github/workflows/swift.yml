@@ -25,10 +25,75 @@ jobs:
         run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
       - name: Build app product
-        run: swift build --product SudrfApp
+        run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
+
+      - name: Build CLI product
+        run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
 
       - name: Run tests
-        run: swift test
+        run: swift test -Xswiftc -strict-concurrency=complete
+
+  # GitHub пока не публикует отдельный macos-27 label. Job запускает вторую
+  # линию, как только Xcode 27 появляется в hosted image. До этого он явно
+  # фиксирует отсутствие SDK в summary; обязательной остаётся stable-линия.
+  build-test-xcode-27:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate newest Xcode 27 (stable > RC > beta)
+        id: xcode27
+        run: |
+          XCODE_PATH=""
+          BEST_SCORE=-1
+          for candidate in /Applications/Xcode*.app; do
+            [[ -d "$candidate" ]] || continue
+            version="$($candidate/Contents/Developer/usr/bin/xcodebuild -version | awk 'NR == 1 { print $2 }')"
+            numeric="${version%%[^0-9.]*}"
+            IFS=. read -r major minor patch <<< "$numeric"
+            major="${major:-0}"; minor="${minor:-0}"; patch="${patch:-0}"
+            [[ "$major" == "27" ]] || continue
+            lower="$(basename "$candidate" | tr '[:upper:]' '[:lower:]')"
+            channel=3
+            [[ "$lower" == *"rc"* ]] && channel=2
+            [[ "$lower" == *"beta"* ]] && channel=1
+            score=$((channel * 1000000 + major * 10000 + minor * 100 + patch))
+            if (( score > BEST_SCORE )); then
+              BEST_SCORE=$score
+              XCODE_PATH="$candidate"
+            fi
+          done
+          if [[ -z "$XCODE_PATH" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Xcode 27 is not installed on this hosted runner; the Xcode 27 line was not executed."
+            echo "### Xcode 27 line not executed" >> "$GITHUB_STEP_SUMMARY"
+            echo "The current hosted macOS image does not contain Xcode 27 beta/RC. Stable Xcode 26 checks remain mandatory; Xcode 27 requires the documented manual development-Mac check." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          SELECTED_VERSION="$(xcodebuild -version | tr '\n' ' ')"
+          echo "### Xcode 27 line" >> "$GITHUB_STEP_SUMMARY"
+          echo "Selected \`$XCODE_PATH\`: $SELECTED_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          xcodebuild -version
+
+      - name: Fetch CoreML model
+        if: steps.xcode27.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+
+      - name: Build with Xcode 27 SDK and macOS 26 deployment target
+        if: steps.xcode27.outputs.available == 'true'
+        run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
+
+      - name: Build CLI with Xcode 27 SDK
+        if: steps.xcode27.outputs.available == 'true'
+        run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
+
+      - name: Run tests with Xcode 27
+        if: steps.xcode27.outputs.available == 'true'
+        run: swift test -Xswiftc -strict-concurrency=complete
 
   package-app:
     runs-on: macos-26

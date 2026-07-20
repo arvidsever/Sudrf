@@ -18,6 +18,7 @@ struct MyCasesView: View {
     @AppStorage(RefreshSettings.ttlKey) private var ttlHours = 6
     @State private var creatingCollection = false
     @State private var newCollectionName = ""
+    @State private var globalSearchPresented = false
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -65,6 +66,42 @@ struct MyCasesView: View {
             .glassEffect(.regular, in: .capsule)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
             Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                TextField("Поиск по делам и актам", text: $router.globalQuery)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5))
+                    .onSubmit {
+                        router.searchSpotlight()
+                        globalSearchPresented = true
+                    }
+                if router.globalSearching {
+                    ProgressView().controlSize(.mini)
+                } else if !router.globalQuery.isEmpty {
+                    Button {
+                        router.clearSpotlightSearch()
+                        globalSearchPresented = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(width: 245, height: 26)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
+            .disabled(!router.spotlightEnabled)
+            .popover(isPresented: $globalSearchPresented, arrowEdge: .bottom) {
+                globalSearchPopover
+            }
+            Toggle("Spotlight", isOn: Binding(
+                get: { router.spotlightEnabled },
+                set: { router.setSpotlightEnabled($0) }))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Индексировать в системном Spotlight реквизиты, стороны и полный текст актов. Включено по умолчанию; при отключении индекс Sudrf удаляется.")
             Text(refreshStatus).font(.system(size: 11)).foregroundStyle(.tertiary)
             Menu {
                 Picker("Интервал обновления", selection: $ttlHours) {
@@ -83,6 +120,55 @@ struct MyCasesView: View {
                 .disabled(router.refreshCenter.walkProgress != nil)
         }
         .padding(.horizontal, 2)
+    }
+
+    private var globalSearchPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Локальный поиск Spotlight")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12).padding(.vertical, 10)
+            Divider()
+            if router.globalSearching && router.globalSearchResults.isEmpty {
+                HStack { ProgressView().controlSize(.small); Text("Ищу…") }
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            } else if let error = router.globalSearchError {
+                Text(error).font(.system(size: 11.5)).foregroundStyle(.secondary).padding(14)
+            } else if router.globalSearchResults.isEmpty {
+                Text("Ничего не найдено")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(router.globalSearchResults) { hit in
+                            Button {
+                                router.handleDeepLink(hit.url)
+                                globalSearchPresented = false
+                            } label: {
+                                HStack(alignment: .top, spacing: 9) {
+                                    Image(systemName: hit.isCourtAct ? "doc.text" : "briefcase")
+                                        .frame(width: 16).foregroundStyle(Color.accentColor)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.title).font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(.primary).lineLimit(2)
+                                        if !hit.subtitle.isEmpty {
+                                            Text(hit.subtitle).font(.system(size: 10.5))
+                                                .foregroundStyle(.secondary).lineLimit(2)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 11).padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider().padding(.leading, 36)
+                        }
+                    }
+                }
+                .frame(maxHeight: 360)
+            }
+        }
+        .frame(width: 390)
     }
 
     private var refreshStatus: String {

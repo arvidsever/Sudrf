@@ -71,7 +71,7 @@ final class MovementCachePolicyTests: XCTestCase {
 
     private func instanceWithTransient(domain: String, level: CaseInstance.Level = .appeal,
                                       act: String? = nil) -> CaseInstance {
-        var inst = instance(domain: domain, level: level, act: act)
+        let inst = instance(domain: domain, level: level, act: act)
         // captchaFormURL == nil, transientError == true. Не мутируем captcha-ветку.
         return CaseInstance(
             level: inst.level, court: inst.court, caseNumber: inst.caseNumber,

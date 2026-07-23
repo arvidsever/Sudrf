@@ -2,7 +2,8 @@ import XCTest
 @testable import SudrfKit
 
 /// Endpoint, маршрутизация картотек и московская ветка движения (mos-gorsud.ru).
-/// Эталон URL — боевой паттерн tochno-st/sudrfscraper (MOSGORSUD_PATTERN).
+/// Эталон URL и коды instance/processType — из живого портала (webarchive,
+/// scripts.js: instanceTypes/processTypes, mgsLinksMapping/rsLinksMapping).
 final class MosGorSudTests: XCTestCase {
 
     // MARK: - endpoint
@@ -12,11 +13,13 @@ final class MosGorSudTests: XCTestCase {
             uid: "77RS0021-01-2024-001234-56", instance: 1, processType: .civil))
         let s = url.absoluteString
         XCTAssertTrue(s.hasPrefix("https://mos-gorsud.ru/search?"))
-        XCTAssertTrue(s.contains("formType=fullForm"))
         XCTAssertTrue(s.contains("uid=77RS0021-01-2024-001234-56"))
         XCTAssertTrue(s.contains("instance=1"))
         XCTAssertTrue(s.contains("processType=2"))
-        XCTAssertTrue(s.contains("courtAlias=&") || s.hasSuffix("courtAlias="))
+        XCTAssertTrue(s.contains("courtAlias="))
+        // page/formType в живом URL портала отсутствуют — не шлём.
+        XCTAssertFalse(s.contains("formType"))
+        XCTAssertFalse(s.contains("page="))
     }
 
     func testSearchURLEncodesCyrillicAsUTF8() throws {
@@ -46,9 +49,30 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(route(.district, "admj")?.0, .admin)
         XCTAssertEqual(route(.district, "admj")?.1, 1)
         XCTAssertEqual(route(.district, "m")?.0, .material)
-        XCTAssertEqual(route(.subject, "u2")?.1, 2)
-        XCTAssertEqual(route(.subject, "g33")?.1, 3)
-        XCTAssertEqual(route(.subject, "u33")?.1, 3)
+        XCTAssertEqual(route(.subject, "u2")?.1, MosGorSudInstance.appeal)     // 2
+        // Кассация нашего реестра (суффикс 3/33) на портале — `4` (Кассационная),
+        // НЕ `3` (это «Второй пересмотр»/надзор).
+        XCTAssertEqual(route(.subject, "g33")?.1, MosGorSudInstance.cassation) // 4
+        XCTAssertEqual(route(.subject, "u33")?.1, MosGorSudInstance.cassation) // 4
+    }
+
+    func testInstanceCodes() {
+        XCTAssertEqual(MosGorSudInstance.first, 1)
+        XCTAssertEqual(MosGorSudInstance.appeal, 2)
+        XCTAssertEqual(MosGorSudInstance.review, 3)     // Второй пересмотр (надзор)
+        XCTAssertEqual(MosGorSudInstance.cassation, 4)  // Кассационная
+    }
+
+    func testSectionSegments() {
+        // Первая × Гражданское → CS → first-civil (МГС) / civil (райсуд).
+        XCTAssertEqual(MosGorSudRouting.sectionSegments(processType: .civil, instance: 1),
+                       ["first-civil", "civil"])
+        // Первая × КАС → CS_KAS → first-admin (МГС) / kas (райсуд).
+        XCTAssertTrue(MosGorSudRouting.sectionSegments(processType: .cas, instance: 1)
+                        .contains("first-admin"))
+        // Апелляция × Уголовное → UA(+UA_APPEAL) → appeal-criminal (+board-criminal).
+        XCTAssertTrue(MosGorSudRouting.sectionSegments(processType: .criminal, instance: 2)
+                        .contains("appeal-criminal"))
     }
 
     func testIsMosGorSudDomain() {
@@ -57,72 +81,65 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertFalse(MosGorSudRouting.isMosGorSud(domain: "syktsud--komi.sudrf.ru"))
     }
 
-    // MARK: - парсер выдачи (синтетика; живая фикстура — TODO)
+    // MARK: - парсеры на ЖИВЫХ фикстурах портала
 
-    func testResultsParserOnSyntheticRow() throws {
-        let html = """
-        <html><body><table>
-        <tr>
-          <td><a href="/mgs/services/cases/civil/details/abc123">02-1234/2024</a></td>
-          <td>77RS0021-01-2024-001234-56</td>
-          <td>Тверской районный суд</td>
-          <td>15.03.2024</td>
-          <td>Иванов И.И. к Петрову П.П.</td>
-        </tr>
-        </table></body></html>
-        """
-        let rows = try MosGorSudResultsParser.parse(html: html)
-        XCTAssertEqual(rows.count, 1)
-        let r = try XCTUnwrap(rows.first)
-        XCTAssertEqual(r.caseNumber, "02-1234/2024")
-        XCTAssertEqual(r.uid, "77RS0021-01-2024-001234-56")
-        XCTAssertEqual(r.court, "Тверской районный суд")
-        XCTAssertEqual(r.receiptDate, "15.03.2024")
-        XCTAssertEqual(r.cardURL?.absoluteString,
-                       "https://mos-gorsud.ru/mgs/services/cases/civil/details/abc123")
+    private func fixture(_ name: String) throws -> String {
+        let url = try XCTUnwrap(
+            Bundle.module.url(forResource: name, withExtension: "html",
+                              subdirectory: "Fixtures/mosgorsud"),
+            "фикстура \(name).html отсутствует")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
-    func testResultsParserDoesNotTreatBailiffAsCourt() throws {
-        let html = "<table><tr><td><a href='/details/1'>02-1/2026</a></td><td>Судебный пристав-исполнитель</td><td>Тверской районный суд</td></tr></table>"
-        XCTAssertEqual(try MosGorSudResultsParser.parse(html: html).first?.court, "Тверской районный суд")
+    /// Выдача поиска: строки — `<tr data-href=…>`, раздел из пути, колонки по
+    /// заголовкам. Фикстура — живой поиск по МГС (participant=Воробьёв, КАС).
+    func testResultsParserOnLiveSearchFixture() throws {
+        let rows = try MosGorSudResultsParser.parse(html: fixture("search-mgs-participant"))
+        XCTAssertEqual(rows.count, 11)
+        // Все строки этого поиска — раздел first-admin (КАС первой инстанции МГС).
+        XCTAssertTrue(rows.allSatisfy { $0.section == "first-admin" })
+        let first = try XCTUnwrap(rows.first)
+        XCTAssertEqual(first.caseNumber, "3а-2719/2023")
+        XCTAssertEqual(first.judge, "Баталова И.С.")
+        XCTAssertEqual(first.result, "Вступило в силу, 05.04.2023")
+        XCTAssertEqual(
+            first.cardURL?.absoluteString,
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/df043061-4638-11ed-8d08-f17fce8d2817")
     }
 
-    func testCardParserOnSyntheticCard() throws {
-        let html = """
-        <html><body>
-        <table>
-          <tr><th>Номер дела</th><td>02-1234/2024</td></tr>
-          <tr><th>Уникальный идентификатор дела</th><td>77RS0021-01-2024-001234-56</td></tr>
-          <tr><th>Судья</th><td>Сидорова А.А.</td></tr>
-          <tr><th>Категория дела</th><td>Споры о защите прав потребителей</td></tr>
-          <tr><th>Результат</th><td>Удовлетворено</td></tr>
-          <tr><th>Дата вступления в законную силу</th><td>01.07.2024</td></tr>
-        </table>
-        <h2>Судебные заседания</h2>
-        <table>
-          <tr><td>20.05.2024 10:30</td><td>Судебное заседание</td><td>Заседание отложено</td></tr>
-          <tr><td>17.06.2024 12:00</td><td>Судебное заседание</td><td>Вынесено решение</td></tr>
-        </table>
-        <a href="/mgs/case/attachments/decision.pdf">Решение</a>
-        </body></html>
-        """
-        let card = try MosGorSudCardParser.parse(html: html)
-        XCTAssertEqual(card.caseNumber, "02-1234/2024")
-        XCTAssertEqual(card.uid, "77RS0021-01-2024-001234-56")
-        XCTAssertEqual(card.judge, "Сидорова А.А.")
-        XCTAssertEqual(card.category, "Споры о защите прав потребителей")
-        XCTAssertEqual(card.result, "Удовлетворено")
-        XCTAssertEqual(card.legalForceDate, "01.07.2024")
-        XCTAssertEqual(card.sessions.count, 2)
-        XCTAssertEqual(card.sessions.first?.date, "20.05.2024")
-        XCTAssertEqual(card.sessions.first?.time, "10:30")
-        XCTAssertEqual(card.sessions.last?.result, "Вынесено решение")
-        XCTAssertEqual(card.actLinks.first?.absoluteString,
-                       "https://mos-gorsud.ru/mgs/case/attachments/decision.pdf")
+    /// Карточка (гражданское дело, райсуд): пары div.left/div.right, латинская C
+    /// в «Cудья», заседания из таблицы «Зал», акт по ссылке cases/docs/content.
+    func testCardParserOnLiveCivilCard() throws {
+        let card = try MosGorSudCardParser.parse(html: fixture("starodubtseva-card"))
+        XCTAssertEqual(card.uid, "77RS0023-02-2024-021289-96")
+        XCTAssertEqual(card.caseNumber, "02-3501/2025")
+        XCTAssertEqual(card.judge, "Дроздова С.А.")   // ключ «Cудья» с латинской C
+        XCTAssertEqual(card.receiptDate, "11.12.2024")
+        XCTAssertEqual(card.category?.hasPrefix("219"), true)
+        XCTAssertEqual(card.sessions.count, 5)
+        let s0 = try XCTUnwrap(card.sessions.first)
+        XCTAssertEqual(s0.date, "27.02.2025")
+        XCTAssertEqual(s0.time, "09:55")
+        XCTAssertEqual(s0.event, "Беседа")
+        XCTAssertEqual(s0.result, "Проведена")
+        XCTAssertEqual(
+            card.actLinks.first?.absoluteString,
+            "https://mos-gorsud.ru/rs/savelovskij/cases/docs/content/d3e5cea0-a297-11f0-b7af-e567c7a96e10")
+        XCTAssertTrue(card.participants.contains("Истец: Стародубцева Е.Н."))
+        XCTAssertTrue(card.participants.contains("Ответчик: ПАО Банк ВТБ"))
     }
 
-    // TODO: живые фикстуры mgs_search_uid.html / mgs_card.html — снять на машине
-    // с доступом к mos-gorsud.ru и добавить тесты на реальной разметке.
+    /// Карточка КАС (МГС): другой раздел, УИД 77OS…, вложений несколько.
+    func testCardParserOnLiveKasCard() throws {
+        let card = try MosGorSudCardParser.parse(html: fixture("first-admin-card"))
+        XCTAssertEqual(card.uid, "77OS0000-01-2020-003295-18")
+        XCTAssertEqual(card.caseNumber, "3а-3843/2020")
+        XCTAssertEqual(card.judge, "Михалева Т.Д.")
+        XCTAssertEqual(card.receiptDate, "18.03.2020")
+        XCTAssertEqual(card.sessions.count, 8)
+        XCTAssertGreaterThanOrEqual(card.actLinks.count, 1)
+        XCTAssertTrue(card.participants.contains { $0.hasPrefix("Административный истец:") })
+    }
 
     // MARK: - московская ветка движения
 

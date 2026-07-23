@@ -375,10 +375,13 @@ final class SearchModel: ObservableObject {
                     participant: name.isEmpty ? nil : name,
                     instance: route.instance,
                     processType: route.processType)
+                // Клиент уже отфильтровал строки по разделу (вид×инстанция).
+                // В выдаче портала нет отдельной колонки «дата поступления»
+                // и УИД — они добираются из карточки.
                 results = rows.map { r in
                     CaseSearchResult(caseNumber: r.caseNumber,
                                      receiptDate: r.receiptDate,
-                                     essence: r.participants ?? r.court,
+                                     essence: r.participants ?? r.category ?? r.court,
                                      judge: r.judge,
                                      decisionDate: nil,
                                      result: r.result,

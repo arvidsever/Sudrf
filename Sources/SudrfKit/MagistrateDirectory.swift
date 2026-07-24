@@ -101,6 +101,11 @@ public actor MagistrateCourtResolver {
 
     public func courts(forRegion region: String) async throws -> [MagistrateCourt] {
         guard let num = CourtDirectory.subjectNumericCode(forRegion: region) else { return [] }
+        return try await courts(forSubjectCode: num)
+    }
+
+    /// То же, но по коду субъекта (идентификация региона под капотом — кодом).
+    public func courts(forSubjectCode num: String) async throws -> [MagistrateCourt] {
         try await ensureDiskLoaded()
         if !loadedSubjects.contains(num) { _ = try await fetchSubject(num) }
         return subjectCourts(num)
@@ -110,6 +115,11 @@ public actor MagistrateCourtResolver {
     public func refresh(forRegion region: String) async throws -> Int {
         guard let num = CourtDirectory.subjectNumericCode(forRegion: region) else { return 0 }
         return try await fetchSubject(num)
+    }
+
+    @discardableResult
+    public func refresh(forSubjectCode num: String) async throws -> Int {
+        try await fetchSubject(num)
     }
 
     private func subjectCourts(_ num: String) -> [MagistrateCourt] {

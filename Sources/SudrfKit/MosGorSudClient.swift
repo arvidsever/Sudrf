@@ -53,6 +53,8 @@ public actor MosGorSudClient {
         // 05-…/12-…). Оставляем строки, чей сегмент пути соответствует
         // выбранным (вид, инстанция); если раздел неизвестен — не режем.
         let allowed = MosGorSudRouting.sectionSegments(processType: processType, instance: instance)
+        // Пусто — раздел не определяется (см. sectionSegments): отдаём как есть,
+        // сервер уже отфильтровал по instance/processType. Резать в ноль нельзя.
         guard !allowed.isEmpty else { return rows }
         return rows.filter { row in row.section.map { allowed.contains($0) } ?? true }
     }

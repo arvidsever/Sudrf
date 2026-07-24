@@ -686,7 +686,11 @@ final class SearchModel: ObservableObject {
         let base = results[index]
         selectedResultID = base.stableID
 
-        let cacheKey = option.domain + "/" + base.caseNumber   // = MovementContext.key
+        // Та же формула, что у MovementContext.key (единый источник правды):
+        // для судов Москвы домен общий, различает их код суда.
+        let cacheKey = MovementContext.identityKey(displayDomain: option.domain,
+                                                   courtCode: option.code,
+                                                   caseNumber: base.caseNumber)
         if let hit = MovementMemoryCache.shared.get(cacheKey) {
             movement = hit.movement
             expandedComplaints = []
@@ -746,7 +750,9 @@ final class SearchModel: ObservableObject {
         let movementResult = rerun ? nil : selectedResult
         let movementCacheKey: String? = {
             guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
-            return option.domain + "/" + mv.caseNumber
+            return MovementContext.identityKey(displayDomain: option.domain,
+                                               courtCode: option.code,
+                                               caseNumber: mv.caseNumber)
         }()
         Task {
             await CaptchaTokenStore.shared.store(token, domain: host)
@@ -768,7 +774,9 @@ final class SearchModel: ObservableObject {
         let movementResult = rerun ? nil : selectedResult
         let movementCacheKey: String? = {
             guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
-            return option.domain + "/" + mv.caseNumber
+            return MovementContext.identityKey(displayDomain: option.domain,
+                                               courtCode: option.code,
+                                               caseNumber: mv.caseNumber)
         }()
         Task {
             if rerun {
@@ -806,7 +814,10 @@ final class SearchModel: ObservableObject {
                                               level: ctx.level, card: card)
         movement = updated
         if let option = selectedCourt {
-            MovementMemoryCache.shared.put(option.domain + "/" + mv.caseNumber, updated)
+            MovementMemoryCache.shared.put(
+                MovementContext.identityKey(displayDomain: option.domain,
+                                            courtCode: option.code,
+                                            caseNumber: mv.caseNumber), updated)
         }
         status = "Инстанция добавлена: \(title)."
     }

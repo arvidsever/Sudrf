@@ -27,6 +27,37 @@ final class MoscowCourtOptionTests: XCTestCase {
         XCTAssertFalse(higherDomains(courtCode: "savelovskij").contains("2kas.sudrf.ru"))
     }
 
+    // MARK: - идентичность дела (домен Москвы общий у всех судов)
+
+    func testMoscowIdentityKeysDifferByCourt() {
+        // Один и тот же номер дела в разных райсудах Москвы — разные дела.
+        let savelovskij = MovementContext.identityKey(
+            displayDomain: MosGorSudEndpoint.host, courtCode: "77RS0023",
+            caseNumber: "02-1234/2025")
+        let tverskoj = MovementContext.identityKey(
+            displayDomain: MosGorSudEndpoint.host, courtCode: "77RS0027",
+            caseNumber: "02-1234/2025")
+        XCTAssertNotEqual(savelovskij, tverskoj)
+        XCTAssertTrue(savelovskij.contains("77RS0023"))
+    }
+
+    func testNonMoscowIdentityKeyUnchanged() {
+        // У остальных судов домен свой — формула прежняя, миграции не нужно.
+        XCTAssertEqual(
+            MovementContext.identityKey(displayDomain: "syktsud.komi.sudrf.ru",
+                                        courtCode: "11RS0001",
+                                        caseNumber: "2-1/2025"),
+            "syktsud.komi.sudrf.ru/2-1/2025")
+    }
+
+    func testMoscowIdentityKeyWithoutCodeFallsBackToDomain() {
+        // Мосгорсуд (звено субъекта) кода не несёт — ключ как раньше.
+        XCTAssertEqual(
+            MovementContext.identityKey(displayDomain: MosGorSudEndpoint.host,
+                                        courtCode: nil, caseNumber: "33-1/2025"),
+            MosGorSudEndpoint.host + "/33-1/2025")
+    }
+
     func testDirectoryCodesAreClassificationCodes() {
         for court in MosGorSudCourtDirectory.districtCourts {
             XCTAssertTrue(court.code.hasPrefix("77RS"), "\(court.alias): \(court.code)")

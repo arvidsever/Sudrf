@@ -105,7 +105,29 @@ struct MovementContext: Codable, Equatable, Sendable {
 
     /// Уникальный ключ дела для дедупликации/идентичности в хранилище:
     /// домашний суд (отображаемый домен) + № дела.
-    var key: String { displayDomain + "/" + caseNumber }
+    var key: String {
+        Self.identityKey(displayDomain: displayDomain, courtCode: courtCode,
+                         caseNumber: caseNumber)
+    }
+
+    /// Единая формула идентичности дела — общая для персистенса
+    /// (`TrackedCaseRecord.key`, unique) и memory-кэша движения.
+    ///
+    /// У ВСЕХ судов Москвы отображаемый домен один (`mos-gorsud.ru`), а номера
+    /// дел в райсудах свои у каждого суда — «02-1234/2025» Савёловского и
+    /// Тверского иначе схлопнулись бы в один ключ (чужое движение из кэша,
+    /// перезатирание отслеживаемого дела). Поэтому для общего портального
+    /// домена в ключ добавляется классификационный код суда. Для всех прочих
+    /// судов (свой домен на суд) формула остаётся прежней — байт-в-байт, чтобы
+    /// сохранённые дела не требовали миграции.
+    static func identityKey(displayDomain: String, courtCode: String?,
+                            caseNumber: String) -> String {
+        if MosGorSudRouting.isMosGorSud(domain: displayDomain),
+           let code = courtCode, !code.isEmpty {
+            return displayDomain + "#" + code + "/" + caseNumber
+        }
+        return displayDomain + "/" + caseNumber
+    }
 
     // MARK: Сервис движения (подбор доменов вышестоящих судов)
 

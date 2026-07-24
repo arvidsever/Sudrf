@@ -75,6 +75,23 @@ final class MosGorSudTests: XCTestCase {
                         .contains("appeal-criminal"))
     }
 
+    /// Кассация (instance = 4): у гражданских/уголовных/КАС ключи CN/UN/CN_KAS,
+    /// которых нет в маппингах САМОГО портала — кассации (КСОЮ, ВС) на
+    /// mos-gorsud не публикуются. Пустое множество здесь — правда о портале,
+    /// а не пробел; фильтр в этом случае просто не применяется (fail-open).
+    func testCassationSectionsAbsentOnPortalExceptKoAP() {
+        let cassation = MosGorSudInstance.cassation
+        XCTAssertTrue(MosGorSudRouting.sectionSegments(processType: .civil, instance: cassation).isEmpty)
+        XCTAssertTrue(MosGorSudRouting.sectionSegments(processType: .criminal, instance: cassation).isEmpty)
+        XCTAssertTrue(MosGorSudRouting.sectionSegments(processType: .cas, instance: cassation).isEmpty)
+        // Единственное «верхнее», что на портале есть, — КоАП-надзор (ключ AN).
+        XCTAssertEqual(MosGorSudRouting.sectionSegments(processType: .admin, instance: cassation),
+                       ["review-supervision"])
+        XCTAssertEqual(MosGorSudRouting.sectionSegments(processType: .admin,
+                                                        instance: MosGorSudInstance.review),
+                       ["review-supervision"])
+    }
+
     func testIsMosGorSudDomain() {
         XCTAssertTrue(MosGorSudRouting.isMosGorSud(domain: "mos-gorsud.ru"))
         XCTAssertTrue(MosGorSudRouting.isMosGorSud(domain: "www.mos-gorsud.ru"))

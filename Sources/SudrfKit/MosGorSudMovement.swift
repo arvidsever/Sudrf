@@ -52,10 +52,12 @@ extension MovementService {
         var actBodies: [String: String] = [:]
 
         // 2. Вышестоящие инстанции на самом портале: апелляция (instance=2) и
-        //    кассация/президиум Мосгорсуда (instance=3) — по УИД.
+        //    кассация Мосгорсуда (instance=4 — «Кассационная»; `3` на портале
+        //    это «Второй пересмотр»/надзор, не кассация) — по УИД.
         if let uid, !uid.isEmpty {
             let ups: [(instance: Int, level: CaseInstance.Level)] =
-                [(2, .appeal), (3, .cassation)].filter { $0.instance > route.instance }
+                [(MosGorSudInstance.appeal, .appeal),
+                 (MosGorSudInstance.cassation, .cassation)].filter { $0.instance > route.instance }
             for up in ups {
                 let rows = (try? await mosgorsud.search(courtAlias: nil, uid: uid,
                                                         caseNumber: nil, participant: nil,

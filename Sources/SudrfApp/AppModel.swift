@@ -965,8 +965,10 @@ final class AppRouter: ObservableObject {
         reload(spotlightScope: .cases([recordKey]))
     }
     func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(key: ctx.key) }
-    func isTracked(number: String, displayDomain: String) -> Bool {
-        store.isTracked(key: displayDomain + "/" + number)
+    func isTracked(number: String, displayDomain: String, courtCode: String? = nil) -> Bool {
+        store.isTracked(key: MovementContext.identityKey(displayDomain: displayDomain,
+                                                         courtCode: courtCode,
+                                                         caseNumber: number))
     }
 
     private func markSeen(_ rec: TrackedCaseRecord) {

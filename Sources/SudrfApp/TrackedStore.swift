@@ -26,6 +26,7 @@ enum TrackedStorePreparation {
     static func prepare(context: ModelContext) throws {
         try migrateFolders(context: context)
         try migrateJudicialUIDs(context: context)
+        try migrateMoscowKeys(context: context)
         try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
         try context.save()
     }
@@ -46,6 +47,29 @@ enum TrackedStorePreparation {
             let uid = rec.context?.judicialUID ?? rec.movement?.uid
             guard let uid, !uid.isEmpty else { continue }
             rec.judicialUID = TrackedStore.normalizedUID(uid)
+        }
+    }
+
+    /// Дела судов Москвы до v0.42 хранились под ключом «mos-gorsud.ru/<№>»:
+    /// домен у всех судов города общий, поэтому одинаковые номера из разных
+    /// райсудов схлопывались в одну запись. С v0.42 в ключ входит код суда
+    /// (`MovementContext.identityKey`) — пересаживаем старые записи.
+    /// Ключей других регионов миграция не касается (формула там прежняя).
+    private static func migrateMoscowKeys(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        var taken = Set(records.map(\.key))
+        for rec in records where MosGorSudRouting.isMosGorSud(domain: rec.displayDomain) {
+            guard let code = rec.context?.courtCode, !code.isEmpty else { continue }
+            let updated = MovementContext.identityKey(displayDomain: rec.displayDomain,
+                                                      courtCode: code,
+                                                      caseNumber: rec.caseNumber)
+            guard updated != rec.key else { continue }
+            // Ключ уникален на уровне схемы: если целевой уже занят (дубль,
+            // слипшийся до миграции), запись не трогаем — иначе save() упадёт.
+            guard !taken.contains(updated) else { continue }
+            taken.remove(rec.key)
+            taken.insert(updated)
+            rec.key = updated
         }
     }
 }

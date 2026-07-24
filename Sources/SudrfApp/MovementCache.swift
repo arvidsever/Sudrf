@@ -8,7 +8,9 @@ import Foundation
 import SudrfKit
 
 /// Кэш карточек, открытых из «Поиска», — в памяти, на сессию приложения.
-/// Ключ — displayDomain + "/" + № дела (та же схема, что MovementContext.key).
+/// Ключ — `MovementContext.identityKey(displayDomain:courtCode:caseNumber:)`
+/// (та же схема, что MovementContext.key: у судов Москвы домен общий, поэтому
+/// в ключ входит ещё и код суда).
 @MainActor
 final class MovementMemoryCache {
     static let shared = MovementMemoryCache()

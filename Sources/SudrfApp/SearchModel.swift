@@ -34,7 +34,14 @@ final class SearchModel: ObservableObject {
         let title: String
         let level: CourtLevel
         /// Классификационный код (11RS0001) — есть у судов из резолвера.
+        /// ВАЖНО: сюда кладём именно классификационный код — он уходит в
+        /// `MovementTargetBuilder` для вычисления вышестоящих судов. Портальный
+        /// alias судов Москвы держим отдельно (`mosGorSudAlias`), иначе
+        /// `normalizedSubjectCode(alias)` → "" глушит фолбэк на код субъекта.
         var code: String? = nil
+        /// courtAlias портала mos-gorsud.ru (напр. `savelovskij`, `mgs`) —
+        /// только для адресного запроса к порталу, НЕ классификационный код.
+        var mosGorSudAlias: String? = nil
         var supportsSearch: Bool = true
         var unsupportedReason: String? = nil
         // Идентичность — по домену + коду: у судов Москвы домен один
@@ -262,8 +269,12 @@ final class SearchModel: ObservableObject {
                 // код) — Московская область (50) сюда не попадает.
                 if region == MosGorSudCourtDirectory.moscowSubjectCode {
                     list = MosGorSudCourtDirectory.districtCourts.map {
+                        // code — настоящий классификационный код (77RS…), он
+                        // питает вычисление вышестоящих судов; портальный alias
+                        // едет отдельным полем.
                         CourtOption(domain: MosGorSudEndpoint.host, title: $0.title,
-                                    level: .district, code: $0.alias)   // code несёт courtAlias
+                                    level: .district, code: $0.code,
+                                    mosGorSudAlias: $0.alias)
                     }
                 } else {
                     list = try await resolver.courts(forSubjectCode: region)
@@ -279,10 +290,11 @@ final class SearchModel: ObservableObject {
                     let isMGS = MosGorSudRouting.isMosGorSud(domain: $0.domain)
                     let supported = $0.isSudrfPlatform || isMGS
                     let suffix = supported ? "" : " — вне платформы sudrf"
-                    // Мосгорсуд (звено субъекта) ищется адресно по courtAlias=mgs.
+                    // Мосгорсуд (звено субъекта) ищется адресно по courtAlias=mgs;
+                    // code оставляем пустым — он классификационный, не алиас.
                     return CourtOption(domain: $0.domain, title: $0.title + suffix,
                                        level: .subject,
-                                       code: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil)
+                                       mosGorSudAlias: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil)
                 }
             case (.general, .appeal):
                 magistrateDistrictCourts = []
@@ -378,7 +390,7 @@ final class SearchModel: ObservableObject {
             let route = MosGorSudRouting.map(cartoteka: cart)
             do {
                 let rows = try await mosGorSudClient.search(
-                    courtAlias: selected.code,   // алиас выбранного суда Москвы
+                    courtAlias: selected.mosGorSudAlias,   // алиас выбранного суда Москвы
                     uid: uid.isEmpty ? nil : uid,
                     caseNumber: num.isEmpty ? nil : num,
                     participant: name.isEmpty ? nil : name,

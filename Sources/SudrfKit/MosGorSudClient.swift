@@ -47,7 +47,14 @@ public actor MosGorSudClient {
             throw SudrfError.parsing("не удалось собрать URL поиска mos-gorsud")
         }
         let html = try await fetchUTF8(url)
-        return try MosGorSudResultsParser.parse(html: html)
+        let rows = try MosGorSudResultsParser.parse(html: html)
+        // Дизамбигуация раздела: короткие номера пересекаются между видами
+        // производства/инстанциями (уголовные 01-… vs апелляция 10-… vs КоАП
+        // 05-…/12-…). Оставляем строки, чей сегмент пути соответствует
+        // выбранным (вид, инстанция); если раздел неизвестен — не режем.
+        let allowed = MosGorSudRouting.sectionSegments(processType: processType, instance: instance)
+        guard !allowed.isEmpty else { return rows }
+        return rows.filter { row in row.section.map { allowed.contains($0) } ?? true }
     }
 
     /// Карточка дела по ссылке из выдачи (/…/details/…).

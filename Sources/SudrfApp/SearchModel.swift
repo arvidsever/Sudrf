@@ -16,9 +16,15 @@ final class SearchModel: ObservableObject {
     // Ввод
     @Published var branch: CourtBranch = .general
     @Published var tier: CourtTier = .district
-    @Published var region = "Республика Коми"
+    // Регион идентифицируется КОДОМ субъекта (под капотом), пользователь в
+    // пикере по-прежнему выбирает словесное имя. «11» — Республика Коми.
+    @Published var region = "11"
+
+    /// Человекочитаемое имя выбранного региона — для слоёв, где имя интринсик
+    /// (движение, персистенс сохранённых дел, сопоставление судов).
+    var regionName: String { CourtDirectory.subjectName(forSubjectCode: region) ?? region }
     @Published var courts: [CourtOption] = []
-    @Published var selectedDomain = ""
+    @Published var selectedCourtID = ""
     @Published var cartotekaId = "adm"
 
     /// Суд в пикере — единый вид для всех источников (живой резолвер портала,
@@ -31,7 +37,9 @@ final class SearchModel: ObservableObject {
         var code: String? = nil
         var supportsSearch: Bool = true
         var unsupportedReason: String? = nil
-        var id: String { domain }
+        // Идентичность — по домену + коду: у судов Москвы домен один
+        // (mos-gorsud.ru), различает их только код-алиас (tverskoj, …).
+        var id: String { code.map { "\(domain)#\($0)" } ?? domain }
         var court: Court { Court(domain: domain, title: title, level: level) }
         /// Суд для сетевых запросов: модуль sud_delo работает на синонимичном
         /// «--»-домене (vs--komi, nvs--spb, sankt-peterburgsky--spb…) — на
@@ -175,14 +183,14 @@ final class SearchModel: ObservableObject {
                                higherCourtDomains: MovementContext.expandedHigherDomains(
                                 branch: branch, courtLevel: court.level,
                                 courtTitle: court.title, courtCode: court.code,
-                                region: region, displayDomain: court.domain),
+                                region: regionName, displayDomain: court.domain),
                                higherCourtTargets: movementTargets(for: court, base: base),
                                vsrf: vsrfClient,
                                mosgorsud: mosGorSudClient)
     }
 
     var busy: Bool { resolving || searching || loadingCard }
-    var selectedCourt: CourtOption? { courts.first { $0.domain == selectedDomain } }
+    var selectedCourt: CourtOption? { courts.first { $0.id == selectedCourtID } }
     var selectedResultIndex: Int? {
         get {
             guard let id = selectedResultID else { return nil }
@@ -224,7 +232,7 @@ final class SearchModel: ObservableObject {
 
     func resolveCourts() async {
         guard tier != .supreme else {
-            courts = []; selectedDomain = ""
+            courts = []; selectedCourtID = ""
             status = "Верховный Суд РФ — задел на будущее: у него отдельный портал "
                    + "(vsrf.ru), парсинг ещё не подключён."
             return
@@ -235,8 +243,8 @@ final class SearchModel: ObservableObject {
             let list: [CourtOption]
             switch (branch, tier) {
             case (.general, .magistrate):
-                let magistrates = try await magistrateResolver.courts(forRegion: region)
-                magistrateDistrictCourts = ((try? await resolver.courts(forRegion: region)) ?? [])
+                let magistrates = try await magistrateResolver.courts(forSubjectCode: region)
+                magistrateDistrictCourts = ((try? await resolver.courts(forSubjectCode: region)) ?? [])
                 list = magistrates.map { m in
                     CourtOption(domain: m.domain,
                                 title: m.isSupported ? m.title : m.title + " — портал не подключён",
@@ -248,20 +256,17 @@ final class SearchModel: ObservableObject {
             case (.general, .district):
                 magistrateDistrictCourts = []
                 // Единственная ступень с пикером региона. Районные суды Москвы
-                // живут не на sudrf.ru, а на едином портале mos-gorsud.ru —
-                // добавляется общая опция портала (пустой courtAlias ищет по
-                // всем судам города сразу, суд виден в строке выдачи).
-                if region.localizedCaseInsensitiveContains("Москва") {
-                    // Для Москвы пустой ответ портального резолвера — норма.
-                    let resolved = ((try? await resolver.courts(forRegion: region)) ?? [])
-                        .filter { !MosGorSudRouting.isMosGorSud(domain: $0.domain) }
-                    list = [CourtOption(domain: MosGorSudEndpoint.host,
-                                        title: "Все районные суды Москвы (портал mos-gorsud.ru)",
-                                        level: .district)]
-                         + resolved.map { CourtOption(domain: $0.domain, title: $0.title,
-                                                      level: .district, code: $0.code) }
+                // (город, субъект 77) живут не на sudrf.ru, а на едином портале
+                // mos-gorsud.ru — их список берётся из запечённого справочника,
+                // а не из живого резолвера. Гейт по КОДУ субъекта (region уже
+                // код) — Московская область (50) сюда не попадает.
+                if region == MosGorSudCourtDirectory.moscowSubjectCode {
+                    list = MosGorSudCourtDirectory.districtCourts.map {
+                        CourtOption(domain: MosGorSudEndpoint.host, title: $0.title,
+                                    level: .district, code: $0.alias)   // code несёт courtAlias
+                    }
                 } else {
-                    list = try await resolver.courts(forRegion: region)
+                    list = try await resolver.courts(forSubjectCode: region)
                         .map { CourtOption(domain: $0.domain, title: $0.title,
                                            level: .district, code: $0.code) }
                 }
@@ -271,9 +276,13 @@ final class SearchModel: ObservableObject {
                 // Мосгорсуд поддержан через портал mos-gorsud.ru; прочие суды
                 // вне платформы sudrf (Н.Новгород, Пенза, Ульяновск) — нет.
                 list = CourtDirectory.subjectCourts.map {
-                    let supported = $0.isSudrfPlatform || MosGorSudRouting.isMosGorSud(domain: $0.domain)
+                    let isMGS = MosGorSudRouting.isMosGorSud(domain: $0.domain)
+                    let supported = $0.isSudrfPlatform || isMGS
                     let suffix = supported ? "" : " — вне платформы sudrf"
-                    return CourtOption(domain: $0.domain, title: $0.title + suffix, level: .subject)
+                    // Мосгорсуд (звено субъекта) ищется адресно по courtAlias=mgs.
+                    return CourtOption(domain: $0.domain, title: $0.title + suffix,
+                                       level: .subject,
+                                       code: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil)
                 }
             case (.general, .appeal):
                 magistrateDistrictCourts = []
@@ -312,8 +321,8 @@ final class SearchModel: ObservableObject {
 
             // Прежний выбор сохраняем, если он остался в списке; список из
             // одного суда выбираем сразу, иначе оставляем «— выберите —».
-            if !courts.contains(where: { $0.domain == selectedDomain }) {
-                selectedDomain = courts.count == 1 ? courts[0].domain : ""
+            if !courts.contains(where: { $0.id == selectedCourtID }) {
+                selectedCourtID = courts.count == 1 ? courts[0].id : ""
             }
 
             switch (courts.isEmpty, branch) {
@@ -369,16 +378,19 @@ final class SearchModel: ObservableObject {
             let route = MosGorSudRouting.map(cartoteka: cart)
             do {
                 let rows = try await mosGorSudClient.search(
-                    courtAlias: nil,
+                    courtAlias: selected.code,   // алиас выбранного суда Москвы
                     uid: uid.isEmpty ? nil : uid,
                     caseNumber: num.isEmpty ? nil : num,
                     participant: name.isEmpty ? nil : name,
                     instance: route.instance,
                     processType: route.processType)
+                // Клиент уже отфильтровал строки по разделу (вид×инстанция).
+                // В выдаче портала нет отдельной колонки «дата поступления»
+                // и УИД — они добираются из карточки.
                 results = rows.map { r in
                     CaseSearchResult(caseNumber: r.caseNumber,
                                      receiptDate: r.receiptDate,
-                                     essence: r.participants ?? r.court,
+                                     essence: r.participants ?? r.category ?? r.court,
                                      judge: r.judge,
                                      decisionDate: nil,
                                      result: r.result,
@@ -796,7 +808,7 @@ final class SearchModel: ObservableObject {
             branch: branch, courtLevel: option.level,
             baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,
             judicialUID: nil, courtTitle: option.title, courtCode: option.code,
-            region: region, displayDomain: option.domain,
+            region: regionName, displayDomain: option.domain,
             districtCourts: option.level == .magistrate
                 ? magistrateDistrictCourts.map { ($0.domain, $0.title) } : [])
     }
@@ -811,7 +823,7 @@ final class SearchModel: ObservableObject {
               let level = tier.level, let base = selectedResult else { return nil }
         var ctx = MovementContext(
             branchRaw: branch.rawValue,
-            region: region,
+            region: regionName,
             searchDomain: option.searchCourt.domain,
             displayDomain: option.domain,
             courtTitle: option.title,

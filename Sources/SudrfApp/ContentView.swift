@@ -110,8 +110,9 @@ private struct FilterPane: View {
                 GridRow {
                     FormLabel("Регион")
                     Picker("", selection: $model.region) {
-                        ForEach(CourtDirectory.subjectRegionNames, id: \.self) { name in
-                            Text(name).tag(name)
+                        // Пользователь видит имя, под капотом выбирается код субъекта.
+                        ForEach(CourtDirectory.subjectRegions) { r in
+                            Text(r.name).tag(r.code)
                         }
                     }
                     .labelsHidden()
@@ -119,10 +120,10 @@ private struct FilterPane: View {
                 }
                 GridRow {
                     FormLabel("Суд")
-                    Picker("", selection: $model.selectedDomain) {
+                    Picker("", selection: $model.selectedCourtID) {
                         Text("— выберите —").tag("")
-                        ForEach(model.courts, id: \.domain) { court in
-                            Text(court.title).tag(court.domain)
+                        ForEach(model.courts, id: \.id) { court in
+                            Text(court.title).tag(court.id)
                         }
                     }
                     .labelsHidden()
@@ -173,7 +174,7 @@ private struct FilterPane: View {
                 Button("Искать") { Task { await model.runSearch() } }
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(model.searching || model.selectedDomain.isEmpty)
+                    .disabled(model.searching || model.selectedCourtID.isEmpty)
             }
             .padding(EdgeInsets(top: 10, leading: 16, bottom: 0, trailing: 16))
 

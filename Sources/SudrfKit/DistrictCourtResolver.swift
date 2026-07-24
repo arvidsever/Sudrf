@@ -148,6 +148,23 @@ public extension CourtDirectory {
             .sorted()
     }
 
+    /// Субъект для пикера региона: пользователь видит `name`, а идентификатор
+    /// под капотом — `code`. `id == code` (для ForEach). Порядок — по имени,
+    /// как в `subjectRegionNames`, набор записей — тот же (без псевдо-записей).
+    public struct SubjectRegion: Identifiable, Hashable, Sendable {
+        public let code: String
+        public let name: String
+        public var id: String { code }
+        public init(code: String, name: String) { self.code = code; self.name = name }
+    }
+
+    static var subjectRegions: [SubjectRegion] {
+        subjectCodeTable
+            .filter { !$0.name.contains("Территории за пределами") && !$0.name.contains("Организации центрального") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { SubjectRegion(code: $0.code, name: $0.name) }
+    }
+
     static let subjectCodeTable: [(name: String, code: String)] = [
         ("Алтайский край", "22"),
         ("Амурская область", "28"),
@@ -342,7 +359,15 @@ public actor DistrictCourtResolver {
 
     /// Районные/городские суды региона.
     public func courts(forRegion region: String) async throws -> [DistrictCourt] {
-        let all = try await load(region: region)
+        districtOrOther(try await load(region: region))
+    }
+
+    /// То же, но по коду субъекта (идентификация региона под капотом — кодом).
+    public func courts(forSubjectCode num: String) async throws -> [DistrictCourt] {
+        districtOrOther(try await load(subjectCode: num))
+    }
+
+    private func districtOrOther(_ all: [DistrictCourt]) -> [DistrictCourt] {
         let rs = all.filter { $0.kind == .district }
         if !rs.isEmpty { return rs }
         // Код нераспознанного формата (.other) — лучше показать суды, чем
@@ -389,10 +414,20 @@ public actor DistrictCourtResolver {
         try await load(region: region)
     }
 
+    /// Все суды субъекта по коду.
+    public func allCourts(forSubjectCode num: String) async throws -> [DistrictCourt] {
+        try await load(subjectCode: num)
+    }
+
     @discardableResult
     public func refresh(forRegion region: String) async throws -> Int {
         guard let num = CourtDirectory.subjectNumericCode(forRegion: region) else { return 0 }
         return try await fetchSubject(num)
+    }
+
+    @discardableResult
+    public func refresh(forSubjectCode num: String) async throws -> Int {
+        try await fetchSubject(num)
     }
 
     /// Диагностика «суды региона не подсасываются»: тянет страницу субъекта
@@ -456,6 +491,10 @@ public actor DistrictCourtResolver {
 
     private func load(region: String) async throws -> [DistrictCourt] {
         guard let num = CourtDirectory.subjectNumericCode(forRegion: region) else { return [] }
+        return try await load(subjectCode: num)
+    }
+
+    private func load(subjectCode num: String) async throws -> [DistrictCourt] {
         try await ensureDiskLoaded()
         if !loadedSubjects.contains(num) { _ = try await fetchSubject(num) }
         var found = subjectCourts(num)

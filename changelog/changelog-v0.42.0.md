@@ -1,7 +1,6 @@
 # v0.42.0 — Мосгорсуд: парсинг выверен по живому порталу
 
-Черновик release-нот ветки `claude/moscow-courts-parsing-ufwtpt`. Номер —
-прогноз, финал присваивается при merge (см. `AGENTS.md`).
+Ветка `claude/moscow-courts-parsing-ufwtpt` (PR #48).
 
 ## Суды Москвы (mos-gorsud.ru) — парсинг приведён к боевой разметке
 

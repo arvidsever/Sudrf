@@ -165,6 +165,8 @@ final class CorrectivePassTests: XCTestCase {
 
     func testJSONValidateFailedRetriesOnceButGeneric400DoesNotRetry() async {
         let document = makeSummaryDocument()
+        XCTAssertTrue(GroqTokenBudget.allowsImmediateRetry(
+            forCharacters: document.sourceText.count))
         let validationFailure = JSONValidationFailureSummarizer()
         do {
             _ = try await ValidatedActSummarizer(base: validationFailure)
@@ -173,7 +175,7 @@ final class CorrectivePassTests: XCTestCase {
         } catch {
             XCTAssertEqual(
                 error.localizedDescription,
-                "Groq принял API-ключ, но после повторной попытки не смог сформировать структурированную сводку.")
+                "Провайдер принял API-ключ, но после повторной попытки не смог сформировать структурированную сводку.")
         }
         let validationCalls = await validationFailure.calls
         XCTAssertEqual(validationCalls, 2)
@@ -186,6 +188,31 @@ final class CorrectivePassTests: XCTestCase {
         } catch {}
         let genericCalls = await genericFailure.calls
         XCTAssertEqual(genericCalls, 1)
+    }
+
+    /// Для крупного chunk два запроса подряд не укладываются в минутный token
+    /// budget, поэтому повтор заведомо получил бы отказ по лимиту и лишь отнял
+    /// бы бюджет у остальных chunks.
+    func testJSONValidateFailedIsNotRetriedWhenTwoRequestsExceedMinuteBudget() async {
+        let source = String(repeating: "А", count: 12_000)
+        let document = ActDocument(
+            caseKey: "case", sourceActID: "large", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: source)
+        XCTAssertFalse(GroqTokenBudget.allowsImmediateRetry(forCharacters: source.count))
+
+        let failure = JSONValidationFailureSummarizer()
+        do {
+            _ = try await ValidatedActSummarizer(base: failure)
+                .summarize(document: document, options: SummaryOptions())
+            XCTFail("json_validate_failed на крупном chunk нельзя повторять")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Провайдер принял API-ключ, но не смог сформировать сводку по заданной JSON-схеме.")
+        }
+        let calls = await failure.calls
+        XCTAssertEqual(calls, 1)
     }
 
     func testHTTPJSONDoesNotRetainErrorBody() async throws {

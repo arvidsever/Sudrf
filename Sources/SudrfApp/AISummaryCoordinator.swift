@@ -16,12 +16,25 @@ struct AnyActSummarizer: ActSummarizing {
     }
 }
 
+/// Идентичность сводки: prompt и pipeline, которыми она была создана. Нужна,
+/// чтобы сохранённый результат признавался устаревшим не только после правки
+/// текста акта, но и после смены prompt или pipeline.
+struct SummaryIdentity: Sendable, Hashable {
+    let promptVersion: String
+    let pipelineVersion: String
+}
+
 struct ConfiguredActSummarizer: Sendable {
     let provider: String
     let model: String
     let options: SummaryOptions
     let pipelineVersion: String
     let summarizer: AnyActSummarizer
+
+    var identity: SummaryIdentity {
+        SummaryIdentity(promptVersion: options.promptVersion,
+                        pipelineVersion: pipelineVersion)
+    }
 }
 
 @MainActor

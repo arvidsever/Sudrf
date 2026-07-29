@@ -325,6 +325,82 @@ final class AISummaryPipelineTests: XCTestCase {
         XCTAssertNil(json["max_completion_tokens"])
     }
 
+    /// Резерв вывода списывается из минутного бюджета до инференса, поэтому
+    /// сумма «оценка входа + резерв» обязана укладываться в бюджет при любой
+    /// длине запроса. Фиксированный резерв за порогом по символам этого не
+    /// обеспечивал: 12 000 символов вместе с 4096 гарантированно выходили за
+    /// лимит и получали HTTP 413, который не повторяется.
+    func testCompletionReservationAlwaysFitsMinuteBudget() {
+        for characters in stride(from: 0, through: 20_000, by: 250) {
+            guard let reservation = GroqTokenBudget.completionReservation(
+                forCharacters: characters) else { continue }
+            XCTAssertGreaterThanOrEqual(reservation, GroqTokenBudget.minimumCompletionTokens)
+            XCTAssertLessThanOrEqual(reservation, GroqTokenBudget.maximumCompletionTokens)
+            XCTAssertLessThanOrEqual(
+                GroqTokenBudget.estimatedInputTokens(forCharacters: characters) + reservation,
+                GroqTokenBudget.usableTokens)
+        }
+        XCTAssertEqual(GroqTokenBudget.completionReservation(forCharacters: 400),
+                       GroqTokenBudget.maximumCompletionTokens)
+        XCTAssertNil(GroqTokenBudget.completionReservation(forCharacters: 11_000))
+        XCTAssertNil(GroqTokenBudget.completionReservation(forCharacters: 12_000))
+        XCTAssertNotEqual(GroqTokenBudget.completionReservation(forCharacters: 8_000),
+                          GroqTokenBudget.maximumCompletionTokens)
+    }
+
+    func testGroqMidSizeChunkSendsReservationThatFitsBudget() async throws {
+        GroqRequestStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GroqRequestStub.self]
+        let provider = GroqActSummarizer(
+            key: "test-secret", model: "openai/gpt-oss-120b",
+            session: URLSession(configuration: configuration))
+        let source = String(repeating: "А", count: 8_000)
+        let document = ActDocument(
+            caseKey: "selected", sourceActID: "mid", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: source)
+
+        _ = try await provider.summarize(document: document, options: SummaryOptions())
+
+        let body = try XCTUnwrap(GroqRequestStub.capturedBody)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let reservation = try XCTUnwrap(json["max_completion_tokens"] as? Int)
+        XCTAssertEqual(reservation,
+                       GroqTokenBudget.completionReservation(forCharacters: source.count))
+        XCTAssertLessThanOrEqual(
+            GroqTokenBudget.estimatedInputTokens(forCharacters: source.count) + reservation,
+            GroqTokenBudget.usableTokens)
+    }
+
+    func testTruncatedGroqResponseIsReportedAsOutputLimit() async throws {
+        TruncatedGroqStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TruncatedGroqStub.self]
+        let provider = GroqActSummarizer(
+            key: "test-secret", model: "openai/gpt-oss-120b",
+            session: URLSession(configuration: configuration))
+        let document = ActDocument(
+            caseKey: "selected", sourceActID: "truncated", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: "Исходный абзац.")
+
+        do {
+            _ = try await ValidatedActSummarizer(base: provider)
+                .summarize(document: document, options: SummaryOptions())
+            XCTFail("Обрезанный ответ нельзя принимать за сводку")
+        } catch let error as AISummarizerError {
+            guard case .responseTruncatedByOutputLimit = error else {
+                return XCTFail("Ожидался обрезанный ответ, получено \(error)")
+            }
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Ответ провайдера обрезан лимитом вывода: полная сводка не получена.")
+        }
+        // Тот же запрос обрежется так же, поэтому повтор не тратится.
+        XCTAssertEqual(TruncatedGroqStub.loads, 1)
+    }
+
     func testBenchmarkRunnerCalculatesConfiguredThresholds() async throws {
         let fixture = SummaryBenchmarkFixture(
             id: "synthetic", caseNumber: "2-1/2026", court: "Суд",
@@ -388,11 +464,9 @@ private final class GroqRequestStub: URLProtocol {
             }
             Self.capturedBody = data
         }
-        let summary = ActSummary(circumstances: [SummaryClaim(
-            text: "Проверенный вывод.", citations: [])])
         let payload: [String: Any] = ["items": [[
             "section": "circumstances",
-            "text": summary.circumstances[0].text,
+            "text": "Проверенный вывод.",
             "citations": [[
                 "paragraphID": "¶1",
                 "evidenceQuote": "ТОЛЬКО ВЫБРАННЫЙ АКТ",
@@ -400,7 +474,37 @@ private final class GroqRequestStub: URLProtocol {
         ]]]
         let content = String(
             data: try! JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
-        let envelope: [String: Any] = ["choices": [["message": ["content": content]]]]
+        let envelope: [String: Any] = ["choices": [
+            ["message": ["content": content], "finish_reason": "stop"],
+        ]]
+        let data = try! JSONSerialization.data(withJSONObject: envelope)
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Ответ, оборванный лимитом вывода: JSON не закрыт, а `finish_reason` равен
+/// `length`. Именно этот режим отказа стал вероятнее после отказа от резерва
+/// вывода на крупных chunk.
+private final class TruncatedGroqStub: URLProtocol {
+    nonisolated(unsafe) static var loads = 0
+
+    static func reset() { loads = 0 }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.loads += 1
+        let envelope: [String: Any] = ["choices": [[
+            "message": ["content": #"{"items": [{"section": "claims", "text": "Обрез"#],
+            "finish_reason": "length",
+        ]]]
         let data = try! JSONSerialization.data(withJSONObject: envelope)
         let response = HTTPURLResponse(
             url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",

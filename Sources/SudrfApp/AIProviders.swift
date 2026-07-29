@@ -14,6 +14,7 @@ enum AISummarizerError: LocalizedError, Sendable {
     case invalidResponse
     case invalidResponseField(String)
     case structuredOutputFailedAfterRetry
+    case responseTruncatedByOutputLimit
     case http(Int, retryAfterSeconds: Int? = nil,
               providerCode: SafeProviderFailureCode? = nil)
 
@@ -30,10 +31,14 @@ enum AISummarizerError: LocalizedError, Sendable {
         case .invalidResponseField(let path):
             "Провайдер вернул неверный тип или значение в поле \(path)."
         case .structuredOutputFailedAfterRetry:
-            "Groq принял API-ключ, но после повторной попытки не смог сформировать структурированную сводку."
+            "Провайдер принял API-ключ, но после повторной попытки не смог сформировать структурированную сводку."
+        case .responseTruncatedByOutputLimit:
+            "Ответ провайдера обрезан лимитом вывода: полная сводка не получена."
         case .http(let status, let retryAfterSeconds, let providerCode):
             if status == 400, providerCode == .jsonValidateFailed {
-                "Groq принял API-ключ, но не смог сформировать сводку по заданной JSON-схеме."
+                "Провайдер принял API-ключ, но не смог сформировать сводку по заданной JSON-схеме."
+            } else if status == 413 {
+                "Запрос вместе с резервом вывода превышает минутный лимит AI API."
             } else if status == 429 {
                 if let retryAfterSeconds {
                     "Лимит AI API исчерпан. Повторите через \(retryAfterSeconds) сек."
@@ -120,7 +125,7 @@ struct ValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
                     }
                     throw error
                 }
-                guard let delay = retryDelay(error) else { throw error }
+                guard let delay = retryDelay(error, document: document) else { throw error }
                 lastError = error
                 if delay > .zero {
                     try await Task.sleep(for: delay)
@@ -130,7 +135,7 @@ struct ValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
         throw lastError ?? AISummarizerError.invalidResponse
     }
 
-    private func retryDelay(_ error: Error) -> Duration? {
+    private func retryDelay(_ error: Error, document: ActDocument) -> Duration? {
         if error is ActSummaryValidationError { return .zero }
         if let summarizerError = error as? AISummarizerError,
            case .invalidResponse = summarizerError { return .zero }
@@ -139,7 +144,15 @@ struct ValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
         guard let summarizerError = error as? AISummarizerError,
               case .http(let status, let retryAfter, let providerCode) = summarizerError
         else { return nil }
-        if status == 400, providerCode == .jsonValidateFailed { return .zero }
+        if status == 400, providerCode == .jsonValidateFailed {
+            // Повтор идентичного запроса опирается только на temperature > 0,
+            // поэтому его допускаем лишь тогда, когда оба запроса укладываются
+            // в минутный token budget. Иначе повтор заведомо получит отказ по
+            // лимиту и отнимет бюджет у остальных chunks. Ветка достижима
+            // только для Groq: allowlisted provider code выдаёт только он.
+            return GroqTokenBudget.allowsImmediateRetry(
+                forCharacters: document.sourceText.count) ? .zero : nil
+        }
         if status == 429 {
             let seconds = retryAfter ?? 1
             return seconds <= 15 ? .seconds(seconds) : nil
@@ -170,6 +183,57 @@ struct FinalValidatedActSummarizer<Base: ActSummarizing>: ActSummarizing {
 struct GroqMessage: Codable, Sendable {
     let role: String
     let content: String
+}
+
+/// Минутный token budget бесплатного проекта Groq — единственный ресурс,
+/// который ограничивает пилот. `max_completion_tokens` списывается из него ещё
+/// до инференса: запрос, у которого вход вместе с резервом превышает лимит,
+/// отклоняется как HTTP 413 (подтверждено полевой проверкой — резерв 8192
+/// отклонялся даже для короткой проверки соединения). Поэтому резерв выводится
+/// из оценки входа, а не из порога по символам: порог в символах при
+/// фиксированном резерве неизбежно допускает запросы, которые заведомо не
+/// укладываются в бюджет.
+///
+/// Оценка сознательно завышает вход. Занижение даёт HTTP 413 — жёсткий отказ,
+/// который нельзя повторить; завышение лишь уменьшает резерв, а обрезанный
+/// ответ распознаётся отдельно по `finish_reason`. Полевой замер даёт около
+/// 2,4 символа на токен для русского судебного акта, здесь используется 2.
+enum GroqTokenBudget {
+    /// Лимит бесплатного проекта Groq для `openai/gpt-oss-120b`.
+    static let perMinuteTokens = 8_000
+    /// Рабочая часть лимита: минутный счётчик учитывает и служебные токены,
+    /// поэтому упираться в него ровно нельзя.
+    static let usableTokens = GroqTokenBudget.perMinuteTokens * 9 / 10
+    static let charactersPerToken = 2
+    /// System prompt, strict schema и служебные поля запроса.
+    static let requestOverheadTokens = 700
+    /// Резерв меньше этого не даёт закрыть JSON со ссылками, поэтому вместо
+    /// бессмысленно малого резерва поле не отправляется вовсе.
+    static let minimumCompletionTokens = 1_536
+    static let maximumCompletionTokens = 4_096
+
+    static func estimatedInputTokens(forCharacters characters: Int) -> Int {
+        max(0, characters) / charactersPerToken + requestOverheadTokens
+    }
+
+    /// Резерв вывода для запроса или `nil`, если бюджет не оставляет для него
+    /// полезного места: тогда Groq применяет server-side completion cap, а
+    /// возможное обрезание ответа распознаётся по `finish_reason`.
+    static func completionReservation(forCharacters characters: Int) -> Int? {
+        let available = usableTokens - estimatedInputTokens(forCharacters: characters)
+        guard available >= minimumCompletionTokens else { return nil }
+        return min(maximumCompletionTokens, available)
+    }
+
+    /// Немедленный повтор оправдан только если два одинаковых запроса подряд
+    /// укладываются в тот же минутный бюджет. Для крупного chunk повтор
+    /// гарантированно упирается в лимит и лишь подменяет причину отказа,
+    /// попутно расходуя бюджет следующих chunks.
+    static func allowsImmediateRetry(forCharacters characters: Int) -> Bool {
+        let attempt = estimatedInputTokens(forCharacters: characters)
+            + minimumCompletionTokens
+        return attempt * 2 <= usableTokens
+    }
 }
 
 private struct GroqSummaryJSONSchema: Encodable, Sendable {
@@ -269,6 +333,14 @@ private struct GroqChatCompletionResponse: Decodable, Sendable {
 
     struct Choice: Decodable, Sendable {
         let message: Message
+        /// Читается только для распознавания обрезанного ответа. Само значение
+        /// не сохраняется и не показывается.
+        let finishReason: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case message
+            case finishReason = "finish_reason"
+        }
     }
 
     struct Message: Decodable, Sendable {
@@ -286,14 +358,10 @@ actor GroqActSummarizer: ActSummarizing {
     }
 
     func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
-        // Free Groq projects currently have an 8K TPM ceiling. Reserving output
-        // tokens together with a near-limit legal act is rejected before
-        // inference (HTTP 413). For a large single chunk, omit the reservation
-        // and let Groq apply its server-side completion cap; the compact schema
-        // remains bounded by the prompt. Short requests keep an explicit cap.
-        let maxCompletionTokens = document.sourceText.count > 12_000 ? nil : 4_096
         let body = GroqChatCompletionRequest(
-            model: model, maxCompletionTokens: maxCompletionTokens,
+            model: model,
+            maxCompletionTokens: GroqTokenBudget.completionReservation(
+                forCharacters: document.sourceText.count),
             messages: SummaryPrompt.messages(document: document))
         guard let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
             throw AISummarizerError.invalidResponse
@@ -306,9 +374,16 @@ actor GroqActSummarizer: ActSummarizing {
         let data = try await HTTPJSON.send(request, session: session)
         guard let response = try? JSONDecoder().decode(
             GroqChatCompletionResponse.self, from: data),
-              let content = response.choices.first?.message.content
+              let choice = response.choices.first
         else { throw AISummarizerError.invalidResponse }
-        return try SummaryPrompt.decode(content)
+        // Резерв вывода ограничен минутным бюджетом, а для крупного chunk не
+        // отправляется вовсе, поэтому обрезанный ответ — ожидаемый режим
+        // отказа. Без этой проверки он приходит как невалидный JSON и тратит
+        // единственный повтор на заведомо тот же результат.
+        guard choice.finishReason != "length" else {
+            throw AISummarizerError.responseTruncatedByOutputLimit
+        }
+        return try SummaryPrompt.decode(choice.message.content)
     }
 }
 
@@ -425,12 +500,14 @@ enum SummaryPrompt {
         ]
     }
 
+    /// Словарное представление strict schema — только для проверок формы.
+    /// Production-путь кодирует типизированную структуру напрямую, поэтому
+    /// провал сериализации здесь не должен ронять приложение: пустая схема
+    /// уронит тест формы, а не пользователя.
     static var jsonSchema: [String: Any] {
-        guard let object = try? JSONSerialization.jsonObject(
-            with: JSONEncoder().encode(GroqSummaryJSONSchema())),
-              let schema = object as? [String: Any]
-        else { preconditionFailure("Groq summary schema must be JSON encodable") }
-        return schema
+        let encoded = try? JSONEncoder().encode(GroqSummaryJSONSchema())
+        let object = encoded.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+        return object as? [String: Any] ?? [:]
     }
 
     static func decode(_ text: String) throws -> ActSummary {

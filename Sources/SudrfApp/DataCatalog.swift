@@ -110,7 +110,27 @@ final class ActSummaryRecord {
     }
 
     var summary: ActSummary? { try? JSONDecoder().decode(ActSummary.self, from: summaryData) }
-    func isStale(for document: ActDocument) -> Bool { sourceHash != document.sourceHash }
+
+    func isStale(for document: ActDocument, identity: SummaryIdentity? = nil) -> Bool {
+        SummaryStaleness.isStale(
+            sourceHash: sourceHash, promptVersion: promptVersion,
+            pipelineVersion: pipelineVersion, document: document, identity: identity)
+    }
+}
+
+/// Сохранённая сводка устаревает не только при изменении текста акта, но и при
+/// смене prompt или pipeline: результат прежнего prompt нельзя показывать как
+/// актуальный. Когда текущая конфигурация недоступна (например, ключ ещё не
+/// введён и сводку всё равно нельзя перегенерировать), сравнивается только hash.
+enum SummaryStaleness {
+    static func isStale(sourceHash: String, promptVersion: String,
+                        pipelineVersion: String, document: ActDocument,
+                        identity: SummaryIdentity?) -> Bool {
+        if sourceHash != document.sourceHash { return true }
+        guard let identity else { return false }
+        return promptVersion != identity.promptVersion
+            || pipelineVersion != identity.pipelineVersion
+    }
 }
 
 enum SudrfSchemaV1: VersionedSchema {
@@ -334,7 +354,12 @@ struct ActSummaryCatalogSnapshot: Sendable, Hashable, Identifiable {
     let generatedAt: Date
 
     var id: String { documentID }
-    func isStale(for document: ActDocument) -> Bool { sourceHash != document.sourceHash }
+
+    func isStale(for document: ActDocument, identity: SummaryIdentity? = nil) -> Bool {
+        SummaryStaleness.isStale(
+            sourceHash: sourceHash, promptVersion: promptVersion,
+            pipelineVersion: pipelineVersion, document: document, identity: identity)
+    }
 }
 
 /// Единственная actor-граница чтения SwiftData для Spotlight, App Intents и

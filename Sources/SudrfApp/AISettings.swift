@@ -114,7 +114,7 @@ enum AIConnectionProbe {
     static func validate(_ summary: ActSummary) throws {
         guard !summary.allClaims.isEmpty else {
             throw AISummarizerError.providerUnavailable(
-                "Groq вернул пустую сводку для синтетического акта.")
+                "Провайдер вернул пустую сводку для синтетического акта.")
         }
         try ActSummaryValidator.validate(summary, against: document)
     }

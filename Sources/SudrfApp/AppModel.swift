@@ -1229,7 +1229,12 @@ final class AppRouter: ObservableObject {
                 guard !Task.isCancelled, self.isCurrentSummaryOperation(operation) else { return }
                 self.cacheSelectedActDocument(document)
                 self.selectedSummary = saved?.summary
-                self.selectedSummaryIsStale = saved?.isStale(for: document) ?? false
+                // Сводка прежнего prompt/pipeline тоже устарела. Если текущая
+                // конфигурация недоступна (нет ключа или согласия), сводку всё
+                // равно нельзя перегенерировать — тогда сравнивается только hash.
+                let identity = (try? self.summaryConfigurationProvider())?.identity
+                self.selectedSummaryIsStale = saved?.isStale(
+                    for: document, identity: identity) ?? false
                 self.finishSummaryOperation(operation)
             } catch {
                 guard self.isCurrentSummaryOperation(operation) else { return }

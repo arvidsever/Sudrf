@@ -4,6 +4,33 @@ import SwiftData
 @testable import SudrfApp
 
 final class DataCatalogTests: XCTestCase {
+    /// Смена prompt или pipeline делает сохранённую сводку устаревшей: показывать
+    /// результат прежнего prompt как актуальный нельзя. Без текущей конфигурации
+    /// (нет ключа или согласия) сводку всё равно нельзя перегенерировать, поэтому
+    /// сравнивается только hash источника.
+    func testSavedSummaryIsStaleAfterPromptOrPipelineBump() {
+        let document = ActDocument(
+            caseKey: "court/2-1/2026", sourceActID: "act-1", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Тестовый суд", instanceLevel: .first,
+            kind: "Решение", date: "01.07.2026", sourceText: "Исходный абзац.")
+        let snapshot = ActSummaryCatalogSnapshot(
+            documentID: document.id, summary: ActSummary(), provider: "groq",
+            model: "openai/gpt-oss-120b", promptVersion: "groq-act-summary-v1",
+            pipelineVersion: "summary-pipeline-v1",
+            sourceHash: document.sourceHash, generatedAt: .now)
+
+        XCTAssertFalse(snapshot.isStale(for: document))
+        XCTAssertFalse(snapshot.isStale(for: document, identity: SummaryIdentity(
+            promptVersion: "groq-act-summary-v1",
+            pipelineVersion: "summary-pipeline-v1")))
+        XCTAssertTrue(snapshot.isStale(for: document, identity: SummaryIdentity(
+            promptVersion: "groq-act-summary-v2",
+            pipelineVersion: "summary-pipeline-v1")))
+        XCTAssertTrue(snapshot.isStale(for: document, identity: SummaryIdentity(
+            promptVersion: "groq-act-summary-v1",
+            pipelineVersion: "summary-pipeline-v2")))
+    }
+
     func testStoredParagraphSnapshotSurvivesProjectionRefreshForSameSourceRevision() throws {
         let source = "Первый абзац.\n\nВторой абзац."
         let document = ActDocument(

@@ -43,7 +43,9 @@ enum ActSummarizerFactory {
         case .groq:
             let key = try requiredKey(kind)
             return wrap(GroqActSummarizer(key: key, model: model),
-                        provider: kind.rawValue, model: model, budget: 18_000)
+                        provider: kind.rawValue, model: model, budget: 18_000,
+                        promptVersion: "groq-act-summary-v2",
+                        pipelineVersion: "summary-pipeline-v2")
         case .appleDirect:
             let osBuild = Self.osBuildCacheComponent
             return wrap(AppleDirectActSummarizer(), provider: kind.rawValue,
@@ -81,13 +83,15 @@ enum ActSummarizerFactory {
 
     private static func wrap<S: ActSummarizing>(_ base: S, provider: String,
                                                  model: String, budget: Int,
+                                                 promptVersion: String = "act-summary-v1",
                                                  pipelineVersion: String = "summary-pipeline-v1")
         -> ConfiguredActSummarizer {
         let chunks = ChunkingActSummarizer(base: ValidatedActSummarizer(base: base))
         let pipeline = FinalValidatedActSummarizer(base: chunks)
         return ConfiguredActSummarizer(
             provider: provider, model: model,
-            options: SummaryOptions(maxInputCharacters: budget),
+            options: SummaryOptions(
+                maxInputCharacters: budget, promptVersion: promptVersion),
             pipelineVersion: pipelineVersion,
             summarizer: AnyActSummarizer(pipeline))
     }

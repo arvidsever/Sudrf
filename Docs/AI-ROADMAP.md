@@ -224,6 +224,24 @@ protocol ActSummarizing: Sendable {
    structured outputs для этой модели:
    <https://console.groq.com/docs/structured-outputs>. Model ID не выбирается
    через случайный router.
+   Первый полевой прогон выявил два `json_validate_failed` на реальном акте при
+   успешной синтетической проверке ключа. Corrective-путь использует компактный
+   provider payload `items[]` с enum раздела, `reasoning_effort=low`, явный
+   output budget и один общий retry на chunk. Полевой connection probe показал,
+   что резерв `8192` output tokens немедленно отклоняется free-tier лимитом Groq
+   как HTTP 413 / `rate_limit_exceeded`, поэтому короткие запросы пилота
+   фиксируют `4096`, а большой одиночный chunk не передаёт это поле и использует
+   server-side completion cap Groq.
+   Groq chunk остаётся 18000 символов: проверочный акт на 7564 input tokens
+   помещается в контекст одним запросом, но вместе с completion превышает
+   бесплатный минутный token budget. Искусственное дробление не решает это без
+   минутной паузы между частями: второй chunk получает 429. Это отдельное
+   ограничение free tier, не возврат `json_validate_failed`; PR не маскирует его
+   бесконечными повторами и не ослабляет structured output.
+   Из HTTP body разрешено извлекать
+   только allowlisted machine code; provider message и failed generation не
+   сохраняются и не выводятся. Проверка соединения обязана получить непустую
+   cited summary для многоабзацного синтетического акта.
 4. Фиксировать model IDs; не использовать случайный free-router.
 5. Benchmark на 50–100 уже опубликованных и обезличенных судом актов хранится
    вне Git; в Git остаются runner и синтетические фикстуры. Повторное

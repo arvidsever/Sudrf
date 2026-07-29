@@ -96,6 +96,30 @@ enum AIKeychain {
     }
 }
 
+enum AIConnectionProbe {
+    static let document = ActDocument(
+        caseKey: "connection-test", sourceActID: "synthetic-v2",
+        caseNumber: "TEST-1/2026", judicialUID: nil, court: "Тестовый суд",
+        instanceLevel: .first, kind: "Решение", date: "20.07.2026",
+        sourceText: """
+        Истец просил взыскать с ответчика 10 000 рублей основного долга.
+
+        Ответчик возражал против требований и ссылался на исполнение обязательства.
+
+        Суд исследовал договор и платёжные документы и установил наличие задолженности.
+
+        Руководствуясь законом, суд решил взыскать с ответчика 10 000 рублей. Решение может быть обжаловано в течение месяца.
+        """)
+
+    static func validate(_ summary: ActSummary) throws {
+        guard !summary.allClaims.isEmpty else {
+            throw AISummarizerError.providerUnavailable(
+                "Groq вернул пустую сводку для синтетического акта.")
+        }
+        try ActSummaryValidator.validate(summary, against: document)
+    }
+}
+
 @MainActor
 final class AISettings: ObservableObject {
     static let shared = AISettings()
@@ -166,14 +190,11 @@ final class AISettings: ObservableObject {
         Task {
             do {
                 let configured = try ActSummarizerFactory.configured(settings: self)
-                let document = ActDocument(
-                    caseKey: "connection-test", sourceActID: "synthetic",
-                    caseNumber: "TEST-1", judicialUID: nil, court: "Тестовый суд",
-                    instanceLevel: .first, kind: "Проверка соединения", date: "",
-                    sourceText: "Синтетический текст для проверки соединения. Реальный судебный акт не отправляется.")
-                _ = try await configured.summarizer.summarize(
+                let document = AIConnectionProbe.document
+                let summary = try await configured.summarizer.summarize(
                     document: document, options: configured.options)
-                statusMessage = "Провайдер доступен. Проверка выполнена на синтетическом тексте."
+                try AIConnectionProbe.validate(summary)
+                statusMessage = "Провайдер доступен. Проверка выполнена на синтетическом акте."
             } catch {
                 statusMessage = "Проверка не пройдена: \(error.localizedDescription)"
             }
@@ -266,7 +287,7 @@ struct AISettingsView: View {
                 settings.testConnection()
             }
             .disabled(settings.connectionTestRunning)
-            Text("Проверка использует только синтетическую фразу и не отправляет судебный акт.")
+            Text("Проверка использует только синтетический акт и не отправляет пользовательские данные.")
                 .font(.caption).foregroundStyle(.secondary)
 
             HStack {

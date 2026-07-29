@@ -202,19 +202,51 @@ final class AISummaryPipelineTests: XCTestCase {
 
 
     func testSummaryPromptDecodesFenceAndStripsProviderControlledMetadata() throws {
-        let summary = ActSummary(
-            localWarnings: ["Подложенное локальное предупреждение"],
-            intermediateEnglishSummary: "attacker diagnostic",
-            usedDoubleTranslation: true)
-        let json = try XCTUnwrap(String(data: JSONEncoder().encode(summary), encoding: .utf8))
+        let payload: [String: Any] = [
+            "items": [[
+                "section": "circumstances",
+                "text": "Проверенный вывод.",
+                "citations": [[
+                    "paragraphID": "¶1",
+                    "evidenceQuote": "Исходный текст",
+                ]],
+            ]],
+            "localWarnings": ["Подложенное локальное предупреждение"],
+            "intermediateEnglishSummary": "attacker diagnostic",
+            "usedDoubleTranslation": true,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
         let decoded = try SummaryPrompt.decode("```json\(json)```")
+        XCTAssertEqual(decoded.circumstances.map(\.text), ["Проверенный вывод."])
         XCTAssertTrue(decoded.localWarnings.isEmpty)
         XCTAssertNil(decoded.intermediateEnglishSummary)
         XCTAssertFalse(decoded.usedDoubleTranslation)
         let schema = try XCTUnwrap(SummaryPrompt.jsonSchema["properties"] as? [String: Any])
+        XCTAssertEqual(Set(schema.keys), ["items"])
         XCTAssertNil(schema["localWarnings"])
         XCTAssertNil(schema["intermediateEnglishSummary"])
         XCTAssertNil(schema["usedDoubleTranslation"])
+    }
+
+    func testSummaryPromptMapsEveryProviderSectionAndRejectsUnknownSection() throws {
+        let sections = SummaryPrompt.ProviderSection.allCases.map(\.rawValue)
+        let items = sections.enumerated().map { index, section in
+            [
+                "section": section,
+                "text": "Вывод \(index)",
+                "citations": [["paragraphID": "¶1", "evidenceQuote": "Фрагмент"]],
+            ] as [String: Any]
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["items": items])
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertEqual(try SummaryPrompt.decode(text).allClaims.count, sections.count)
+
+        var invalidItems = items
+        invalidItems[0]["section"] = "attacker_section"
+        let invalidData = try JSONSerialization.data(withJSONObject: ["items": invalidItems])
+        let invalidText = try XCTUnwrap(String(data: invalidData, encoding: .utf8))
+        XCTAssertThrowsError(try SummaryPrompt.decode(invalidText))
     }
 
     func testHTTPErrorDoesNotRetainProviderBody() {
@@ -258,11 +290,39 @@ final class AISummaryPipelineTests: XCTestCase {
         let body = try XCTUnwrap(GroqRequestStub.capturedBody)
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(json["model"] as? String, "openai/gpt-oss-120b")
+        XCTAssertEqual(json["temperature"] as? Double, 0.2)
+        XCTAssertEqual(json["reasoning_effort"] as? String, "low")
+        XCTAssertEqual(json["max_completion_tokens"] as? Int, 4_096)
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
         let prompt = messages.compactMap { $0["content"] }.joined(separator: "\n")
         XCTAssertTrue(prompt.contains("ТОЛЬКО ВЫБРАННЫЙ АКТ"))
         XCTAssertFalse(prompt.contains("РЕАЛЬНЫЙ ПОСТОРОННИЙ АКТ"))
         XCTAssertFalse(String(data: body, encoding: .utf8)?.contains("test-secret") == true)
+
+        let responseFormat = try XCTUnwrap(json["response_format"] as? [String: Any])
+        XCTAssertEqual(responseFormat["type"] as? String, "json_schema")
+        let namedSchema = try XCTUnwrap(responseFormat["json_schema"] as? [String: Any])
+        XCTAssertEqual(namedSchema["strict"] as? Bool, true)
+        let schema = try XCTUnwrap(namedSchema["schema"] as? [String: Any])
+        assertStrictObjects(in: schema)
+    }
+
+    func testGroqLargeChunkOmitsCompletionReservationForFreeTier() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GroqRequestStub.self]
+        let provider = GroqActSummarizer(
+            key: "test-secret", model: "openai/gpt-oss-120b",
+            session: URLSession(configuration: configuration))
+        let document = ActDocument(
+            caseKey: "selected", sourceActID: "large", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Суд", instanceLevel: .first,
+            kind: "Решение", date: "", sourceText: String(repeating: "А", count: 12_001))
+
+        _ = try await provider.summarize(document: document, options: SummaryOptions())
+
+        let body = try XCTUnwrap(GroqRequestStub.capturedBody)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertNil(json["max_completion_tokens"])
     }
 
     func testBenchmarkRunnerCalculatesConfiguredThresholds() async throws {
@@ -283,6 +343,26 @@ final class AISummaryPipelineTests: XCTestCase {
         XCTAssertEqual(report.criticalAccuracy, 1)
         XCTAssertEqual(report.sectionCompleteness, 1)
         XCTAssertTrue(report.passed)
+    }
+
+    private func assertStrictObjects(
+        in schema: [String: Any],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        if schema["type"] as? String == "object" {
+            XCTAssertEqual(schema["additionalProperties"] as? Bool, false, file: file, line: line)
+            let properties = schema["properties"] as? [String: Any] ?? [:]
+            let required = schema["required"] as? [String] ?? []
+            XCTAssertEqual(Set(properties.keys), Set(required), file: file, line: line)
+        }
+        for value in schema.values {
+            if let nested = value as? [String: Any] {
+                assertStrictObjects(in: nested, file: file, line: line)
+            } else if let values = value as? [[String: Any]] {
+                values.forEach { assertStrictObjects(in: $0, file: file, line: line) }
+            }
+        }
     }
 }
 
@@ -309,10 +389,17 @@ private final class GroqRequestStub: URLProtocol {
             Self.capturedBody = data
         }
         let summary = ActSummary(circumstances: [SummaryClaim(
-            text: "Проверенный вывод.",
-            citations: [SummaryCitation(paragraphID: "¶1",
-                                         evidenceQuote: "ТОЛЬКО ВЫБРАННЫЙ АКТ")])])
-        let content = String(data: try! JSONEncoder().encode(summary), encoding: .utf8)!
+            text: "Проверенный вывод.", citations: [])])
+        let payload: [String: Any] = ["items": [[
+            "section": "circumstances",
+            "text": summary.circumstances[0].text,
+            "citations": [[
+                "paragraphID": "¶1",
+                "evidenceQuote": "ТОЛЬКО ВЫБРАННЫЙ АКТ",
+            ]],
+        ]]]
+        let content = String(
+            data: try! JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
         let envelope: [String: Any] = ["choices": [["message": ["content": content]]]]
         let data = try! JSONSerialization.data(withJSONObject: envelope)
         let response = HTTPURLResponse(

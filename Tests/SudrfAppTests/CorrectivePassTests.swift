@@ -83,6 +83,25 @@ final class CorrectivePassTests: XCTestCase {
         }
     }
 
+    private actor JSONValidationFailureSummarizer: ActSummarizing {
+        private(set) var calls = 0
+
+        func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+            calls += 1
+            throw AISummarizerError.http(
+                400, providerCode: .jsonValidateFailed)
+        }
+    }
+
+    private actor GenericBadRequestSummarizer: ActSummarizing {
+        private(set) var calls = 0
+
+        func summarize(document: ActDocument, options: SummaryOptions) async throws -> ActSummary {
+            calls += 1
+            throw AISummarizerError.http(400)
+        }
+    }
+
     func testOnlyFailingChunkUsesSharedRetryBudget() async throws {
         let paragraphs = (1...3).map {
             ActParagraph(ordinal: $0,
@@ -144,6 +163,31 @@ final class CorrectivePassTests: XCTestCase {
         XCTAssertEqual(cancelledCalls, 1)
     }
 
+    func testJSONValidateFailedRetriesOnceButGeneric400DoesNotRetry() async {
+        let document = makeSummaryDocument()
+        let validationFailure = JSONValidationFailureSummarizer()
+        do {
+            _ = try await ValidatedActSummarizer(base: validationFailure)
+                .summarize(document: document, options: SummaryOptions())
+            XCTFail("json_validate_failed должен завершиться после одного повтора")
+        } catch {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "Groq принял API-ключ, но после повторной попытки не смог сформировать структурированную сводку.")
+        }
+        let validationCalls = await validationFailure.calls
+        XCTAssertEqual(validationCalls, 2)
+
+        let genericFailure = GenericBadRequestSummarizer()
+        do {
+            _ = try await ValidatedActSummarizer(base: genericFailure)
+                .summarize(document: document, options: SummaryOptions())
+            XCTFail("Обычный HTTP 400 нельзя повторять")
+        } catch {}
+        let genericCalls = await genericFailure.calls
+        XCTAssertEqual(genericCalls, 1)
+    }
+
     func testHTTPJSONDoesNotRetainErrorBody() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SecretHTTPErrorStub.self]
@@ -156,6 +200,36 @@ final class CorrectivePassTests: XCTestCase {
             XCTAssertEqual(error.localizedDescription, "AI API вернул HTTP 500.")
             XCTAssertFalse(String(describing: error).contains("secret response"))
         }
+    }
+
+    func testHTTPJSONRetainsOnlyAllowlistedProviderFailureCode() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [JSONValidationHTTPErrorStub.self]
+        let session = URLSession(configuration: configuration)
+        let request = URLRequest(url: try XCTUnwrap(URL(string: "https://example.invalid")))
+        do {
+            _ = try await HTTPJSON.send(request, session: session)
+            XCTFail("HTTP 400 должен завершаться ошибкой")
+        } catch let error as AISummarizerError {
+            guard case .http(400, _, .jsonValidateFailed) = error else {
+                return XCTFail("Ожидался безопасный json_validate_failed, получено \(error)")
+            }
+            XCTAssertFalse(String(describing: error).contains("secret response"))
+            XCTAssertFalse(error.localizedDescription.contains("secret response"))
+        } catch {
+            XCTFail("Неожиданный тип ошибки: \(error)")
+        }
+    }
+
+    func testConnectionProbeRejectsEmptyAndAcceptsCitedSummary() throws {
+        XCTAssertThrowsError(try AIConnectionProbe.validate(ActSummary()))
+
+        let paragraph = try XCTUnwrap(AIConnectionProbe.document.paragraphs.first)
+        let summary = ActSummary(claims: [SummaryClaim(
+            text: "Истец просил взыскать 10 000 рублей.",
+            citations: [SummaryCitation(
+                paragraphID: paragraph.id, evidenceQuote: "10 000 рублей")])])
+        XCTAssertNoThrow(try AIConnectionProbe.validate(summary))
     }
 
     func testTranslationRejectsReservedPlaceholderCollision() throws {
@@ -385,6 +459,29 @@ private final class SecretHTTPErrorStub: URLProtocol {
             headerFields: ["Content-Type": "text/plain"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("secret response".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class JSONValidationHTTPErrorStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 400, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
+        let body: [String: Any] = ["error": [
+            "code": "json_validate_failed",
+            "type": "invalid_request_error",
+            "message": "secret response with reflected prompt",
+            "failed_generation": ["private": "secret response"],
+        ]]
+        let data = try! JSONSerialization.data(withJSONObject: body)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 

@@ -1,6 +1,6 @@
-# v0.41.1 — Groq structured summary correction
+# v0.42.1 — Groq structured summary correction
 
-Roadmap: `AI-4`, `SUMMARY-5`.
+Ветка `codex/fix-groq-json-validation` (PR #49). Roadmap: `AI-4`, `SUMMARY-5`.
 
 ## Причина
 

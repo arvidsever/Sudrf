@@ -25,7 +25,7 @@
 | Запуск приложения, корневые экраны и навигация | `Sources/SudrfApp/SudrfApp.swift`, `RootView.swift`, `AppModel.swift` (`AppRouter`) | `ContentView.swift`, `OverviewView.swift`, `MyCasesView.swift`, `CalendarScreen.swift` | `CurrentEntityActivityTests`, `OverviewModelTests`, `MyCasesModelTests`, `CalendarWeekLayoutTests` |
 | Интерактивный поиск и выбор суда | `Sources/SudrfApp/SearchModel.swift` | `MovementContext.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfKit/CourtDirectory.swift`, `DistrictCourtResolver.swift`, `MagistrateDirectory.swift` | `SearchResultSelectionTests`, `MoscowCourtOptionTests`, `CourtDirectoryTests`, `DistrictResolverTests`, `MagistrateTests` |
 | URL, запросы и HTML обычных судов `*.sudrf.ru` | `Sources/SudrfKit/SudrfClient.swift`, `SudrfURLBuilder.swift` | `ResultsParser.swift`, `CaseCardParser.swift`, `SearchPageClassifier.swift`, `SearchPatternDirectory.swift`, `WorkingVariantStore.swift` | `URLBuilderTests`, `ResultsParserTests`, `CaseCardParserTests`, `SearchPageClassifierTests`, `SearchPatternTests`, `WorkingVariantStoreTests` |
-| Мировые судьи, ВС РФ или Мосгорсуд | `MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud*.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests` |
+| Мировые судьи, ВС РФ или Мосгорсуд | `Sources/SudrfKit/MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud.swift`, `MosGorSudMovement.swift`, `MosGorSudParsers.swift`, `MosGorSudCourtDirectory.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests` |
 | Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementTargetBuilder.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
 | Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests` |
@@ -58,22 +58,21 @@
 с последним успешным движением через `MovementCachePolicy`, строит снимок через
 `MovementDerivation` и только после этого сохраняет запись.
 
-Ошибка сети, временно недоступная карточка или CAPTCHA идут в failure/pending
-путь и не вызывают `applyMovement`. Поэтому последний успешный `movement`,
-`snapshot` и `movementFetchedAt` остаются доступными.
+Ошибка домашнего суда, после которой нельзя собрать пригодный `CaseMovement`,
+идёт в failure/pending-путь и не вызывает `applyMovement`. Последний успешный
+`movement`, `snapshot` и `movementFetchedAt` при этом остаются доступными.
+
+Ошибки при загрузке вышестоящего суда обрабатываются иначе: `MovementService`
+может вернуть частичный `CaseMovement` с CAPTCHA/сетевой заглушкой или с
+`incompleteHigherCourtDomains`. Такой результат проходит через
+`applyMovement`, а `MovementCachePolicy.merge` восстанавливает сохранённые
+инстанции соответствующего суда вместо их удаления.
 
 ### CAPTCHA
 
-Клиент обнаруживает CAPTCHA и выдаёт `SudrfError.captchaRequired`. Приложение
-сначала может вызвать `AutoCaptchaSolver`, который получает изображение через
-`SudrfKit`, распознаёт его продуктом `CaptchaSolver` и кладёт подтверждённый
-токен в `CaptchaTokenStore`. При отключённом солвере, низкой уверенности или
-исчерпании попыток управление переходит к `CaptchaAssistSheet` и скрытому
-`WKWebView`.
-
-Точки автоматического вызова: `SearchModel.executeSearch`,
-`RefreshCenter.performRefresh` и `AppRouter.beginCaptcha`. Каждая обязана
-сохранять ручной fallback.
+Точки вызова, настройки, диагностика и обязательный ручной fallback описаны в
+корневом `AGENTS.md`, раздел «Captcha auto-solver». Для выбора файлов и тестов
+используйте строку «Автоматическая или ручная CAPTCHA» в таблице маршрутов.
 
 ### Судебный акт и AI
 
@@ -86,13 +85,11 @@
 
 ## Инварианты
 
-- Неудачный refresh не должен заменять последний успешный кэш пустыми или
-  частичными данными. Изменение success/failure-веток требует тестов
+- Ошибка верхнего уровня до получения пригодного `CaseMovement` не должна изменять
+  последний успешный кэш. Частичный результат вышестоящих судов проходит через
+  `MovementCachePolicy.merge`, который сохраняет ранее загруженные инстанции для
+  незавершённых доменов. Изменение этих веток требует тестов
   `RefreshCenterTests` и `MovementCachePolicyTests`.
-- `CaptchaSolver` остаётся автономным локальным продуктом без зависимости от
-  `SudrfKit` и без сетевых вызовов. Интеграция находится в `SudrfApp`.
-- CAPTCHA всегда имеет ручной fallback; автосолвер включается в точке вызова,
-  а не становится обязательным поведением сетевого ядра.
 - `SudrfClient`, `MovementService`, `VSRFClient` и резолверы используют actor
   isolation. Не обходите их троттлинг отдельными `URLSession` в UI-слое.
 - HTML судов — нестабильный внешний контракт. Новый вариант страницы должен
@@ -110,7 +107,7 @@
   алгоритмы и независимые модели следует помещать в профильные файлы, а не
   увеличивать `AppRouter`.
 - `Movement.swift` — доменные модели и сетевой агрегатор движения. UI-проекции
-  находятся в `SudrfApp/MovementDerivation.swift`.
+  находятся в `Sources/SudrfApp/MovementDerivation.swift`.
 - `CaptchaWebView.swift` — мост ручной CAPTCHA и WebKit. Распознавание живёт в
   `CaptchaSolver`, извлечение изображения и токена — в `SudrfKit`.
 - `TrackedStore.swift` владеет изменениями отслеживаемых записей;

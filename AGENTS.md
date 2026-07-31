@@ -1,4 +1,4 @@
-## Imported Claude Cowork project instructions
+# Sudrf project instructions
 
 ## Repository map
 

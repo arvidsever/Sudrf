@@ -1,4 +1,8 @@
-## Imported Claude Cowork project instructions
+# Sudrf project instructions
+
+## Repository map
+
+- Для широких и сквозных изменений сначала используйте `Docs/architecture/repo-map.md`; для локальной правки открывайте только релевантную строку таблицы маршрутов.
 
 ## Changelog convention
 

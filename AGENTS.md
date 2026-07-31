@@ -1,5 +1,9 @@
 ## Imported Claude Cowork project instructions
 
+## Repository map
+
+- Для широких и сквозных изменений сначала используйте `Docs/architecture/repo-map.md`; для локальной правки открывайте только релевантную строку таблицы маршрутов.
+
 ## Changelog convention
 
 - **Branch drafts:** новые изменения пишутся в `Docs/branch-changelogs/<branch-slug>/vX.Y.Z.md` (папка = имя ветки, файл = прогнозируемая версия). Прогноз может не совпасть с финалом — это нормально.

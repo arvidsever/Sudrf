@@ -144,41 +144,10 @@ final class SearchModel: ObservableObject {
         // на оба пути — интерактивный поиск (`SearchModel`) и
         // фоновый обход (`RefreshCenter`).
         //
-        // `preprocessingProvider` — live-источник флага: тоггл в меню
-        // применяется к следующему вызову `solver.solve` без пересоздания
-        // солвера. Без provider флаг фиксировался бы в момент init.
-        //
-        // `CoreMLCaptchaStrategy` (v0.38.8) — для `.sudrfToken`. Если
-        // модель найдена на диске, оборачивает Vision через
-        // `KindDispatchingStrategy` (см. AppModel).
         let settings = captchaSettings ?? CaptchaSettings.shared
         self.captchaSettings = settings
         self.corpusStore = corpusStore
-        if let captchaSolver {
-            self.captchaSolver = captchaSolver
-        } else {
-            let solverConfiguration = settings.solverConfiguration
-            var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
-            vision.preprocessingProvider = { [weak settings] in
-                settings?.preprocessorEnabled ?? false
-            }
-            let provider: any CaptchaSolvingProvider
-            if let modelURL = CoreMLModelDiscovery.discoverURL(),
-               let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
-                provider = KindDispatchingStrategy(
-                    primary: coreML,
-                    fallback: vision,
-                    minPrimaryConfidence: solverConfiguration.minConfidence,
-                    primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
-                )
-            } else {
-                provider = vision
-            }
-            self.captchaSolver = CaptchaSolver(
-                provider: provider,
-                configuration: solverConfiguration
-            )
-        }
+        self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
@@ -458,55 +427,46 @@ final class SearchModel: ObservableObject {
         let uid = uidSearchEnabled ? queryUID.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         guard let cart = cartoteka else { return }
 
-        if court.level == .magistrate {
-            let primary: (SearchField, String) = !num.isEmpty ? (.caseNumber, num) : (.name, name)
-            do {
-                var res = try await magistrateClient.search(court: court, cartoteka: cart,
-                                                            field: primary.0, value: primary.1)
-                if !num.isEmpty, primary.0 != .caseNumber {
-                    res = res.filter { $0.caseNumber.hasPrefix(num) }
-                }
-                if !name.isEmpty, primary.0 != .name {
-                    res = res.filter { ($0.essence ?? "").localizedCaseInsensitiveContains(name) }
-                }
-                results = res
-                hasSearched = true
-                let used = [(num, "№ дела"), (name, "ФИО")]
-                    .filter { !$0.0.isEmpty }.map(\.1).joined(separator: " + ")
-                status = res.isEmpty
-                    ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
-                    : "Найдено: \(res.count) (\(used))"
-                await bootstrapCaptchaToCorpus(host: court.domain, results: res)
-            } catch SudrfError.captchaRequired(let formURL) {
-                try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
-            }
-            return
-        }
-
         let primary: (SearchField, String) =
-            !uid.isEmpty ? (.uid, uid)
-            : !num.isEmpty ? (.caseNumber, num)
-            : (.name, name)
+            court.level == .magistrate
+                ? (!num.isEmpty ? (.caseNumber, num) : (.name, name))
+                : (!uid.isEmpty ? (.uid, uid)
+                   : !num.isEmpty ? (.caseNumber, num)
+                   : (.name, name))
+        let searchClient: any CaseProviding = court.level == .magistrate ? magistrateClient : client
         do {
-            var res = try await client.search(court: court, cartoteka: cart,
-                                              field: primary.0, value: primary.1)
-            if !num.isEmpty, primary.0 != .caseNumber {
-                res = res.filter { $0.caseNumber.hasPrefix(num) }
-            }
-            if !name.isEmpty, primary.0 != .name {
-                res = res.filter { ($0.essence ?? "").localizedCaseInsensitiveContains(name) }
-            }
+            let fetched = try await searchClient.search(court: court, cartoteka: cart,
+                                                        field: primary.0, value: primary.1)
+            let res = Self.filteredSearchResults(fetched, primary: primary.0,
+                                                 caseNumber: num, name: name)
             results = res
             hasSearched = true
-            let used = [(num, "№ дела"), (name, "ФИО"), (uid, "УИД")]
-                .filter { !$0.0.isEmpty }.map(\.1).joined(separator: " + ")
-            status = res.isEmpty
-                ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
-                : "Найдено: \(res.count) (\(used))"
+            var searchInputs = [(num, "№ дела"), (name, "ФИО")]
+            if court.level != .magistrate { searchInputs.append((uid, "УИД")) }
+            let used = searchInputs.filter { !$0.0.isEmpty }.map(\.1)
+            status = Self.searchStatus(for: res, used: used)
             await bootstrapCaptchaToCorpus(host: court.domain, results: res)
         } catch SudrfError.captchaRequired(let formURL) {
             try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
         }
+    }
+
+    /// Применяет к выдаче поля, которые не были отправлены как первичный запрос.
+    /// Это одинаково для районных и мировых судов: различается только выбор
+    /// первичного поля и сетевого клиента выше.
+    static func filteredSearchResults(_ rows: [CaseSearchResult], primary: SearchField,
+                                      caseNumber: String, name: String) -> [CaseSearchResult] {
+        rows.filter { row in
+            (caseNumber.isEmpty || primary == .caseNumber || row.caseNumber.hasPrefix(caseNumber))
+                && (name.isEmpty || primary == .name
+                    || (row.essence ?? "").localizedCaseInsensitiveContains(name))
+        }
+    }
+
+    static func searchStatus(for results: [CaseSearchResult], used: [String]) -> String {
+        results.isEmpty
+            ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
+            : "Найдено: \(results.count) (\(used.joined(separator: " + ")))"
     }
 
     /// Хелпер для `executeSearch` — на `captchaRequired` пытается решить
@@ -746,49 +706,52 @@ final class SearchModel: ObservableObject {
     /// пройдут без окна кода (пока суд не отклонит пару). Если окно открыто из
     /// базового поиска (rerunSearch) — лист закрывается и поиск продолжается сам.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
-        let rerun = captcha?.rerunSearch == true
-        let movementResult = rerun ? nil : selectedResult
-        let movementCacheKey: String? = {
-            guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
-            return MovementContext.identityKey(displayDomain: option.domain,
-                                               courtCode: option.code,
-                                               caseNumber: mv.caseNumber)
-        }()
+        let resume = captchaResumeState()
         Task {
             await CaptchaTokenStore.shared.store(token, domain: host)
-            if rerun {
-                captcha = nil
-                await runSearch()
-            } else {
-                if let key = movementCacheKey { MovementMemoryCache.shared.remove(key) }
-                captcha = nil
-                if let result = movementResult {
-                    await openMovement(result)
-                }
-            }
+            await resumeAfterCaptchaUnlock(resume)
         }
     }
 
     func captchaSessionUnlocked(host: String) {
-        let rerun = captcha?.rerunSearch == true
-        let movementResult = rerun ? nil : selectedResult
+        let resume = captchaResumeState()
+        Task {
+            await resumeAfterCaptchaUnlock(resume)
+        }
+    }
+
+    private struct CaptchaResumeState {
+        let rerunSearch: Bool
+        let movementResult: CaseSearchResult?
+        let movementCacheKey: String?
+    }
+
+    /// Снимок нужен до запуска `Task`: пользователь может успеть выбрать другую
+    /// запись, пока пара captcha/captchaid сохраняется в actor-хранилище.
+    private func captchaResumeState() -> CaptchaResumeState {
+        let rerunSearch = captcha?.rerunSearch == true
+        let movementResult = rerunSearch ? nil : selectedResult
         let movementCacheKey: String? = {
-            guard !rerun, let option = selectedCourt, let mv = movement else { return nil }
+            guard !rerunSearch, let option = selectedCourt, let mv = movement else { return nil }
             return MovementContext.identityKey(displayDomain: option.domain,
                                                courtCode: option.code,
                                                caseNumber: mv.caseNumber)
         }()
-        Task {
-            if rerun {
-                captcha = nil
-                await runSearch()
-            } else {
-                if let key = movementCacheKey { MovementMemoryCache.shared.remove(key) }
-                captcha = nil
-                if let result = movementResult {
-                    await openMovement(result)
-                }
-            }
+        return CaptchaResumeState(rerunSearch: rerunSearch,
+                                  movementResult: movementResult,
+                                  movementCacheKey: movementCacheKey)
+    }
+
+    private func resumeAfterCaptchaUnlock(_ resume: CaptchaResumeState) async {
+        if resume.rerunSearch {
+            captcha = nil
+            await runSearch()
+            return
+        }
+        if let key = resume.movementCacheKey { MovementMemoryCache.shared.remove(key) }
+        captcha = nil
+        if let result = resume.movementResult {
+            await openMovement(result)
         }
     }
 

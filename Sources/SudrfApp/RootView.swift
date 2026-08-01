@@ -452,26 +452,9 @@ private struct LiveActsPane: View {
                     }
                 }
                 ForEach(acts) { a in
-                    Button { router.selectAct(a.id) } label: {
-                        HStack(spacing: 8) {
-                            Circle().fill(a.instanceLevel.tint).frame(width: 7, height: 7)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(a.title)
-                                    .font(.system(size: 12, weight: a.id == router.selectedActID ? .semibold : .regular))
-                                    .foregroundStyle(.primary).lineLimit(1)
-                                Text("\(a.date) · \(a.courtShort)")
-                                    .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 5)
-                        .background(RoundedRectangle(cornerRadius: 9)
-                            .fill(a.id == router.selectedActID ? Color.accentColor.opacity(0.13) : .clear))
-                        .overlay(RoundedRectangle(cornerRadius: 9)
-                            .strokeBorder(a.id == router.selectedActID ? Color.accentColor.opacity(0.25) : .clear))
-                        .contentShape(Rectangle())
+                    CourtActListRow(act: a, selected: a.id == router.selectedActID) {
+                        router.selectAct(a.id)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(EdgeInsets(top: 14, leading: 14, bottom: 10, trailing: 14))

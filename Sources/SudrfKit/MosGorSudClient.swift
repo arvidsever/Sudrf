@@ -11,10 +11,7 @@ import Foundation
 
 public actor MosGorSudClient {
 
-    private let session: URLSession
-    private let userAgent: String
-    private let minInterval: TimeInterval
-    private var lastRequestAt: Date?
+    private let transport: HTMLCourtTransport
     public var maxAttempts = 3
 
     public init(minInterval: TimeInterval = 2.0,
@@ -27,9 +24,19 @@ public actor MosGorSudClient {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.timeoutIntervalForRequest = 30
         let delegate: (any URLSessionDelegate)? = trustCourtCertificates ? SudrfTLSDelegate() : nil
-        self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        self.userAgent = userAgent
-        self.minInterval = minInterval
+        self.transport = HTMLCourtTransport(
+            session: URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil),
+            userAgent: userAgent, minInterval: minInterval,
+            decodingPolicy: .utf8Only, throttleSemantics: .lastRequestStart)
+    }
+
+    /// Внутренний init для тестов с URLProtocol-stub'ом.
+    internal init(session: URLSession,
+                  minInterval: TimeInterval = 2.0,
+                  userAgent: String = "SudrfKitTests") {
+        self.transport = HTMLCourtTransport(
+            session: session, userAgent: userAgent, minInterval: minInterval,
+            decodingPolicy: .utf8Only, throttleSemantics: .lastRequestStart)
     }
 
     /// Поиск по порталу. Пустой courtAlias — по всем судам Москвы сразу.
@@ -68,43 +75,6 @@ public actor MosGorSudClient {
     // MARK: - сеть
 
     private func fetchUTF8(_ url: URL) async throws -> String {
-        var lastError: Error = SudrfError.http(status: 0)
-        for attempt in 0..<max(1, maxAttempts) {
-            try await throttle()
-            var req = URLRequest(url: url)
-            req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-            req.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-            do {
-                let (data, response) = try await session.data(for: req)
-                let http = response as? HTTPURLResponse
-                if let http, (500..<600).contains(http.statusCode) {
-                    lastError = SudrfError.http(status: http.statusCode)
-                    try await backoff(attempt); continue
-                }
-                if let http, !(200..<300).contains(http.statusCode) {
-                    throw SudrfError.http(status: http.statusCode)
-                }
-                if let s = String(data: data, encoding: .utf8) { return s }
-                throw SudrfError.decodingFailed
-            } catch let e as URLError {
-                lastError = e
-                try await backoff(attempt); continue
-            }
-        }
-        throw lastError
-    }
-
-    private func backoff(_ attempt: Int) async throws {
-        try await Task.sleep(nanoseconds: UInt64(Double(attempt + 1) * 0.8 * 1_000_000_000))
-    }
-    private func throttle() async throws {
-        if let last = lastRequestAt {
-            let elapsed = Date().timeIntervalSince(last)
-            if elapsed < minInterval {
-                try await Task.sleep(nanoseconds: UInt64((minInterval - elapsed) * 1_000_000_000))
-            }
-        }
-        lastRequestAt = Date()
+        try await transport.fetch(url, maxAttempts: maxAttempts)
     }
 }

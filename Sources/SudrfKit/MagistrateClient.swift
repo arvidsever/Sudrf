@@ -127,7 +127,7 @@ public enum MagistrateCardParser {
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать карточку мирового участка") }
 
         let root = (try? doc.select("div.lawcase-content").first()) ?? doc
-        let rawText = normalize(blockText(root))
+        let rawText = HTMLTextExtractor.normalizedBlockText(root, style: .magistrate)
         let tabs = (try? root.select(".tab-content").array()) ?? []
 
         let metaTab = tabs.first { (($0.ownTextSafe + " " + text($0)).lowercased()).contains("уникальный идентификатор дела") }
@@ -240,7 +240,7 @@ public enum MagistrateCardParser {
     private static func parseActs(from el: Element?) -> [CaseActText] {
         guard let el else { return [] }
         let word = (try? el.select(".WordSection1").first()) ?? el
-        let body = normalize(blockText(word))
+        let body = HTMLTextExtractor.normalizedBlockText(word, style: .magistrate)
         guard !body.isEmpty else { return [] }
         return [CaseActText(id: "doc1", kind: "Судебный акт",
                             label: "Судебный акт", body: body)]
@@ -270,49 +270,6 @@ public enum MagistrateCardParser {
         ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static let blockTags: Set<String> = [
-        "p", "div", "tr", "li", "table", "section", "article", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6"
-    ]
-
-    private static func blockText(_ element: Element) -> String {
-        var out = ""
-        appendText(of: element, to: &out)
-        return out
-    }
-
-    private static func appendText(of node: Node, to out: inout String) {
-        for child in node.getChildNodes() {
-            if let text = child as? TextNode {
-                out += text.getWholeText()
-            } else if let el = child as? Element {
-                let tag = el.tagName().lowercased()
-                if tag == "br" { out += "\n"; continue }
-                if tag == "script" || tag == "style" { continue }
-                let isBlock = blockTags.contains(tag)
-                if isBlock && !out.hasSuffix("\n") { out += "\n" }
-                appendText(of: el, to: &out)
-                if isBlock && !out.hasSuffix("\n") { out += "\n" }
-            }
-        }
-    }
-
-    private static func normalize(_ text: String) -> String {
-        let lines = text.components(separatedBy: .newlines)
-            .map {
-                $0.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespaces)
-            }
-        var out: [String] = []
-        for line in lines {
-            if line.isEmpty {
-                if let last = out.last, !last.isEmpty { out.append("") }
-            } else {
-                out.append(line)
-            }
-        }
-        return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 private extension Element {

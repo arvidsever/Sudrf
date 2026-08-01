@@ -121,6 +121,27 @@ final class CartotekaRegistryTests: XCTestCase {
                       "пустой номер — судить не по чему, не переключаем")
     }
 
+    func testResolveDirectLinkUsesStablePrecedence() throws {
+        XCTAssertEqual(
+            CartotekaRegistry.resolve(level: .subject, deloID: "5", new: "5",
+                                      caseNumber: "44Г-1/2019")?.id,
+            "g2", "точная пара должна быть сильнее индекса номера")
+        XCTAssertEqual(
+            CartotekaRegistry.resolve(level: .cassation, deloID: "2800001",
+                                      new: "2800001", caseNumber: "8Г-1/2026")?.id,
+            "g3", "неканонический delo_id разрешается по new")
+        XCTAssertEqual(
+            CartotekaRegistry.resolve(level: .district, deloID: "1610001", new: nil,
+                                      caseNumber: "15-1/2026")?.id,
+            "m", "известный delo_id используется до индекса")
+        XCTAssertEqual(
+            CartotekaRegistry.resolve(level: .district, deloID: "unknown", new: nil,
+                                      caseNumber: "2а-1/2026")?.id,
+            "p1", "индекс номера остаётся последним fallback")
+        XCTAssertNil(CartotekaRegistry.resolve(level: .district, deloID: "unknown",
+                                               new: nil, caseNumber: ""))
+    }
+
     // MARK: Маршруты обжалования согласованы с наборами
 
     func testHigherRouteIDsExistInTargetSets() {

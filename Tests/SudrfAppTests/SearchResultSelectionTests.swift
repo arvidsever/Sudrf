@@ -35,6 +35,37 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testSharedSearchFilteringAndStatusPreservePrimaryFieldBehavior() {
+        let matching = CaseSearchResult(caseNumber: "2-1/2026", essence: "Иванов Иван")
+        let wrongNumber = CaseSearchResult(caseNumber: "2-2/2026", essence: "Иванов Иван")
+        let wrongName = CaseSearchResult(caseNumber: "2-1/2026", essence: "Петров Пётр")
+        let rows = [matching, wrongNumber, wrongName]
+
+        let uidSearch = SearchModel.filteredSearchResults(
+            rows, primary: .uid, caseNumber: "2-1", name: "иванов"
+        )
+        XCTAssertEqual(uidSearch.map(\.caseNumber), ["2-1/2026"],
+                       "оба вторичных фильтра применяются к выдаче поиска по УИД")
+
+        let magistrateNameSearch = SearchModel.filteredSearchResults(
+            rows, primary: .name, caseNumber: "2-1", name: "иванов"
+        )
+        XCTAssertEqual(magistrateNameSearch.map { $0.essence ?? "" },
+                       ["Иванов Иван", "Петров Пётр"],
+                       "для мирового участка номер остаётся вторичным фильтром, а ФИО — первичным")
+
+        let caseNumberSearch = SearchModel.filteredSearchResults(
+            rows, primary: .caseNumber, caseNumber: "2-1", name: "иванов"
+        )
+        XCTAssertEqual(caseNumberSearch.map(\.caseNumber), ["2-1/2026", "2-2/2026"],
+                       "первичное поле не фильтруется повторно локально")
+        XCTAssertEqual(SearchModel.searchStatus(for: uidSearch, used: ["№ дела", "ФИО", "УИД"]),
+                       "Найдено: 1 (№ дела + ФИО + УИД)")
+        XCTAssertEqual(SearchModel.searchStatus(for: [], used: ["ФИО"]),
+                       "Ничего не найдено (учтите ограничения публикации по 262-ФЗ).")
+    }
+
+    @MainActor
     func testActionsIgnoreStaleRows() async throws {
         let model = SearchModel()
         let url = try XCTUnwrap(URL(string: "https://example.test/card?id=stale"))

@@ -211,8 +211,8 @@ enum CaseImporter {
         }
 
         let isMaterial = deloID == "1610001" || deloID == "1610002"
-        let cartoteka = resolveCartoteka(level: level, deloID: deloID, new: newParam,
-                                         caseNumber: row.number)
+        let cartoteka = CartotekaRegistry.resolve(
+            level: level, deloID: deloID, new: newParam, caseNumber: row.number)
 
         return .seed(ImportSeed(
             row: row, searchDomain: searchDomain, displayDomain: displayDomain,
@@ -244,21 +244,6 @@ enum CaseImporter {
             return (.subject, .general)
         }
         return (.district, .general)
-    }
-
-    /// Каноническая картотека по параметрам ссылки. Ссылки выгрузки не всегда
-    /// несут канонический delo_id (у КСОЮ карточка открыта как delo_id=2450001,
-    /// хотя каноническая пара картотеки — 4&new=2450001), поэтому порядок:
-    /// точная пара → по new (некороткому) → по delo_id → по индексу № дела.
-    static func resolveCartoteka(level: CourtLevel, deloID: String, new: String?,
-                                 caseNumber: String) -> Cartoteka? {
-        let sets = CartotekaRegistry.sets(for: level)
-        if let c = sets.first(where: { $0.deloID == deloID && $0.new == (new ?? "0") }) { return c }
-        if let new, new != "0", let c = sets.first(where: { $0.new == new }) { return c }
-        if let c = sets.first(where: { $0.deloID == deloID }) { return c }
-        // Материал/дело по некороткому new не нашлись — карточка могла быть
-        // открыта нестандартной парой; индекс номера — последний шанс.
-        return CartotekaRegistry.matches(caseNumber: caseNumber, level: level).first
     }
 
     // MARK: Группировка по УИД

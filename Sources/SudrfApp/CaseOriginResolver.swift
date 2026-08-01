@@ -138,8 +138,8 @@ actor CaseOriginResolver {
         // Материал остаётся самостоятельной карточкой, кроме производства,
         // для которого внешний УИД подтверждает родительское дело. Для 13/13а
         // такая связь также допускается только по точному УИД, никогда по №.
-        if cart.id == "m", Self.requiresVerifiedParent(number: lowerNumber,
-                                                       courtLevel: resolved.court.level),
+        if cart.id == "m", CaseIndexClassifier.requiresVerifiedParent(caseNumber: lowerNumber,
+                                                                        courtLevel: resolved.court.level),
            let parentCart = Self.verifiedParentCartoteka(for: lowerNumber,
                                                          level: resolved.court.level),
            let judicialUID, !judicialUID.isEmpty {
@@ -170,7 +170,8 @@ actor CaseOriginResolver {
 
     private func resolveVerifiedMaterialParent(context: MovementContext, card: CaseCard) async throws
         -> ResolvedCaseOrigin {
-        guard Self.requiresVerifiedParent(number: context.caseNumber, courtLevel: context.courtLevel),
+        guard CaseIndexClassifier.requiresVerifiedParent(caseNumber: context.caseNumber,
+                                                          courtLevel: context.courtLevel),
               let uid = Self.nonEmpty(card.uid) ?? Self.nonEmpty(context.judicialUID),
               let cart = Self.verifiedParentCartoteka(for: context.caseNumber, level: context.courtLevel)
         else { throw CaseOriginResolutionError.noReference }
@@ -382,13 +383,6 @@ actor CaseOriginResolver {
 
     static func classificationCode(from uid: String?) -> String? {
         KoAPProceduralRole.classificationCode(from: uid)
-    }
-
-    static func requiresVerifiedParent(number: String, courtLevel: CourtLevel) -> Bool {
-        if let info = CaseIndexClassifier.classify(caseNumber: number, courtLevel: courtLevel),
-           info.materialLinkPolicy == .requiresVerifiedParent { return true }
-        let index = CaseIndexClassifier.normalizedIndex(from: number)
-        return index == "13" || index == "13а"
     }
 
     static func verifiedParentCartoteka(for number: String, level: CourtLevel) -> Cartoteka? {

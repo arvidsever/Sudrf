@@ -323,9 +323,8 @@ final class RefreshCenter: ObservableObject {
         }
         let service = serviceBuilder(ctx)
         do {
-            let mv = try await service.movement(for: ctx.baseResult,
-                                                court: ctx.searchCourt, cartoteka: cart)
-            return applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
+            return try await fetchAndApply(service: service, key: effectiveKey,
+                                           ctx: ctx, cart: cart)
         } catch SudrfError.captchaRequired(let url) {
             // Сначала пробуем авто-солвер. Если он вернёт уверенный
             // ответ и токен попадёт в CaptchaTokenStore, повторный
@@ -354,10 +353,8 @@ final class RefreshCenter: ObservableObject {
                 // шумный сигнал, лучше перебдеть). Bootstrap живёт
                 // в `SearchModel.executeSearch`.
                 do {
-                    let mv = try await service.movement(for: ctx.baseResult,
-                                                        court: ctx.searchCourt,
-                                                        cartoteka: cart)
-                    return applyMovement(key: effectiveKey, ctx: ctx, mv: mv)
+                    return try await fetchAndApply(service: service, key: effectiveKey,
+                                                   ctx: ctx, cart: cart)
                 } catch SudrfError.captchaRequired(let url2) {
                     queueCaptcha(key: effectiveKey, formURL: url2)
                     let message = "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)"
@@ -381,6 +378,18 @@ final class RefreshCenter: ObservableObject {
             return failure(effectiveKey,
                            "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
+    }
+
+    /// Выполняет один сетевой запрос движения и атомарно применяет его к
+    /// кэшу. Общий happy-path нужен и для первой попытки, и для inline-retry
+    /// после CAPTCHA: повтор не должен звать `refresh(key:)`, пока текущая
+    /// task остаётся в таблице дедупликации.
+    private func fetchAndApply(service: any MovementProviding, key: String,
+                               ctx: MovementContext, cart: Cartoteka) async throws -> RefreshExecution {
+        let movement = try await service.movement(for: ctx.baseResult,
+                                                  court: ctx.searchCourt,
+                                                  cartoteka: cart)
+        return applyMovement(key: key, ctx: ctx, mv: movement)
     }
 
     /// Success-путь `performRefresh`: merge / snapshot / persist / сброс

@@ -181,6 +181,16 @@ public enum CaseIndexClassifier {
         return catalog.first { $0.index == index && $0.courtLevel == courtLevel && $0.branch == branch }
     }
 
+    /// Требует подтверждённой внешней связи с родительским делом. Если индекс
+    /// не описан в каталоге, 13/13а остаются совместимым специальным случаем.
+    public static func requiresVerifiedParent(caseNumber: String, courtLevel: CourtLevel) -> Bool {
+        if let info = classify(caseNumber: caseNumber, courtLevel: courtLevel) {
+            return info.materialLinkPolicy == .requiresVerifiedParent
+        }
+        let index = normalizedIndex(from: caseNumber)
+        return index == "13" || index == "13а"
+    }
+
     /// Удобный мост для существующих технических звеньев Sudrf. Он нужен только
     /// когда вызывающий уже знает, что суд военный.
     public static func classify(caseNumber: String, level: MilitaryCaseIndexLevel) -> CaseIndexInfo? {

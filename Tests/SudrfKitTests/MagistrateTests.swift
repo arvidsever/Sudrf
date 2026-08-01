@@ -117,6 +117,54 @@ final class MagistrateTests: XCTestCase {
         XCTAssertEqual(MagistrateResultsParser.pageNumbers(html: html), [1])
     }
 
+    func testResultsDeduplicationFallsBackToRelativeCardURLWithoutCaseID() throws {
+        let sameURL = try XCTUnwrap(URL(string: "modules.php?name=sud_delo&op=cs&row=same"))
+        let otherURL = try XCTUnwrap(URL(string: "modules.php?name=sud_delo&op=cs&row=other"))
+        let pageOne = [CaseSearchResult(caseNumber: "5-10/2026", cardURL: sameURL)]
+        let pageTwo = [
+            CaseSearchResult(caseNumber: "5-10/2026", cardURL: sameURL),
+            CaseSearchResult(caseNumber: "5-10/2026", cardURL: otherURL)
+        ]
+        XCTAssertNil(pageOne[0].caseID)
+        let rows = MagistrateResultsParser.deduplicated(pageOne + pageTwo)
+
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.map { $0.cardURL?.absoluteString }, [
+            "modules.php?name=sud_delo&op=cs&row=same",
+            "modules.php?name=sud_delo&op=cs&row=other"
+        ])
+    }
+
+    func testClientDeduplicatesRowsAcrossPages() async throws {
+        MagistrateSearchStub.reset(responses: [
+            "first": """
+            <div id="search_results">
+              <a href="/modules.php?name=sud_delo&amp;op=sf&amp;pageNum_Recordset1=1">2</a>
+              <table><tr><td><a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=same">5-10/2026</a></td></tr></table>
+            </div>
+            """,
+            "1": """
+            <div id="search_results"><table>
+              <tr><td><a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=same">5-10/2026</a></td></tr>
+              <tr><td><a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=other">5-10/2026</a></td></tr>
+            </table></div>
+            """
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateSearchStub.self]
+        let client = MagistrateClient(
+            sudrfClient: SudrfClient(session: URLSession(configuration: configuration), minInterval: 0))
+        let court = Court(domain: "petrozavodskoj.komi.msudrf.ru",
+                          title: "Петрозаводский судебный участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+
+        let rows = try await client.search(court: court, cartoteka: cartoteka,
+                                           field: .caseNumber, value: "5-10/2026")
+
+        XCTAssertEqual(rows.map(\.caseID), ["same", "other"])
+        XCTAssertEqual(MagistrateSearchStub.requestCount, 2)
+    }
+
     func testCardParserReadsMagistrateTabs() throws {
         let html = """
         <div class="content lawcase-content">
@@ -192,5 +240,35 @@ private final class MagistrateCacheStub: URLProtocol {
         Self.requestCount += 1
         client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
     }
+    override func stopLoading() {}
+}
+
+private final class MagistrateSearchStub: URLProtocol {
+    nonisolated(unsafe) static var responseByPage: [String: String] = [:]
+    nonisolated(unsafe) static var requestCount = 0
+
+    static func reset(responses: [String: String]) {
+        responseByPage = responses
+        requestCount = 0
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let page = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first { $0.name == "pageNum_Recordset1" }?.value ?? "first"
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data((Self.responseByPage[page] ?? "").utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
     override func stopLoading() {}
 }

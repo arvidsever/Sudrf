@@ -63,35 +63,8 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
     }
 
     public func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
-        // Предобработка решает per-host. По умолчанию выключена —
-        // на captcha sudrf без сильных искажений Vision с прямым PNG
-        // даёт conf=1.00, а предобработка вносит артефакты
-        // (например, читает «667» как «49»). Включать стоит только
-        // для хостов с rotated/struck-through captcha, на которых
-        // Vision возвращает conf=0.00 на сырых данных.
-        //
-        // Логика:
-        //   - live provider (если задан) → читаем `preprocessorEnabled`
-        //     из `CaptchaSettings` на каждом вызове (для тоггла в меню).
-        //   - иначе фиксированный `preprocessingEnabled`:
-        //       - false  → preprocess выключен глобально.
-        //       - true + preprocessorHosts = ∅   → preprocess для всех.
-        //       - true + preprocessorHosts = {...} → только эти хосты.
-        let liveFlag = await livePreprocessingEnabled()
-        let shouldPreprocess: Bool = {
-            guard liveFlag else { return false }
-            guard !preprocessorHosts.isEmpty else { return true }
-            guard let host = host?.lowercased() else { return false }
-            return preprocessorHosts.contains { $0.lowercased() == host }
-        }()
-
-        let effectiveData: Data
-        if shouldPreprocess, let preprocessed = Preprocessor.process(pngData: pngData) {
-            effectiveData = preprocessed
-        } else {
-            effectiveData = pngData
-        }
-
+        let (effectiveData, _) = await resolveEffectiveData(
+            pngData: pngData, host: host)
         let observations = try await performVision(data: effectiveData, kind: kind)
         let candidates = observations.compactMap { $0.topCandidates(1).first }
         return Self.pick(tuples: candidates.map { ($0.string, $0.confidence) }, kind: kind)

@@ -91,4 +91,17 @@ final class CaseIndexClassifierTests: XCTestCase {
         XCTAssertEqual(CaseIndexClassifier.normalizedIndex(from: "8G-44/2026"), "8г")
         XCTAssertNil(CaseIndexClassifier.normalizedIndex(from: "3/1"))
     }
+
+    func testRequiresVerifiedParentUsesPolicyAndMagistrateFallback() {
+        XCTAssertTrue(CaseIndexClassifier.requiresVerifiedParent(
+            caseNumber: "33-1/2026", courtLevel: .subject))
+        XCTAssertTrue(CaseIndexClassifier.requiresVerifiedParent(
+            caseNumber: "13-1/2026", courtLevel: .magistrate))
+        XCTAssertTrue(CaseIndexClassifier.requiresVerifiedParent(
+            caseNumber: "13а-1/2026", courtLevel: .magistrate))
+        XCTAssertTrue(CaseIndexClassifier.requiresVerifiedParent(
+            caseNumber: "13-1/2026", courtLevel: .appeal))
+        XCTAssertFalse(CaseIndexClassifier.requiresVerifiedParent(
+            caseNumber: "3/12-1/2026", courtLevel: .district))
+    }
 }

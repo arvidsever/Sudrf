@@ -9,7 +9,7 @@
 
 | Продукт | Роль | Направление зависимостей |
 | --- | --- | --- |
-| `SudrfKit` | Сеть, HTML-парсинг, справочники судов, модели и сбор движения дела | Зависит только от `SwiftSoup` и системных framework |
+| `SudrfKit` | Сеть, HTML-парсинг, справочники судов, цели обжалования, модели и сбор движения дела | Зависит только от `SwiftSoup` и системных framework |
 | `CaptchaSolver` | Локальное распознавание CAPTCHA через Vision/CoreML | Не зависит от `SudrfKit` |
 | `SudrfApp` | SwiftUI, SwiftData, фоновые обновления, CAPTCHA-адаптер, AI и системные интеграции | Зависит от `SudrfKit` и `CaptchaSolver` |
 | `sudrf-cli` | Командный интерфейс к поиску, карточкам и справочникам | Зависит от `SudrfKit` и `ArgumentParser` |
@@ -22,17 +22,17 @@
 
 | Задача | Начать с | Затем проверить | Основные тесты |
 | --- | --- | --- | --- |
-| Запуск приложения, корневые экраны и навигация | `Sources/SudrfApp/SudrfApp.swift`, `RootView.swift`, `AppModel.swift` (`AppRouter`) | `ContentView.swift`, `OverviewView.swift`, `MyCasesView.swift`, `CalendarScreen.swift` | `CurrentEntityActivityTests`, `OverviewModelTests`, `MyCasesModelTests`, `CalendarWeekLayoutTests` |
-| Интерактивный поиск и выбор суда | `Sources/SudrfApp/SearchModel.swift` | `MovementContext.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfKit/CourtDirectory.swift`, `DistrictCourtResolver.swift`, `MagistrateDirectory.swift` | `SearchResultSelectionTests`, `MoscowCourtOptionTests`, `CourtDirectoryTests`, `DistrictResolverTests`, `MagistrateTests` |
-| URL, запросы и HTML обычных судов `*.sudrf.ru` | `Sources/SudrfKit/SudrfClient.swift`, `SudrfURLBuilder.swift` | `ResultsParser.swift`, `CaseCardParser.swift`, `SearchPageClassifier.swift`, `SearchPatternDirectory.swift`, `WorkingVariantStore.swift` | `URLBuilderTests`, `ResultsParserTests`, `CaseCardParserTests`, `SearchPageClassifierTests`, `SearchPatternTests`, `WorkingVariantStoreTests` |
-| Мировые судьи, ВС РФ или Мосгорсуд | `Sources/SudrfKit/MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud.swift`, `MosGorSudMovement.swift`, `MosGorSudParsers.swift`, `MosGorSudCourtDirectory.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests` |
-| Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementTargetBuilder.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
+| Запуск приложения, корневые экраны и навигация | `Sources/SudrfApp/SudrfApp.swift`, `RootView.swift`, `AppModel.swift` (`AppRouter`) | `MonitoringModels.swift`, `ContentView.swift`, `OverviewView.swift`, `MyCasesView.swift`, `CalendarScreen.swift` | `CurrentEntityActivityTests`, `OverviewModelTests`, `MyCasesModelTests`, `CalendarWeekLayoutTests` |
+| Интерактивный поиск и выбор суда | `Sources/SudrfApp/SearchModel.swift` | `MovementContext.swift`, `Sources/SudrfKit/MovementTargetBuilder.swift`, `CourtDirectory.swift`, `DistrictCourtResolver.swift`, `MagistrateDirectory.swift` | `SearchResultSelectionTests`, `MoscowCourtOptionTests`, `CourtDirectoryTests`, `DistrictResolverTests`, `MagistrateTests` |
+| URL, запросы и HTML обычных судов `*.sudrf.ru` | `Sources/SudrfKit/SudrfClient.swift`, `SudrfURLBuilder.swift` | `ResultsParser.swift`, `CaseCardParser.swift`, `HTMLTextExtractor.swift`, `SearchPageClassifier.swift`, `SearchPatternDirectory.swift`, `WorkingVariantStore.swift` | `URLBuilderTests`, `ResultsParserTests`, `CaseCardParserTests`, `SearchPageClassifierTests`, `SearchPatternTests`, `WorkingVariantStoreTests` |
+| Мировые судьи, ВС РФ или Мосгорсуд | `Sources/SudrfKit/MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud.swift`, `MosGorSudMovement.swift`, `MosGorSudParsers.swift`, `MosGorSudCourtDirectory.swift`; общий транспорт ВС РФ и Мосгорсуда — `HTMLCourtTransport.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests`, `HTMLCourtTransportTests` |
+| Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
 | Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests` |
-| Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift` | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests` |
-| Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebView.swift`, `RefreshCenter.swift` | `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
-| Текст судебного акта и AI-резюме | `Sources/SudrfApp/AppModel.swift` (`loadSelectedActSummary`, `generateSelectedActSummary`) | `AISummaryCoordinator.swift`, `AIProviders.swift`, `AISettings.swift`, `AppleAISummarizers.swift`, `Sources/SudrfKit/ActDocument.swift`, `ActSummary.swift` | `ActDocumentTests`, `ActSummaryTests`, `AISummaryPipelineTests`, `CorrectivePassTests` |
-| Spotlight, deep links, App Intents | `Sources/SudrfApp/SpotlightIntegration.swift`, `AppIntentsIntegration.swift` | `DataCatalog.swift`, `AppModel.swift` (`handleDeepLink`) | `SpotlightIntegrationTests`, `CurrentEntityActivityTests` |
+| Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
+| Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebViewCoordinator.swift`, `RefreshCenter.swift` | `CaptchaWebView.swift`, `CaptchaAssistSheet.swift`, `CaptchaFlowDecisions.swift`, `CaptchaSolverFactory.swift`, `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
+| Текст судебного акта и AI-резюме | `Sources/SudrfApp/AppModel.swift` (`loadSelectedActSummary`, `generateSelectedActSummary`) | `SummaryOperationState.swift`, `AISummaryCoordinator.swift`, `AIProviders.swift`, `AISettings.swift`, `AppleAISummarizers.swift`, `Sources/SudrfKit/ActDocument.swift`, `ActSummary.swift` | `ActDocumentTests`, `ActSummaryTests`, `AISummaryPipelineTests`, `CorrectivePassTests` |
+| Spotlight, deep links, App Intents | `Sources/SudrfApp/SpotlightIntegration.swift`, `AppIntentsIntegration.swift` | `DataCatalog.swift`, `CurrentEntityActivityFactory.swift`, `AppModel.swift` (`handleDeepLink`) | `SpotlightIntegrationTests`, `CurrentEntityActivityTests` |
 | CLI или справочники судов | `Sources/sudrf-cli/SudrfCLI.swift` | `Sources/SudrfKit/CourtDirectory.swift`, `DistrictCourtResolver.swift`, `Cartoteka.swift`, `CaseIndexClassifier.swift` | `CourtDirectoryTests`, `DistrictResolverTests`, `CartotekaRegistryTests`, `CaseIndexClassifierTests` |
 
 Имена тестов в таблице совпадают с классами `XCTestCase`; файлы находятся в
@@ -92,6 +92,11 @@
   `RefreshCenterTests` и `MovementCachePolicyTests`.
 - `SudrfClient`, `MovementService`, `VSRFClient` и резолверы используют actor
   isolation. Не обходите их троттлинг отдельными `URLSession` в UI-слое.
+- Троттлинг и повторы ВС РФ и Мосгорсуда вынесены в `HTMLCourtTransport`, но
+  политики у них разные: Мосгорсуд декодирует только UTF-8 и отсчитывает паузу
+  от старта предыдущего запроса, ВС РФ допускает cp1251-фолбэк и резервирует
+  слот очереди до первого `await`. `SudrfClient` этот транспорт намеренно не
+  использует: у него cp1251, CAPTCHA, вариант хоста и отдельный HTTP-фолбэк.
 - HTML судов — нестабильный внешний контракт. Новый вариант страницы должен
   сопровождаться классификатором/парсером и фикстурным регрессионным тестом.
 - Миграции и резервное копирование SwiftData выполняются до создания рабочего
@@ -103,13 +108,21 @@
 
 ## Владение кодом
 
-- `AppModel.swift` — оркестрация и состояние приложения. Новые парсеры,
-  алгоритмы и независимые модели следует помещать в профильные файлы, а не
-  увеличивать `AppRouter`.
+- `AppModel.swift` — оркестрация и состояние приложения (`AppRouter`). Новые
+  парсеры, алгоритмы и независимые модели следует помещать в профильные файлы,
+  а не увеличивать `AppRouter`. Уже вынесены: типы представления разделов
+  мониторинга — в `MonitoringModels.swift`, состояние операции резюме — в
+  `SummaryOperationState.swift`, контекст onscreen awareness — в
+  `CurrentEntityActivityFactory.swift`.
 - `Movement.swift` — доменные модели и сетевой агрегатор движения. UI-проекции
-  находятся в `Sources/SudrfApp/MovementDerivation.swift`.
-- `CaptchaWebView.swift` — мост ручной CAPTCHA и WebKit. Распознавание живёт в
-  `CaptchaSolver`, извлечение изображения и токена — в `SudrfKit`.
+  находятся в `Sources/SudrfApp/MovementDerivation.swift`, а построение целей
+  обжалования — в `Sources/SudrfKit/MovementTargetBuilder.swift`.
+- Ручная CAPTCHA разложена по ответственности: `CaptchaWebViewCoordinator.swift`
+  — мост к WebKit и state-машина попыток, `CaptchaWebView.swift` — тонкая
+  `NSViewRepresentable`-обёртка, `CaptchaAssistSheet.swift` — лист ввода кода,
+  `CaptchaFlowDecisions.swift` — чистые решения потока (их и покрывают тесты).
+  Распознавание живёт в `CaptchaSolver` и собирается через
+  `CaptchaSolverFactory.swift`; извлечение изображения и токена — в `SudrfKit`.
 - `TrackedStore.swift` владеет изменениями отслеживаемых записей;
   `DataCatalog.swift` — схемами, миграциями, каталогом актов и AI-резюме.
 

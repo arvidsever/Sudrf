@@ -10,10 +10,18 @@ enum CaptchaSolverFactory {
     static func make(settings: CaptchaSettings) -> CaptchaSolver {
         let configuration = settings.solverConfiguration
         var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
+        // `preprocessingProvider` — именно замыкание, а не снятое здесь значение
+        // (v0.38.4, v0.38.7): флаг читается на каждом вызове `solver.solve`,
+        // поэтому тоггл preprocess в меню «Captcha» действует сразу. Со
+        // значением он зафиксировался бы на момент сборки солвера, и меню
+        // не работало бы до перезапуска приложения.
         vision.preprocessingProvider = { [weak settings] in
             settings?.preprocessorEnabled ?? false
         }
 
+        // `CoreMLCaptchaStrategy` (v0.38.8) обслуживает только `.sudrfToken`:
+        // если модель найдена на диске, числовые captcha идут через CoreML,
+        // текстовые `.kcaptcha` остаются за Vision. Без модели — только Vision.
         let provider: any CaptchaSolvingProvider
         if let modelURL = CoreMLModelDiscovery.discoverURL(),
            let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {

@@ -78,6 +78,31 @@ public enum CartotekaRegistry {
         return hits.filter { $0.len == best }.map(\.cart)
     }
 
+    /// Восстанавливает каноническую картотеку из параметров прямой ссылки.
+    ///
+    /// В опубликованных ссылках `delo_id` не всегда каноничен: например,
+    /// карточка КСОЮ может открываться с одинаковыми `delo_id` и `new`, хотя
+    /// форма поиска использует короткий `delo_id`. Поэтому порядок намеренно
+    /// строгий: точная пара → значимый `new` → `delo_id` → индекс номера дела.
+    public static func resolve(level: CourtLevel, deloID: String, new: String?,
+                               caseNumber: String) -> Cartoteka? {
+        let candidates = sets(for: level)
+        let normalizedNew = new ?? "0"
+        if let exact = candidates.first(where: {
+            $0.deloID == deloID && $0.new == normalizedNew
+        }) {
+            return exact
+        }
+        if normalizedNew != "0",
+           let byNew = candidates.first(where: { $0.new == normalizedNew }) {
+            return byNew
+        }
+        if let byDeloID = candidates.first(where: { $0.deloID == deloID }) {
+            return byDeloID
+        }
+        return matches(caseNumber: caseNumber, level: level).first
+    }
+
     /// Соответствует ли номер дела индексам данной картотеки.
     /// Картотека без индексов считается подходящей (судить не по чему).
     public static func prefixMatches(_ c: Cartoteka, caseNumber: String) -> Bool {

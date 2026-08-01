@@ -34,7 +34,9 @@ public enum CaseCardParser {
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать карточку") }
 
         let body: Element? = doc.body() ?? doc
-        let rawText = body.map { normalize(blockText($0)) } ?? ""
+        let rawText = body.map {
+            HTMLTextExtractor.normalizedBlockText($0, style: .sudrf)
+        } ?? ""
 
         // Некоторые sudrf-серверы отвечают HTTP 200 и общей оболочкой сайта,
         // но вместо карточки кладут штатную заглушку «Информация временно
@@ -246,7 +248,7 @@ public enum CaseCardParser {
 
         var acts: [CaseActText] = []
         for (n, div) in bodies {
-            let body = normalize(blockText(div))
+            let body = HTMLTextExtractor.normalizedBlockText(div, style: .sudrf)
             guard !body.isEmpty else { continue }
             let label = labels[n] ?? "Судебный акт #\(n)"
             acts.append(CaseActText(id: "doc\(n)",
@@ -583,7 +585,7 @@ public enum CaseCardParser {
 
         var acts: [CaseActText] = []
         for (n, div) in bodies {
-            let body = normalize(blockText(div))
+            let body = HTMLTextExtractor.normalizedBlockText(div, style: .sudrf)
             guard !body.isEmpty else { continue }
             let label = labels[n] ?? "Судебный акт #\(n)"
             acts.append(CaseActText(id: "doc\(n)",
@@ -601,55 +603,6 @@ public enum CaseCardParser {
               open < close else { return "" }
         let inner = label[label.index(after: open)..<close]
         return inner.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Извлечение текста с сохранением абзацев
-
-    private static let blockTags: Set<String> = [
-        "p", "div", "tr", "td", "th", "li", "table", "section", "article", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-    ]
-
-    private static func blockText(_ element: Element) -> String {
-        var out = ""
-        appendText(of: element, to: &out)
-        return out
-    }
-
-    private static func appendText(of node: Node, to out: inout String) {
-        for child in node.getChildNodes() {
-            if let text = child as? TextNode {
-                out += text.getWholeText()
-            } else if let el = child as? Element {
-                let tag = el.tagName().lowercased()
-                if tag == "br" { out += "\n"; continue }
-                if tag == "script" || tag == "style" { continue }
-                let isBlock = blockTags.contains(tag)
-                if isBlock && !out.hasSuffix("\n") { out += "\n" }
-                appendText(of: el, to: &out)
-                if isBlock && !out.hasSuffix("\n") { out += "\n" }
-            }
-        }
-    }
-
-    /// Схлопывает пробелы внутри строк и серии пустых строк, сохраняя абзацы.
-    private static func normalize(_ text: String) -> String {
-        let lines = text
-            .components(separatedBy: .newlines)
-            .map {
-                $0.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                  .trimmingCharacters(in: .whitespaces)
-            }
-        var result: [String] = []
-        for line in lines {
-            if line.isEmpty {
-                if let last = result.last, !last.isEmpty { result.append("") }
-            } else {
-                result.append(line)
-            }
-        }
-        return result.joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Регэксп-хелпер

@@ -1,6 +1,5 @@
 import XCTest
 import SudrfKit
-@testable import SudrfApp
 
 final class KoAPMovementTargetTests: XCTestCase {
     private func cart(_ level: CourtLevel, _ id: String) throws -> Cartoteka {

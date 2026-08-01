@@ -20,12 +20,7 @@ import Foundation
 
 public actor VSRFClient {
 
-    private let session: URLSession
-    private let userAgent: String
-    private let minInterval: TimeInterval
-    /// Хвост зарезервированной очереди запросов. Резервация выполняется до
-    /// `await`, поэтому несколько параллельных поисков не просыпаются разом.
-    private var nextAllowedAt: Date?
+    private let transport: HTMLCourtTransport
     public var maxAttempts = 3
 
     public init(minInterval: TimeInterval = 1.5,
@@ -38,18 +33,19 @@ public actor VSRFClient {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.timeoutIntervalForRequest = 30
         let delegate: (any URLSessionDelegate)? = trustVSRFCertificate ? VSRFTLSDelegate() : nil
-        self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        self.userAgent = userAgent
-        self.minInterval = minInterval
+        self.transport = HTMLCourtTransport(
+            session: URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil),
+            userAgent: userAgent, minInterval: minInterval,
+            decodingPolicy: .utf8ThenWindows1251, throttleSemantics: .reserveSlots)
     }
 
     /// Внутренний init для тестов с URLProtocol-stub'ом.
     internal init(session: URLSession,
                   minInterval: TimeInterval = 1.5,
                   userAgent: String = "SudrfKitTests") {
-        self.session = session
-        self.userAgent = userAgent
-        self.minInterval = minInterval
+        self.transport = HTMLCourtTransport(
+            session: session, userAgent: userAgent, minInterval: minInterval,
+            decodingPolicy: .utf8ThenWindows1251, throttleSemantics: .reserveSlots)
     }
 
     // MARK: - Карточка
@@ -116,45 +112,7 @@ public actor VSRFClient {
     // MARK: - сеть
 
     private func fetchUTF8(_ url: URL) async throws -> String {
-        var lastError: Error = SudrfError.http(status: 0)
-        for attempt in 0..<max(1, maxAttempts) {
-            try await throttle()
-            var req = URLRequest(url: url)
-            req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-            req.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-            do {
-                let (data, response) = try await session.data(for: req)
-                let http = response as? HTTPURLResponse
-                if let http, (500..<600).contains(http.statusCode) {
-                    lastError = SudrfError.http(status: http.statusCode)
-                    try await backoff(attempt); continue
-                }
-                if let http, !(200..<300).contains(http.statusCode) {
-                    throw SudrfError.http(status: http.statusCode)
-                }
-                if let s = String(data: data, encoding: .utf8) { return s }
-                if let s = Cyrillic1251.decode(data) { return s }   // на всякий случай
-                throw SudrfError.decodingFailed
-            } catch let e as URLError {
-                lastError = e
-                try await backoff(attempt); continue
-            }
-        }
-        throw lastError
-    }
-
-    private func backoff(_ attempt: Int) async throws {
-        try await Task.sleep(nanoseconds: UInt64(Double(attempt + 1) * 0.8 * 1_000_000_000))
-    }
-    private func throttle() async throws {
-        let now = Date()
-        let slot = max(now, nextAllowedAt ?? now)
-        nextAllowedAt = slot.addingTimeInterval(minInterval)
-        let wait = slot.timeIntervalSince(now)
-        if wait > 0 {
-            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-        }
+        try await transport.fetch(url, maxAttempts: maxAttempts)
     }
 }
 

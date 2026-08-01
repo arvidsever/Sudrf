@@ -1,17 +1,16 @@
 import Foundation
-import SudrfKit
 
 /// Единый источник целей движения для живого поиска и сохранённых контекстов.
 /// Уровень якоря важнее уровня суда: апелляционная карточка суда субъекта не
 /// должна повторно рассматриваться как первая инстанция этого суда.
-enum MovementTargetBuilder {
+public enum MovementTargetBuilder {
     /// Точные цели, когда одной пары «звено + суффикс картотеки» недостаточно.
     /// Для КоАП учитываются три картотеки суда субъекта и происхождение УИД.
-    static func targets(branch: CourtBranch, courtLevel: CourtLevel,
-                        baseCartoteka: Cartoteka, caseNumber: String,
-                        judicialUID: String?, courtTitle: String,
-                        courtCode: String?, region: String, displayDomain: String,
-                        districtCourts: [(domain: String, title: String)] = [])
+    public static func targets(branch: CourtBranch, courtLevel: CourtLevel,
+                               baseCartoteka: Cartoteka, caseNumber: String,
+                               judicialUID: String?, courtTitle: String,
+                               courtCode: String?, region: String, displayDomain: String,
+                               districtCourts: [(domain: String, title: String)] = [])
         -> [MovementSearchTarget]? {
         guard branch == .general else { return nil }
         if baseCartoteka.id.hasPrefix("adm") {
@@ -27,10 +26,12 @@ enum MovementTargetBuilder {
             courtCode: courtCode, region: region, districtCourts: districtCourts)
     }
 
-    static func higherDomains(branch: CourtBranch, courtLevel: CourtLevel,
-                              baseInstanceLevel: CaseInstance.Level,
-                              courtTitle: String, courtCode: String?,
-                              region: String, displayDomain: String) -> [String] {
+    /// Домены судов для обычного поиска по УИД. Вызывающая сторона при
+    /// необходимости разворачивает sudrf-домен в дефисный и точечный варианты.
+    public static func higherDomains(branch: CourtBranch, courtLevel: CourtLevel,
+                                     baseInstanceLevel: CaseInstance.Level,
+                                     courtTitle: String, courtCode: String?,
+                                     region: String, displayDomain: String) -> [String] {
         guard baseInstanceLevel != .cassation else { return [] }
         guard branch == .general else {
             if baseInstanceLevel == .appeal {

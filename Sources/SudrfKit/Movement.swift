@@ -391,8 +391,8 @@ public actor MovementService: MovementProviding {
                 // Базовый круг и уже добавленные — пропускаем (№ может идти с
                 // дописками «… ~ М-…», поэтому сравнение префиксом).
                 if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
-                if instances.contains(where: { $0.domain == court.domain
-                                            && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
+                if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
+                                         usingCanonicalHost: false) { continue }
                 guard let card = try? await fetchCard(row: r, court: court,
                                                       cartoteka: cartoteka) else { continue }
                 var roundActID: String? = nil
@@ -430,8 +430,8 @@ public actor MovementService: MovementProviding {
                                                  field: .uid, value: uid)) ?? []
             for r in rows {
                 guard Self.hasCardAccess(r) else { continue }
-                if instances.contains(where: { $0.domain == court.domain
-                                            && Self.sameCaseNumber($0.caseNumber, r.caseNumber) }) { continue }
+                if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
+                                         usingCanonicalHost: false) { continue }
                 guard let card = try? await fetchCard(row: r, court: court,
                                                       cartoteka: mCart) else { continue }
                 var matActID: String? = nil
@@ -533,14 +533,8 @@ public actor MovementService: MovementProviding {
                         // и оба успешно отдают один и тот же круг — без dedup
                         // инстанция и акт дублируются. Сравниваем по каноническому
                         // `moduleHost` (одинаков для обеих форм) + номеру дела.
-                        if instances.contains(where: {
-                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(entry.inst.domain)
-                            && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
-                        }) { continue }
-                        if let a = entry.act, let b = entry.body {
-                            acts.append(a); actBodies[a.id] = b
-                        }
-                        instances.append(entry.inst)
+                        _ = Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                             to: &instances, acts: &acts, actBodies: &actBodies)
                     }
                     break   // записи апелляции найдены в этой картотеке — к следующему суду
                 } catch SudrfError.captchaRequired(let formURL) {
@@ -558,41 +552,31 @@ public actor MovementService: MovementProviding {
                         // содержать несколько кругов одного вышестоящего суда; пропускаем
                         // только реальный дубль. `MovementService` — actor, fetch-цикл
                         // последовательный, гонок нет.
-                        if let n = kc.caseNumber, instances.contains(where: {
-                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
-                            && Self.sameCaseNumber($0.caseNumber, n)
-                        }) { rescued = true; continue }
+                        if let n = kc.caseNumber,
+                           Self.containsInstance(instances, domain: kc.domain, caseNumber: n,
+                                                 usingCanonicalHost: true) {
+                            rescued = true
+                            continue
+                        }
                         guard let entry = await instanceFromKnownCard(kc) else { continue }
                         // A14: после fetch — финальная проверка против параллельных
                         // rescue (на случай, если fetched-круг совпадает с уже
                         // добавленным от предыдущего `kc`/`target`).
-                        if instances.contains(where: {
-                            SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
-                            && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
-                        }) { rescued = true; continue }
-                        if let a = entry.act, let b = entry.body {
-                            acts.append(a); actBodies[a.id] = b
+                        guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                               to: &instances, acts: &acts, actBodies: &actBodies)
+                        else {
+                            rescued = true
+                            continue
                         }
-                        instances.append(entry.inst)
                         rescued = true
                     }
-                    if !rescued, !instances.contains(where: {
+                    if !rescued {
                         // A14: captcha-stub проверяется по каноническому moduleHost,
                         // не по сырому домену — иначе dash+dot формы вышестоящего суда
                         // (развёрнутые `expandedHigherDomains`) дали бы две заглушки.
-                        SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)
-                    }) {
-                        instances.append(CaseInstance(
-                            level: instLevel,
-                            court: higherCourt.title,
-                            caseNumber: "—",
-                            judge: nil,
-                            domain: domain,
-                            foundByUID: false,
-                            result: nil,
-                            sessions: [],
-                            actID: nil,
-                            captchaFormURL: formURL))
+                        Self.appendHigherCourtStub(to: &instances, level: instLevel,
+                                                   courtTitle: higherCourt.title, domain: domain,
+                                                   captchaFormURL: formURL)
                     }
                     break
                 }
@@ -607,22 +591,9 @@ public actor MovementService: MovementProviding {
                     // в instances, идёт в персист, UI показывает плашку «нет
                     // связи» + retry (если onRefresh != nil).
                     let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
-                    if !instances.contains(where: {
-                        SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)
-                    }) {
-                        instances.append(CaseInstance(
-                            level: instLevel,
-                            court: higherCourt.title,
-                            caseNumber: "—",
-                            judge: nil,
-                            domain: domain,
-                            foundByUID: false,
-                            result: nil,
-                            sessions: [],
-                            actID: nil,
-                            captchaFormURL: nil,
-                            transientError: true))
-                    }
+                    Self.appendHigherCourtStub(to: &instances, level: instLevel,
+                                               courtTitle: higherCourt.title, domain: domain,
+                                               transientError: true)
                     break
                 }
                 catch {
@@ -642,19 +613,13 @@ public actor MovementService: MovementProviding {
         for kc in knownCards {
             // A14: дедуп по каноническому moduleHost — иначе `expandedHigherDomains`
             // (dash+dot) приведёт к дублю инстанции при доборе.
-            if let n = kc.caseNumber, instances.contains(where: {
-                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
-                && Self.sameCaseNumber($0.caseNumber, n)
-            }) { continue }
+            if let n = kc.caseNumber,
+               Self.containsInstance(instances, domain: kc.domain, caseNumber: n,
+                                     usingCanonicalHost: true) { continue }
             guard let entry = await instanceFromKnownCard(kc) else { continue }
-            if instances.contains(where: {
-                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(kc.domain)
-                && Self.sameCaseNumber($0.caseNumber, entry.inst.caseNumber)
-            }) { continue }
-            if let a = entry.act, let b = entry.body {
-                acts.append(a); actBodies[a.id] = b
-            }
-            instances.append(entry.inst)
+            guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                   to: &instances, acts: &acts, actBodies: &actBodies)
+            else { continue }
         }
 
         // 3. Вторая кассация — Верховный Суд РФ (vsrf.ru, отдельная платформа).
@@ -725,6 +690,54 @@ public actor MovementService: MovementProviding {
                                 result: card.result, sessions: card.sessions,
                                 actID: act?.id)
         return (inst, act, body)
+    }
+
+    /// Проверяет дубль инстанции. Для вышестоящих судов сравнение по
+    /// `moduleHost` намеренно объединяет dash- и dot-формы домена; для кругов
+    /// домашнего суда сохраняется прежнее точное сравнение домена.
+    private static func containsInstance(_ instances: [CaseInstance], domain: String,
+                                         caseNumber: String? = nil,
+                                         usingCanonicalHost: Bool) -> Bool {
+        instances.contains { instance in
+            let sameDomain = usingCanonicalHost
+                ? SudrfHost.moduleHost(instance.domain) == SudrfHost.moduleHost(domain)
+                : instance.domain == domain
+            guard sameDomain else { return false }
+            return caseNumber.map { Self.sameCaseNumber(instance.caseNumber, $0) } ?? true
+        }
+    }
+
+    /// Добавляет найденную инстанцию вместе с актом ровно один раз. Важный
+    /// контракт: акт и тело добавляются только вместе и только если сама
+    /// инстанция не оказалась дублем по каноническому хосту и номеру дела.
+    @discardableResult
+    private static func appendIfNew(_ instance: CaseInstance, act: CaseAct?, body: String?,
+                                    to instances: inout [CaseInstance], acts: inout [CaseAct],
+                                    actBodies: inout [String: String]) -> Bool {
+        guard !containsInstance(instances, domain: instance.domain,
+                                caseNumber: instance.caseNumber, usingCanonicalHost: true)
+        else { return false }
+        if let act, let body {
+            acts.append(act)
+            actBodies[act.id] = body
+        }
+        instances.append(instance)
+        return true
+    }
+
+    /// Создаёт не более одной заглушки на канонический хост. Captcha- и
+    /// transient-заглушки различаются только соответствующими полями
+    /// `CaseInstance`; это важно для последующего `MovementCachePolicy.merge`.
+    private static func appendHigherCourtStub(to instances: inout [CaseInstance],
+                                              level: CaseInstance.Level, courtTitle: String,
+                                              domain: String, captchaFormURL: URL? = nil,
+                                              transientError: Bool? = nil) {
+        guard !containsInstance(instances, domain: domain, usingCanonicalHost: true) else { return }
+        instances.append(CaseInstance(level: level, court: courtTitle, caseNumber: "—",
+                                      judge: nil, domain: domain, foundByUID: false,
+                                      result: nil, sessions: [], actID: nil,
+                                      captchaFormURL: captchaFormURL,
+                                      transientError: transientError))
     }
 }
 

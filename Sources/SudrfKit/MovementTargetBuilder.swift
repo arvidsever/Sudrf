@@ -21,7 +21,7 @@ public enum MovementTargetBuilder {
                 districtCourts: districtCourts)
         }
         guard courtLevel == .magistrate else { return nil }
-        return magistrateTargetsLegacy(
+        return magistrateTargets(
             baseCartoteka: baseCartoteka, caseNumber: caseNumber,
             courtCode: courtCode, region: region, districtCourts: districtCourts)
     }
@@ -93,17 +93,10 @@ public enum MovementTargetBuilder {
         return domains
     }
 
-    static func magistrateTargets(baseCartoteka: Cartoteka, caseNumber: String,
-                                  courtCode: String?, region: String,
-                                  districtCourts: [(domain: String, title: String)])
-        -> [MovementSearchTarget]? {
-        targets(branch: .general, courtLevel: .magistrate,
-                baseCartoteka: baseCartoteka, caseNumber: caseNumber,
-                judicialUID: courtCode, courtTitle: "", courtCode: courtCode,
-                region: region, displayDomain: "", districtCourts: districtCourts)
-    }
-
-    private static func magistrateTargetsLegacy(
+    /// Не-КоАП цели мирового участка: районная апелляция, КСОЮ до 2026 и
+    /// президиум суда субъекта с 2026. Суффикс картотеки зависит от отрасли,
+    /// поэтому КАС отделяется от гражданского по индексу «2а».
+    private static func magistrateTargets(
         baseCartoteka: Cartoteka, caseNumber: String,
         courtCode: String?, region: String,
         districtCourts: [(domain: String, title: String)])

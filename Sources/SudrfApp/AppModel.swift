@@ -1107,8 +1107,18 @@ final class AppRouter: ObservableObject {
 
         for rec in recs {
             let snap = rec.snapshot
-            let stage = snap.map { CaseStageKind(rawValue: $0.stageRaw) ?? .first } ?? .first
-            cs.append(makeTrackedCase(rec: rec, snap: snap, stage: stage))
+            let presentation: CaseLifecyclePresentation?
+            if let snap, let movement = rec.movement {
+                presentation = MovementDerivation.lifecyclePresentation(
+                    from: movement, snapshot: snap, context: rec.context, today: today)
+            } else {
+                presentation = nil
+            }
+            let stage = presentation?.stage
+                ?? snap.map { CaseStageKind(rawValue: $0.stageRaw) ?? .first }
+                ?? .first
+            cs.append(makeTrackedCase(rec: rec, snap: snap, stage: stage,
+                                      presentation: presentation))
 
             guard let snap else { continue }
 
@@ -1208,7 +1218,8 @@ final class AppRouter: ObservableObject {
     }
 
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
-                                 stage: CaseStageKind) -> TrackedCase {
+                                 stage: CaseStageKind,
+                                 presentation: CaseLifecyclePresentation? = nil) -> TrackedCase {
         let isNew = rec.seenAt == nil
         let today = DateUtil.today
         let production = productionType(for: rec)
@@ -1219,20 +1230,25 @@ final class AppRouter: ObservableObject {
             let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
                 .first.flatMap(\.date)
             let nextDeadline = snap.deadlines.map(\.date).filter { $0 >= today }.min()
-            let next = [nextHearing, nextDeadline].compactMap { $0 }.min()
+            let next = stage == .done
+                ? nil : [nextHearing, nextDeadline].compactMap { $0 }.min()
             return TrackedCase(
                 recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
-                stage: stage, stageTag: snap.stageTag, subject: snap.category ?? "—",
+                stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,
+                subject: snap.category ?? "—",
                 court: rec.courtTitle, production: production,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 leadCharges: snap.leadCharges,
                 secondPartyLine: snap.secondPartyLine,
-                statusText: snap.statusText,
-                statusChip: Palette.Chip(rawValue: snap.statusChipRaw) ?? .gray,
-                last: snap.lastEvent, next: snap.nextEvent,
-                nextChip: Palette.Chip(rawValue: snap.nextChipRaw) ?? .gray,
-                isNew: isNew, steps: makeSteps(snap.steps), newDot: isNew,
+                statusText: presentation?.statusText ?? snap.statusText,
+                statusChip: presentation?.statusChip
+                    ?? Palette.Chip(rawValue: snap.statusChipRaw) ?? .gray,
+                last: snap.lastEvent, next: presentation?.nextEvent ?? snap.nextEvent,
+                nextChip: presentation?.nextChip
+                    ?? Palette.Chip(rawValue: snap.nextChipRaw) ?? .gray,
+                isNew: isNew,
+                steps: makeSteps(presentation?.steps ?? snap.steps), newDot: isNew,
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next)
         }
         // Снимок ещё не собран (трек до загрузки движения).

@@ -395,4 +395,26 @@ final class RefreshCenterTests: XCTestCase {
                        "неудачная попытка не должна выглядеть успешным обновлением")
         XCTAssertNotNil(center.lastErrors[key])
     }
+
+    func testHigherCourtCaptchaStubDoesNotPersistCassationStage() async throws {
+        let key = store.all()[0].key
+        var movement = successMV!
+        movement.instances.append(CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "—", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: false, result: nil, sessions: [],
+            captchaFormURL: URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")))
+        let service = FixedMovement(movement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        _ = await center.refresh(key: key)?.value
+
+        let record = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.first.rawValue)
+        XCTAssertEqual(record.snapshot?.steps, ["active", "todo", "todo"])
+        XCTAssertFalse(record.movement?.instances.contains {
+            $0.captchaFormURL != nil
+        } ?? true)
+    }
 }

@@ -65,6 +65,19 @@ struct CaseSnapshot: Codable, Equatable {
     var actsFingerprint: [String]?
 }
 
+/// Динамическая часть снимка. Пересчитывается и при сетевом обновлении, и при
+/// обычном `AppRouter.reload`, чтобы наступление подтверждённого срока меняло
+/// стадию без записи нового формата в SwiftData.
+struct CaseLifecyclePresentation {
+    var stage: CaseStageKind
+    var stageTag: String
+    var statusText: String
+    var statusChip: Palette.Chip
+    var nextEvent: String
+    var nextChip: Palette.Chip
+    var steps: [String]
+}
+
 // MARK: - Движок
 
 enum MovementDerivation {
@@ -90,17 +103,13 @@ enum MovementDerivation {
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
                       < (DateUtil.parse($1.dateRaw) ?? .distantPast) }
 
-        // Какие звенья присутствуют.
-        let hasFirst     = mv.instances.contains { $0.level == .first }
-        let hasAppeal    = mv.instances.contains { $0.level == .appeal }
-        let hasCassation = mv.instances.contains { $0.level == .cassation || $0.level == .vsCassation }
-        let present = [hasFirst, hasAppeal, hasCassation]
-        let highestIdx = present.lastIndex(of: true) ?? 0
-
-        // Стадия / ярлык.
-        let stage: CaseStageKind = mv.inForce ? .done
-            : (hasCassation ? .cassation : hasAppeal ? .appeal : .first)
-        let stageTag = self.stageTag(stage: stage, prefix: prefix)
+        // Для стадии и сроков учитываются только реальные производства. Stub
+        // нужен карточке для CAPTCHA/retry, но не доказывает наличие жалобы.
+        let realInstances = CaseLifecycleResolver.realInstances(in: mv)
+        let hasAppeal = realInstances.contains { $0.level == .appeal }
+        let hasCassation = realInstances.contains {
+            $0.level == .cassation || $0.level == .vsCassation || $0.level == .supervisory
+        }
 
         // Стороны (короткая строка + статьи ведущего лица + вторая строка «Списком»).
         let partiesShort = self.partiesShort(mv.parties)
@@ -111,41 +120,15 @@ enum MovementDerivation {
         let deadlines = self.deadlines(from: mv, sessions: sessions, prefix: prefix,
                                        hasAppeal: hasAppeal, hasCassation: hasCassation,
                                        today: today)
-        let nextHearing = futureHearings(sessions, today: today).first
+        let presentation = lifecyclePresentation(from: mv, sessions: sessions,
+                                                 deadlines: deadlines, context: context,
+                                                 today: today)
         // Порядок `acts` не должен сам по себе создавать ложное уведомление.
         // Тело акта намеренно не включаем: для факта новой публикации достаточно
         // стабильных публичных метаданных, а снимок остаётся компактным.
         let actsFingerprint = mv.acts.map {
             "\($0.id)|\($0.date)|\($0.title)|\($0.courtShort)|\($0.instanceLevel.rawValue)"
         }.sorted()
-
-        // «Дальше» + цвет.
-        var nextEvent = "—"
-        var nextChip: Palette.Chip = .gray
-        if let h = nextHearing, let d = DateUtil.parse(h.dateRaw) {
-            nextEvent = "заседание \(DateUtil.shortDM(d))" + (h.time.map { ", \($0)" } ?? "")
-            nextChip = .blue
-        } else if let dl = deadlines.sorted(by: { $0.dateRef < $1.dateRef }).first {
-            nextEvent = "срок \(dl.kind == "cassation" ? "кассации" : "апелляции"): \(DateUtil.shortDM(dl.date))"
-            nextChip = dl.statusRaw == "confirmed" ? .confirmed : .proposed
-        } else if mv.inForce {
-            nextEvent = "завершено"; nextChip = .gray
-        }
-
-        // Статус.
-        var statusText: String
-        var statusChip: Palette.Chip
-        if mv.inForce {
-            statusText = "Вступило в силу"; statusChip = .green
-        } else if nextHearing != nil {
-            statusText = "Назначено заседание"; statusChip = .blue
-        } else if let r = mv.instances.last(where: { $0.level != .material })?.result, !r.isEmpty {
-            statusText = r; statusChip = .gray
-        } else if let last = sessions.last {
-            statusText = last.event; statusChip = .blue
-        } else {
-            statusText = "В производстве"; statusChip = .blue
-        }
 
         // «Последнее событие».
         let lastEvent: String
@@ -155,27 +138,93 @@ enum MovementDerivation {
             lastEvent = "нет данных о движении"
         }
 
-        // Шаги (точки стадий).
-        var steps: [String] = []
-        for i in 0..<3 {
-            if mv.inForce {
-                steps.append(present[i] ? "done" : "todo")
-            } else if present[i] {
-                steps.append(i == highestIdx ? "active" : "done")
-            } else {
-                steps.append("todo")
-            }
-        }
-
         return CaseSnapshot(
             uid: mv.uid, inForce: mv.inForce, category: mv.category,
             partiesShort: partiesShort, leadCharges: leadCharges,
             secondPartyLine: secondPartyLine,
-            stageRaw: stage.rawValue, stageTag: stageTag,
-            statusText: statusText, statusChipRaw: statusChip.rawValue,
-            lastEvent: lastEvent, nextEvent: nextEvent, nextChipRaw: nextChip.rawValue,
-            steps: steps, sessions: sessions, deadlines: deadlines,
+            stageRaw: presentation.stage.rawValue, stageTag: presentation.stageTag,
+            statusText: presentation.statusText,
+            statusChipRaw: presentation.statusChip.rawValue,
+            lastEvent: lastEvent, nextEvent: presentation.nextEvent,
+            nextChipRaw: presentation.nextChip.rawValue,
+            steps: presentation.steps, sessions: sessions, deadlines: deadlines,
             actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint)
+    }
+
+    /// Пересчёт представляемой стадии по сохранённому движению и снимку. Поля
+    /// `CaseSnapshot` остаются обратно совместимыми и служат fallback, если
+    /// полного движения у старой записи нет.
+    static func lifecyclePresentation(from mv: CaseMovement, snapshot: CaseSnapshot,
+                                      context: MovementContext?,
+                                      today: Date = DateUtil.today) -> CaseLifecyclePresentation {
+        lifecyclePresentation(from: mv, sessions: snapshot.sessions,
+                              deadlines: snapshot.deadlines, context: context, today: today)
+    }
+
+    private static func lifecyclePresentation(from mv: CaseMovement,
+                                              sessions: [StoredSession],
+                                              deadlines: [StoredDeadline],
+                                              context: MovementContext?,
+                                              today: Date) -> CaseLifecyclePresentation {
+        let resolution = CaseLifecycleResolver.resolve(movement: mv, deadlines: deadlines,
+                                                       today: today)
+        let prefix = context.map {
+            String($0.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
+        } ?? ""
+        let nextHearing = futureHearings(
+            sessions.filter { $0.level != .material }, today: today).first
+
+        var nextEvent = "—"
+        var nextChip: Palette.Chip = .gray
+        if resolution.isCompleted {
+            nextEvent = "завершено"
+        } else if let hearing = nextHearing, let date = hearing.date {
+            nextEvent = "заседание \(DateUtil.shortDM(date))"
+                + (hearing.time.map { ", \($0)" } ?? "")
+            nextChip = .blue
+        } else if let deadline = deadlines.sorted(by: { $0.dateRef < $1.dateRef }).first {
+            nextEvent = "срок \(deadline.kind == "cassation" ? "кассации" : "апелляции"): "
+                + DateUtil.shortDM(deadline.date)
+            nextChip = deadline.statusRaw == DeadlineStatus.confirmed.rawValue
+                ? .confirmed : .proposed
+        }
+
+        let statusText: String
+        let statusChip: Palette.Chip
+        switch resolution.completionReason {
+        case .legalForce:
+            statusText = "Вступило в силу"
+            statusChip = .green
+        case .terminalReview(let result):
+            statusText = result
+            statusChip = .green
+        case .confirmedDeadline:
+            statusText = "Срок обжалования истёк"
+            statusChip = .green
+        case nil where nextHearing != nil:
+            statusText = "Назначено заседание"
+            statusChip = .blue
+        case nil:
+            if let result = resolution.currentInstance?.result, !result.isEmpty {
+                statusText = result
+                statusChip = .gray
+            } else if let last = sessions.last(where: { $0.level != .material }) {
+                statusText = last.result ?? last.event
+                statusChip = .blue
+            } else {
+                statusText = "В производстве"
+                statusChip = .blue
+            }
+        }
+
+        return CaseLifecyclePresentation(
+            stage: resolution.stage,
+            stageTag: stageTag(stage: resolution.stage, prefix: prefix),
+            statusText: statusText,
+            statusChip: statusChip,
+            nextEvent: nextEvent,
+            nextChip: nextChip,
+            steps: resolution.steps)
     }
 
     /// Переносит в свежий снимок пользовательские правки сроков: подтверждённый

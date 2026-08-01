@@ -215,8 +215,8 @@ final class TrackedCaseRepairCoordinator {
         // он участвует в локальном UID-слиянии, но не требует даже загрузки
         // карточки. Сетевой поиск нужен только 13/13а с проверяемым родителем.
         if anchorContext.baseInstanceLevel == .material,
-           !CaseOriginResolver.requiresVerifiedParent(number: anchorContext.caseNumber,
-                                                      courtLevel: anchorContext.courtLevel) {
+           !CaseIndexClassifier.requiresVerifiedParent(caseNumber: anchorContext.caseNumber,
+                                                       courtLevel: anchorContext.courtLevel) {
             clearRetry(key: key)
             return
         }

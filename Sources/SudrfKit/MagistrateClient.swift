@@ -65,7 +65,7 @@ public enum MagistrateResultsParser {
                 cardURL: absoluteURL(href, domain: court.domain)
             ))
         }
-        return dedupe(rows)
+        return deduplicated(rows)
     }
 
     public static func pageNumbers(html: String) -> [Int] {
@@ -108,7 +108,7 @@ public enum MagistrateResultsParser {
         return v.isEmpty ? nil : v
     }
 
-    private static func dedupe(_ items: [CaseSearchResult]) -> [CaseSearchResult] {
+    static func deduplicated(_ items: [CaseSearchResult]) -> [CaseSearchResult] {
         var seen = Set<String>()
         var out: [CaseSearchResult] = []
         for r in items {
@@ -323,7 +323,7 @@ public actor MagistrateClient: CaseProviding {
             }
             rows += try MagistrateResultsParser.parse(html: html, court: court)
         }
-        return dedupe(rows)
+        return MagistrateResultsParser.deduplicated(rows)
     }
 
     public func fetchCard(court: Court, caseID: String, caseUID: String,
@@ -358,15 +358,6 @@ public actor MagistrateClient: CaseProviding {
         court.level == .magistrate || SudrfHost.isMSudrfHost(court.domain)
     }
 
-    private func dedupe(_ items: [CaseSearchResult]) -> [CaseSearchResult] {
-        var seen = Set<String>()
-        var out: [CaseSearchResult] = []
-        for r in items {
-            let key = (r.caseID ?? r.cardURL?.absoluteString ?? "") + "|" + r.caseNumber
-            if seen.insert(key).inserted { out.append(r) }
-        }
-        return out
-    }
 }
 
 public enum MagistratePageClassifier {

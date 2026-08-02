@@ -173,16 +173,21 @@ let known = CourtDirectory.court(forDomain: "https://2ap.sudrf.ru/")
   Мосгорсуда, у которых своя вёрстка.
 
 Запуск (от лучшего к простому):
-1. **Xcode-проект (рекомендуется)**: `brew install xcodegen && xcodegen`,
+1. **Xcode-проект (рекомендуется)**: `brew install xcodegen && xcodegen generate`,
    затем `open Sudrf.xcodeproj`, схема **Sudrf**, ⌘R — настоящий .app-бандл
    с Liquid Glass (конфигурация — в `project.yml`). Без XcodeGen: в Xcode
    File → New → Project → macOS App «Sudrf», удалить шаблонные файлы,
    File → Add Package Dependencies → Add Local… → эта папка (продукт SudrfKit),
    и добавить файлы из `Sources/SudrfApp` в таргет.
+
 2. **Скрипт**: `bash Scripts/make-app.sh` — соберёт и откроет
    `build/SudrfApp.app` без Xcode-проекта.
 3. `swift run SudrfApp` — быстрый запуск без бандла: macOS 26 рендерит
    такой бинарь в режиме совместимости (без части стекла).
+
+`Sudrf.xcodeproj` — ignored/generated-файл. После `git pull`, который добавил,
+удалил или переименовал Swift-файлы, обязательно снова выполните
+`xcodegen generate` до сборки в Xcode.
 
 ## Версионирование
 

@@ -24,6 +24,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
+      - name: Install XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      - name: Generate and build Xcode app target
+        run: |
+          xcodegen generate
+          xcodebuild \
+            -project Sudrf.xcodeproj \
+            -scheme Sudrf \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/SudrfDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
       - name: Build app product
         run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
 

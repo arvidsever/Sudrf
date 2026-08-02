@@ -51,6 +51,28 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(out.first?.event, "Рассмотрение жалобы")
     }
 
+    func testFutureHearingsUseNumericTimeAndExcludeTerminalSessionToday() {
+        let sessions = [
+            StoredSession(dateRaw: "01.05.2026", time: "11:00", room: nil,
+                          event: "Судебное заседание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "01.05.2026", time: "9:00", room: nil,
+                          event: "Судебное заседание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "01.05.2026", time: "10.30", room: nil,
+                          event: "Судебное заседание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "01.05.2026", time: "08:00", room: nil,
+                          event: "Судебное заседание",
+                          result: "Жалоба оставлена без удовлетворения",
+                          court: "СГС", levelRaw: "appeal"),
+        ]
+
+        let out = MovementDerivation.futureHearings(sessions, today: today)
+
+        XCTAssertEqual(out.map(\.time), ["9:00", "10.30", "11:00"])
+    }
+
     // MARK: Сроки
 
     func testAppealDeadlineProposedForCivilCase() {
@@ -107,12 +129,57 @@ final class MovementDerivationTests: XCTestCase {
     func testStageAndStepsForAppealInProgress() {
         let appeal = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
                                   judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,
-                                  result: nil, sessions: [])
+                                  result: nil, sessions: [
+                                    CaseSession(date: "20.04.2026",
+                                                event: "Регистрация производства"),
+                                  ])
         let mv = movement(sessions: [CaseSession(date: "10.04.2026", event: "Судебное заседание")],
                           instances: [appeal])
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         XCTAssertEqual(snap.stageRaw, "appeal")
         XCTAssertEqual(snap.steps, ["done", "active", "todo"])
+    }
+
+    func testUndatedHigherInstanceDoesNotOverrideDatedRound() {
+        let undatedCassation = CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-1/2026", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: true, result: nil, sessions: [])
+        let mv = movement(
+            sessions: [CaseSession(date: "20.04.2026", event: "Регистрация дела")],
+            instances: [undatedCassation])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.first.rawValue)
+        XCTAssertEqual(snap.steps, ["active", "todo", "done"])
+    }
+
+    func testAllUndatedRealInstancesUseConservativeFallback() {
+        let undatedAppeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil, sessions: [])
+        let mv = movement(sessions: [], instances: [undatedAppeal])
+
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: mv, deadlines: [], today: today)
+
+        XCTAssertEqual(resolution.stage, .appeal)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "33-1/2026")
+    }
+
+    func testUndatedHigherInstanceWithAuthoritativeResultIsNotLost() {
+        let undatedAppeal = CaseInstance(
+            level: .appeal, court: "Мосгорсуд", caseNumber: "33-1/2026", judge: nil,
+            domain: "mos-gorsud.ru", foundByUID: false,
+            result: "Жалоба оставлена без удовлетворения", sessions: [])
+        let mv = movement(
+            sessions: [CaseSession(date: "20.04.2026", event: "Решение")],
+            instances: [undatedAppeal])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.statusText, "Жалоба оставлена без удовлетворения")
     }
 
     func testCaptchaAndTransientStubsDoNotChangeStageOrDeadlines() {
@@ -181,7 +248,7 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(snap.stageRaw, "done")
         XCTAssertEqual(snap.statusText, "Вступило в силу")
-        XCTAssertEqual(snap.nextEvent, "завершено")
+        XCTAssertTrue(snap.nextEvent.hasPrefix("срок кассации:"))
     }
 
     func testTerminalCassationResultCompletesCase() {
@@ -213,6 +280,154 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(snap.stageRaw, "done")
         XCTAssertEqual(snap.statusText, cassation.result)
+    }
+
+    func testInstanceResultOverridesOlderRemandSession() {
+        let cassation = CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-3/2026", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: true,
+            result: "Жалоба оставлена без удовлетворения",
+            sessions: [
+                CaseSession(date: "10.04.2026", event: "Рассмотрено",
+                            result: "Направлено на новое апелляционное рассмотрение"),
+                CaseSession(date: "01.05.2026", event: "Опубликован результат"),
+            ])
+        let mv = movement(sessions: [CaseSession(date: "10.01.2026", event: "Решение")],
+                          instances: [cassation])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.statusText, cassation.result)
+    }
+
+    func testLaterTerminalSessionOverridesOlderRemandSession() {
+        let cassation = CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-4/2026", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [
+                CaseSession(date: "10.04.2026", event: "Рассмотрено",
+                            result: "Направлено на новое апелляционное рассмотрение"),
+                CaseSession(date: "01.05.2026", event: "Рассмотрено",
+                            result: "Жалоба оставлена без удовлетворения"),
+            ])
+        let mv = movement(sessions: [CaseSession(date: "10.01.2026", event: "Решение")],
+                          instances: [cassation])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.statusText, "Жалоба оставлена без удовлетворения")
+    }
+
+    func testLaterReactivationOverridesOldLegalForce() {
+        let mv = movement(inForce: true, sessions: [
+            CaseSession(date: "10.04.2026", event: "Решение вступило в законную силу"),
+            CaseSession(date: "20.04.2026", event: "Производство возобновлено"),
+        ])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.first.rawValue)
+        XCTAssertEqual(snap.steps, ["active", "todo", "todo"])
+        XCTAssertTrue(snap.deadlines.isEmpty,
+                      "возобновление отменяет основанный на старом вступлении в силу срок")
+    }
+
+    func testRestorationGrantedReactivatesButDenialCompletesReview() {
+        func snapshot(result: String) -> CaseSnapshot {
+            let appeal = CaseInstance(
+                level: .appeal, court: "ВС Коми", caseNumber: "33-5/2026", judge: nil,
+                domain: "vs.komi.sudrf.ru", foundByUID: true, result: result,
+                sessions: [CaseSession(date: "20.04.2026", event: "Результат рассмотрения")])
+            return MovementDerivation.snapshot(
+                from: movement(inForce: true, sessions: [
+                    CaseSession(date: "10.04.2026", event: "Решение вступило в законную силу"),
+                ], instances: [appeal]),
+                context: context(), today: today)
+        }
+
+        XCTAssertEqual(snapshot(result: "Срок обжалования восстановлен").stageRaw,
+                       CaseStageKind.appeal.rawValue)
+        let denied = snapshot(result: "Отказано в восстановлении срока обжалования")
+        XCTAssertEqual(denied.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(denied.statusText, "Отказано в восстановлении срока обжалования")
+        XCTAssertNotNil(denied.deadlines.first { $0.kind == "cassation" })
+        XCTAssertFalse(CaseLifecycleResolver.isReactivation(
+            event: "Ходатайство о восстановлении процессуального срока", result: nil))
+    }
+
+    func testDenialOfAcceptanceIsNotActiveProceeding() {
+        let appeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-6/2026", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true,
+            result: "Отказано в принятии жалобы к производству",
+            sessions: [CaseSession(date: "20.04.2026", event: "Опубликован результат")])
+        let snap = MovementDerivation.snapshot(
+            from: movement(sessions: [CaseSession(date: "10.04.2026", event: "Решение")],
+                           instances: [appeal]),
+            context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.statusText, "Отказано в принятии жалобы к производству")
+    }
+
+    func testOldFirstInstanceLegalForceDoesNotCreateDeadlineDuringActiveAppeal() {
+        let appeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-7/2026", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "20.04.2026", event: "Жалоба принята к производству")])
+        let mv = movement(inForce: true, sessions: [
+            CaseSession(date: "10.04.2026", event: "Решение вступило в законную силу"),
+        ], instances: [appeal])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
+        XCTAssertNil(snap.deadlines.first { $0.kind == "cassation" })
+    }
+
+    func testCompletedRoundDoesNotPresentEarlierHearingFromToday() {
+        let appeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-8/2026", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [
+                CaseSession(date: "01.05.2026", time: "09:00", event: "Судебное заседание"),
+                CaseSession(date: "01.05.2026", time: "11:00", event: "Результат",
+                            result: "Жалоба оставлена без удовлетворения"),
+            ])
+        let mv = movement(sessions: [CaseSession(date: "10.04.2026", event: "Решение")],
+                          instances: [appeal])
+
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.nextEvent, "завершено")
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+        XCTAssertNil(presentation.nextEventDate)
+    }
+
+    func testExpandedTerminalReviewResultsAndBareChangedWord() {
+        func snapshot(result: String) -> CaseSnapshot {
+            let appeal = CaseInstance(
+                level: .appeal, court: "ВС Коми", caseNumber: "33-2/2026", judge: nil,
+                domain: "vs.komi.sudrf.ru", foundByUID: true, result: result,
+                sessions: [CaseSession(date: "01.05.2026", event: "Опубликован результат")])
+            return MovementDerivation.snapshot(
+                from: movement(sessions: [CaseSession(date: "10.01.2026", event: "Решение")],
+                               instances: [appeal]),
+                context: context(), today: today)
+        }
+
+        XCTAssertEqual(snapshot(result: "Вынесено решение по существу").stageRaw,
+                       CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot(result: "Приговор изменён").stageRaw,
+                       CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot(result: "Изменено постановление суда").stageRaw,
+                       CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot(result: "Срок изменён").stageRaw,
+                       CaseStageKind.appeal.rawValue)
     }
 
     func testCassationRemandWithoutNewRoundReturnsToAppeal() {
@@ -259,6 +474,21 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(confirmed.completionReason, .confirmedDeadline)
         XCTAssertEqual(active.stage, .appeal)
         XCTAssertNil(active.completionReason)
+    }
+
+    func testCompletedCaseStillPresentsFutureCassationDeadline() {
+        let mv = movement(inForce: true, sessions: [
+            CaseSession(date: "20.04.2026", event: "Решение вступило в законную силу"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+
+        XCTAssertEqual(presentation.stage, .done)
+        XCTAssertEqual(presentation.statusText, "Вступило в силу")
+        XCTAssertTrue(presentation.nextEvent.hasPrefix("срок кассации:"))
+        XCTAssertEqual(presentation.nextEventDate,
+                       DateUtil.addDays(DateUtil.parse("20.04.2026")!, 90))
     }
 
     func testMaterialAndUndatedStubDoNotBecomeCurrentStage() {

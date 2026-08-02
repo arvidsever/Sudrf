@@ -1122,13 +1122,16 @@ final class AppRouter: ObservableObject {
 
             guard let snap else { continue }
 
-            // Заседания (будущие).
-            for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
-                guard let d = s.date else { continue }
-                hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
-                    caseNumber: rec.caseNumber, parties: snap.partiesShort,
-                    court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
-                    judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
+            // Завершившийся круг может всё ещё содержать состоявшееся сегодня
+            // заседание. Оно остаётся в истории, но не попадает в календарь.
+            if stage != .done {
+                for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
+                    guard let d = s.date else { continue }
+                    hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
+                        caseNumber: rec.caseNumber, parties: snap.partiesShort,
+                        court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
+                        judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
+                }
             }
             // Сроки.
             for dl in snap.deadlines {
@@ -1170,7 +1173,11 @@ final class AppRouter: ObservableObject {
             }
         }
 
-        hs.sort { ($0.date, $0.time) < ($1.date, $1.time) }
+        hs.sort {
+            if $0.date != $1.date { return $0.date < $1.date }
+            return CaseLifecycleResolver.hearingTimeKey($0.time)
+                < CaseLifecycleResolver.hearingTimeKey($1.time)
+        }
         dls.sort { $0.date < $1.date }
 
         cases = cs
@@ -1227,11 +1234,17 @@ final class AppRouter: ObservableObject {
             // Даты для сортировок: последнее состоявшееся событие и ближайшее
             // будущее (заседание или срок).
             let past = snap.sessions.compactMap(\.date).filter { $0 <= today }.max()
-            let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
-                .first.flatMap(\.date)
-            let nextDeadline = snap.deadlines.map(\.date).filter { $0 >= today }.min()
-            let next = stage == .done
-                ? nil : [nextHearing, nextDeadline].compactMap { $0 }.min()
+            let next: Date?
+            if let presentation {
+                next = presentation.nextEventDate
+            } else if stage == .done {
+                next = nil
+            } else {
+                let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
+                    .first.flatMap(\.date)
+                let nextDeadline = snap.deadlines.map(\.date).filter { $0 >= today }.min()
+                next = [nextHearing, nextDeadline].compactMap { $0 }.min()
+            }
             return TrackedCase(
                 recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
                 stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,

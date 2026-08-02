@@ -209,7 +209,9 @@ let known = CourtDirectory.court(forDomain: "https://2ap.sudrf.ru/")
 В app bundle `CFBundleShortVersionString` хранит публичную версию
 (`0.37.1`), а `CFBundleVersion` — внутренний монотонный билд (`38`, затем
 `39`, `40` и дальше). Changelog релизов называется в формате
-`changelog/changelog-v0.37.1.md`, архивы сборок — вроде
+`changelog/changelog-v0.37.01.md` — второй и третий сегменты дополняются нулём
+до двух знаков, чтобы алфавитная сортировка папки совпадала с порядком версий
+(сама версия при этом остаётся обычным semver). Архивы сборок — вроде
 `build/Sudrf-Alpha-0.37.1-build38.zip`.
 
 При каждой новой версии нужно обновить `MARKETING_VERSION` и

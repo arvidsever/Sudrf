@@ -1,6 +1,6 @@
-# v0.42.2 — структурный рефакторинг
+# v0.42.3 — структурный рефакторинг
 
-Ветки `codex/repowise-refactor` (PR #51) и `claude/adversarial-review-pr-51-tp7uer`.
+Ветки `codex/repowise-refactor` (PR #51 и #52) и `claude/adversarial-review-pr-51-tp7uer`.
 
 Функциональных изменений нет: релиз целиком про устранение дублирования и
 границы между таргетами. Сетевые маршруты, fallback-цепочки и ручной путь

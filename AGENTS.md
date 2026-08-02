@@ -8,7 +8,8 @@
 
 - **Branch drafts:** новые изменения пишутся в `Docs/branch-changelogs/<branch-slug>/vX.Y.Z.md` (папка = имя ветки, файл = прогнозируемая версия). Прогноз может не совпасть с финалом — это нормально.
 - **Не трогаем** `changelog/changelog-v*.md`, `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в `project.yml` / `Scripts/make-app.sh` пока идёт работа в feature-ветке. Версия присваивается при merge/release.
-- **Перед merge/release:** выбираем финальный номер по фактическому порядку выхода, копируем содержимое черновика в `changelog/changelog-vX.Y.Z.md`, обновляем `project.yml` и `Scripts/make-app.sh` с новой версией и следующим номером билда.
+- **Перед merge/release:** выбираем финальный номер по фактическому порядку выхода, копируем содержимое черновика в `changelog/changelog-vX.YY.ZZ.md`, обновляем `project.yml` и `Scripts/make-app.sh` с новой версией и следующим номером билда. Каждая влитая ветка получает собственный номер: отсутствие отдельной сборки — повод бампнуть версию, а не повод склеить заметки.
+- **Имена файлов в `changelog/`:** второй и третий сегменты дополняются нулём до двух знаков (`changelog-v0.04.00.md`, `changelog-v0.42.06.md`), чтобы алфавитная сортировка папки совпадала с порядком версий. Заголовок внутри файла и `MARKETING_VERSION` остаются обычным semver без ведущих нулей (`# v0.42.6`, `"0.42.6"`).
 - **После merge:** черновик из `Docs/branch-changelogs/` удаляем (или оставляем, если он полезен как handoff-документ).
 - Применяется ко всем feature-веткам с этого момента. v0.38.0–v0.38.7 (на ветке `captcha-auto-solver` до rebase) были закоммичены по старому правилу — при следующем merge их release-ноты будут retro-fitted в `changelog/changelog-v0.38.{0..7}.md` из draft в `Docs/branch-changelogs/captcha-auto-solver/v0.38.8.md` (preamble).
 

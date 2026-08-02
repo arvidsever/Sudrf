@@ -1,4 +1,6 @@
-# Alpha 0.42.2
+# v0.42.2 — карта репозитория и контекст для агентов
+
+Ветка `codex/repository-context-and-localization` (PR #50).
 
 ## Добавлено
 

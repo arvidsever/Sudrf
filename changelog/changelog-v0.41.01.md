@@ -1,5 +1,7 @@
 # v0.41.1 — onscreen activity crash hotfix
 
+Ветка `codex/fix-onscreen-activity-crash` (PR #47).
+
 ## Исправлено
 
 - Открытие отслеживаемого дела или судебного акта больше не передаёт custom URL

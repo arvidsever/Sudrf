@@ -128,7 +128,6 @@ enum MovementDerivation {
         // Для стадии и сроков учитываются только реальные производства. Stub
         // нужен карточке для CAPTCHA/retry, но не доказывает наличие жалобы.
         let realInstances = CaseLifecycleResolver.realInstances(in: mv)
-        let lifecycleSessions = sessions.filter { $0.level != .material }
         let hasAppeal = realInstances.contains { $0.level == .appeal }
         let hasCassation = realInstances.contains {
             $0.level == .cassation || $0.level == .vsCassation || $0.level == .supervisory
@@ -140,7 +139,7 @@ enum MovementDerivation {
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, sessions: lifecycleSessions, prefix: prefix,
+        let deadlines = self.deadlines(from: mv, prefix: prefix,
                                        hasAppeal: hasAppeal, hasCassation: hasCassation,
                                        today: today)
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
@@ -194,7 +193,7 @@ enum MovementDerivation {
         let prefix = context.map {
             String($0.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
         } ?? ""
-        let nextHearing = futureHearings(
+        let nextHearing = resolution.isCompleted ? nil : futureHearings(
             sessions.filter { $0.level != .material }, today: today).first
         let nextDeadline = deadlines
             .filter { $0.date >= today }
@@ -276,6 +275,19 @@ enum MovementDerivation {
         return out
     }
 
+    /// Сравнение сырого движения для фонового бейджа. Тела актов могут
+    /// отличаться только форматированием, а CAPTCHA/transient-заглушки отражают
+    /// доступность портала, не новое событие дела. Публичные метаданные актов и
+    /// остальные поля снимка отдельно проверяет `CaseSnapshot`.
+    static func hasSameRefreshSource(_ lhs: CaseMovement, _ rhs: CaseMovement) -> Bool {
+        lhs.uid == rhs.uid
+            && lhs.caseNumber == rhs.caseNumber
+            && lhs.inForce == rhs.inForce
+            && CaseLifecycleResolver.realInstances(in: lhs)
+                == CaseLifecycleResolver.realInstances(in: rhs)
+            && lhs.complaints == rhs.complaints
+    }
+
     // MARK: Заседания
 
     /// Сессии-заседания в будущем (включая сегодня), отсортированные по дате/времени.
@@ -307,12 +319,18 @@ enum MovementDerivation {
     /// переносы с выходных, восстановление и т. п. здесь не учитываются). Все
     /// расчётные сроки помечаются «proposed» и требуют подтверждения. Для КоАП и
     /// УПК единый срок кассации отсутствует — кассацию не считаем.
-    private static func deadlines(from mv: CaseMovement, sessions: [StoredSession],
+    private static func deadlines(from mv: CaseMovement,
                                   prefix: String, hasAppeal: Bool, hasCassation: Bool,
                                   today: Date) -> [StoredDeadline] {
         var out: [StoredDeadline] = []
-        let forceState = currentLegalForceState(in: sessions)
-        let legallyEffective = forceState.effective ?? mv.inForce
+        // Юридическая сила относится к текущему кругу. Старое вступление в
+        // силу первой инстанции не должно порождать срок кассации, пока более
+        // поздняя апелляция/кассация остаётся активной.
+        let current = CaseLifecycleResolver.resolve(movement: mv, deadlines: [], today: today)
+        let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
+        let activeReview = current.completionReason == nil
+            && current.currentInstance.map { isReviewLevel($0.level) } == true
+        let legallyEffective = !activeReview && (forceState.effective ?? mv.inForce)
         let currentlyReactivated = forceState.effective == false
 
         // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
@@ -369,10 +387,10 @@ enum MovementDerivation {
            let d = DateUtil.parse(withResult.date) { return d }
         return dated.max()
     }
-    private static func currentLegalForceState(in sessions: [StoredSession]) -> LegalForceState {
+    private static func currentLegalForceState(in sessions: [CaseSession]) -> LegalForceState {
         let ordered = sessions.enumerated().sorted { left, right in
-            let leftDate = left.element.date ?? .distantPast
-            let rightDate = right.element.date ?? .distantPast
+            let leftDate = DateUtil.parse(left.element.date) ?? .distantPast
+            let rightDate = DateUtil.parse(right.element.date) ?? .distantPast
             return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
         }
         var state = LegalForceState()
@@ -381,7 +399,7 @@ enum MovementDerivation {
                 event: session.event, result: session.result
             ) {
                 state.effective = true
-                state.date = session.date
+                state.date = DateUtil.parse(session.date)
             } else if CaseLifecycleResolver.isReactivation(
                 event: session.event, result: session.result
             ) {
@@ -390,6 +408,12 @@ enum MovementDerivation {
             }
         }
         return state
+    }
+    private static func isReviewLevel(_ level: CaseInstance.Level) -> Bool {
+        switch level {
+        case .appeal, .cassation, .vsCassation, .supervisory: return true
+        case .first, .material: return false
+        }
     }
     private static func lastAppealDate(_ mv: CaseMovement) -> Date? {
         mv.instances.filter { $0.level == .appeal }

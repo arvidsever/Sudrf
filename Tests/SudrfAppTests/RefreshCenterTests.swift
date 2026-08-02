@@ -418,6 +418,79 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNil(rec.seenAt, "новый результат инстанции должен вернуть бейдж")
     }
 
+    func testTransientHigherCourtStubDoesNotMarkSeenCaseAsUpdated() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let oldMovement = successMV!
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.snapshot = MovementDerivation.snapshot(from: oldMovement, context: ctx)
+        rec.movement = oldMovement
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.seenAt = seenAt
+
+        var withStub = oldMovement
+        withStub.instances.append(CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "—", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: false, result: nil, sessions: [],
+            transientError: true))
+        let service = FixedMovement(withStub)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        _ = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(rec.seenAt, seenAt,
+                       "появление transient-заглушки не является событием дела")
+    }
+
+    func testTransientHigherCourtStubDisappearanceDoesNotMarkSeenCaseAsUpdated() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        var oldMovement = successMV!
+        oldMovement.instances.append(CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "—", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: false, result: nil, sessions: [],
+            transientError: true))
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.snapshot = MovementDerivation.snapshot(from: oldMovement, context: ctx)
+        rec.movement = oldMovement
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.seenAt = seenAt
+        let service = FixedMovement(successMV)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        _ = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(rec.seenAt, seenAt,
+                       "исчезновение transient-заглушки не является событием дела")
+    }
+
+    func testActBodyFormattingChangeDoesNotMarkSeenCaseAsUpdated() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        var oldMovement = successMV!
+        oldMovement.acts = [CaseAct(id: "act-1", title: "Решение", date: "10.04.2026",
+                                    courtShort: "СГС", instanceLevel: .first)]
+        oldMovement.actBodies = ["act-1": "Иск удовлетворён."]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.snapshot = MovementDerivation.snapshot(from: oldMovement, context: ctx)
+        rec.movement = oldMovement
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.seenAt = seenAt
+
+        var reformatted = oldMovement
+        reformatted.actBodies["act-1"] = "  Иск удовлетворён.\n"
+        let service = FixedMovement(reformatted)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        _ = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(rec.seenAt, seenAt,
+                       "форматирование тела уже известного акта не должно создавать бейдж")
+    }
+
     func testUnavailableCourtDoesNotOverwriteSavedCard() async throws {
         let ctx = makeContext()
         let key = store.all()[0].key

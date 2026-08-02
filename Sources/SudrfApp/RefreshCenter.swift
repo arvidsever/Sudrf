@@ -411,7 +411,10 @@ final class RefreshCenter: ObservableObject {
         let snapshotSourceChanged = oldSnapshot.map {
             !$0.hasSameRefreshSource(as: newSnap)
         } ?? true
-        let changed = oldMovement != persistedMovement || snapshotSourceChanged
+        let movementSourceChanged = oldMovement.map {
+            !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
+        } ?? true
+        let changed = movementSourceChanged || snapshotSourceChanged
         rec.snapshot = newSnap
         rec.movement = persistedMovement
         rec.movementFetchedAt = Date()

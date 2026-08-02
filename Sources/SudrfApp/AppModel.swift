@@ -1122,13 +1122,16 @@ final class AppRouter: ObservableObject {
 
             guard let snap else { continue }
 
-            // Заседания (будущие).
-            for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
-                guard let d = s.date else { continue }
-                hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
-                    caseNumber: rec.caseNumber, parties: snap.partiesShort,
-                    court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
-                    judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
+            // Завершившийся круг может всё ещё содержать состоявшееся сегодня
+            // заседание. Оно остаётся в истории, но не попадает в календарь.
+            if stage != .done {
+                for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
+                    guard let d = s.date else { continue }
+                    hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
+                        caseNumber: rec.caseNumber, parties: snap.partiesShort,
+                        court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
+                        judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
+                }
             }
             // Сроки.
             for dl in snap.deadlines {
@@ -1234,6 +1237,8 @@ final class AppRouter: ObservableObject {
             let next: Date?
             if let presentation {
                 next = presentation.nextEventDate
+            } else if stage == .done {
+                next = nil
             } else {
                 let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
                     .first.flatMap(\.date)

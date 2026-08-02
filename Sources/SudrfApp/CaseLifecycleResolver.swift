@@ -57,7 +57,13 @@ enum CaseLifecycleResolver {
         // доказательство подачи жалобы (в частности, подавляет расчётный срок),
         // но не должна перекрывать последний датированный круг производства.
         let datedInstances = instances.filter(hasDatedSession)
-        let latest = datedInstances.last ?? instances.last
+        // Исключение — карточка с содержательным `result`: некоторые порталы
+        // публикуют итог без таблицы сессий. Такой результат надёжнее пустоты и
+        // не должен теряться только из-за отсутствующей даты.
+        let undatedWithResult = instances.filter {
+            !hasDatedSession($0) && hasAuthoritativeResult($0)
+        }
+        let latest = undatedWithResult.last ?? datedInstances.last ?? instances.last
         let visited = Set(instances.compactMap(stage(for:)))
 
         // Будущее заседание — наиболее сильный сигнал активного производства.
@@ -184,7 +190,10 @@ enum CaseLifecycleResolver {
     /// сортируется после корректного HH:mm в тот же день.
     static func hearingTimeKey(_ time: String?) -> Int {
         guard let time else { return Int.max }
-        let parts = time.split(separator: ":", maxSplits: 1)
+        let canonical = time.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ".", with: ":")
+            .replacingOccurrences(of: "-", with: ":")
+        let parts = canonical.split(separator: ":", maxSplits: 1)
         guard parts.count == 2, let hours = Int(parts[0]), let minutes = Int(parts[1]),
               (0...23).contains(hours), (0...59).contains(minutes) else { return Int.max }
         return hours * 60 + minutes
@@ -207,6 +216,10 @@ enum CaseLifecycleResolver {
 
     private static func hasDatedSession(_ instance: CaseInstance) -> Bool {
         instance.sessions.contains { DateUtil.parse($0.date) != nil }
+    }
+
+    private static func hasAuthoritativeResult(_ instance: CaseInstance) -> Bool {
+        nonempty(instance.result).flatMap(signal) != nil
     }
 
     /// Возвращает последний актуальный процессуальный сигнал внутри одного
@@ -259,14 +272,24 @@ enum CaseLifecycleResolver {
     }
 
     private static func isReactivation(_ value: String) -> Bool {
-        value.contains("возобнов")
-            || (value.contains("восстанов") && value.contains("срок"))
+        guard !isDenied(value) else { return false }
+        let words = Set(value.split(whereSeparator: { !$0.isLetter }).map(String.init))
+        let restorationOrdered = !words.isDisjoint(with: [
+            "восстановлен", "восстановлена", "восстановлено", "восстановлены", "восстановить",
+        ])
+        let restoredDeadline = value.contains("срок")
+            && (restorationOrdered
+                || (value.contains("восстанов") && value.contains("удовлетвор")
+                    && !value.contains("без удовлетвор")))
+        return value.contains("возобнов")
+            || restoredDeadline
             || (value.contains("пересмотр") && value.contains("обстоятель")
                 && (value.contains("нов") || value.contains("вновь")))
     }
 
     private static func isActiveProceeding(_ value: String) -> Bool {
-        (value.contains("принят") && value.contains("производств"))
+        guard !isDenied(value) else { return false }
+        return (value.contains("принят") && value.contains("производств"))
             || (value.contains("регистрац")
                 && (value.contains("жалоб") || value.contains("производств")
                     || value.contains("дел")))
@@ -280,6 +303,10 @@ enum CaseLifecycleResolver {
         let terminated = value.contains("производств") && value.contains("прекращ")
         let returned = (value.contains("возврат") || value.contains("возвращ"))
             && value.contains("без рассмотр")
+        let restorationDenied = isDenied(value) && value.contains("восстанов")
+            && value.contains("срок")
+        let acceptanceDenied = isDenied(value) && value.contains("принят")
+            && value.contains("производств")
         let judicialAct = value.contains("решен") || value.contains("приговор")
             || value.contains("постановлен") || value.contains("определен")
             || (value.contains("судебн") && value.contains("акт"))
@@ -290,7 +317,12 @@ enum CaseLifecycleResolver {
             && !value.contains("без удовлетвор")
             && !(value.contains("направ") && value.contains("рассмотр"))
         return unchanged || transferDenied || terminated || returned
+            || restorationDenied || acceptanceDenied
             || changedWithoutRemand || meritsDecision || satisfiedWithoutRemand
+    }
+
+    private static func isDenied(_ value: String) -> Bool {
+        value.contains("отказ") || value.contains("не восстанов")
     }
 
     private static func nonempty(_ value: String?) -> String? {

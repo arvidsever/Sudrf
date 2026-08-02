@@ -63,6 +63,22 @@ struct CaseSnapshot: Codable, Equatable {
     /// Метаданные опубликованных актов для детектора фоновых обновлений.
     /// Optional сохраняет декодирование снимков, созданных до появления поля.
     var actsFingerprint: [String]?
+
+    /// Сравнение для фонового бейджа: stage/status/steps/next пересчитываются
+    /// из того же движения и текущей даты, поэтому одно лишь исправление этих
+    /// производных полей не является новым событием дела.
+    func hasSameRefreshSource(as other: CaseSnapshot) -> Bool {
+        uid == other.uid
+            && inForce == other.inForce
+            && category == other.category
+            && partiesShort == other.partiesShort
+            && leadCharges == other.leadCharges
+            && secondPartyLine == other.secondPartyLine
+            && lastEvent == other.lastEvent
+            && sessions == other.sessions
+            && deadlines == other.deadlines
+            && actsFingerprint == other.actsFingerprint
+    }
 }
 
 /// Динамическая часть снимка. Пересчитывается и при сетевом обновлении, и при
@@ -75,12 +91,18 @@ struct CaseLifecyclePresentation {
     var statusChip: Palette.Chip
     var nextEvent: String
     var nextChip: Palette.Chip
+    var nextEventDate: Date?
     var steps: [String]
 }
 
 // MARK: - Движок
 
 enum MovementDerivation {
+
+    private struct LegalForceState {
+        var effective: Bool?
+        var date: Date?
+    }
 
     /// Главная функция: движение + контекст → снимок. `today` — для расчёта
     /// «дальше», заседаний и сроков (по умолчанию системная дата).
@@ -106,6 +128,7 @@ enum MovementDerivation {
         // Для стадии и сроков учитываются только реальные производства. Stub
         // нужен карточке для CAPTCHA/retry, но не доказывает наличие жалобы.
         let realInstances = CaseLifecycleResolver.realInstances(in: mv)
+        let lifecycleSessions = sessions.filter { $0.level != .material }
         let hasAppeal = realInstances.contains { $0.level == .appeal }
         let hasCassation = realInstances.contains {
             $0.level == .cassation || $0.level == .vsCassation || $0.level == .supervisory
@@ -117,7 +140,7 @@ enum MovementDerivation {
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, sessions: sessions, prefix: prefix,
+        let deadlines = self.deadlines(from: mv, sessions: lifecycleSessions, prefix: prefix,
                                        hasAppeal: hasAppeal, hasCassation: hasCassation,
                                        today: today)
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
@@ -173,20 +196,27 @@ enum MovementDerivation {
         } ?? ""
         let nextHearing = futureHearings(
             sessions.filter { $0.level != .material }, today: today).first
+        let nextDeadline = deadlines
+            .filter { $0.date >= today }
+            .sorted(by: { $0.dateRef < $1.dateRef })
+            .first
 
         var nextEvent = "—"
         var nextChip: Palette.Chip = .gray
-        if resolution.isCompleted {
-            nextEvent = "завершено"
-        } else if let hearing = nextHearing, let date = hearing.date {
+        var nextEventDate: Date?
+        if let hearing = nextHearing, let date = hearing.date {
             nextEvent = "заседание \(DateUtil.shortDM(date))"
                 + (hearing.time.map { ", \($0)" } ?? "")
             nextChip = .blue
-        } else if let deadline = deadlines.sorted(by: { $0.dateRef < $1.dateRef }).first {
+            nextEventDate = date
+        } else if let deadline = nextDeadline {
             nextEvent = "срок \(deadline.kind == "cassation" ? "кассации" : "апелляции"): "
                 + DateUtil.shortDM(deadline.date)
             nextChip = deadline.statusRaw == DeadlineStatus.confirmed.rawValue
                 ? .confirmed : .proposed
+            nextEventDate = deadline.date
+        } else if resolution.isCompleted {
+            nextEvent = "завершено"
         }
 
         let statusText: String
@@ -224,6 +254,7 @@ enum MovementDerivation {
             statusChip: statusChip,
             nextEvent: nextEvent,
             nextChip: nextChip,
+            nextEventDate: nextEventDate,
             steps: resolution.steps)
     }
 
@@ -252,18 +283,21 @@ enum MovementDerivation {
     /// либо событие, у которого указано время (на портале время проставляют именно
     /// у заседаний).
     static func futureHearings(_ sessions: [StoredSession], today: Date) -> [StoredSession] {
-        sessions.filter { s in
-            guard let d = DateUtil.parse(s.dateRaw), DateUtil.daysBetween(today, d) >= 0 else { return false }
-            let e = s.event.lowercased()
-            return (s.time != nil && !(s.time ?? "").isEmpty)
-                || e.contains("заседани") || e.contains("рассмотрени") || e.contains("слушани")
+        sessions.enumerated().filter { _, session in
+            guard let date = DateUtil.parse(session.dateRaw),
+                  DateUtil.daysBetween(today, date) >= 0 else { return false }
+            return CaseLifecycleResolver.isHearing(
+                event: session.event, result: session.result, time: session.time)
         }
         .sorted {
-            let d0 = DateUtil.parse($0.dateRaw) ?? .distantFuture
-            let d1 = DateUtil.parse($1.dateRaw) ?? .distantFuture
+            let d0 = DateUtil.parse($0.element.dateRaw) ?? .distantFuture
+            let d1 = DateUtil.parse($1.element.dateRaw) ?? .distantFuture
             if d0 != d1 { return d0 < d1 }
-            return ($0.time ?? "") < ($1.time ?? "")
+            let t0 = CaseLifecycleResolver.hearingTimeKey($0.element.time)
+            let t1 = CaseLifecycleResolver.hearingTimeKey($1.element.time)
+            return t0 == t1 ? $0.offset < $1.offset : t0 < t1
         }
+        .map(\.element)
     }
 
     // MARK: Сроки (ОРИЕНТИРОВОЧНЫЙ расчёт — требует подтверждения пользователем)
@@ -277,10 +311,13 @@ enum MovementDerivation {
                                   prefix: String, hasAppeal: Bool, hasCassation: Bool,
                                   today: Date) -> [StoredDeadline] {
         var out: [StoredDeadline] = []
+        let forceState = currentLegalForceState(in: sessions)
+        let legallyEffective = forceState.effective ?? mv.inForce
+        let currentlyReactivated = forceState.effective == false
 
         // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
         // апелляцию и не вступило в силу.
-        if !mv.inForce, !hasAppeal {
+        if !legallyEffective, !currentlyReactivated, !hasAppeal {
             if let firstDecision = firstInstanceDecisionDate(mv),
                let days = appealDays(prefix: prefix) {
                 let due = DateUtil.addDays(firstDecision, days)
@@ -293,8 +330,8 @@ enum MovementDerivation {
         }
 
         // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
-        if mv.inForce, !hasCassation, let days = cassationDays(prefix: prefix) {
-            guard let base = inForceDate(sessions) ?? lastAppealDate(mv) else { return out }
+        if legallyEffective, !hasCassation, let days = cassationDays(prefix: prefix) {
+            guard let base = forceState.date ?? lastAppealDate(mv) else { return out }
             let due = DateUtil.addDays(base, days)
             out.append(StoredDeadline(
                 kind: "cassation", what: "Кассационная жалоба",
@@ -332,8 +369,27 @@ enum MovementDerivation {
            let d = DateUtil.parse(withResult.date) { return d }
         return dated.max()
     }
-    private static func inForceDate(_ sessions: [StoredSession]) -> Date? {
-        sessions.first { $0.event.lowercased().contains("силу") }.flatMap { DateUtil.parse($0.dateRaw) }
+    private static func currentLegalForceState(in sessions: [StoredSession]) -> LegalForceState {
+        let ordered = sessions.enumerated().sorted { left, right in
+            let leftDate = left.element.date ?? .distantPast
+            let rightDate = right.element.date ?? .distantPast
+            return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
+        }
+        var state = LegalForceState()
+        for (_, session) in ordered {
+            if CaseLifecycleResolver.hasLegalForceEvidence(
+                event: session.event, result: session.result
+            ) {
+                state.effective = true
+                state.date = session.date
+            } else if CaseLifecycleResolver.isReactivation(
+                event: session.event, result: session.result
+            ) {
+                state.effective = false
+                state.date = nil
+            }
+        }
+        return state
     }
     private static func lastAppealDate(_ mv: CaseMovement) -> Date? {
         mv.instances.filter { $0.level == .appeal }

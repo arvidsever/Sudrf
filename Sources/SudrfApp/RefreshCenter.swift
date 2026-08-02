@@ -403,11 +403,17 @@ final class RefreshCenter: ObservableObject {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
         }
         let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
+        let oldMovement = rec.movement
+        let oldSnapshot = rec.snapshot
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
-            MovementDerivation.snapshot(from: merged, context: ctx), old: rec.snapshot)
-        let changed = rec.snapshot != newSnap
+            MovementDerivation.snapshot(from: merged, context: ctx), old: oldSnapshot)
+        let persistedMovement = MovementCachePolicy.stripped(forPersist: merged)
+        let snapshotSourceChanged = oldSnapshot.map {
+            !$0.hasSameRefreshSource(as: newSnap)
+        } ?? true
+        let changed = oldMovement != persistedMovement || snapshotSourceChanged
         rec.snapshot = newSnap
-        rec.movement = MovementCachePolicy.stripped(forPersist: merged)
+        rec.movement = persistedMovement
         rec.movementFetchedAt = Date()
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).

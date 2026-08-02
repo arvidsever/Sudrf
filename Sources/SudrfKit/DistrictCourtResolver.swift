@@ -151,7 +151,7 @@ public extension CourtDirectory {
     /// Субъект для пикера региона: пользователь видит `name`, а идентификатор
     /// под капотом — `code`. `id == code` (для ForEach). Порядок — по имени,
     /// как в `subjectRegionNames`, набор записей — тот же (без псевдо-записей).
-    public struct SubjectRegion: Identifiable, Hashable, Sendable {
+    struct SubjectRegion: Identifiable, Hashable, Sendable {
         public let code: String
         public let name: String
         public var id: String { code }

@@ -20,9 +20,26 @@ public struct SearchURLVariant: Sendable, Equatable {
 /// поэтому query собирается строкой, а не через URLComponents (тот навязал бы UTF-8).
 public struct SudrfURLBuilder {
     public let court: Court
-    public init(court: Court) { self.court = court }
+
+    /// Номер экземпляра базы суда. У крупных судов их несколько (наблюдались 1…3),
+    /// и дела распределены между ними: запрос только к первому даёт НЕПОЛНУЮ выдачу,
+    /// причём молча — суд отвечает валидной страницей без недостающих строк.
+    /// Значение по умолчанию сохраняет прежнее поведение; перебор экземпляров —
+    /// задача вызывающего (см. `Docs/architecture/ksoyu-listing-grammar.md`).
+    public let srvNum: Int
+
+    public init(court: Court, srvNum: Int = 1) {
+        self.court = court
+        self.srvNum = max(1, srvNum)
+    }
 
     private var base: String { "https://\(court.domain)/modules.php?name=sud_delo" }
+
+    private var srv: String { "&srv_num=\(srvNum)" }
+
+    /// Суффикс ключа варианта: рабочий вариант, найденный на одном экземпляре базы,
+    /// не должен подставляться вместо другого (`WorkingVariantStore` кэширует по id).
+    private var variantSuffix: String { srvNum == 1 ? "" : ":srv\(srvNum)" }
 
     /// Версия поискового интерфейса этого суда.
     public var pattern: SearchPattern { SearchPatternDirectory.pattern(forDomain: court.domain) }
@@ -33,13 +50,13 @@ public struct SudrfURLBuilder {
         let q: String
         switch pattern {
         case .primary:
-            var s = "\(base)&srv_num=1&name_op=sf&delo_id=\(Self.escape(c.deloID))"
+            var s = "\(base)\(srv)&name_op=sf&delo_id=\(Self.escape(c.deloID))"
             if c.new != "0" { s += "&new=\(Self.escape(c.new))" }
             q = s
         case .vnkod:
             // Винтажная форма; пары _deloId/_new — как у выдачи (vnkodDeloParams).
             let (deloID, new) = Self.vnkodDeloParams(c)?.first ?? (c.deloID, c.new)
-            q = "\(base)&srv_num=1&name_op=sf&_deloId=\(Self.escape(deloID))&_caseType=0&_new=\(Self.escape(new))"
+            q = "\(base)\(srv)&name_op=sf&_deloId=\(Self.escape(deloID))&_caseType=0&_new=\(Self.escape(new))"
         }
         guard let url = URL(string: q) else { throw SudrfError.parsing("не удалось собрать URL формы") }
         return url
@@ -56,7 +73,7 @@ public struct SudrfURLBuilder {
         guard let encoded = Cyrillic1251.percentEncodeQueryValue(value) else {
             throw SudrfError.invalidValue(value)
         }
-        var q = "\(base)&srv_num=1&name_op=r&delo_id=\(Self.escape(c.deloID))&case_type=0&new=\(Self.escape(c.new))"
+        var q = "\(base)\(srv)&name_op=r&delo_id=\(Self.escape(c.deloID))&case_type=0&new=\(Self.escape(c.new))"
         q += "&delo_table=\(Self.escape(c.deloTable))"
         q += "&\(fieldName)=\(encoded)"
         q += "&Submit=%CD%E0%E9%F2%E8"   // «Найти» в cp1251
@@ -94,7 +111,7 @@ public struct SudrfURLBuilder {
         guard pattern == .vnkod,
               let vnkod = SearchPatternDirectory.vnkod(forDomain: court.domain),
               let pairs = Self.vnkodDeloParams(c) else {
-            return [SearchURLVariant(id: "primary",
+            return [SearchURLVariant(id: "primary\(variantSuffix)",
                                      url: try searchURL(cartoteka: c, field: field, value: value))]
         }
         guard let encoded = Cyrillic1251.percentEncodeQueryValue(value) else {
@@ -102,7 +119,7 @@ public struct SudrfURLBuilder {
         }
         var variants: [SearchURLVariant] = []
         for (deloID, new) in pairs {
-            let head = "\(base)&name_op=r&_page=1&vnkod=\(Self.escape(vnkod))&srv_num=1"
+            let head = "\(base)&name_op=r&_page=1&vnkod=\(Self.escape(vnkod))\(srv)"
                      + "&_deloId=\(Self.escape(deloID))&case__case_type=0&_new=\(Self.escape(new))"
                      + "&case__vnkod=\(Self.escape(vnkod))&case__num_build=1"
             // process-type нужен не только первой инстанции: часть VNKOD-судов
@@ -127,14 +144,14 @@ public struct SudrfURLBuilder {
                 }
                 let ptSuffix = pt == nil ? "" : ":pt"
                 let fSuffix = fieldName == "part__namess" ? ":part" : ""
-                variants.append(SearchURLVariant(id: "vnkod:\(deloID):\(new)\(ptSuffix)\(fSuffix)",
+                variants.append(SearchURLVariant(id: "vnkod:\(deloID):\(new)\(ptSuffix)\(fSuffix)\(variantSuffix)",
                                                  url: url))
             }
         }
         // Классификация среза VNKOD-судов может устаревать (Воронеж по живой
         // проверке уже на современном модуле) — primary-вариант замыкает
         // перебор, а WorkingVariantStore запомнит его как рабочий.
-        variants.append(SearchURLVariant(id: "primary",
+        variants.append(SearchURLVariant(id: "primary\(variantSuffix)",
                                          url: try searchURL(cartoteka: c, field: field, value: value)))
         return variants
     }
@@ -179,7 +196,7 @@ public struct SudrfURLBuilder {
         let q: String
         switch pattern {
         case .primary:
-            var s = "\(base)&srv_num=1&name_op=case&case_id=\(Self.escape(caseID))"
+            var s = "\(base)\(srv)&name_op=case&case_id=\(Self.escape(caseID))"
             s += "&case_uid=\(Self.escape(caseUID))&delo_id=\(Self.escape(deloID))"
             if new != "0" && !new.isEmpty { s += "&new=\(Self.escape(new))" }
             q = s
@@ -190,7 +207,7 @@ public struct SudrfURLBuilder {
             ))?.first ?? (deloID, new.isEmpty ? "0" : new)
             q = "\(base)&name_op=case&_id=\(Self.escape(caseID))"
               + "&_uid=\(Self.escape(caseUID))&_deloId=\(Self.escape(mapped.deloID))"
-              + "&_caseType=0&_new=\(Self.escape(mapped.new))&srv_num=1"
+              + "&_caseType=0&_new=\(Self.escape(mapped.new))\(srv)"
         }
         guard let url = URL(string: q) else { throw SudrfError.parsing("не удалось собрать URL карточки") }
         return url

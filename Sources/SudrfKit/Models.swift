@@ -1,5 +1,28 @@
 import Foundation
 
+/// Ссылка на текст судебного акта из последней колонки строки выдачи
+/// (`name_op=doc`). Для приложения избыточна — оно берёт тексты из карточки,
+/// — но для сплошного сбора это половина запросов: текст по такой ссылке
+/// совпадает с блоком `cont_doc{N}` карточки того же дела
+/// (`Docs/architecture/ksoyu-listing-grammar.md`, §4).
+public struct CaseActLink: Sendable, Equatable, Identifiable {
+    /// `number=` — идентификатор документа в базе суда.
+    public var number: String
+    /// `text_number=` — порядковый номер акта внутри дела, с 1.
+    /// Несколько актов на дело возможны, но редки.
+    public var textNumber: Int
+    /// Ярлык из `TITLE` ссылки: «Постановления», «Решения», «Определение».
+    public var kind: String?
+    public var url: URL
+
+    public var id: String { url.absoluteString }
+
+    public init(number: String, textNumber: Int, kind: String? = nil, url: URL) {
+        self.number = number; self.textNumber = textNumber
+        self.kind = kind; self.url = url
+    }
+}
+
 /// Одна строка таблицы результатов поиска.
 public struct CaseSearchResult: Sendable, Equatable, Identifiable {
     public var caseNumber: String          // № дела (текст ссылки)
@@ -12,6 +35,9 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
     public var caseID: String?             // case_id из ссылки на карточку
     public var caseUID: String?            // case_uid (GUID) из ссылки
     public var cardURL: URL?               // абсолютная ссылка на карточку
+    /// Ссылки на тексты опубликованных актов из последней колонки. Пусто, если
+    /// акт не опубликован (262-ФЗ: публикуется не всё) или суд колонку не даёт.
+    public var actTextLinks: [CaseActLink]
 
     public var id: String { stableID }
 
@@ -40,7 +66,8 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
                 legalForceDate: String? = nil,
                 caseID: String? = nil,
                 caseUID: String? = nil,
-                cardURL: URL? = nil) {
+                cardURL: URL? = nil,
+                actTextLinks: [CaseActLink] = []) {
         self.caseNumber = caseNumber
         self.receiptDate = receiptDate
         self.essence = essence
@@ -51,6 +78,7 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
         self.caseID = caseID
         self.caseUID = caseUID
         self.cardURL = cardURL
+        self.actTextLinks = actTextLinks
     }
 }
 

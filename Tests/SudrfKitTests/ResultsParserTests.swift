@@ -102,4 +102,86 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertTrue(r.cardURL?.absoluteString.contains("_deloId=1540005") == true)
         XCTAssertTrue(r.cardURL?.absoluteString.contains("_new=5") == true)
     }
+
+    // MARK: - Ссылки на тексты актов (последняя колонка)
+
+    /// Живая разметка КСОЮ: у дела с опубликованным актом последняя колонка
+    /// несёт `name_op=doc`. Для приложения избыточно, для сплошного сбора —
+    /// половина запросов (`Docs/architecture/ksoyu-listing-grammar.md`, §4).
+    func testParsesActLinkFromLastColumn() throws {
+        let html = """
+        <html><body><table id="tablcont">
+          <tr><th>№</th><th>Дата</th><th>Стороны</th><th>Судья</th><th>Дата реш.</th><th>Рез.</th><th>Сила</th><th>Акты</th></tr>
+          <tr>
+            <td><a href="/modules.php?name=sud_delo&amp;srv_num=1&amp;name_op=case&amp;case_id=18223875&amp;case_uid=GUID&amp;delo_id=2800001">8Г-15211/2026</a></td>
+            <td>28.04.2026</td><td>КАТЕГОРИЯ: …</td><td>Попова Е.В.</td>
+            <td>14.05.2026</td><td>ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ</td><td>&nbsp;</td>
+            <td><a href="/modules.php?name=sud_delo&amp;srv_num=1&amp;name_op=doc&amp;number=18565938&amp;delo_id=2800001&amp;new=2800001&amp;text_number=1" TITLE="Постановления"><img src="/images/arow.gif"></a></td>
+          </tr>
+        </table></body></html>
+        """
+        let results = try ResultsParser.parse(html: html, court: .syktyvkarskiy)
+        let r = try XCTUnwrap(results.first)
+        XCTAssertEqual(r.actTextLinks.count, 1)
+
+        let link = try XCTUnwrap(r.actTextLinks.first)
+        XCTAssertEqual(link.number, "18565938")
+        XCTAssertEqual(link.textNumber, 1)
+        XCTAssertEqual(link.kind, "Постановления")
+        XCTAssertEqual(link.url.host, "syktsud--komi.sudrf.ru")
+        XCTAssertEqual(ResultsParser.queryValue("name_op", in: link.url.absoluteString), "doc")
+    }
+
+    /// 262-ФЗ: часть актов не публикуется. Пустая последняя колонка — норма,
+    /// а не сбой разбора; дело при этом остаётся полноценным результатом.
+    func testNoActLinkWhenActNotPublished() throws {
+        let html = """
+        <html><body><table id="tablcont">
+          <tr>
+            <td><a href="/modules.php?name=sud_delo&amp;name_op=case&amp;case_id=1&amp;case_uid=G">8Г-1/2026</a></td>
+            <td>01.06.2026</td><td>КАТЕГОРИЯ: &lt;Информация скрыта&gt;</td><td>&nbsp;</td>
+            <td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>
+          </tr>
+        </table></body></html>
+        """
+        let r = try XCTUnwrap(try ResultsParser.parse(html: html, court: .syktyvkarskiy).first)
+        XCTAssertEqual(r.caseNumber, "8Г-1/2026")
+        XCTAssertTrue(r.actTextLinks.isEmpty)
+    }
+
+    /// Несколько актов на дело — редкость, но разбор обязан их пережить:
+    /// ссылки различаются `text_number` и отдаются по возрастанию.
+    func testParsesSeveralActLinksSortedByTextNumber() throws {
+        let html = """
+        <html><body><table id="tablcont">
+          <tr>
+            <td><a href="/modules.php?name=sud_delo&amp;name_op=case&amp;case_id=7&amp;case_uid=G">7У-1/2026</a></td>
+            <td>01.06.2026</td><td>Лица</td><td>Судья</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>
+            <td>
+              <a href="/modules.php?name=sud_delo&amp;name_op=doc&amp;number=200&amp;text_number=2" TITLE="Определение"></a>
+              <a href="/modules.php?name=sud_delo&amp;name_op=doc&amp;number=100&amp;text_number=1" TITLE="Постановления"></a>
+            </td>
+          </tr>
+        </table></body></html>
+        """
+        let r = try XCTUnwrap(try ResultsParser.parse(html: html, court: .syktyvkarskiy).first)
+        XCTAssertEqual(r.actTextLinks.map(\.textNumber), [1, 2])
+        XCTAssertEqual(r.actTextLinks.map(\.number), ["100", "200"])
+        XCTAssertEqual(r.actTextLinks.map(\.kind), ["Постановления", "Определение"])
+    }
+
+    /// Ссылка без `number` бесполезна — текст по ней не запросить.
+    func testIgnoresActLinkWithoutNumber() throws {
+        let html = """
+        <html><body><table id="tablcont">
+          <tr>
+            <td><a href="/modules.php?name=sud_delo&amp;name_op=case&amp;case_id=9&amp;case_uid=G">8Г-9/2026</a></td>
+            <td>01.06.2026</td><td>Стороны</td><td>Судья</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>
+            <td><a href="/modules.php?name=sud_delo&amp;name_op=doc&amp;text_number=1">акт</a></td>
+          </tr>
+        </table></body></html>
+        """
+        let r = try XCTUnwrap(try ResultsParser.parse(html: html, court: .syktyvkarskiy).first)
+        XCTAssertTrue(r.actTextLinks.isEmpty)
+    }
 }

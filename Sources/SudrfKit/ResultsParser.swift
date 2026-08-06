@@ -29,10 +29,14 @@ public enum ResultsParser {
             let cardURL = absoluteURL(href, domain: court.domain)
 
             var cells: [String] = []
-            if let row = closestRow(of: a), let tds = try? row.select("td") {
-                cells = tds.array()
-                    .compactMap { try? $0.text() }
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            var actTextLinks: [CaseActLink] = []
+            if let row = closestRow(of: a) {
+                if let tds = try? row.select("td") {
+                    cells = tds.array()
+                        .compactMap { try? $0.text() }
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                }
+                actTextLinks = parseActTextLinks(in: row, domain: court.domain)
             }
 
             results.append(CaseSearchResult(
@@ -45,7 +49,8 @@ public enum ResultsParser {
                 legalForceDate: cell(cells, at: 6),
                 caseID: caseID,
                 caseUID: caseUID,
-                cardURL: cardURL
+                cardURL: cardURL,
+                actTextLinks: actTextLinks
             ))
         }
         return dedupe(results)
@@ -57,6 +62,34 @@ public enum ResultsParser {
         let normalized = href.hasPrefix("http") ? href : "https://placeholder/\(href)"
         guard let comps = URLComponents(string: normalized) else { return nil }
         return comps.queryItems?.first { $0.name == name }?.value
+    }
+
+    /// Ссылки на тексты актов из строки выдачи (`name_op=doc`).
+    ///
+    /// Ищем по всей строке, а не в последней ячейке: число колонок у разных
+    /// судов отличается (дату вступления в силу дают не все), а `name_op=doc`
+    /// встречается только в колонке «Судебные акты».
+    ///
+    /// Ссылки без `number` пропускаем — без него запрос текста не собрать.
+    /// `text_number` по умолчанию 1: у подавляющего большинства дел акт один.
+    private static func parseActTextLinks(in row: Element, domain: String) -> [CaseActLink] {
+        let anchors = (try? row.select("a[href*=name_op=doc]").array()) ?? []
+        var links: [CaseActLink] = []
+        var seen = Set<String>()
+        for a in anchors {
+            let href = (try? a.attr("href")) ?? ""
+            guard let number = queryValue("number", in: href), !number.isEmpty,
+                  let url = absoluteURL(href, domain: domain) else { continue }
+            let textNumber = queryValue("text_number", in: href).flatMap(Int.init) ?? 1
+            let kind = (try? a.attr("title"))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard seen.insert(url.absoluteString).inserted else { continue }
+            links.append(CaseActLink(number: number,
+                                     textNumber: textNumber,
+                                     kind: (kind?.isEmpty ?? true) ? nil : kind,
+                                     url: url))
+        }
+        return links.sorted { $0.textNumber < $1.textNumber }
     }
 
     private static func closestRow(of el: Element) -> Element? {

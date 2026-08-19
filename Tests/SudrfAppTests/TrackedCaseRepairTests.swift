@@ -264,6 +264,39 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(saved.movement?.acts.map(\.id), ["main-act"])
     }
 
+    func testExistingMainUIDMergePreservesSharedActReferencedBySurvivingInstance() async throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let main = context(level: .first, number: "2а-5090/2026",
+                           domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                           courtLevel: .district)
+        let sharedActID = "act_\(main.searchDomain)"
+        store.upsert(
+            context: preliminary, snapshot: nil,
+            movement: movement(level: .first, number: preliminary.caseNumber,
+                               domain: preliminary.searchDomain, actID: sharedActID),
+            collections: [])
+        store.upsert(
+            context: main, snapshot: nil,
+            movement: movement(level: .first, number: main.caseNumber,
+                               domain: main.searchDomain, actID: sharedActID),
+            collections: [])
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: unusedResolver(),
+            defaults: defaults())
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.merged, 1)
+        let saved = try XCTUnwrap(store.record(forKey: main.key))
+        XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
+        XCTAssertEqual(saved.movement?.instances.first?.actID, sharedActID)
+        XCTAssertEqual(saved.movement?.acts.map(\.id), [sharedActID])
+        XCTAssertEqual(saved.movement?.actBodies[sharedActID], "Текст \(sharedActID)")
+    }
+
     func testReanchorsHigherCardAndKeepsOriginalKnownCard() async throws {
         let store = TrackedStore(inMemory: true)
         let appeal = context(level: .appeal, number: "33-4818/2025",

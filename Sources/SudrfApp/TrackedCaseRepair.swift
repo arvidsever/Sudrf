@@ -751,8 +751,22 @@ final class TrackedCaseRepairCoordinator {
                     && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
             }
         }
-        movement.acts.removeAll { removedActIDs.contains($0.id) }
-        for id in removedActIDs { movement.actBodies[id] = nil }
+        // Базовые карточки одного суда исторически используют общий
+        // `act_<domain>`. Поэтому удалённая предварительная инстанция может
+        // ссылаться на тот же акт, что и оставшаяся основная. Удаляем только
+        // действительно осиротевшие акты, сравнивая также alternate/module host.
+        let retainedActKeys = Set(movement.instances.compactMap(\.actID).map(canonicalActKey))
+        let orphanedActKeys = Set(removedActIDs.map(canonicalActKey))
+            .subtracting(retainedActKeys)
+        let orphanedActIDs = movement.acts.compactMap { act in
+            orphanedActKeys.contains(canonicalActKey(act.id)) ? act.id : nil
+        }
+        movement.acts.removeAll { orphanedActKeys.contains(canonicalActKey($0.id)) }
+        for id in Set(orphanedActIDs).union(removedActIDs.filter {
+            orphanedActKeys.contains(canonicalActKey($0))
+        }) {
+            movement.actBodies[id] = nil
+        }
         return movement
     }
 

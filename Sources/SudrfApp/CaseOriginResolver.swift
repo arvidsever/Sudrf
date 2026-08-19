@@ -194,17 +194,23 @@ actor CaseOriginResolver {
         guard let cart = anchorContext.cartoteka else {
             throw CaseOriginResolutionError.noReference
         }
-        let provider: any CaseProviding = court.level == .magistrate
-            ? magistrateProvider : regularProvider
-        let rows = try await provider.search(court: court, cartoteka: cart,
-                                             field: .uid, value: uid)
+        // Площадки мировых судей не поддерживают поиск по УИД. Без него нельзя
+        // выполнить обязательную точную проверку перехода предварительного
+        // номера, поэтому не превращаем отсутствие подтверждения в parsing-
+        // ошибку и постоянное исключение из repair-прохода.
+        guard court.level != .magistrate else {
+            throw CaseOriginResolutionError.noReference
+        }
+        let rows = try await regularProvider.search(court: court, cartoteka: cart,
+                                                    field: .uid, value: uid)
         let mainRows = rows.filter {
             CaseIndexClassifier.classify(caseNumber: $0.caseNumber,
                                          courtLevel: court.level,
                                          branch: anchorContext.branch)?.cardRole == .firstInstanceCase
         }
         guard let match = try await uniqueUIDMatch(
-            rows: mainRows, uid: uid, court: court, cartoteka: cart, provider: provider)
+            rows: mainRows, uid: uid, court: court, cartoteka: cart,
+            provider: regularProvider)
         else { throw CaseOriginResolutionError.notFound }
         return ResolvedCaseOrigin(court: court, branch: anchorContext.branch,
                                   region: anchorContext.region, courtCode: anchorContext.courtCode,

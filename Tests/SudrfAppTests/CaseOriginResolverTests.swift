@@ -151,6 +151,35 @@ final class CaseOriginResolverTests: XCTestCase {
         }
     }
 
+    func testPreliminaryMagistrateCaseDoesNotAttemptUnsupportedUIDSearch() async throws {
+        let regularProvider = OriginProviderStub(numberRows: [], cards: [:])
+        let magistrateProvider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(
+            client: SudrfClient(), regularProvider: regularProvider,
+            magistrateProvider: magistrateProvider)
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "11ms0062.msudrf.ru", displayDomain: "11ms0062.msudrf.ru",
+            courtTitle: "Судебный участок № 62", courtLevelRaw: "magistrate",
+            courtCode: "11MS0062", cartotekaId: "g1",
+            cartotekaLevelRaw: "magistrate", caseNumber: "М-100/2026")
+        context.judicialUID = "11MS0062-01-2026-000100-10"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        let card = CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                            caseNumber: context.caseNumber)
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: card)
+            XCTFail("Мировой суд не должен получать неподдерживаемый UID-поиск")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+        let regularFields = await regularProvider.fields
+        let magistrateFields = await magistrateProvider.fields
+        XCTAssertTrue(regularFields.isEmpty)
+        XCTAssertTrue(magistrateFields.isEmpty)
+    }
+
     func testUIDRowsWithDifferentNumberFallBackToExactNumberSearch() async throws {
         let noise = CaseSearchResult(caseNumber: "2-999/2026",
                                      caseID: "noise", caseUID: "noise-guid")

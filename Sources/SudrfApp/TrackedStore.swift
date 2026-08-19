@@ -298,7 +298,7 @@ final class TrackedStore {
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
     /// Этот initializer предназначен для тестов. Production-контейнер
-    /// открывает `SudrfModelContainerFactory.makeProduction()`: там выполняются
+    /// открывает `PersistentStoreBootstrapper.prepareProduction()`: там выполняются
     /// versioned migration и предмиграционный backup.
     convenience init(inMemory: Bool) {
         do {

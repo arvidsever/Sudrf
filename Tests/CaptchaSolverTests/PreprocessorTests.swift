@@ -21,8 +21,8 @@ final class PreprocessorTests: XCTestCase {
     /// letterbox-паддинга. Пропорции сохраняются (2x2), 80×40
     /// становится 160×80 — это и есть суть preprocess: удвоить
     /// пиксельное разрешение для Vision, а не вписать в фиксированный
-    /// прямоугольник (что сломанный `ImagePreprocessor` пытался делать
-    /// раньше с Y-flip, и что регрессировало на нормальных captcha).
+    /// прямоугольник (прежний пайплайн с Y-flip регрессировал на нормальных
+    /// captcha).
     func testPreprocessPreservesAspectRatio() throws {
         let png = SyntheticCaptcha.makePNG(width: 80, height: 40, digits: "98765", hasBorder: false)
         let out = try XCTUnwrap(Preprocessor.process(pngData: png))

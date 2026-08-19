@@ -74,7 +74,7 @@ public enum SearchDiagnostics {
     /// charset=...>` из самого HTML и применит его) и в `iconv` / `xxd`
     /// без потерь.
     public static func dumpVariant(data: Data, host: String) {
-        save(data: data, kind: "variant", host: host, suffix: nil)
+        save(data: data, kind: "variant", host: host)
     }
 
     /// Сохранить HTML формы поиска, на которой `CaptchaDetector`
@@ -82,18 +82,7 @@ public enum SearchDiagnostics {
     /// суда детектор не узнал маркер капчи — нужно посмотреть,
     /// как выглядит форма.
     public static func dumpFormCheck(data: Data, host: String) {
-        save(data: data, kind: "form", host: host, suffix: nil)
-    }
-
-    /// String-overload для тестов и редких случаев, когда сырых
-    /// байт нет (например, ошибочные пути в юнит-тестах). В продакшене
-    /// предпочитайте `data:`-версию — она не искажает кодировку.
-    public static func dumpVariant(html: String, host: String) {
-        save(data: Data(html.utf8), kind: "variant", host: host, suffix: nil)
-    }
-
-    public static func dumpFormCheck(html: String, host: String) {
-        save(data: Data(html.utf8), kind: "form", host: host, suffix: nil)
+        save(data: data, kind: "form", host: host)
     }
 
     /// Сохранить HTML-ответ с маркером «неверный проверочный код»
@@ -102,12 +91,7 @@ public enum SearchDiagnostics {
     /// (`variant_`) — это два разных диагноза. Дамп — для разбора;
     /// основной фикс (инвалидация токена) — в `SudrfClient.runVariants`.
     public static func dumpCaptchaRejected(data: Data, host: String) {
-        save(data: data, kind: "rejected", host: host, suffix: nil)
-    }
-
-    /// String-overload для тестов и редких случаев.
-    public static func dumpCaptchaRejected(html: String, host: String) {
-        save(data: Data(html.utf8), kind: "rejected", host: host, suffix: nil)
+        save(data: data, kind: "rejected", host: host)
     }
 
     /// Сохранить HTML ответа и PNG капчи, на которой авто-солвер
@@ -116,7 +100,7 @@ public enum SearchDiagnostics {
     /// с «правильным» (который мы не знаем, но видим последствия
     /// в ответе сервера).
     public static func dumpSolverMismatch(png: Data, responseData: Data, host: String) {
-        save(data: responseData, kind: "solver-mismatch", host: host, suffix: nil)
+        save(data: responseData, kind: "solver-mismatch", host: host)
         // Дополнительно — сохраняем PNG, чтобы можно было посмотреть
         // глазами на ту капчу, которую солвер не угадал.
         let dir = directory.withLock { $0 }
@@ -129,17 +113,14 @@ public enum SearchDiagnostics {
         evictIfNeeded(in: dir)
     }
 
-    /// Внутренний writer. `kind` определяет префикс имени файла,
-    /// `suffix` — необязательный тег (сейчас не используется,
-    /// зарезервировано под будущее).
-    private static func save(data: Data, kind: String, host: String, suffix: String?) {
+    /// Внутренний writer. `kind` определяет префикс имени файла.
+    private static func save(data: Data, kind: String, host: String) {
         guard enabled else { return }
         let dir = directory.withLock { $0 }
         let safeHost = host.replacingOccurrences(of: "/", with: "_")
                             .replacingOccurrences(of: ":", with: "")
-        let tag = suffix.map { "_\($0)" } ?? ""
         let url = dir.appendingPathComponent(
-            "\(safeHost)_\(timestampSafe())_\(kind)\(tag).html"
+            "\(safeHost)_\(timestampSafe())_\(kind).html"
         )
         do {
             try data.write(to: url, options: .atomic)

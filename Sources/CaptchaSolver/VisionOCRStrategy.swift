@@ -5,7 +5,7 @@ import Vision
 /// Стратегия распознавания на основе Vision framework (`VNRecognizeTextRequest`).
 ///
 /// Поток: `pngData` → опционально `Preprocessor.process` (grayscale +
-/// 2x scale, см. `CaptchaConfiguration.preprocessingEnabled`) →
+/// 2x scale, см. `CaptchaSettings.preprocessorEnabled`) →
 /// `VNRecognizeTextRequest` с `usesLanguageCorrection = false`,
 /// `minimumTextHeight = 0.2` (понижен с 0.3 в v0.38.4 — на 100×30
 /// PNG текст может быть 20–25% высоты, и 0.3 не даёт Vision даже

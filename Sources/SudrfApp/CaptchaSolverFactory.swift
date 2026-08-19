@@ -8,7 +8,6 @@ import CaptchaSolver
 @MainActor
 enum CaptchaSolverFactory {
     static func make(settings: CaptchaSettings) -> CaptchaSolver {
-        let configuration = settings.solverConfiguration
         var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
         // `preprocessingProvider` — именно замыкание, а не снятое здесь значение
         // (v0.38.4, v0.38.7): флаг читается на каждом вызове `solver.solve`,
@@ -28,13 +27,13 @@ enum CaptchaSolverFactory {
             provider = KindDispatchingStrategy(
                 primary: coreML,
                 fallback: vision,
-                minPrimaryConfidence: configuration.minConfidence,
+                minPrimaryConfidence: settings.minConfidence,
                 primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }
             )
         } else {
             provider = vision
         }
 
-        return CaptchaSolver(provider: provider, configuration: configuration)
+        return CaptchaSolver(provider: provider)
     }
 }

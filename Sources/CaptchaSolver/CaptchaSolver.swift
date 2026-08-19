@@ -8,15 +8,18 @@ import Foundation
 public actor CaptchaSolver {
 
     private let provider: any CaptchaSolvingProvider
-    private let configuration: CaptchaConfiguration
+    private let enabledKinds: Set<CaptchaKind>
+    private let minIntervalMs: Int
     public nonisolated let log: CaptchaSolverLog
     private var lastInvocationAt: Date = .distantPast
 
     public init(provider: any CaptchaSolvingProvider = VisionOCRStrategy(),
-                configuration: CaptchaConfiguration = .default,
+                enabledKinds: Set<CaptchaKind> = [.sudrfToken, .kcaptcha],
+                minIntervalMs: Int = 50,
                 log: CaptchaSolverLog = .shared) {
         self.provider = provider
-        self.configuration = configuration
+        self.enabledKinds = enabledKinds
+        self.minIntervalMs = minIntervalMs
         self.log = log
     }
 
@@ -27,7 +30,7 @@ public actor CaptchaSolver {
     /// `sankt-peterburgsky--spb.sudrf.ru`). Пробрасывается в провайдер
     /// для per-host решений (например, preprocessor hosts).
     public func solve(pngData: Data, kind: CaptchaKind, host: String? = nil) async throws -> CaptchaAttempt {
-        guard configuration.enabledKinds.contains(kind) else {
+        guard enabledKinds.contains(kind) else {
             return .empty
         }
         await throttleIfNeeded()
@@ -70,7 +73,7 @@ public actor CaptchaSolver {
     private func throttleIfNeeded() async {
         let now = Date()
         let elapsedMs = Int(now.timeIntervalSince(lastInvocationAt) * 1000)
-        let wait = configuration.minIntervalMs - elapsedMs
+        let wait = minIntervalMs - elapsedMs
         if wait > 0 {
             try? await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000)
         }

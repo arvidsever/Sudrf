@@ -28,7 +28,7 @@ final class SearchDiagnosticsTests: XCTestCase {
 
     func testDumpVariantWritesFile() {
         let html = "<html><body>Unrecognized content from sudrf server.</body></html>"
-        SearchDiagnostics.dumpVariant(html: html, host: "example.sudrf.ru")
+        SearchDiagnostics.dumpVariant(data: Data(html.utf8), host: "example.sudrf.ru")
 
         let files = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil
@@ -91,7 +91,7 @@ final class SearchDiagnosticsTests: XCTestCase {
 
     func testDumpFormCheckWritesFile() {
         let html = "<html><body>Form with no captcha marker we recognize.</body></html>"
-        SearchDiagnostics.dumpFormCheck(html: html, host: "msk--sudrf.ru")
+        SearchDiagnostics.dumpFormCheck(data: Data(html.utf8), host: "msk--sudrf.ru")
 
         let files = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil

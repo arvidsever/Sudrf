@@ -7,7 +7,8 @@ struct SudrfCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sudrf-cli",
         abstract: "Поиск дел и судебных актов на сайтах судов общей юрисдикции (ГАС «Правосудие»).",
-        subcommands: [Search.self, Card.self, Route.self, District.self, Harvest.self],
+        subcommands: [Search.self, Card.self, Route.self, District.self, Harvest.self,
+                      ExportDirectories.self],
         defaultSubcommand: Search.self
     )
 }

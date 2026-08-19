@@ -72,16 +72,6 @@ final class CaptchaSettings: ObservableObject {
         }
     }
 
-    /// Текущая «эффективная» конфигурация для `CaptchaSolver`.
-    var solverConfiguration: CaptchaConfiguration {
-        var config = CaptchaConfiguration.default
-        config.minConfidence = minConfidence
-        config.maxAttempts = maxAttempts
-        config.preprocessingEnabled = preprocessorEnabled
-        config.preprocessorHosts = preprocessorHosts
-        return config
-    }
-
     /// Единый снимок пользовательских настроек для всех вызовов
     /// `AutoCaptchaSolver`: поиска, фонового обновления и retry из
     /// карточки дела.
@@ -102,7 +92,7 @@ final class CaptchaSettings: ObservableObject {
         defaults.register(defaults: [Self.enabledKey: true])
         defaults.register(defaults: [Self.minConfidenceKey: 0.55])
         defaults.register(defaults: [Self.maxAttemptsKey: Self.defaultMaxAttempts])
-        // Preprocessor: выключен по умолчанию (см. solverConfiguration).
+        // Preprocessor выключен по умолчанию.
         defaults.register(defaults: [Self.preprocessorEnabledKey: false])
         defaults.register(defaults: [Self.preprocessorHostsKey: [String]()])
         self.autoSolveEnabled = defaults.bool(forKey: Self.enabledKey)

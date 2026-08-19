@@ -43,9 +43,9 @@ Recommended next round (v0.38.7) is to investigate **mo's home page response**:
 
 ```
 Sources/CaptchaSolver/
-  CaptchaKind.swift, CaptchaAttempt.swift, CaptchaConfiguration.swift,
+  CaptchaKind.swift, CaptchaAttempt.swift,
   CaptchaSolvingProvider.swift, CaptchaSolver.swift, CaptchaSolverLog.swift,
-  VisionOCRStrategy.swift, ImagePreprocessor.swift, Preprocessor.swift
+  VisionOCRStrategy.swift, Preprocessor.swift
 
 Sources/SudrfKit/
   EncodingDetector.swift             — does NOT exist (deferred)
@@ -64,7 +64,7 @@ Sources/SudrfApp/
   CaptchaMenu.swift                   — v0.38.0
   SearchModel.swift (re-uses SearchModel.CaptchaContext)
 
-Tests/CaptchaSolverTests/             — PreprocessorTests, CaptchaSolverLogTests, VisionOCRStrategyTests, AutoCaptchaSolverTests, CaptchaSolverTests, ImagePreprocessorTests
+Tests/CaptchaSolverTests/             — PreprocessorTests, CaptchaSolverLogTests, VisionOCRStrategyTests, AutoCaptchaSolverTests, CaptchaSolverTests
 Tests/SudrfKitTests/                  — CaptchaImageExtractorTests, SearchDiagnosticsTests
 Tests/SudrfAppTests/                  — CaptchaAssistTests, CaptchaPendingQueueTests, etc.
 ```

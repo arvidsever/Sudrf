@@ -282,20 +282,6 @@ enum SudrfModelContainerFactory {
                                   configurations: configuration)
     }
 
-    static func makeProduction() throws -> ModelContainer {
-        let defaultURL = ModelConfiguration().url
-        var backup: URL?
-        do {
-            backup = try SudrfPersistentStoreBackup.prepare(storeURL: defaultURL)
-            // Backup и контейнер получают один и тот же URL, а не вычисляют
-            // default location независимо друг от друга.
-            let container = try make(inMemory: false, storeURL: defaultURL)
-            SudrfPersistentStoreBackup.markMigrationCompleted()
-            return container
-        } catch {
-            throw SudrfStoreBootstrapError(underlying: error, backupDirectory: backup)
-        }
-    }
 }
 
 /// Production bootstrap использует отдельный ModelContext внутри actor. До

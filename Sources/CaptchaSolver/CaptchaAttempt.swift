@@ -3,7 +3,7 @@ import Foundation
 /// Результат одной попытки распознавания.
 ///
 /// `confidence` — оценка от 0.0 до 1.0. Значение ниже
-/// `CaptchaConfiguration.minConfidence` означает, что солвер не уверен и
+/// Порог `AutoCaptchaSolver.Settings.minConfidence` означает, что солвер не уверен и
 /// вызывающая сторона должна вернуться к ручному вводу. `value` в этом
 /// случае может быть пустым или содержать наилучшее предположение.
 public struct CaptchaAttempt: Sendable, Equatable {

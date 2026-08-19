@@ -1,6 +1,7 @@
 import XCTest
 @testable import CaptchaSolver
 import SudrfKit
+import AppKit
 
 /// Базовая проверка скелета солвера. Полные тесты (точность на размеченных
 /// фикстурах) добавляются в фазе 5 после `VisionOCRStrategy` и сбора 30+
@@ -15,29 +16,17 @@ final class CaptchaSolverTests: XCTestCase {
     }
 
     func testDisabledKindReturnsEmpty() async throws {
-        var config = CaptchaConfiguration.default
-        config.enabledKinds = [.kcaptcha]
-        let solver = CaptchaSolver(provider: VisionOCRStrategy(), configuration: config)
+        let solver = CaptchaSolver(provider: VisionOCRStrategy(), enabledKinds: [.kcaptcha])
         let attempt = try await solver.solve(pngData: Data([0x00]), kind: .sudrfToken)
         XCTAssertEqual(attempt.value, "")
         XCTAssertEqual(attempt.confidence, 0.0)
     }
 
     func testEnabledKindPassesThrough() async throws {
-        var config = CaptchaConfiguration.default
-        config.enabledKinds = [.kcaptcha]
-        let solver = CaptchaSolver(provider: VisionOCRStrategy(), configuration: config)
+        let solver = CaptchaSolver(provider: VisionOCRStrategy(), enabledKinds: [.kcaptcha])
         let attempt = try await solver.solve(pngData: Data([0x00]), kind: .kcaptcha)
         XCTAssertEqual(attempt.value, "")
         XCTAssertEqual(attempt.confidence, 0.0)
-    }
-
-    func testConfigurationDefaults() {
-        let config = CaptchaConfiguration.default
-        XCTAssertEqual(config.maxAttempts, 3)
-        XCTAssertEqual(config.minConfidence, 0.55, accuracy: 0.001)
-        XCTAssertEqual(config.minIntervalMs, 50)
-        XCTAssertEqual(config.enabledKinds, [.sudrfToken, .kcaptcha])
     }
 
     func testAttemptIsConfident() {
@@ -174,5 +163,45 @@ private final class PreprocessingFlag {
 
     init(_ value: Bool) {
         self.value = value
+    }
+}
+
+/// Test-only PNG generator shared by captcha preprocessing and solver tests.
+enum SyntheticCaptcha {
+    static func makePNG(width: Int, height: Int, digits: String, hasBorder: Bool) -> Data {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0xFF, count: width * height * 4)
+        if hasBorder {
+            for x in 0..<width {
+                for y in [0, height - 1] {
+                    let i = y * bytesPerRow + x * 4
+                    pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0
+                }
+            }
+            for y in 0..<height {
+                for x in [0, width - 1] {
+                    let i = y * bytesPerRow + x * 4
+                    pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0
+                }
+            }
+        }
+        let glyphWidth = max(4, (width - 12) / max(1, digits.count))
+        let glyphHeight = max(6, height - 12)
+        for (index, _) in digits.enumerated() {
+            for y in 6..<(6 + glyphHeight) {
+                for x in (6 + index * glyphWidth)..<(4 + (index + 1) * glyphWidth) {
+                    guard x < width - 1, y < height - 1 else { continue }
+                    let i = y * bytesPerRow + x * 4
+                    pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0
+                }
+            }
+        }
+        let context = CGContext(
+            data: &pixels, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        return NSBitmapImageRep(cgImage: context.makeImage()!)
+            .representation(using: .png, properties: [:]) ?? Data()
     }
 }

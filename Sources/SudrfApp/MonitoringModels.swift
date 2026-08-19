@@ -320,6 +320,8 @@ struct TrackedCase: Identifiable {
     var stageTag: String
     var subject: String
     var court: String
+    /// Вычисляется из активного круга, не хранится в SwiftData.
+    var courtTier: CourtTier?
     /// Вид производства, вычисленный при сборке строки с учётом звена суда
     /// (см. `productionType(for:)`). Читатели фильтров/счётчиков берут готовое.
     var production: ProductionType?

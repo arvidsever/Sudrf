@@ -263,6 +263,7 @@ struct MyCasesView: View {
     }
 
     private var filterSidebar: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 0) {
             sidebarTitle("ПОДБОРКИ").padding(.top, 14)
 
@@ -341,6 +342,42 @@ struct MyCasesView: View {
             }
             .padding(.horizontal, 10).padding(.top, 2)
 
+            Divider().padding(.horizontal, 16).padding(.vertical, 12)
+            sidebarTitle("ЗВЕНО")
+            VStack(spacing: 1) {
+                ForEach(router.tierCounts, id: \.0) { tier, count in
+                    let isInactive = tier == nil
+                    let active = isInactive ? router.noActiveProductionFilter
+                        : router.tierFilter == tier
+                    Button {
+                        if let tier {
+                            router.tierFilter = active ? nil : tier
+                            router.noActiveProductionFilter = false
+                        } else {
+                            router.noActiveProductionFilter.toggle()
+                            router.tierFilter = nil
+                        }
+                    } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: isInactive ? "minus.circle" : "building.columns")
+                                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                            Text(tier.map(tierLabel) ?? "Нет активного производства")
+                                .font(.system(size: 12.5, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? Color.accentColor : .primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("\(count)").font(.system(size: 11)).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 9).padding(.vertical, 4.5)
+                        .background(RoundedRectangle(cornerRadius: 9)
+                            .fill(active ? Color.accentColor.opacity(0.1) : .clear))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10).padding(.top, 2)
+
             Spacer(minLength: 0)
 
             // «+ Новая подборка» — инлайн-поле: Enter создаёт (и выбирает), Esc отменяет.
@@ -371,9 +408,20 @@ struct MyCasesView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 .overlay(Divider(), alignment: .top)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+        }
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5))
+    }
+
+    private func tierLabel(_ tier: CourtTier) -> String {
+        switch tier {
+        case .magistrate: return "Мировой судья"
+        case .district: return "Районный суд"
+        case .subject: return "Областной суд"
+        case .appeal: return "Апелляционный суд"
+        case .cassation: return "Кассационный суд"
+        case .supreme: return "Верховный Суд РФ"
+        }
     }
 
     private func commitNewCollection() {

@@ -34,6 +34,10 @@ final class AppRouter: ObservableObject {
     /// Выбранная подборка («Все дела» — без фильтра).
     @Published var folder: String = "Все дела"
     @Published var stageFilter: CaseStageKind? = nil
+    /// `nil` означает «Нет активного производства»; отдельный флаг отличает
+    /// этот фильтр от отсутствия фильтра вообще.
+    @Published var tierFilter: CourtTier? = nil
+    @Published var noActiveProductionFilter = false
     @Published var prodFilter: ProductionType? = nil
     /// Живой фильтр таблицы: номер + стороны + подборки + суд.
     @Published var query: String = ""
@@ -66,6 +70,7 @@ final class AppRouter: ObservableObject {
     @Published var deadlines: [TrackedDeadline] = []
     @Published var collections: [(String, Int)] = []   // «Все дела» + подборки со счётчиками
     @Published var stageCounts: [(CaseStageKind, Int)] = []
+    @Published var tierCounts: [(CourtTier?, Int)] = []
     @Published var lastOverviewRefreshAt: Date? = nil
 
     // Правка срока
@@ -1186,6 +1191,7 @@ final class AppRouter: ObservableObject {
         feed = buildFeed(feedItems)
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
+        tierCounts = Self.buildTierCounts(cs)
         lastOverviewRefreshAt = recs.compactMap(\.movementFetchedAt).max()
         reconcileFeed(notify: notifyNew)
         if let spotlightScope, !spotlightOnboardingRequired {
@@ -1230,6 +1236,7 @@ final class AppRouter: ObservableObject {
         let isNew = rec.seenAt == nil
         let today = DateUtil.today
         let production = productionType(for: rec)
+        let ctx = rec.context
         if let snap {
             // Даты для сортировок: последнее состоявшееся событие и ближайшее
             // будущее (заседание или срок).
@@ -1249,7 +1256,11 @@ final class AppRouter: ObservableObject {
                 recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
                 stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,
                 subject: snap.category ?? "—",
-                court: rec.courtTitle, production: production,
+                court: rec.courtTitle,
+                courtTier: presentation?.currentTier
+                    ?? (stage == .done ? nil : ctx.flatMap {
+                        MovementDerivation.inferredTier(stage: stage, context: $0) }),
+                production: production,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 leadCharges: snap.leadCharges,
@@ -1265,11 +1276,12 @@ final class AppRouter: ObservableObject {
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next)
         }
         // Снимок ещё не собран (трек до загрузки движения).
-        let ctx = rec.context
         return TrackedCase(
             recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
-            court: rec.courtTitle, production: production,
+            court: rec.courtTitle,
+            courtTier: ctx.map { MovementDerivation.tier(for: $0.courtLevel) },
+            production: production,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
             leadCharges: nil,
@@ -1423,9 +1435,18 @@ final class AppRouter: ObservableObject {
         }
     }
 
+    static func buildTierCounts(_ cs: [TrackedCase]) -> [(CourtTier?, Int)] {
+        let tiers: [CourtTier] = [.magistrate, .district, .subject, .appeal, .cassation, .supreme]
+        let active = tiers.map { tier in
+            (Optional(tier), cs.filter { $0.courtTier == tier }.count)
+        }
+        let inactive = cs.filter { $0.courtTier == nil }.count
+        return active + [(nil, inactive)]
+    }
+
     // MARK: Фильтры «Моих дел»
 
-    /// Таблица «Списком»: подборка ∧ вид производства ∧ стадия ∧ живой запрос,
+    /// Таблица «Списком»: подборка ∧ вид производства ∧ стадия ∧ звено ∧ живой запрос,
     /// затем выбранная сортировка. Фильтры комбинируются (И).
     func filteredCases() -> [TrackedCase] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1433,6 +1454,8 @@ final class AppRouter: ObservableObject {
             (folder == "Все дела" || c.collections.contains(folder))
             && (prodFilter == nil || c.production == prodFilter)
             && (stageFilter == nil || c.stage == stageFilter)
+            && (!noActiveProductionFilter || c.courtTier == nil)
+            && (tierFilter == nil || c.courtTier == tierFilter)
             && (q.isEmpty || Self.matches(c, query: q))
         }
         return Self.sorted(rows, by: sortBy)

@@ -93,6 +93,8 @@ struct CaseLifecyclePresentation {
     var nextChip: Palette.Chip
     var nextEventDate: Date?
     var steps: [String]
+    /// Звено текущего производства. Для завершённых дел отсутствует.
+    var currentTier: CourtTier?
 }
 
 // MARK: - Движок
@@ -125,23 +127,13 @@ enum MovementDerivation {
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
                       < (DateUtil.parse($1.dateRaw) ?? .distantPast) }
 
-        // Для стадии и сроков учитываются только реальные производства. Stub
-        // нужен карточке для CAPTCHA/retry, но не доказывает наличие жалобы.
-        let realInstances = CaseLifecycleResolver.realInstances(in: mv)
-        let hasAppeal = realInstances.contains { $0.level == .appeal }
-        let hasCassation = realInstances.contains {
-            $0.level == .cassation || $0.level == .vsCassation || $0.level == .supervisory
-        }
-
         // Стороны (короткая строка + статьи ведущего лица + вторая строка «Списком»).
         let partiesShort = self.partiesShort(mv.parties)
         let leadCharges = mv.parties.leadCharges
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, prefix: prefix,
-                                       hasAppeal: hasAppeal, hasCassation: hasCassation,
-                                       today: today)
+        let deadlines = self.deadlines(from: mv, prefix: prefix, today: today)
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
                                                  deadlines: deadlines, context: context,
                                                  today: today)
@@ -196,7 +188,7 @@ enum MovementDerivation {
         let nextHearing = resolution.isCompleted ? nil : futureHearings(
             sessions.filter { $0.level != .material }, today: today).first
         let nextDeadline = deadlines
-            .filter { $0.date >= today }
+            .filter { $0.date >= today || $0 == resolution.graceDeadline }
             .sorted(by: { $0.dateRef < $1.dateRef })
             .first
 
@@ -213,7 +205,10 @@ enum MovementDerivation {
                 + DateUtil.shortDM(deadline.date)
             nextChip = deadline.statusRaw == DeadlineStatus.confirmed.rawValue
                 ? .confirmed : .proposed
-            nextEventDate = deadline.date
+            // В буфере продолжаем показывать сам истёкший срок, а в сортировке
+            // держим карточку до конца седьмого календарного дня.
+            nextEventDate = deadline == resolution.graceDeadline && deadline.date < today
+                ? DateUtil.addDays(deadline.date, 7) : deadline.date
         } else if resolution.isCompleted {
             nextEvent = "завершено"
         }
@@ -225,6 +220,9 @@ enum MovementDerivation {
             statusText = "Вступило в силу"
             statusChip = .green
         case .terminalReview(let result):
+            statusText = result
+            statusChip = .green
+        case .terminalFirst(let result):
             statusText = result
             statusChip = .green
         case .confirmedDeadline:
@@ -254,7 +252,92 @@ enum MovementDerivation {
             nextEvent: nextEvent,
             nextChip: nextChip,
             nextEventDate: nextEventDate,
-            steps: resolution.steps)
+            steps: resolution.steps,
+            currentTier: resolution.isCompleted ? nil : courtTier(
+                for: resolution.currentInstance, context: context)
+                ?? inferredTier(stage: resolution.stage, context: context))
+    }
+
+    /// Классификация намеренно живёт в presentation: она зависит от текущего
+    /// раунда и не меняет форматы `CaseSnapshot`/SwiftData.
+    static func courtTier(for instance: CaseInstance?, context: MovementContext?) -> CourtTier? {
+        guard let instance else { return nil }
+        let text = (instance.court + " " + instance.domain).lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+        if instance.level == .vsCassation || instance.level == .supervisory
+            || text.contains("vsrf.ru") || text.contains("верховн") && text.contains("росс") {
+            return .supreme
+        }
+        let canonicalDomain = instance.domain.lowercased().replacingOccurrences(of: "www.", with: "")
+        if CourtDirectory.subjectCourts.contains(where: {
+            $0.domain.lowercased().replacingOccurrences(of: "www.", with: "") == canonicalDomain
+        }) { return .subject }
+        if let context, (instance.domain == context.searchDomain || instance.domain == context.displayDomain),
+           context.courtLevel == .subject { return .subject }
+        if text.contains("миров") || text.contains("msudrf") { return .magistrate }
+        if text.contains("кассац") || text.contains("kas.sudrf") || text.contains("vkas") {
+            return .cassation
+        }
+        if text.contains("апелляц") || text.contains("ap.sudrf") || text.contains("asoy") {
+            return .appeal
+        }
+        if text.contains("гарнизон") { return .district }
+        if text.contains("район") || text.contains("городск") { return .district }
+        if text.contains("окружн") || text.contains("флотск") { return .subject }
+        if text.contains("област") || text.contains("краев") || text.contains("республик") {
+            return .subject
+        }
+        if let context, instance.domain == context.searchDomain
+            || instance.domain == context.displayDomain {
+            switch context.courtLevel {
+            case .magistrate: return .magistrate
+            case .district: return .district
+            case .subject: return .subject
+            case .appeal: return .appeal
+            case .cassation: return .cassation
+            }
+        }
+        switch instance.level {
+        case .first: return .district
+        case .appeal: return .subject
+        case .cassation: return .cassation
+        case .vsCassation, .supervisory: return .supreme
+        case .material: return nil
+        }
+    }
+
+    /// Когда портал сообщил возврат, но карточка целевого суда ещё не найдена,
+    /// дело остаётся активным и получает ожидаемое звено по процессуальному пути.
+    static func inferredTier(stage: CaseStageKind, context: MovementContext?) -> CourtTier? {
+        guard let context else { return nil }
+        switch stage {
+        case .done: return nil
+        case .first:
+            return tier(for: context.courtLevel)
+        case .appeal:
+            switch context.courtLevel {
+            case .magistrate: return .district
+            case .district: return .subject
+            case .subject: return .appeal
+            case .appeal: return .cassation
+            case .cassation: return .supreme
+            }
+        case .cassation:
+            switch context.courtLevel {
+            case .cassation: return .supreme
+            default: return .cassation
+            }
+        }
+    }
+
+    static func tier(for level: CourtLevel) -> CourtTier {
+        switch level {
+        case .magistrate: return .magistrate
+        case .district: return .district
+        case .subject: return .subject
+        case .appeal: return .appeal
+        case .cassation: return .cassation
+        }
     }
 
     /// Переносит в свежий снимок пользовательские правки сроков: подтверждённый
@@ -320,13 +403,16 @@ enum MovementDerivation {
     /// расчётные сроки помечаются «proposed» и требуют подтверждения. Для КоАП и
     /// УПК единый срок кассации отсутствует — кассацию не считаем.
     private static func deadlines(from mv: CaseMovement,
-                                  prefix: String, hasAppeal: Bool, hasCassation: Bool,
-                                  today: Date) -> [StoredDeadline] {
+                                  prefix: String, today: Date) -> [StoredDeadline] {
         var out: [StoredDeadline] = []
         // Юридическая сила относится к текущему кругу. Старое вступление в
         // силу первой инстанции не должно порождать срок кассации, пока более
         // поздняя апелляция/кассация остаётся активной.
         let current = CaseLifecycleResolver.resolve(movement: mv, deadlines: [], today: today)
+        // После возврата на новое рассмотрение историческая апелляция относится
+        // к прежнему кругу и не должна подавлять новый расчётный срок.
+        let timeline = CaseLifecycleResolver.timeline(in: mv)
+        let hasAppealInCurrentRound = timeline.hasAppealInCurrentRound
         let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
         let activeReview = current.completionReason == nil
             && current.currentInstance.map { isReviewLevel($0.level) } == true
@@ -335,8 +421,8 @@ enum MovementDerivation {
 
         // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
         // апелляцию и не вступило в силу.
-        if !legallyEffective, !currentlyReactivated, !hasAppeal {
-            if let firstDecision = firstInstanceDecisionDate(mv),
+        if !legallyEffective, !currentlyReactivated, !hasAppealInCurrentRound {
+            if let firstDecision = firstInstanceDecisionDate(mv, timeline: timeline),
                let days = appealDays(prefix: prefix) {
                 let due = DateUtil.addDays(firstDecision, days)
                 out.append(StoredDeadline(
@@ -348,7 +434,8 @@ enum MovementDerivation {
         }
 
         // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
-        if legallyEffective, !hasCassation, let days = cassationDays(prefix: prefix) {
+        if legallyEffective, !timeline.hasCassationInCurrentRound,
+           let days = cassationDays(prefix: prefix) {
             guard let base = forceState.date ?? lastAppealDate(mv) else { return out }
             let due = DateUtil.addDays(base, days)
             out.append(StoredDeadline(
@@ -378,8 +465,10 @@ enum MovementDerivation {
         }
     }
 
-    private static func firstInstanceDecisionDate(_ mv: CaseMovement) -> Date? {
-        guard let first = mv.instances.first(where: { $0.level == .first }) else { return nil }
+    private static func firstInstanceDecisionDate(_ mv: CaseMovement,
+                                                  timeline: CaseLifecycleResolver.Timeline) -> Date? {
+        let first = timeline.latestFirst?.instance
+        guard let first else { return nil }
         // Дата итогового акта 1-й инстанции: последняя сессия с результатом,
         // иначе последняя сессия.
         let dated = first.sessions.compactMap { s -> Date? in DateUtil.parse(s.date) }

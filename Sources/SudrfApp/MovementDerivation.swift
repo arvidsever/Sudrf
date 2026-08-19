@@ -127,23 +127,13 @@ enum MovementDerivation {
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
                       < (DateUtil.parse($1.dateRaw) ?? .distantPast) }
 
-        // Для стадии и сроков учитываются только реальные производства. Stub
-        // нужен карточке для CAPTCHA/retry, но не доказывает наличие жалобы.
-        let realInstances = CaseLifecycleResolver.realInstances(in: mv)
-        let hasAppeal = realInstances.contains { $0.level == .appeal }
-        let hasCassation = realInstances.contains {
-            $0.level == .cassation || $0.level == .vsCassation || $0.level == .supervisory
-        }
-
         // Стороны (короткая строка + статьи ведущего лица + вторая строка «Списком»).
         let partiesShort = self.partiesShort(mv.parties)
         let leadCharges = mv.parties.leadCharges
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, prefix: prefix,
-                                       hasAppeal: hasAppeal, hasCassation: hasCassation,
-                                       today: today)
+        let deadlines = self.deadlines(from: mv, prefix: prefix, today: today)
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
                                                  deadlines: deadlines, context: context,
                                                  today: today)
@@ -413,8 +403,7 @@ enum MovementDerivation {
     /// расчётные сроки помечаются «proposed» и требуют подтверждения. Для КоАП и
     /// УПК единый срок кассации отсутствует — кассацию не считаем.
     private static func deadlines(from mv: CaseMovement,
-                                  prefix: String, hasAppeal: Bool, hasCassation: Bool,
-                                  today: Date) -> [StoredDeadline] {
+                                  prefix: String, today: Date) -> [StoredDeadline] {
         var out: [StoredDeadline] = []
         // Юридическая сила относится к текущему кругу. Старое вступление в
         // силу первой инстанции не должно порождать срок кассации, пока более
@@ -422,11 +411,8 @@ enum MovementDerivation {
         let current = CaseLifecycleResolver.resolve(movement: mv, deadlines: [], today: today)
         // После возврата на новое рассмотрение историческая апелляция относится
         // к прежнему кругу и не должна подавлять новый расчётный срок.
-        let originalFirst = mv.instances.first(where: { $0.level == .first })
-        let latestFirst = mv.instances.last(where: { $0.level == .first })
-        let returnedFirstRound = latestFirst != nil && latestFirst != originalFirst
-            && mv.instances.contains { isReviewLevel($0.level) }
-        let hasAppealInCurrentRound = hasAppeal && !returnedFirstRound
+        let timeline = CaseLifecycleResolver.timeline(in: mv)
+        let hasAppealInCurrentRound = timeline.hasAppealInCurrentRound
         let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
         let activeReview = current.completionReason == nil
             && current.currentInstance.map { isReviewLevel($0.level) } == true
@@ -436,7 +422,7 @@ enum MovementDerivation {
         // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
         // апелляцию и не вступило в силу.
         if !legallyEffective, !currentlyReactivated, !hasAppealInCurrentRound {
-            if let firstDecision = firstInstanceDecisionDate(mv, current: current.currentInstance),
+            if let firstDecision = firstInstanceDecisionDate(mv, timeline: timeline),
                let days = appealDays(prefix: prefix) {
                 let due = DateUtil.addDays(firstDecision, days)
                 out.append(StoredDeadline(
@@ -448,7 +434,8 @@ enum MovementDerivation {
         }
 
         // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
-        if legallyEffective, !hasCassation, let days = cassationDays(prefix: prefix) {
+        if legallyEffective, !timeline.hasCassationInCurrentRound,
+           let days = cassationDays(prefix: prefix) {
             guard let base = forceState.date ?? lastAppealDate(mv) else { return out }
             let due = DateUtil.addDays(base, days)
             out.append(StoredDeadline(
@@ -479,8 +466,8 @@ enum MovementDerivation {
     }
 
     private static func firstInstanceDecisionDate(_ mv: CaseMovement,
-                                                  current: CaseInstance?) -> Date? {
-        let first = mv.instances.last(where: { $0.level == .first })
+                                                  timeline: CaseLifecycleResolver.Timeline) -> Date? {
+        let first = timeline.latestFirst?.instance
         guard let first else { return nil }
         // Дата итогового акта 1-й инстанции: последняя сессия с результатом,
         // иначе последняя сессия.

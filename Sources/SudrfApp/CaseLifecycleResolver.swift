@@ -26,9 +26,82 @@ enum CaseLifecycleResolver {
         var isCompleted: Bool { completionReason != nil }
     }
 
-    private struct IndexedInstance {
+    struct IndexedInstance {
         var index: Int
         var instance: CaseInstance
+    }
+
+    /// Хронология не меняет сохранённое движение. Она лишь связывает
+    /// производные решения с последним датированным процессуальным кругом.
+    /// Недатированная карточка с итогом остаётся надёжным fallback, пока нет
+    /// доказательства, что после её пересмотра начался новый круг.
+    struct Timeline {
+        var sourceOrdered: [IndexedInstance]
+        var chronological: [IndexedInstance]
+        var dated: [IndexedInstance]
+        /// Первая датированная инстанция нового круга, созданного возвратом.
+        var currentRoundStart: IndexedInstance?
+        var currentDated: IndexedInstance?
+        var currentDatedStartsNewRound: Bool { currentRoundStart != nil }
+
+        var instances: [CaseInstance] { chronological.map(\.instance) }
+
+        var latestFirst: IndexedInstance? {
+            dated.last(where: { $0.instance.level == .first })
+                ?? chronological.last(where: { $0.instance.level == .first })
+        }
+
+        /// Карточка апелляции без дат не доказывает стадию, но достаточно
+        /// надёжна, чтобы не предлагать пользователю уже поданную жалобу.
+        /// Датированная апелляция относится к текущему кругу только после
+        /// последней первой инстанции этого круга.
+        var hasAppealInCurrentRound: Bool {
+            guard let latestFirst else {
+                return sourceOrdered.contains { $0.instance.level == .appeal }
+            }
+            let firstDate = CaseLifecycleResolver.earliestDatedSessionDate(in: latestFirst.instance)
+            for candidate in sourceOrdered where candidate.instance.level == .appeal {
+                guard let appealDate = CaseLifecycleResolver.earliestDatedSessionDate(in: candidate.instance) else {
+                    // Дата отсутствует, поэтому не повышаем стадию. Но реальная
+                    // карточка всё равно консервативно подавляет предлагаемый
+                    // срок: порядок карточек неустойчив после merge кэша.
+                    if currentRoundStart == nil
+                        || !CaseLifecycleResolver.isConcludedReview(candidate.instance) { return true }
+                    // Авторитетный итог недатированной карточки, вытесненный
+                    // подтверждённым новым кругом, относится к истории.
+                    continue
+                }
+                if let firstDate, appealDate >= firstDate { return true }
+            }
+            return false
+        }
+
+        var hasUnresolvedUndatedAppeal: Bool {
+            return sourceOrdered.contains {
+                $0.instance.level == .appeal
+                    && CaseLifecycleResolver.earliestDatedSessionDate(in: $0.instance) == nil
+                    && !CaseLifecycleResolver.isConcludedReview($0.instance)
+            }
+        }
+
+        var hasCassationInCurrentRound: Bool {
+            let cassationLevels: Set<CaseInstance.Level> = [.cassation, .vsCassation, .supervisory]
+            guard let currentRoundStart,
+                  let roundDate = CaseLifecycleResolver.earliestDatedSessionDate(
+                    in: currentRoundStart.instance
+                  ) else {
+                return sourceOrdered.contains { cassationLevels.contains($0.instance.level) }
+            }
+            return sourceOrdered.contains { candidate in
+                guard cassationLevels.contains(candidate.instance.level) else { return false }
+                guard let date = CaseLifecycleResolver.earliestDatedSessionDate(
+                    in: candidate.instance
+                ) else {
+                    return !CaseLifecycleResolver.isConcludedReview(candidate.instance)
+                }
+                return date >= roundDate
+            }
+        }
     }
 
     private enum InstanceSignal {
@@ -39,24 +112,71 @@ enum CaseLifecycleResolver {
     }
 
     static func realInstances(in movement: CaseMovement) -> [CaseInstance] {
-        movement.instances.enumerated()
+        timeline(in: movement).instances
+    }
+
+    static func timeline(in movement: CaseMovement) -> Timeline {
+        let sourceOrdered = movement.instances.enumerated()
             .filter { _, instance in
                 instance.level != .material
                     && instance.captchaFormURL == nil
                     && instance.transientError != true
             }
             .map { IndexedInstance(index: $0.offset, instance: $0.element) }
-            .sorted {
+        let chronological = sourceOrdered.sorted {
                 let left = MovementService.instanceOrderKey($0.instance)
                 let right = MovementService.instanceOrderKey($1.instance)
                 return left == right ? $0.index < $1.index : left < right
             }
-            .map(\.instance)
+        let dated = chronological.filter { hasDatedSession($0.instance) }
+        // Возврат создаёт новый процессуальный круг только когда есть отдельная
+        // датированная карточка целевой инстанции. У недатированного возврата
+        // порядок источника предпочтителен; однако merge кэша кладёт такие
+        // карточки в хвост, поэтому повторное звено цели также подтверждает
+        // границу (первая инстанция → пересмотр → новая первая инстанция).
+        var roundStarts: [IndexedInstance] = []
+        for remand in sourceOrdered {
+            guard let target = remandTarget(from: latestSignal(for: remand.instance)) else {
+                continue
+            }
+            let targets = dated.filter {
+                $0.instance != remand.instance && stage(for: $0.instance) == target
+            }
+            guard !targets.isEmpty else { continue }
+            let remandDate = earliestDatedSessionDate(in: remand.instance)
+            for targetInstance in targets {
+                let targetDate = earliestDatedSessionDate(in: targetInstance.instance)
+                let followsRemand: Bool
+                if let remandDate, let targetDate {
+                    followsRemand = targetDate >= remandDate
+                } else {
+                    followsRemand = targetInstance.index > remand.index || targets.count > 1
+                }
+                if followsRemand { roundStarts.append(targetInstance) }
+            }
+        }
+        let currentRoundStart = roundStarts.max { left, right in
+            let leftKey = MovementService.instanceOrderKey(left.instance)
+            let rightKey = MovementService.instanceOrderKey(right.instance)
+            return leftKey == rightKey ? left.index < right.index : leftKey < rightKey
+        }
+        let currentDated: IndexedInstance?
+        if let currentRoundStart, let startDate = earliestDatedSessionDate(in: currentRoundStart.instance) {
+            currentDated = dated.last(where: {
+                guard let date = earliestDatedSessionDate(in: $0.instance) else { return false }
+                return date >= startDate
+            })
+        } else {
+            currentDated = dated.last
+        }
+        return Timeline(sourceOrdered: sourceOrdered, chronological: chronological, dated: dated,
+                        currentRoundStart: currentRoundStart, currentDated: currentDated)
     }
 
     static func resolve(movement: CaseMovement, deadlines: [StoredDeadline],
                         today: Date = DateUtil.today) -> Resolution {
-        let instances = realInstances(in: movement)
+        let timeline = timeline(in: movement)
+        let instances = timeline.instances
         // Пустая карточка вышестоящего суда, найденная по УИД, полезна как
         // доказательство подачи жалобы (в частности, подавляет расчётный срок),
         // но не должна перекрывать последний датированный круг производства.
@@ -71,7 +191,9 @@ enum CaseLifecycleResolver {
         // базовой карточки, но не вправе переписать более поздний круг того же
         // или более высокого звена.
         let latest: CaseInstance?
-        if let undated = undatedWithResult.last, let dated = datedInstances.last,
+        if timeline.currentDatedStartsNewRound, let dated = timeline.currentDated {
+            latest = dated.instance
+        } else if let undated = undatedWithResult.last, let dated = datedInstances.last,
            stageRank(dated) >= stageRank(undated) {
             latest = dated
         } else {
@@ -102,6 +224,14 @@ enum CaseLifecycleResolver {
                 return completed(current: latest, visited: visited,
                                  reason: .terminalReview(result))
             case .terminal(let result) where latest.level == .first:
+                // Неполная карточка апелляции нового круга не доказывает
+                // повышение стадии, но исключает автоматическое закрытие
+                // первой инстанции из-за отсутствия расчётного срока.
+                if timeline.hasUnresolvedUndatedAppeal {
+                    return Resolution(stage: .first, currentInstance: latest,
+                                      steps: steps(visited: visited, active: .first),
+                                      completionReason: nil, graceDeadline: nil)
+                }
                 return resolveTerminalFirst(current: latest, result: result,
                                             visited: visited, deadlines: deadlines, today: today)
             case .active, .terminal, nil:
@@ -274,6 +404,10 @@ enum CaseLifecycleResolver {
         instance.sessions.contains { DateUtil.parse($0.date) != nil }
     }
 
+    static func earliestDatedSessionDate(in instance: CaseInstance) -> Date? {
+        instance.sessions.compactMap { DateUtil.parse($0.date) }.min()
+    }
+
     private static func hasAuthoritativeResult(_ instance: CaseInstance) -> Bool {
         guard let result = nonempty(instance.result) else { return false }
         return signal(in: result) != nil
@@ -347,6 +481,23 @@ enum CaseLifecycleResolver {
             return .terminal(result)
         }
         return latest
+    }
+
+    private static func remandTarget(from signal: InstanceSignal?) -> CaseStageKind? {
+        guard case .remand(let target)? = signal else { return nil }
+        return target
+    }
+
+    /// После доказанного возврата лишь завершённый недатированный пересмотр
+    /// можно отнести к старому кругу. Активная карточка без даты остаётся
+    /// консервативным свидетельством подачи, но сама не повышает стадию.
+    private static func isConcludedReview(_ instance: CaseInstance) -> Bool {
+        switch latestSignal(for: instance) {
+        case .remand, .legalForce, .terminal:
+            return true
+        case .active, nil:
+            return false
+        }
     }
 
     private static func signal(in source: String) -> InstanceSignal? {

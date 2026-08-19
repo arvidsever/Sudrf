@@ -10,6 +10,7 @@ enum CaseLifecycleResolver {
     enum CompletionReason: Equatable {
         case legalForce
         case terminalReview(String)
+        case terminalFirst(String)
         case confirmedDeadline
     }
 
@@ -18,6 +19,9 @@ enum CaseLifecycleResolver {
         var currentInstance: CaseInstance?
         var steps: [String]
         var completionReason: CompletionReason?
+        /// Расчётный срок первой инстанции, который ещё удерживает дело в
+        /// активном состоянии. Не персистируется: нужен только для UI и сортировки.
+        var graceDeadline: StoredDeadline?
 
         var isCompleted: Bool { completionReason != nil }
     }
@@ -63,7 +67,16 @@ enum CaseLifecycleResolver {
         let undatedWithResult = instances.filter {
             !hasDatedSession($0) && hasAuthoritativeResult($0)
         }
-        let latest = undatedWithResult.last ?? datedInstances.last ?? instances.last
+        // Недатированный итог вышестоящей инстанции всё ещё надёжнее датированной
+        // базовой карточки, но не вправе переписать более поздний круг того же
+        // или более высокого звена.
+        let latest: CaseInstance?
+        if let undated = undatedWithResult.last, let dated = datedInstances.last,
+           stageRank(dated) >= stageRank(undated) {
+            latest = dated
+        } else {
+            latest = undatedWithResult.last ?? datedInstances.last ?? instances.last
+        }
         let visited = Set(instances.compactMap(stage(for:)))
 
         // Будущее заседание — наиболее сильный сигнал активного производства.
@@ -72,21 +85,25 @@ enum CaseLifecycleResolver {
             let active = stage(for: hearingInstance) ?? .first
             return Resolution(stage: active, currentInstance: hearingInstance,
                               steps: steps(visited: visited, active: active),
-                              completionReason: nil)
+                              completionReason: nil, graceDeadline: nil)
         }
 
         let currentSignal = latest.flatMap(latestSignal)
         if let latest {
             switch currentSignal {
             case .remand(let target):
-                return Resolution(stage: target, currentInstance: latest,
+                return Resolution(stage: target, currentInstance: latestInstance(
+                    for: target, among: instances, excluding: latest),
                                   steps: steps(visited: visited, active: target),
-                                  completionReason: nil)
+                                  completionReason: nil, graceDeadline: nil)
             case .legalForce:
                 return completed(current: latest, visited: visited, reason: .legalForce)
             case .terminal(let result) where isReview(latest.level):
                 return completed(current: latest, visited: visited,
                                  reason: .terminalReview(result))
+            case .terminal(let result) where latest.level == .first:
+                return resolveTerminalFirst(current: latest, result: result,
+                                            visited: visited, deadlines: deadlines, today: today)
             case .active, .terminal, nil:
                 break
             }
@@ -114,15 +131,44 @@ enum CaseLifecycleResolver {
         }
 
         let active = latest.flatMap(stage(for:)) ?? .first
-        return Resolution(stage: active, currentInstance: latest,
-                          steps: steps(visited: visited, active: active),
-                          completionReason: nil)
+            return Resolution(stage: active, currentInstance: latest,
+                              steps: steps(visited: visited, active: active),
+                              completionReason: nil, graceDeadline: nil)
     }
 
     private static func completed(current: CaseInstance?, visited: Set<CaseStageKind>,
                                   reason: CompletionReason) -> Resolution {
         Resolution(stage: .done, currentInstance: current,
-                   steps: steps(visited: visited, active: nil), completionReason: reason)
+                   steps: steps(visited: visited, active: nil), completionReason: reason,
+                   graceDeadline: nil)
+    }
+
+    private static func resolveTerminalFirst(current: CaseInstance, result: String,
+                                             visited: Set<CaseStageKind>,
+                                             deadlines: [StoredDeadline], today: Date) -> Resolution {
+        guard let deadline = deadlines.first(where: { $0.kind == "appeal" }) else {
+            return completed(current: current, visited: visited, reason: .terminalFirst(result))
+        }
+        if deadline.statusRaw == DeadlineStatus.confirmed.rawValue, deadline.date < today {
+            return completed(current: current, visited: visited, reason: .confirmedDeadline)
+        }
+        // Расчётный срок — не юридический факт, но даём порталам семь полных
+        // календарных дней после него на публикацию апелляции. На восьмой день
+        // производство закрывается автоматически.
+        let graceEnd = DateUtil.addDays(deadline.date, 7)
+        if deadline.date >= today || today <= graceEnd {
+            return Resolution(stage: .first, currentInstance: current,
+                              steps: steps(visited: visited, active: .first),
+                              completionReason: nil, graceDeadline: deadline)
+        }
+        return completed(current: current, visited: visited, reason: .terminalFirst(result))
+    }
+
+    private static func latestInstance(for stage: CaseStageKind, among instances: [CaseInstance],
+                                       excluding current: CaseInstance) -> CaseInstance? {
+        instances.last { candidate in
+            candidate != current && self.stage(for: candidate) == stage
+        }
     }
 
     private static func stage(for instance: CaseInstance) -> CaseStageKind? {
@@ -131,6 +177,15 @@ enum CaseLifecycleResolver {
         case .appeal: return .appeal
         case .cassation, .vsCassation, .supervisory: return .cassation
         case .material: return nil
+        }
+    }
+
+    private static func stageRank(_ instance: CaseInstance) -> Int {
+        switch stage(for: instance) {
+        case .first: return 1
+        case .appeal: return 2
+        case .cassation: return 3
+        case .done, nil: return 0
         }
     }
 
@@ -179,7 +234,8 @@ enum CaseLifecycleResolver {
         let value = normalized(event + " " + (result ?? ""))
         // Состоявшееся сегодня заседание с уже опубликованным итогом не должно
         // считаться будущим только потому, что сравнение идёт по календарному дню.
-        if remandTarget(in: value) != nil || isTerminalDisposition(value) { return false }
+        if remandTarget(in: value) != nil || hasLegalForceEvidence(in: value)
+            || isTerminalDisposition(value) { return false }
         return !(time ?? "").isEmpty
             || value.contains("заседани")
             || value.contains("рассмотрени")
@@ -219,7 +275,10 @@ enum CaseLifecycleResolver {
     }
 
     private static func hasAuthoritativeResult(_ instance: CaseInstance) -> Bool {
-        nonempty(instance.result).flatMap(signal) != nil
+        guard let result = nonempty(instance.result) else { return false }
+        return signal(in: result) != nil
+            || instance.level == .first && hasReliableHomeResult(instance)
+                && isReliableFirstTerminalResult(normalized(result))
     }
 
     /// Возвращает последний актуальный процессуальный сигнал внутри одного
@@ -227,15 +286,16 @@ enum CaseLifecycleResolver {
     /// хронологии, чтобы старое вступление в силу/возврат не побеждало более
     /// позднее возобновление или новый конечный результат.
     private static func latestSignal(for instance: CaseInstance) -> InstanceSignal? {
-        if let result = nonempty(instance.result), let signal = signal(in: result) {
-            return signal
-        }
         let ordered = instance.sessions.enumerated().sorted { left, right in
             let leftDate = DateUtil.parse(left.element.date) ?? .distantPast
             let rightDate = DateUtil.parse(right.element.date) ?? .distantPast
             return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
         }
         var latest: InstanceSignal?
+        // Возобновление остаётся доминирующим состоянием через последующие
+        // регистрации/принятие жалобы; сбросить его может только более поздний
+        // конечный сигнал, а не очередная активная административная строка.
+        var reactivationStillDominant = false
         for (_, session) in ordered {
             let event = nonempty(session.event)
             let result = nonempty(session.result)
@@ -244,7 +304,47 @@ enum CaseLifecycleResolver {
                 ?? event.flatMap(signal)
                 ?? (combined.isEmpty ? nil : signal(in: combined)) {
                 latest = current
+                if isReactivation(normalized(combined)) {
+                    reactivationStillDominant = true
+                } else if case .legalForce = current {
+                    reactivationStillDominant = false
+                } else if case .terminal = current {
+                    reactivationStillDominant = false
+                } else if case .remand = current {
+                    reactivationStillDominant = false
+                }
             }
+        }
+        // Итог карточки обычно не датирован и должен перебивать старые строки,
+        // но опубликованное позднее вступление в силу/возобновление — более
+        // сильный, явно хронологический сигнал.
+        if let result = nonempty(instance.result), let resultSignal = signal(in: result) {
+            if let latest {
+                switch latest {
+                case .legalForce:
+                    return latest
+                case .active where reactivationStillDominant:
+                    return latest
+                default:
+                    break
+                }
+            }
+            return resultSignal
+        }
+        if let latest {
+            switch latest {
+            case .legalForce:
+                return latest
+            case .active where reactivationStillDominant:
+                return latest
+            default:
+                break
+            }
+        }
+        if instance.level == .first, hasReliableHomeResult(instance),
+           let result = nonempty(instance.result),
+           isReliableFirstTerminalResult(normalized(result)) {
+            return .terminal(result)
         }
         return latest
     }
@@ -261,6 +361,7 @@ enum CaseLifecycleResolver {
 
     private static func remandTarget(in source: String) -> CaseStageKind? {
         let value = normalized(source)
+        guard !value.contains("без направ") else { return nil }
         guard value.contains("направ"), value.contains("нов"),
               value.contains("рассмотр") else { return nil }
         return value.contains("апелляцион") ? .appeal : .first
@@ -303,6 +404,9 @@ enum CaseLifecycleResolver {
         let terminated = value.contains("производств") && value.contains("прекращ")
         let returned = (value.contains("возврат") || value.contains("возвращ"))
             && value.contains("без рассмотр")
+        let wholeProceedingSubject = isWholeProceedingSubject(value)
+        let leftWithoutConsideration = value.contains("остав") && value.contains("без рассмотр")
+            && wholeProceedingSubject
         let restorationDenied = isDenied(value) && value.contains("восстанов")
             && value.contains("срок")
         let acceptanceDenied = isDenied(value) && value.contains("принят")
@@ -312,13 +416,56 @@ enum CaseLifecycleResolver {
             || (value.contains("судебн") && value.contains("акт"))
         let changedWithoutRemand = value.contains("измен") && judicialAct
             && remandTarget(in: value) == nil
+        // Узкая формула отмены без направления — итог; обычные слова вроде
+        // «отмена заседания» или «отменена доверенность» сюда не попадают.
+        let cancelledWithoutDirection = value.contains("отмен") && value.contains("без направ")
+        let cancelledActWithNewDecision = value.contains("отмен") && judicialAct
+            && (value.contains("новое решен") || value.contains("принят") && value.contains("нов")
+                && value.contains("решен"))
         let meritsDecision = value.contains("вынес") && value.contains("решен")
         let satisfiedWithoutRemand = value.contains("жалоб") && value.contains("удовлетвор")
             && !value.contains("без удовлетвор")
             && !(value.contains("направ") && value.contains("рассмотр"))
-        return unchanged || transferDenied || terminated || returned
+        return unchanged || transferDenied || terminated || returned || leftWithoutConsideration
             || restorationDenied || acceptanceDenied
-            || changedWithoutRemand || meritsDecision || satisfiedWithoutRemand
+            || changedWithoutRemand || cancelledWithoutDirection || cancelledActWithNewDecision
+            || meritsDecision || satisfiedWithoutRemand
+    }
+
+    /// Конечные формулы первой инстанции. Намеренно не считаем итогом простое
+    /// «рассмотрение отложено», «принято» или неоконченную карточку.
+    private static func isReliableFirstTerminalResult(_ value: String) -> Bool {
+        let civilOrKAS = value.contains("иск")
+            && (value.contains("удовлетвор") || value.contains("отказано"))
+        let criminal = value.contains("приговор")
+        let koap = value.contains("постановлен")
+            && (value.contains("административн") || value.contains("производств") || value.contains("наказан"))
+        let wholeProceedingSubject = isWholeProceedingSubject(value)
+        let proceduralReturn = (value.contains("остав") && value.contains("без рассмотрен")
+            && wholeProceedingSubject)
+            || (value.contains("заявлен") && value.contains("возвращ"))
+        let bareDecision = value.contains("решен") && value.contains("вынес")
+        return civilOrKAS || criminal || koap || proceduralReturn || bareDecision
+    }
+
+    private static func hasReliableHomeResult(_ instance: CaseInstance) -> Bool {
+        guard let result = nonempty(instance.result), isReliableFirstTerminalResult(normalized(result)) else {
+            return false
+        }
+        // Прямой акт/сессия или найденная по УИД карточка — сильный источник.
+        // Для домашней карточки без УИД таким источником является опубликованный
+        // акт (обычный production-путь, не произвольная строка выдачи).
+        return instance.foundByUID || hasDatedSession(instance)
+            || instance.actID != nil || instance.actURL != nil
+    }
+
+    /// «Без рассмотрения» относится к исходу дела, только когда объектом
+    /// является весь спор. Слово «дело» в «ходатайство по делу» этого не меняет.
+    private static func isWholeProceedingSubject(_ value: String) -> Bool {
+        let intermediateObjects = ["ходатайств", "запрос", "доказательств", "отвод"]
+        guard !intermediateObjects.contains(where: value.contains) else { return false }
+        return value.contains("иск") || value.contains("заявлен")
+            || value.contains("жалоб") || value.contains("дел")
     }
 
     private static func isDenied(_ value: String) -> Bool {

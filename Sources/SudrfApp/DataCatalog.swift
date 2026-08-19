@@ -365,11 +365,18 @@ struct ActSummaryCatalogSnapshot: Sendable, Hashable, Identifiable {
 /// Единственная actor-граница чтения SwiftData для Spotlight, App Intents и
 /// AI. Ни один `@Model`-объект наружу не выходит.
 actor CaseCatalog {
-    private let context: ModelContext
+    private let container: ModelContainer
+    /// Не создаём контекст в `init`: actor часто создаётся из MainActor, а
+    /// SwiftData привязывает ModelContext к текущему executor. Lazy-инициализация
+    /// происходит при первом actor-isolated вызове.
+    private lazy var context: ModelContext = {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        return context
+    }()
 
     init(container: ModelContainer) {
-        context = ModelContext(container)
-        context.autosaveEnabled = false
+        self.container = container
     }
 
     func cases() throws -> [CaseCatalogSnapshot] {

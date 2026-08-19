@@ -138,6 +138,7 @@ final class MyCasesModelTests: XCTestCase {
     private func tracked(_ number: String, last: Date? = nil, next: Date? = nil) -> TrackedCase {
         TrackedCase(recordKey: "court/" + number, caseNumber: number, collections: [],
                     stage: .first, stageTag: "1-я инст.", subject: "—", court: "Сыктывкарский городской суд",
+                    courtTier: .district,
                     production: ProductionType.of(number),
                     partiesShort: "Иванов А. А. ⚔ ООО «Ромашка»", statusText: "В производстве",
                     statusChip: .blue, last: "—", next: "—", nextChip: .gray,
@@ -165,6 +166,20 @@ final class MyCasesModelTests: XCTestCase {
                     tracked("2-3/2026", next: nil)]
         let sorted = AppRouter.sorted(rows, by: .nextEvent).map(\.caseNumber)
         XCTAssertEqual(sorted, ["2-2/2026", "2-1/2026", "2-3/2026"])   // без события — в конец
+    }
+
+    @MainActor
+    func testTierCountsPartitionCasesIncludingInactiveOnly() {
+        var magistrate = tracked("1-1/2026")
+        magistrate.courtTier = .magistrate
+        var completed = tracked("2-2/2026")
+        completed.stage = .done
+        completed.courtTier = nil
+        let counts = AppRouter.buildTierCounts([magistrate, tracked("2-3/2026"), completed])
+        XCTAssertEqual(counts.reduce(0) { $0 + $1.1 }, 3)
+        XCTAssertEqual(counts.first(where: { $0.0 == .magistrate })?.1, 1)
+        XCTAssertEqual(counts.first(where: { $0.0 == .district })?.1, 1)
+        XCTAssertEqual(counts.first(where: { $0.0 == nil })?.1, 1)
     }
 
     // MARK: Живой фильтр

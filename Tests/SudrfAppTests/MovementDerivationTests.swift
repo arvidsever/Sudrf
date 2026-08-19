@@ -200,6 +200,9 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
                        DateUtil.addDays(DateUtil.parse("20.04.2026")!, 30))
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+        XCTAssertNil(presentation.currentReviewNumber)
     }
 
     func testReturnedDatedFirstRoundBeatsHistoricalUndatedReviewResult() {
@@ -458,6 +461,37 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         XCTAssertEqual(snap.stageRaw, "appeal")
         XCTAssertEqual(snap.steps, ["done", "active", "todo"])
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+        XCTAssertEqual(presentation.currentReviewNumber, "33-1/2026")
+    }
+
+    func testActiveAndCompletedReviewLevelsExposeCurrentNumber() {
+        let cases: [(CaseInstance.Level, String)] = [
+            (.appeal, "33-1/2026"),
+            (.cassation, "8Г-12/2026"),
+            (.vsCassation, "88-7/2026"),
+            (.supervisory, "4-УД26-3-К1"),
+        ]
+        for (level, number) in cases {
+            for terminal in [false, true] {
+                let result = terminal ? "Жалоба оставлена без удовлетворения" : nil
+                let review = CaseInstance(
+                    level: level, court: "Суд пересмотра", caseNumber: number,
+                    judge: nil, domain: "review.sudrf.ru", foundByUID: true,
+                    result: result,
+                    sessions: [CaseSession(date: "20.04.2026",
+                                           event: terminal ? "Рассмотрено" : "Регистрация производства",
+                                           result: result)])
+                let mv = movement(sessions: [], instances: [review])
+                let snap = MovementDerivation.snapshot(
+                    from: mv, context: context(), today: today)
+                let presentation = MovementDerivation.lifecyclePresentation(
+                    from: mv, snapshot: snap, context: context(), today: today)
+                XCTAssertEqual(presentation.currentReviewNumber, number,
+                               "\(level) terminal=\(terminal)")
+            }
+        }
     }
 
     func testUndatedHigherInstanceDoesNotOverrideDatedRound() {
@@ -500,6 +534,9 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(snap.statusText, "Жалоба оставлена без удовлетворения")
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+        XCTAssertEqual(presentation.currentReviewNumber, "33-1/2026")
     }
 
     func testCaptchaAndTransientStubsDoNotChangeStageOrDeadlines() {

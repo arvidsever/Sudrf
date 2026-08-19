@@ -131,7 +131,8 @@ struct OverviewView: View {
                 .frame(width: 72, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("№ \(h.caseNumber)").font(.system(size: 13, weight: .semibold))
+                    Text("№ \(CaseNumberPresentation.primary(h.caseNumber))")
+                        .font(.system(size: 13, weight: .semibold))
                     Text(h.parties)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -227,7 +228,7 @@ struct OverviewView: View {
 
     private func deadlineBody(_ d: TrackedDeadline) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(d.what) · № \(d.caseNumber)")
+            Text("\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))")
                 .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
             Text(d.basis)
@@ -411,7 +412,7 @@ struct OverviewView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 7) {
-                    Text("№ \(f.caseNumber)")
+                    Text("№ \(CaseNumberPresentation.primary(f.caseNumber))")
                         .font(.system(size: full ? 12.5 : 12, weight: .semibold))
                     if full {
                         Text(f.client)

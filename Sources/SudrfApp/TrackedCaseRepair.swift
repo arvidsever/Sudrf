@@ -118,9 +118,9 @@ final class TrackedCaseRepairCoordinator {
     private let captchaSettings: CaptchaSettings?
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,
                             AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult
-    // v5 повторно прогоняет v4: поиск по УИД мог вернуть строку другой
-    // картотеки и преждевременно завершиться до точного поиска по номеру.
-    private static let migrationID = "importChainRepair.v5"
+    // v6 повторно прогоняет v5 и дополнительно пересаживает предварительные
+    // `М-/9-` карточки на подтверждённое основное дело по точному УИД.
+    private static let migrationID = "importChainRepair.v6"
     private var attemptsKey: String { "\(Self.migrationID).attempts" }
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
@@ -215,6 +215,7 @@ final class TrackedCaseRepairCoordinator {
         // он участвует в локальном UID-слиянии, но не требует даже загрузки
         // карточки. Сетевой поиск нужен только 13/13а с проверяемым родителем.
         if anchorContext.baseInstanceLevel == .material,
+           !mayBecomeMainCase(anchorContext),
            !CaseIndexClassifier.requiresVerifiedParent(caseNumber: anchorContext.caseNumber,
                                                        courtLevel: anchorContext.courtLevel) {
             clearRetry(key: key)
@@ -234,6 +235,30 @@ final class TrackedCaseRepairCoordinator {
                 _ = store.save()
                 summary.rerouted += 1
                 summary.affectedCaseKeys.insert(rec.key)
+            }
+            if mayBecomeMainCase(effectiveContext) {
+                let origin = try await originResolver.resolveMainCase(
+                    anchorContext: effectiveContext, anchorCard: anchorCard)
+                var canonical = makeContext(origin: origin, anchor: effectiveContext,
+                                            anchorCard: anchorCard)
+                let primaryNumber = CaseNumberPresentation.primary(canonical.caseNumber)
+                if !primaryNumber.isEmpty { canonical.caseNumber = primaryNumber }
+                let survivor = store.record(forKey: canonical.key) ?? rec
+                let duplicates = survivor === rec ? [] : [rec]
+                guard let remaps = merge(survivor: survivor, duplicates: duplicates,
+                                         canonicalContext: canonical,
+                                         canonicalCard: origin.card) else {
+                    summary.transient += 1
+                    recordTransient(key: key)
+                    return
+                }
+                clearRetry(key: key)
+                summary.keyRemaps.merge(remaps) { _, new in new }
+                summary.affectedCaseKeys.formUnion(remaps.keys)
+                summary.affectedCaseKeys.formUnion(remaps.values)
+                summary.reanchored += 1
+                summary.merged += duplicates.count
+                return
             }
             if normalized.role == .authorityJudicialReview
                 || normalized.role == .firstInstance {
@@ -276,10 +301,14 @@ final class TrackedCaseRepairCoordinator {
                 // Корректная карточка пересмотра может не публиковать номер
                 // нижестоящего дела (типичный случай — КоАП 12-*). Такой
                 // результат не является ошибкой и не должен шуметь в отчёте.
-                clearRetry(key: key)
-                recordCompleted(key: key)
+                if mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
+                else {
+                    clearRetry(key: key)
+                    recordCompleted(key: key)
+                }
             case .ambiguous:
                 summary.ambiguous.append(anchorContext.caseNumber)
+                if mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
             case .notFound:
                 // Официальная ссылка может вести на карточку, которую сам
                 // нижестоящий суд не опубликовал в открытой картотеке. После
@@ -341,7 +370,34 @@ final class TrackedCaseRepairCoordinator {
         let groups = Dictionary(grouping: store.all().filter { !($0.judicialUID ?? "").isEmpty },
                                 by: { $0.judicialUID! })
         for records in groups.values where records.count > 1 {
-            let sorted = records.sorted { rank($0.context?.baseInstanceLevel) < rank($1.context?.baseInstanceLevel) }
+            let preliminary = records.filter { $0.context.map(mayBecomeMainCase) ?? false }
+            let ordinary = records.filter { !($0.context.map(mayBecomeMainCase) ?? false) }
+            let localMain = preliminary.isEmpty ? [] : ordinary.filter { candidate in
+                guard let candidateContext = candidate.context,
+                      CaseIndexClassifier.classify(
+                        caseNumber: candidateContext.caseNumber,
+                        courtLevel: candidateContext.courtLevel,
+                        branch: candidateContext.branch)?.cardRole == .firstInstanceCase
+                else { return false }
+                return preliminary.allSatisfy { record in
+                    guard let context = record.context else { return false }
+                    return SudrfHost.moduleHost(context.searchDomain)
+                            == SudrfHost.moduleHost(candidateContext.searchDomain)
+                        && context.cartotekaId == candidateContext.cartotekaId
+                }
+            }
+            // Предварительную карточку можно слить локально только с единственной
+            // основной карточкой того же суда и той же картотеки. Одна лишь
+            // общность УИД с апелляцией/кассацией не обходит сетевую проверку.
+            let mergeable = preliminary.isEmpty || localMain.count == 1 ? records : ordinary
+            guard mergeable.count > 1 else { continue }
+            let sorted = mergeable.sorted {
+                if localMain.count == 1 {
+                    if $0 === localMain[0] { return true }
+                    if $1 === localMain[0] { return false }
+                }
+                return rank($0.context?.baseInstanceLevel) < rank($1.context?.baseInstanceLevel)
+            }
             guard let survivor = sorted.first, let canonical = survivor.context else { continue }
             let duplicates = Array(sorted.dropFirst())
             guard let remaps = merge(survivor: survivor, duplicates: duplicates,
@@ -364,6 +420,7 @@ final class TrackedCaseRepairCoordinator {
     }
 
     private func shouldRepair(_ context: MovementContext) -> Bool {
+        if mayBecomeMainCase(context) { return true }
         if context.baseInstanceLevel == .appeal || context.baseInstanceLevel == .cassation
             || context.baseInstanceLevel == .material {
             return true
@@ -372,6 +429,12 @@ final class TrackedCaseRepairCoordinator {
             && KoAPProceduralRole.resolve(
                 courtLevel: context.courtLevel, cartotekaID: context.cartotekaId,
                 judicialUID: context.judicialUID) == .unknown
+    }
+
+    private func mayBecomeMainCase(_ context: MovementContext) -> Bool {
+        CaseIndexClassifier.classify(caseNumber: context.caseNumber,
+                                    courtLevel: context.courtLevel,
+                                    branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
     }
 
     /// Исправляет сохранённые уровни и точные цели без сети. Записи admj без
@@ -501,7 +564,10 @@ final class TrackedCaseRepairCoordinator {
         movements.append(contentsOf: all.compactMap {
             normalizedMovement($0.movement, context: $0.context)
         })
-        let movement = Self.mergeMovements(movements)
+        var movement = Self.mergeMovements(movements)
+        if !mayBecomeMainCase(context) {
+            movement = Self.pruningPreliminaryAliases(movement, from: all)
+        }
 
         let collections = all.flatMap(\.collectionNames).reduce(into: [String]()) {
             if !$0.contains($1) { $0.append($1) }
@@ -610,10 +676,32 @@ final class TrackedCaseRepairCoordinator {
     static func mergeMovements(_ movements: [CaseMovement]) -> CaseMovement? {
         guard var out = movements.first else { return nil }
         for movement in movements.dropFirst() {
-            for inst in movement.instances where !out.instances.contains(where: {
-                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(inst.domain)
-                    && CaseOriginResolver.sameCaseNumber($0.caseNumber, inst.caseNumber)
-            }) { out.instances.append(inst) }
+            for inst in movement.instances {
+                if let index = out.instances.firstIndex(where: {
+                    SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(inst.domain)
+                        && CaseOriginResolver.sameCaseNumber($0.caseNumber, inst.caseNumber)
+                }) {
+                    // Свежая canonicalCard может быть частичной. Обогащаем её
+                    // последним успешным кэшем, не теряя заседания и акт.
+                    out.instances[index].judge = out.instances[index].judge ?? inst.judge
+                    out.instances[index].result = out.instances[index].result ?? inst.result
+                    out.instances[index].actID = out.instances[index].actID ?? inst.actID
+                    out.instances[index].captchaFormURL = out.instances[index].captchaFormURL
+                        ?? inst.captchaFormURL
+                    out.instances[index].transientError = out.instances[index].transientError
+                        ?? inst.transientError
+                    out.instances[index].note = out.instances[index].note ?? inst.note
+                    out.instances[index].actURL = out.instances[index].actURL ?? inst.actURL
+                    out.instances[index].foundByUID = out.instances[index].foundByUID
+                        && inst.foundByUID
+                    for session in inst.sessions
+                        where !out.instances[index].sessions.contains(session) {
+                        out.instances[index].sessions.append(session)
+                    }
+                } else {
+                    out.instances.append(inst)
+                }
+            }
             for act in movement.acts {
                 if let existing = out.acts.first(where: {
                     canonicalActKey($0.id) == canonicalActKey(act.id)
@@ -634,6 +722,38 @@ final class TrackedCaseRepairCoordinator {
         out.instances.sort { MovementService.instanceOrderKey($0) < MovementService.instanceOrderKey($1) }
         out.acts.sort { MovementService.actOrderKey($0) < MovementService.actOrderKey($1) }
         return out
+    }
+
+    /// После подтверждённого перехода `М-/9- → основное дело` предварительная
+    /// карточка не является самостоятельным кругом движения и не должна
+    /// оставлять свой акт в проекции.
+    private static func pruningPreliminaryAliases(_ movement: CaseMovement?,
+                                                   from records: [TrackedCaseRecord]) -> CaseMovement? {
+        guard var movement else { return nil }
+        let aliases = records.compactMap { record -> (String, String)? in
+            guard let context = record.context,
+                  CaseIndexClassifier.classify(caseNumber: context.caseNumber,
+                                               courtLevel: context.courtLevel,
+                                               branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
+            else { return nil }
+            return (SudrfHost.moduleHost(context.searchDomain), context.caseNumber)
+        }
+        guard !aliases.isEmpty else { return movement }
+        let removedActIDs = Set(movement.instances.compactMap { instance -> String? in
+            aliases.contains { host, number in
+                SudrfHost.moduleHost(instance.domain) == host
+                    && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
+            } ? instance.actID : nil
+        })
+        movement.instances.removeAll { instance in
+            aliases.contains { host, number in
+                SudrfHost.moduleHost(instance.domain) == host
+                    && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
+            }
+        }
+        movement.acts.removeAll { removedActIDs.contains($0.id) }
+        for id in removedActIDs { movement.actBodies[id] = nil }
+        return movement
     }
 
     static func movement(from card: CaseCard, context: MovementContext) -> CaseMovement {

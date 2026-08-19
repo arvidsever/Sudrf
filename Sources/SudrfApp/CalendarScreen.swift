@@ -70,8 +70,8 @@ struct CalendarScreen: View {
         for h in router.hearings {
             out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
                 date: h.date, sortTime: h.time, kind: .hearing,
-                chip: "\(h.time) заседание · \(h.caseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
-                title: "№ \(h.caseNumber) — \(h.parties)",
+                chip: "\(h.time) заседание · \(CaseNumberPresentation.primary(h.caseNumber))", time: h.time, heading: "ЗАСЕДАНИЕ",
+                title: "№ \(CaseNumberPresentation.primary(h.caseNumber)) — \(h.parties)",
                 sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
                 caseNumber: h.caseNumber, deadlineId: nil,
                 parties: h.parties, court: h.court, room: h.room, judge: h.judge))
@@ -83,7 +83,7 @@ struct CalendarScreen: View {
                 kind: confirmed ? .deadlineConfirmed : .deadlineProposed,
                 chip: (confirmed ? "срок · " : "срок? ") + d.calLabel,
                 time: "срок", heading: confirmed ? "ДЕДЛАЙН · ПОДТВЕРЖДЁН" : "ДЕДЛАЙН · РАСЧЁТНЫЙ",
-                title: "\(d.what) · № \(d.caseNumber)", sub: d.basis,
+                title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
                 caseNumber: d.caseNumber, deadlineId: d.id))
         }
         return out
@@ -554,7 +554,7 @@ struct CalendarScreen: View {
                                 conflict: Bool,
                                 minHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("№ \(item.caseNumber)")
+            Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -592,7 +592,7 @@ struct CalendarScreen: View {
             ForEach(block.hearings) { item in
                 Button { router.openCase(item.caseNumber) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(timePrefix(item, in: block))№ \(item.caseNumber) · \(item.parties)")
+                        Text("\(timePrefix(item, in: block))№ \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
                             .font(.system(size: 10.2, weight: .semibold))
                             .foregroundStyle(conflict ? Palette.confirmed : .primary)
                             .lineLimit(2)
@@ -692,12 +692,12 @@ struct CalendarScreen: View {
     private func weekDeadlineChip(_ ev: CalEvent) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(ev.kind == .deadlineConfirmed
-                 ? "СРОК · № \(ev.caseNumber ?? "")"
-                 : "СРОК? · № \(ev.caseNumber ?? "")")
+                 ? "СРОК · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))"
+                 : "СРОК? · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(ev.accent)
                 .lineLimit(1)
-            Text(ev.title.replacingOccurrences(of: " · № \(ev.caseNumber ?? "")", with: ""))
+            Text(ev.title.replacingOccurrences(of: " · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))", with: ""))
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(Color.primary.opacity(0.62))
                 .lineLimit(1)
@@ -717,7 +717,7 @@ struct CalendarScreen: View {
         return Button {
             if let num = ev.caseNumber { router.openCase(num) }
         } label: {
-            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(ev.caseNumber ?? "")")
+            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))")
                 .font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(Color.accentColor)
                 .lineLimit(1)
@@ -863,7 +863,8 @@ struct CalendarScreen: View {
                             ForEach(waiting) { d in
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("\(DateUtil.fmt(d.date)) · \(d.what)").font(.system(size: 12, weight: .semibold))
-                                    Text("дело № \(d.caseNumber)").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                                    Text("дело № \(CaseNumberPresentation.primary(d.caseNumber))")
+                                        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                                     DeadlineActions(id: d.id, compact: true)
                                 }
                                 .padding(.horizontal, 14).padding(.vertical, 9)

@@ -225,7 +225,15 @@ struct MyCasesView: View {
             CardBox {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Text("№ \(c.caseNumber)").font(.system(size: 13, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("№ \(CaseNumberPresentation.primary(c.caseNumber))")
+                                .font(.system(size: 13, weight: .semibold))
+                            if let review = c.currentReviewNumber {
+                                Text(review)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         if c.isNew { StatusChip(text: "обновлено", kind: .blue) }
                         Spacer()
                         Text(c.stageTag).font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
@@ -535,8 +543,15 @@ struct MyCasesView: View {
                     .frame(width: 12, alignment: .leading).padding(.top, 5)
                 // Дело · вид — номер может переноситься, ничего не обрезается
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(c.caseNumber).font(.system(size: 12.5, weight: .semibold))
+                    Text(CaseNumberPresentation.primary(c.caseNumber))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
+                    if let review = c.currentReviewNumber {
+                        Text(review)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(prod?.row ?? "материал")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(prod?.color ?? Color.secondary)

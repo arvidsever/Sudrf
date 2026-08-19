@@ -1253,7 +1253,9 @@ final class AppRouter: ObservableObject {
                 next = [nextHearing, nextDeadline].compactMap { $0 }.min()
             }
             return TrackedCase(
-                recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
+                recordKey: rec.key, caseNumber: rec.caseNumber,
+                currentReviewNumber: presentation?.currentReviewNumber,
+                collections: rec.collectionNames,
                 stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,
                 subject: snap.category ?? "—",
                 court: rec.courtTitle,

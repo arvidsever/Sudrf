@@ -479,6 +479,37 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(movement.instances.first?.level, .appeal)
         XCTAssertEqual(movement.acts.first?.instanceLevel, .appeal)
     }
+
+    func testMainCaseDoesNotReaddPreliminaryAliasFromSameCourtUIDSearch() async throws {
+        let card = CaseCard(
+            rawText: "", actText: nil,
+            sessions: [CaseSession(date: "20.08.2026", event: "Судебное заседание")],
+            uid: Self.uid, caseNumber: "2а-5090/2026 ~ М-2417/2026")
+        let preliminary = CaseSearchResult(
+            caseNumber: "М-2417/2026", caseID: "preliminary-id",
+            caseUID: "preliminary-guid")
+        let mock = MockClient(
+            firstCardID: "main-id", firstCard: card,
+            higherResults: [], higherCards: ["preliminary-id": card],
+            sameCourtResults: [preliminary])
+        let knownPreliminary = KnownCard(
+            domain: districtCourt().domain, courtTitle: districtCourt().title,
+            caseID: "preliminary-id", caseUID: "preliminary-guid",
+            deloID: "5", new: "5", caseNumber: preliminary.caseNumber,
+            levelRaw: CaseInstance.Level.first.rawValue, cartotekaID: "p1")
+        let service = MovementService(client: mock, knownCards: [knownPreliminary])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "p1"))
+        let base = CaseSearchResult(
+            caseNumber: "2а-5090/2026", caseID: "main-id", caseUID: "main-guid")
+
+        let movement = try await service.movement(
+            for: base, court: districtCourt(), cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.map(\.caseNumber), ["2а-5090/2026"])
+        XCTAssertFalse(movement.instances.contains {
+            CaseNumberPresentation.primary($0.caseNumber) == "М-2417/2026"
+        })
+    }
 }
 
 /// Мок клиента: отдаёт заранее заданные карточки и записывает значения поиска.

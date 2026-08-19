@@ -467,14 +467,19 @@ final class AppRouter: ObservableObject {
         openedCase = nil; closeLiveCard()
     }
 
-    func calStep(_ months: Int) { calMonth = DateUtil.startOfMonth(DateUtil.addMonths(calMonth, months)) }
+    func calStep(_ months: Int) {
+        calMonth = DateUtil.startOfMonth(
+            DateUtil.cal.date(byAdding: .month, value: months, to: calMonth) ?? calMonth
+        )
+    }
     func setCalMode(_ mode: CalMode) {
         switch mode {
         case .month:
             calMonth = DateUtil.startOfMonth(calSelectedDate ?? calWeekStart)
         case .week:
             let anchor = calSelectedDate
-                ?? (DateUtil.sameMonth(calMonth, DateUtil.today) ? DateUtil.today : calMonth)
+                ?? (DateUtil.startOfMonth(calMonth) == DateUtil.startOfMonth(DateUtil.today)
+                    ? DateUtil.today : calMonth)
             calWeekStart = DateUtil.startOfWeek(anchor)
             calMonth = DateUtil.startOfMonth(anchor)
         case .agenda:

@@ -17,14 +17,9 @@ import SwiftSoup
 
 enum MGSParse {
     /// УИД вида 77RS0021-01-2024-001234-56 / 77OS0000-01-2020-003295-18.
-    static let uidRegex = try! NSRegularExpression(
-        pattern: #"\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b"#)
-
     static func firstUID(in text: String) -> String? {
-        let range = NSRange(text.startIndex..., in: text)
-        guard let m = uidRegex.firstMatch(in: text, range: range),
-              let r = Range(m.range, in: text) else { return nil }
-        return String(text[r])
+        text.firstMatch(of: /\b\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}\b/)
+            .map { String($0.output) }
     }
 
     /// Первый «токен» до пробела/тильды — номер дела из ячейки, где рядом бывают
@@ -220,27 +215,22 @@ public enum MosGorSudCardParser {
     }
 
     private static func parseDateTime(_ s: String) -> (date: String, time: String?)? {
-        guard let r = s.range(of: #"^\d{2}\.\d{2}\.\d{4}"#, options: .regularExpression) else { return nil }
-        let date = String(s[r])
-        let rest = s[r.upperBound...]
-        let time = rest.range(of: #"\d{1,2}:\d{2}"#, options: .regularExpression).map { String(rest[$0]) }
-        return (date, time)
+        guard let date = s.firstMatch(of: /^(\d{2}\.\d{2}\.\d{4})/) else { return nil }
+        let rest = s[date.range.upperBound...]
+        let time = rest.firstMatch(of: /\d{1,2}:\d{2}/).map { String($0.output) }
+        return (String(date.1), time)
     }
 
     private static func firstCaseNumberLike(_ s: String) -> String? {
-        s.range(of: #"\d+[а-яё]?-\d+/\d{4}"#, options: .regularExpression).map { String(s[$0]) }
+        s.firstMatch(of: /\d+[а-яё]?-\d+\/\d{4}/).map { String($0.output) }
     }
 
     /// `<p class="table-bold-text">Роль</p>Имя<br/>Имя…` → ["Роль: Имя", …].
     static func parseParties(_ rawHTML: String) -> [String] {
-        // Raw-строка Swift (#"…"#): кавычки пишутся как есть, без экранирования.
-        let pattern = #"<p class="table-bold-text">([\s\S]*?)</p>([\s\S]*?)(?=<p class="table-bold-text">|$)"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let ns = rawHTML as NSString
         var out: [String] = []
-        for m in re.matches(in: rawHTML, range: NSRange(location: 0, length: ns.length)) {
-            let role = stripTags(ns.substring(with: m.range(at: 1)))
-            for chunk in splitBR(ns.substring(with: m.range(at: 2))) {
+        for match in rawHTML.matches(of: /<p class="table-bold-text">([\s\S]*?)<\/p>([\s\S]*?)(?=<p class="table-bold-text">|$)/) {
+            let role = stripTags(String(match.1))
+            for chunk in splitBR(String(match.2)) {
                 let name = stripTags(chunk)
                 if !role.isEmpty && !name.isEmpty { out.append("\(role): \(name)") }
             }

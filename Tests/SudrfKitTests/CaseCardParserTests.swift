@@ -48,6 +48,12 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertNil(card.caseNumber)
     }
 
+    func testProductionNumberComesFromCardHeader() throws {
+        let html = "<html><body><div class=\"casenumber\">ПРОИЗВОДСТВО № 8Г-2430/2026 [88-4097/2026]</div></body></html>"
+        let card = try CaseCardParser.parse(html: html)
+        XCTAssertEqual(card.caseNumber, "8Г-2430/2026 [88-4097/2026]")
+    }
+
     private func loadFixture(_ name: String) throws -> String {
         guard let url = Bundle.module.url(forResource: name, withExtension: "html",
                                           subdirectory: "Fixtures") else {

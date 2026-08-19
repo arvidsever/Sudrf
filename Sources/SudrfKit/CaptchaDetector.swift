@@ -110,11 +110,8 @@ public enum CaptchaDetector {
     }
 
     private static func hasEditableInputMarkup(_ lower: String) -> Bool {
-        guard let re = try? NSRegularExpression(pattern: #"<input\b[^>]*>"#) else { return false }
-        let ns = lower as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        return re.matches(in: lower, range: range).contains { match in
-            isEditableInputMarkup(ns.substring(with: match.range))
+        lower.matches(of: /<input\b[^>]*>/).contains { match in
+            isEditableInputMarkup(String(match.output))
         }
     }
 

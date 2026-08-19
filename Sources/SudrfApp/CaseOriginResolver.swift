@@ -41,6 +41,17 @@ enum CaseOriginResolutionError: Error, Equatable {
 protocol CaseOriginResolving: Sendable {
     func resolve(anchorContext: MovementContext,
                  anchorCard: CaseCard) async throws -> ResolvedCaseOrigin
+    /// Предварительный материал (`М-`, `9-`, `9а-`, `9у-`) может стать
+    /// самостоятельным основным делом только после точного подтверждения УИД.
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard) async throws -> ResolvedCaseOrigin
+}
+
+extension CaseOriginResolving {
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        throw CaseOriginResolutionError.noReference
+    }
 }
 
 struct OriginCourtResolution: Sendable {
@@ -166,6 +177,44 @@ actor CaseOriginResolver {
                                   cartoteka: canonical.cartoteka, result: canonical.result,
                                   card: canonical.card, intermediateCards: intermediate,
                                   districtAppealCourts: districtAppealCourts)
+    }
+
+    /// Ищет принятое к производству основное дело в том же суде и по тому же
+    /// УИД. Номер `М-/9-` не участвует в выборе: он лишь повод выполнить
+    /// проверку, а совпадение допускается ровно одно.
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        guard CaseIndexClassifier.classify(caseNumber: anchorContext.caseNumber,
+                                           courtLevel: anchorContext.courtLevel,
+                                           branch: anchorContext.branch)?.materialLinkPolicy == .mayBecomeMainCase,
+              let uid = Self.nonEmpty(anchorCard.uid) ?? Self.nonEmpty(anchorContext.judicialUID)
+        else { throw CaseOriginResolutionError.noReference }
+
+        let court = anchorContext.searchCourt
+        guard let cart = anchorContext.cartoteka else {
+            throw CaseOriginResolutionError.noReference
+        }
+        // Площадки мировых судей не поддерживают поиск по УИД. Без него нельзя
+        // выполнить обязательную точную проверку перехода предварительного
+        // номера, поэтому не превращаем отсутствие подтверждения в parsing-
+        // ошибку и постоянное исключение из repair-прохода.
+        guard court.level != .magistrate else {
+            throw CaseOriginResolutionError.noReference
+        }
+        let rows = try await regularProvider.search(court: court, cartoteka: cart,
+                                                    field: .uid, value: uid)
+        let mainRows = rows.filter {
+            CaseIndexClassifier.classify(caseNumber: $0.caseNumber,
+                                         courtLevel: court.level,
+                                         branch: anchorContext.branch)?.cardRole == .firstInstanceCase
+        }
+        guard let match = try await uniqueUIDMatch(
+            rows: mainRows, uid: uid, court: court, cartoteka: cart,
+            provider: regularProvider)
+        else { throw CaseOriginResolutionError.notFound }
+        return ResolvedCaseOrigin(court: court, branch: anchorContext.branch,
+                                  region: anchorContext.region, courtCode: anchorContext.courtCode,
+                                  cartoteka: cart, result: match.0, card: match.1)
     }
 
     private func resolveVerifiedMaterialParent(context: MovementContext, card: CaseCard) async throws

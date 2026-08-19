@@ -314,6 +314,9 @@ struct TrackedCase: Identifiable {
     var id: String { recordKey }
     var recordKey: String
     var caseNumber: String
+    /// Очищенный номер текущей апелляции/кассации/надзора для UI. Сырой
+    /// `caseNumber` остаётся источником навигации и поиска.
+    var currentReviewNumber: String? = nil
     /// Подборки, в которых состоит дело (доверитель, тема — что угодно).
     var collections: [String]
     var stage: CaseStageKind

@@ -25,6 +25,17 @@ private actor StubOriginResolver: CaseOriginResolving {
     }
 }
 
+private actor PromotionOriginResolver: CaseOriginResolving {
+    let origin: ResolvedCaseOrigin
+    init(origin: ResolvedCaseOrigin) { self.origin = origin }
+    func resolve(anchorContext: MovementContext,
+                 anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        throw CaseOriginResolutionError.noReference
+    }
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard) async throws -> ResolvedCaseOrigin { origin }
+}
+
 @MainActor
 final class TrackedCaseRepairTests: XCTestCase {
     private let uid = "11RS0001-01-2025-011255-03"
@@ -140,6 +151,150 @@ final class TrackedCaseRepairTests: XCTestCase {
         let second = await coordinator.runAll()
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(store.all().count, 1)
+    }
+
+    func testPromotesPreliminaryNumberAndPrunesItsMovement() async throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let main = context(level: .first, number: "2а-5090/2026",
+                           domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                           courtLevel: .district)
+        var preliminaryMovement = movement(level: .first, number: preliminary.caseNumber,
+                                            domain: preliminary.searchDomain,
+                                            actID: "preliminary-act")
+        preliminaryMovement.instances.append(CaseInstance(
+            level: .first, court: preliminary.courtTitle,
+            caseNumber: "2а-5090/2026 ~ М-2417/2026", judge: nil,
+            domain: preliminary.searchDomain, foundByUID: true, result: "Назначено заседание",
+            sessions: preliminaryMovement.instances[0].sessions))
+        let old = store.upsert(context: preliminary, snapshot: nil, movement: preliminaryMovement,
+                               collections: ["Импорт"])
+        old.seenAt = nil
+        let origin = ResolvedCaseOrigin(
+            court: main.searchCourt, branch: .general, region: main.region, courtCode: main.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "p1")),
+            result: CaseSearchResult(caseNumber: "2а-5090/2026 ~ М-2417/2026",
+                                     caseID: "main-id", caseUID: "main-guid"),
+            card: CaseCard(rawText: "", actText: nil, uid: uid,
+                           caseNumber: "2а-5090/2026 ~ М-2417/2026"))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: PromotionOriginResolver(origin: origin),
+            defaults: defaults(), anchorCardFetcher: { _ in
+                CaseCard(rawText: "", actText: nil, uid: self.uid, caseNumber: preliminary.caseNumber)
+            })
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.reanchored, 1)
+        XCTAssertNil(store.record(forKey: preliminary.key))
+        let saved = try XCTUnwrap(store.record(forKey: main.key))
+        XCTAssertEqual(saved.collectionNames, ["Импорт"])
+        XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
+        XCTAssertEqual(saved.movement?.instances.first?.sessions,
+                       preliminaryMovement.instances.first?.sessions,
+                       "sparse canonical card must not erase cached sessions")
+        XCTAssertEqual(saved.movement?.instances.first?.result, "Назначено заседание")
+        XCTAssertTrue(saved.movement?.acts.isEmpty == true)
+    }
+
+    func testPreliminaryIsNotLocallyMergedIntoHigherCourtCardByUIDAlone() async throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let appeal = context(level: .appeal, number: "33а-4818/2026",
+                             domain: "lo.sudrf.ru", cartoteka: "ga",
+                             courtLevel: .subject)
+        store.upsert(context: preliminary, snapshot: nil, movement: nil, collections: ["M"])
+        store.upsert(context: appeal, snapshot: nil, movement: nil, collections: ["A"])
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(),
+            originResolver: StubOriginResolver(.noReference), defaults: defaults(),
+            anchorCardFetcher: { context in
+                CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                         caseNumber: context.caseNumber)
+            })
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.merged, 0)
+        XCTAssertNotNil(store.record(forKey: preliminary.key))
+        XCTAssertNotNil(store.record(forKey: appeal.key))
+        XCTAssertEqual(store.all().count, 2)
+    }
+
+    func testExistingMainRecordWinsUIDMergeAndPreservesPreliminaryUserState() async throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let main = context(level: .first, number: "2а-5090/2026",
+                           domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                           courtLevel: .district)
+        let preliminaryRecord = store.upsert(
+            context: preliminary, snapshot: nil,
+            movement: movement(level: .first, number: preliminary.caseNumber,
+                               domain: preliminary.searchDomain, actID: "preliminary-act"),
+            collections: ["Предварительная"])
+        let mainRecord = store.upsert(
+            context: main, snapshot: nil,
+            movement: movement(level: .first, number: main.caseNumber,
+                               domain: main.searchDomain, actID: "main-act"),
+            collections: ["Основная"])
+        preliminaryRecord.addedAt = Date(timeIntervalSince1970: 100)
+        preliminaryRecord.seenAt = nil
+        mainRecord.addedAt = Date(timeIntervalSince1970: 200)
+        mainRecord.seenAt = Date(timeIntervalSince1970: 300)
+        store.save()
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: unusedResolver(),
+            defaults: defaults())
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertNil(store.record(forKey: preliminary.key))
+        let saved = try XCTUnwrap(store.record(forKey: main.key))
+        XCTAssertEqual(Set(saved.collectionNames), ["Предварительная", "Основная"])
+        XCTAssertEqual(saved.addedAt, Date(timeIntervalSince1970: 100))
+        XCTAssertNil(saved.seenAt)
+        XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
+        XCTAssertEqual(saved.movement?.acts.map(\.id), ["main-act"])
+    }
+
+    func testExistingMainUIDMergePreservesSharedActReferencedBySurvivingInstance() async throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let main = context(level: .first, number: "2а-5090/2026",
+                           domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                           courtLevel: .district)
+        let sharedActID = "act_\(main.searchDomain)"
+        store.upsert(
+            context: preliminary, snapshot: nil,
+            movement: movement(level: .first, number: preliminary.caseNumber,
+                               domain: preliminary.searchDomain, actID: sharedActID),
+            collections: [])
+        store.upsert(
+            context: main, snapshot: nil,
+            movement: movement(level: .first, number: main.caseNumber,
+                               domain: main.searchDomain, actID: sharedActID),
+            collections: [])
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: unusedResolver(),
+            defaults: defaults())
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.merged, 1)
+        let saved = try XCTUnwrap(store.record(forKey: main.key))
+        XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
+        XCTAssertEqual(saved.movement?.instances.first?.actID, sharedActID)
+        XCTAssertEqual(saved.movement?.acts.map(\.id), [sharedActID])
+        XCTAssertEqual(saved.movement?.actBodies[sharedActID], "Текст \(sharedActID)")
     }
 
     func testReanchorsHigherCardAndKeepsOriginalKnownCard() async throws {
@@ -426,9 +581,9 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertTrue(first.ambiguous.isEmpty)
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(fetchCalls, 1)
-        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v5.completed") ?? [])
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.completed") ?? [])
             .contains(appeal.key))
-        XCTAssertFalse((suite.stringArray(forKey: "importChainRepair.v5.unsupported") ?? [])
+        XCTAssertFalse((suite.stringArray(forKey: "importChainRepair.v6.unsupported") ?? [])
             .contains(appeal.key))
         XCTAssertNotNil(store.record(forKey: appeal.key))
     }

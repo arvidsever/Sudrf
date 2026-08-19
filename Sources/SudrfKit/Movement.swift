@@ -339,6 +339,16 @@ public actor MovementService: MovementProviding {
             courtLevel: court.level, cartotekaID: cartoteka.id,
             judicialUID: uid, lowerCourtTitle: baseCard.lowerCourt?.courtTitle
         ).instanceLevel ?? baseInstanceLevel
+        let baseIsMainCase = CaseIndexClassifier.classify(
+            caseNumber: base.caseNumber, courtLevel: court.level)?.cardRole == .firstInstanceCase
+        func isPreliminaryAlias(_ knownCard: KnownCard) -> Bool {
+            guard baseIsMainCase,
+                  SudrfHost.moduleHost(knownCard.domain) == SudrfHost.moduleHost(court.domain),
+                  let number = knownCard.caseNumber
+            else { return false }
+            return CaseIndexClassifier.classify(
+                caseNumber: number, courtLevel: court.level)?.materialLinkPolicy == .mayBecomeMainCase
+        }
         // Вкладка «Обжалование» 1-й инстанции — авторитетный классификатор жалоб
         // (вид + даты). Парсится из уже загруженной карточки, без доп. запросов.
         let appeals = baseCard.appeals
@@ -388,6 +398,11 @@ public actor MovementService: MovementProviding {
                                                           field: .uid, value: uid)) ?? []
             for r in sameCourtRows {
                 guard Self.hasCardAccess(r) else { continue }
+                if baseIsMainCase,
+                   CaseIndexClassifier.classify(caseNumber: r.caseNumber,
+                                                courtLevel: court.level)?.materialLinkPolicy == .mayBecomeMainCase {
+                    continue
+                }
                 // Базовый круг и уже добавленные — пропускаем (№ может идти с
                 // дописками «… ~ М-…», поэтому сравнение префиксом).
                 if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
@@ -430,6 +445,11 @@ public actor MovementService: MovementProviding {
                                                  field: .uid, value: uid)) ?? []
             for r in rows {
                 guard Self.hasCardAccess(r) else { continue }
+                if baseIsMainCase,
+                   CaseIndexClassifier.classify(caseNumber: r.caseNumber,
+                                                courtLevel: court.level)?.materialLinkPolicy == .mayBecomeMainCase {
+                    continue
+                }
                 if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
                                          usingCanonicalHost: false) { continue }
                 guard let card = try? await fetchCard(row: r, court: court,
@@ -547,7 +567,7 @@ public actor MovementService: MovementProviding {
                     var rescued = false
                     for kc in knownCards
                         where SudrfHost.moduleHost(kc.domain) == SudrfHost.moduleHost(domain)
-                        && kc.level != .material {
+                        && kc.level != .material && !isPreliminaryAlias(kc) {
                         // A14: дедуп по (moduleHost, caseNumber) — `KnownCard` могут
                         // содержать несколько кругов одного вышестоящего суда; пропускаем
                         // только реальный дубль. `MovementService` — actor, fetch-цикл
@@ -611,6 +631,9 @@ public actor MovementService: MovementProviding {
         //     любого звена), подтягиваются прямым GET. Поиск первичен — он находит
         //     все круги; уже собранные инстанции не дублируем.
         for kc in knownCards {
+            // Ссылка сохраняется для provenance, но подтверждённая
+            // предварительная карточка не является отдельным кругом.
+            if isPreliminaryAlias(kc) { continue }
             // A14: дедуп по каноническому moduleHost — иначе `expandedHigherDomains`
             // (dash+dot) приведёт к дублю инстанции при доборе.
             if let n = kc.caseNumber,

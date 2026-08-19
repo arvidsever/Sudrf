@@ -95,6 +95,9 @@ struct CaseLifecyclePresentation {
     var steps: [String]
     /// Звено текущего производства. Для завершённых дел отсутствует.
     var currentTier: CourtTier?
+    /// Номер текущей инстанции пересмотра для второй строки мониторинга.
+    /// Не персистируется: вычисляется из `CaseLifecycleResolver.currentInstance`.
+    var currentReviewNumber: String?
 }
 
 // MARK: - Движок
@@ -255,7 +258,20 @@ enum MovementDerivation {
             steps: resolution.steps,
             currentTier: resolution.isCompleted ? nil : courtTier(
                 for: resolution.currentInstance, context: context)
-                ?? inferredTier(stage: resolution.stage, context: context))
+                ?? inferredTier(stage: resolution.stage, context: context),
+            currentReviewNumber: reviewNumber(for: resolution.currentInstance))
+    }
+
+    /// Возвращает номер только реальной инстанции пересмотра. Материалы,
+    /// captcha/network-заглушки и placeholder-карточки («—») исключаются.
+    static func reviewNumber(for instance: CaseInstance?) -> String? {
+        guard let instance,
+              [.appeal, .cassation, .vsCassation, .supervisory].contains(instance.level),
+              instance.captchaFormURL == nil,
+              instance.transientError != true else { return nil }
+        let number = CaseNumberPresentation.primary(instance.caseNumber)
+        guard !number.isEmpty, !["—", "–", "-"].contains(number) else { return nil }
+        return number
     }
 
     /// Классификация намеренно живёт в presentation: она зависит от текущего

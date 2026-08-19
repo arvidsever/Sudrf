@@ -98,6 +98,88 @@ final class CaseOriginResolverTests: XCTestCase {
         XCTAssertEqual(fields, [.caseNumber])
     }
 
+    func testPreliminaryNumberResolvesOnlySingleSameCartotekaMainCaseByExactUID() async throws {
+        let main = CaseSearchResult(caseNumber: "2а-5090/2026 ~ М-2417/2026",
+                                    caseID: "main", caseUID: "guid")
+        let provider = OriginProviderStub(
+            uidRows: [], numberRows: [],
+            cards: ["main": CaseCard(rawText: "", actText: nil, uid: uid,
+                                      caseNumber: main.caseNumber)],
+            rowsByCartAndValue: ["p1|\(uid)": [main]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        var (context, card) = anchor(uid: uid)
+        context.searchDomain = "syktsud--komi.sudrf.ru"
+        context.displayDomain = "syktsud.komi.sudrf.ru"
+        context.courtTitle = "Сыктывкарский городской суд"
+        context.courtLevelRaw = CourtLevel.district.rawValue
+        context.cartotekaId = "p1"
+        context.cartotekaLevelRaw = CourtLevel.district.rawValue
+        context.caseNumber = "М-2417/2026"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        card.caseNumber = context.caseNumber
+
+        let result = try await resolver.resolveMainCase(anchorContext: context, anchorCard: card)
+
+        XCTAssertEqual(result.result.caseNumber, main.caseNumber)
+        XCTAssertEqual(result.cartoteka.id, "p1")
+        XCTAssertEqual(result.court.title, context.courtTitle)
+    }
+
+    func testPreliminaryNumberRejectsMainCardWithDifferentUID() async throws {
+        let main = CaseSearchResult(caseNumber: "2а-5090/2026", caseID: "main", caseUID: "guid")
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["main": CaseCard(rawText: "", actText: nil, uid: "47RS0005-other",
+                                      caseNumber: main.caseNumber)],
+            rowsByCartAndValue: ["p1|\(uid)": [main]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        var (context, card) = anchor(uid: uid)
+        context.searchDomain = "syktsud--komi.sudrf.ru"
+        context.displayDomain = "syktsud.komi.sudrf.ru"
+        context.courtLevelRaw = CourtLevel.district.rawValue
+        context.cartotekaId = "p1"
+        context.cartotekaLevelRaw = CourtLevel.district.rawValue
+        context.caseNumber = "М-2417/2026"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        card.caseNumber = context.caseNumber
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: card)
+            XCTFail("Карточка с другим УИД не должна переякоривать дело")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testPreliminaryMagistrateCaseDoesNotAttemptUnsupportedUIDSearch() async throws {
+        let regularProvider = OriginProviderStub(numberRows: [], cards: [:])
+        let magistrateProvider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(
+            client: SudrfClient(), regularProvider: regularProvider,
+            magistrateProvider: magistrateProvider)
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "11ms0062.msudrf.ru", displayDomain: "11ms0062.msudrf.ru",
+            courtTitle: "Судебный участок № 62", courtLevelRaw: "magistrate",
+            courtCode: "11MS0062", cartotekaId: "g1",
+            cartotekaLevelRaw: "magistrate", caseNumber: "М-100/2026")
+        context.judicialUID = "11MS0062-01-2026-000100-10"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        let card = CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                            caseNumber: context.caseNumber)
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: card)
+            XCTFail("Мировой суд не должен получать неподдерживаемый UID-поиск")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+        let regularFields = await regularProvider.fields
+        let magistrateFields = await magistrateProvider.fields
+        XCTAssertTrue(regularFields.isEmpty)
+        XCTAssertTrue(magistrateFields.isEmpty)
+    }
+
     func testUIDRowsWithDifferentNumberFallBackToExactNumberSearch() async throws {
         let noise = CaseSearchResult(caseNumber: "2-999/2026",
                                      caseID: "noise", caseUID: "noise-guid")

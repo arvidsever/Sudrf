@@ -280,3 +280,5 @@ swift run sudrf-cli harvest --type OV  # окружные (флотские) —
   `DistrictCourtResolver`; мировые участки — `MagistrateDirectory`.
 - Поверх ядра — SwiftUI-интерфейс (`SudrfApp`): разделы Обзор / Мои дела /
   Поиск / Календарь, отслеживание дел, движение по инстанциям и CAPTCHA Assist.
+
+  [![repowise](https://api.repowise.dev/badge/wiki/arvidsever/sudrf.svg)](https://repowise.dev/repo/arvidsever/sudrf)

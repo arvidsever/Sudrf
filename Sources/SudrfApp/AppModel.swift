@@ -138,11 +138,13 @@ final class AppRouter: ObservableObject {
     private var summaryOperationState = SummaryOperationState()
     private var summaryTask: Task<Void, Never>?
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
-    private var readFeedIDs = Set(UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
+    private var readFeedIDs = Set((UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
+        .map(AppRouter.feedIDDroppingKind))
     /// Уже виденные id ленты — чтобы уведомлять только о реально новых записях.
     /// Отдельно от readFeedIDs: то — «пользователь прочёл», это — «система знала».
     private static let knownFeedIDsKey = "notifiedFeedIDs.v1"
-    private var knownFeedIDs = Set(UserDefaults.standard.stringArray(forKey: knownFeedIDsKey) ?? [])
+    private var knownFeedIDs = Set((UserDefaults.standard.stringArray(forKey: knownFeedIDsKey) ?? [])
+        .map(AppRouter.feedIDDroppingKind))
 
     var isRefreshingOpenCase: Bool {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
@@ -1158,7 +1160,7 @@ final class AppRouter: ObservableObject {
                 if diff >= 0 && diff <= 45 {
                     let text = s.result ?? s.event
                     let kind = feedKind(for: s)
-                    let id = feedID(recordKey: rec.key, kind: kind, date: d,
+                    let id = feedID(recordKey: rec.key, date: d,
                                     time: s.time ?? "—", text: text)
                     feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
                         time: s.time ?? "—", recordKey: rec.key, caseNumber: rec.caseNumber,
@@ -1173,7 +1175,7 @@ final class AppRouter: ObservableObject {
                     let diff = DateUtil.daysBetween(d, today)
                     guard diff >= 0 && diff <= 45 else { continue }
                     let text = "Опубликован судебный акт: \(act.title)"
-                    let id = feedID(recordKey: rec.key, kind: .act, date: d,
+                    let id = feedID(recordKey: rec.key, date: d,
                                     time: "—", text: act.id)
                     feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
                         time: "—", recordKey: rec.key, caseNumber: rec.caseNumber,
@@ -1316,20 +1318,40 @@ final class AppRouter: ObservableObject {
             .nilIfEmpty ?? rec.courtTitle
     }
 
+    /// Вид записи ленты. Раньше здесь жила своя копия предиката заседания — с
+    /// тем же дефектом «есть время ⇒ заседание» (#99), поэтому канцелярские
+    /// события помечались как заседания и в «Обзоре», и в ленте. Общий
+    /// предикат — `isHearingEvent`, а не `isHearing`: лента историческая, и
+    /// прошедшее заседание с уже наступившей законной силой должно остаться
+    /// заседанием, а не превратиться в «движение».
     private func feedKind(for session: StoredSession) -> FeedEntryKind {
-        let text = (session.event + " " + (session.result ?? "")).lowercased()
-        if !(session.time ?? "").isEmpty
-            || text.contains("заседани")
-            || text.contains("слушани")
-            || text.contains("рассмотрени") {
-            return .hearing
-        }
-        return .movement
+        CaseLifecycleResolver.isHearingEvent(
+            event: session.event, result: session.result, time: session.time)
+            ? .hearing : .movement
     }
 
-    private func feedID(recordKey: String, kind: FeedEntryKind,
+    /// Идентификатор записи ленты. Вид (`kind`) в него НЕ входит: он —
+    /// производная классификация, и её уточнение (#99) меняло бы id у давно
+    /// прочитанных записей. Тогда они возвращались бы в ленту непрочитанными и
+    /// порождали уведомления о событиях месячной давности. Различать записи
+    /// вида хватает и без него: акты идут с `time` = «—» и `text` = `act.id`.
+    private func feedID(recordKey: String,
                         date: Date, time: String, text: String) -> String {
-        "\(recordKey)#feed#\(kind.rawValue)#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(text)"
+        "\(recordKey)#feed#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(text)"
+    }
+
+    /// Одноразовая миграция id, сохранённых до того, как вид перестал входить
+    /// в идентификатор. Разбирать по «#» нельзя: у судов Москвы `recordKey` сам
+    /// содержит «#» (`MovementContext.identityKey`), поэтому ищем маркер
+    /// «#feed#» и снимаем ровно один следующий сегмент, если он — известный вид.
+    nonisolated static func feedIDDroppingKind(_ id: String) -> String {
+        guard let marker = id.range(of: "#feed#") else { return id }
+        let tail = id[marker.upperBound...]
+        for kind in FeedEntryKind.allCases where tail.hasPrefix(kind.rawValue + "#") {
+            return String(id[..<marker.upperBound])
+                + tail.dropFirst(kind.rawValue.count + 1)
+        }
+        return id
     }
 
     private func buildFeed(_ items: [FeedEntry]) -> [FeedEntry] {

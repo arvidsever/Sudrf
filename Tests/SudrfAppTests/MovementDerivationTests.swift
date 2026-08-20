@@ -73,6 +73,85 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(out.map(\.time), ["9:00", "10.30", "11:00"])
     }
 
+    /// Регресс #99: `Дело сдано в отдел судебного делопроизводства` в 11:00 и
+    /// 11:01 попадало в «Заседания» и в календарь только потому, что у события
+    /// проставлено время. Оба дела из issue — реальное заседание 18.08, потом
+    /// канцелярская строка 20.08.
+    func testClericalEventWithTimeIsNotAHearing() {
+        let sessions = [
+            StoredSession(dateRaw: "01.05.2026", time: "16:50", room: nil,
+                          event: "Судебное заседание",
+                          result: "Вынесено решение (определение)",
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "05.05.2026", time: "11:00", room: nil,
+                          event: "Дело сдано в отдел судебного делопроизводства",
+                          result: nil, court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "05.05.2026", time: "11:01", room: nil,
+                          event: "Дело сдано в отдел судебного делопроизводства",
+                          result: nil, court: "СГС", levelRaw: "first"),
+        ]
+
+        XCTAssertTrue(MovementDerivation.futureHearings(sessions, today: today).isEmpty)
+    }
+
+    /// Прочие канцелярские события с валидными датой и временем — негативный
+    /// набор к тому же фолбэку.
+    func testOtherClericalEventsWithTimeAreNotHearings() {
+        for event in ["Дело сдано в архив",
+                      "Передано в экспедицию",
+                      "Передача материалов судье",
+                      "Регистрация входящей корреспонденции",
+                      "Изготовлено мотивированное решение в окончательной форме",
+                      "Направление копии постановления (определения) в соответствующие органы"] {
+            let sessions = [StoredSession(dateRaw: "05.05.2026", time: "11:00", room: nil,
+                                          event: event, result: nil,
+                                          court: "СГС", levelRaw: "first")]
+            XCTAssertTrue(MovementDerivation.futureHearings(sessions, today: today).isEmpty,
+                          "«\(event)» не должно становиться заседанием")
+        }
+    }
+
+    /// Обратная сторона: заседание не должно потеряться из-за вариативной
+    /// формулировки или канцелярского результата.
+    func testRealHearingsSurviveClericalFilter() {
+        let sessions = [
+            StoredSession(dateRaw: "05.05.2026", time: nil, room: nil,
+                          event: "Предварительное судебное заседание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "06.05.2026", time: "10:00", room: nil,
+                          event: "Рассмотрение дела по существу", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            // Слово-маркер перевешивает канцелярский результат.
+            StoredSession(dateRaw: "07.05.2026", time: "09:30", room: nil,
+                          event: "Судебное заседание",
+                          result: "Дело сдано в отдел судебного делопроизводства",
+                          court: "СГС", levelRaw: "first"),
+            // Формулировка без ключевого слова, но со временем — заседание.
+            StoredSession(dateRaw: "08.05.2026", time: "14:00", room: nil,
+                          event: "Беседа", result: nil,
+                          court: "СГС", levelRaw: "first"),
+        ]
+
+        let out = MovementDerivation.futureHearings(sessions, today: today)
+
+        XCTAssertEqual(out.map(\.dateRaw),
+                       ["05.05.2026", "06.05.2026", "07.05.2026", "08.05.2026"])
+    }
+
+    /// Лента историческая: у неё свой предикат без проверки завершённости
+    /// круга, но с тем же исправленным фолбэком по времени.
+    func testFeedPredicateKeepsPastHearingsAndDropsClerical() {
+        XCTAssertTrue(CaseLifecycleResolver.isHearingEvent(
+            event: "Судебное заседание",
+            result: "Вступило в законную силу", time: "10:00"))
+        XCTAssertFalse(CaseLifecycleResolver.isHearing(
+            event: "Судебное заседание",
+            result: "Вступило в законную силу", time: "10:00"))
+        XCTAssertFalse(CaseLifecycleResolver.isHearingEvent(
+            event: "Дело сдано в отдел судебного делопроизводства",
+            result: nil, time: "11:00"))
+    }
+
     // MARK: Сроки
 
     func testAppealDeadlineProposedForCivilCase() {

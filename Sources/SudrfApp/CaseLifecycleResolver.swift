@@ -359,17 +359,48 @@ enum CaseLifecycleResolver {
         return best?.instance
     }
 
-    /// Общий для resolver и табличного представления предикат заседания.
+    /// Канцелярские события движения. Портал публикует их с датой И временем,
+    /// ровно как слушания, поэтому одно лишь наличие времени заседания не
+    /// означает (#99): `Дело сдано в отдел судебного делопроизводства` в 11:00
+    /// попадало в «Заседания» и в календарь.
+    ///
+    /// Список закрывает ТОЛЬКО фолбэк по времени. Событие с явным словом
+    /// «заседание» / «рассмотрение» / «слушание» остаётся заседанием
+    /// независимо от него.
+    private static let clericalEventMarkers = [
+        "сдано в отдел", "сдано в архив", "передано в экспедици",
+        "передача дела", "передача материал", "регистрация",
+        "изготовлено мотивированн", "направление копи",
+    ]
+
+    private static func isClericalEvent(_ event: String) -> Bool {
+        let value = normalized(event)
+        return clericalEventMarkers.contains { value.contains($0) }
+    }
+
+    /// Событие ПО СМЫСЛУ является судебным заседанием — безотносительно того,
+    /// состоялось оно или ещё предстоит. Этим предикатом пользуется лента,
+    /// которая раскладывает по видам уже прошедшие события.
+    static func isHearingEvent(event: String, result: String?, time: String?) -> Bool {
+        let value = normalized(event + " " + (result ?? ""))
+        if value.contains("заседани") || value.contains("рассмотрени")
+            || value.contains("слушани") { return true }
+        // Время проверяем против вида строки движения (`event`), а не против
+        // склейки с результатом: у состоявшегося заседания в `result` вполне
+        // может стоять канцелярская формулировка, и заседанием оно быть не
+        // перестаёт.
+        return !(time ?? "").isEmpty && !isClericalEvent(event)
+    }
+
+    /// Предикат БУДУЩЕГО заседания: смысл события плюс проверка, что круг им
+    /// уже не закрыт. Общий для resolver и табличного представления.
     static func isHearing(event: String, result: String?, time: String?) -> Bool {
         let value = normalized(event + " " + (result ?? ""))
         // Состоявшееся сегодня заседание с уже опубликованным итогом не должно
         // считаться будущим только потому, что сравнение идёт по календарному дню.
         if remandTarget(in: value) != nil || hasLegalForceEvidence(in: value)
             || isTerminalDisposition(value) { return false }
-        return !(time ?? "").isEmpty
-            || value.contains("заседани")
-            || value.contains("рассмотрени")
-            || value.contains("слушани")
+        return isHearingEvent(event: event, result: result, time: time)
     }
 
     /// Строковое сравнение ставило `11:00` раньше `9:00`. Неизвестное время

@@ -109,7 +109,7 @@ private struct OperationalRootView: View {
 
             NavCapsule()
                 .environmentObject(router)
-                .padding(.top, 11)
+                .padding(.top, NavChrome.topPadding)
         }
         .ignoresSafeArea()
         .background(WindowChrome())
@@ -304,6 +304,33 @@ private struct ImportSheet: View {
 
 // MARK: - Капсула-навигатор
 
+/// Единственный источник правды о плавающей навигационной капсуле.
+///
+/// Капсула лежит поверх экранов отдельным слоем `ZStack` и места под себя не
+/// резервирует, поэтому каждый экран обязан сам отступить от верха окна на
+/// `contentInset`. Раньше это число подбиралось в пяти местах независимо:
+/// «Обзор» и «Мои дела» — 54, «Календарь» — 52, хост карточки дела — 26, а
+/// шапка выдачи — всего 16 при полосе капсулы 11–47. Последнее и давало
+/// наезжание подзаголовка на навигацию (#75).
+///
+/// Отступы под светофор окна сюда не относятся: светофор живёт в левом верхнем
+/// углу (`WindowChrome`), капсула — по центру. Это разные ограничения.
+enum NavChrome {
+    /// Высота строки вкладок.
+    static let tabHeight: CGFloat = 28
+    /// Внутренний отступ стеклянной капсулы вокруг вкладок.
+    static let capsulePadding: CGFloat = 4
+    /// Отступ капсулы от верхней кромки окна.
+    static let topPadding: CGFloat = 11
+    /// Зазор между нижней кромкой капсулы и первой строкой контента.
+    static let contentGap: CGFloat = 7
+
+    /// Высота капсулы целиком.
+    static let capsuleHeight: CGFloat = tabHeight + capsulePadding * 2
+    /// Верхний отступ контента любого экрана под капсулой.
+    static let contentInset: CGFloat = topPadding + capsuleHeight + contentGap
+}
+
 private struct NavCapsule: View {
     @EnvironmentObject var router: AppRouter
 
@@ -311,7 +338,7 @@ private struct NavCapsule: View {
         HStack(spacing: 2) {
             ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
         }
-        .padding(4)
+        .padding(NavChrome.capsulePadding)
         .glassEffect(.regular, in: .capsule)
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
     }
@@ -336,7 +363,7 @@ private struct NavCapsule: View {
             }
             .foregroundStyle(active ? Color.accentColor : Color.primary.opacity(0.62))
             .padding(.horizontal, 16)
-            .frame(height: 28)
+            .frame(height: NavChrome.tabHeight)
             .background(Capsule().fill(active ? Color.accentColor.opacity(0.13) : .clear))
             .overlay(Capsule().strokeBorder(active ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
             .contentShape(Capsule())
@@ -355,7 +382,9 @@ private struct CaseCardHost: View {
             Color(nsColor: .sudrfContent).ignoresSafeArea()
             content
         }
-        .padding(.top, 26)   // чтобы кнопка «Назад» не налезала на светофор окна
+        // Отступ под капсулу — он же покрывает светофор окна, на который
+        // рассчитывались прежние 26pt: кнопка «Назад» лежит ниже обоих.
+        .padding(.top, NavChrome.contentInset)
         .sheet(item: $router.captcha) { ctx in
             CaptchaAssistSheet(context: ctx,
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },

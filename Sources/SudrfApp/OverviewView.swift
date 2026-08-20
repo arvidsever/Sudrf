@@ -23,7 +23,7 @@ struct OverviewView: View {
                 }
             }
         }
-        .padding(EdgeInsets(top: 54, leading: sidePadding, bottom: 18, trailing: sidePadding))
+        .padding(EdgeInsets(top: NavChrome.contentInset, leading: sidePadding, bottom: 18, trailing: sidePadding))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .sudrfContent).ignoresSafeArea())
     }

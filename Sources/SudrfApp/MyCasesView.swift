@@ -32,7 +32,7 @@ struct MyCasesView: View {
                 groupedMode          // .stages / .prods / .clients
             }
         }
-        .padding(EdgeInsets(top: 54, leading: 20, bottom: 18, trailing: 20))
+        .padding(EdgeInsets(top: NavChrome.contentInset, leading: 20, bottom: 18, trailing: 20))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .sudrfContent).ignoresSafeArea())
     }

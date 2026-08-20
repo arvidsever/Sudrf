@@ -301,7 +301,7 @@ private struct ResultsPane: View {
                     .glassEffect()
             }
         }
-        .padding(EdgeInsets(top: 16, leading: 16, bottom: 6, trailing: 16))
+        .padding(EdgeInsets(top: NavChrome.contentInset, leading: 16, bottom: 6, trailing: 16))
     }
 
     private var resultsList: some View {

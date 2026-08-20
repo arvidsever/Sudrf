@@ -52,7 +52,7 @@ struct CalendarScreen: View {
                 agendaMode
             }
         }
-        .padding(EdgeInsets(top: 52, leading: 18, bottom: 18, trailing: 18))
+        .padding(EdgeInsets(top: NavChrome.contentInset, leading: 18, bottom: 18, trailing: 18))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .sudrfContent).ignoresSafeArea())
     }

@@ -512,14 +512,35 @@ enum MovementDerivation {
 
     private static func firstInstanceDecisionDate(_ mv: CaseMovement,
                                                   timeline: CaseLifecycleResolver.Timeline) -> Date? {
-        let first = timeline.latestFirst?.instance
-        guard let first else { return nil }
-        // Дата итогового акта 1-й инстанции: последняя сессия с результатом,
-        // иначе последняя сессия.
-        let dated = first.sessions.compactMap { s -> Date? in DateUtil.parse(s.date) }
-        if let withResult = first.sessions.last(where: { ($0.result ?? "").isEmpty == false }),
-           let d = DateUtil.parse(withResult.date) { return d }
-        return dated.max()
+        guard let first = timeline.latestFirst?.instance else { return nil }
+
+        // Триггер срока — строка, которой объявлен обжалуемый итоговый акт.
+        // Раньше бралась «последняя сессия с непустым результатом, иначе
+        // последняя по дате»: обе ветки семантику события не проверяли, и срок
+        // уезжал на произвольную строку — портал заполняет «Результат события»
+        // и у промежуточных, и у канцелярских строк (#80).
+        if let decision = first.sessions.last(where: {
+            CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+        }), let date = DateUtil.parse(decision.date) {
+            return date
+        }
+
+        // Итоговую строку опознать не удалось. Полностью отказаться от срока
+        // нельзя: `resolveTerminalFirst` завершает дело, когда расчётного срока
+        // апелляции нет, — то есть дело с нераспознанной формулировкой молча
+        // уехало бы в «Завершённые» и пропало из активных списков. Это хуже
+        // неточной даты, поэтому поведение остаётся прежним, но канцелярские
+        // строки в кандидаты больше не попадают: именно они и перебивали
+        // настоящий итог, будучи позже него по дате.
+        let meaningful = first.sessions.filter {
+            !CaseLifecycleResolver.isClerical(event: $0.event)
+        }
+        let candidates = meaningful.isEmpty ? first.sessions : meaningful
+        if let withResult = candidates.last(where: { ($0.result ?? "").isEmpty == false }),
+           let date = DateUtil.parse(withResult.date) {
+            return date
+        }
+        return candidates.compactMap { DateUtil.parse($0.date) }.max()
     }
     private static func currentLegalForceState(in sessions: [CaseSession]) -> LegalForceState {
         let ordered = sessions.enumerated().sorted { left, right in

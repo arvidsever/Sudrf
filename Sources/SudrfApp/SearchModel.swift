@@ -44,6 +44,11 @@ final class SearchModel: ObservableObject {
         var mosGorSudAlias: String? = nil
         var supportsSearch: Bool = true
         var unsupportedReason: String? = nil
+        /// Порядковый номер нумерованного суда (КСОЮ, апелляционные ОСЮ) из
+        /// справочника. Задаёт порядок в списке: «Первый … Девятый» по номеру,
+        /// а не по алфавиту, где «Восьмой» встаёт перед «Вторым». У остальных
+        /// звеньев номера нет — они сортируются по названию, как раньше.
+        var number: Int? = nil
         // Идентичность — по домену + коду: у судов Москвы домен один
         // (mos-gorsud.ru), различает их только код-алиас (tverskoj, …).
         var id: String { code.map { "\(domain)#\($0)" } ?? domain }
@@ -56,6 +61,24 @@ final class SearchModel: ObservableObject {
                   title: title, level: level)
         }
     }
+
+    /// Порядок судов в списке звена. Нумерованные суды (КСОЮ, апелляционные
+    /// ОСЮ) идут по номеру: лексикографически «Восьмой» встаёт перед «Вторым»,
+    /// что для нумерованного ряда бессмысленно. Все прочие звенья — по
+    /// названию, как раньше. Название остаётся вторичным ключом, чтобы порядок
+    /// был устойчив, если номер вдруг задан не всем судам списка.
+    nonisolated static func ordered(_ list: [CourtOption]) -> [CourtOption] {
+        list.sorted { lhs, rhs in
+            switch (lhs.number, rhs.number) {
+            case let (l?, r?) where l != r: return l < r
+            case (nil, .some):             return false
+            case (.some, nil):             return true
+            default:
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+        }
+    }
+
     @Published var queryCaseNumber = ""
     @Published var queryName = ""
     @Published var queryUID = ""
@@ -268,11 +291,13 @@ final class SearchModel: ObservableObject {
             case (.general, .appeal):
                 magistrateDistrictCourts = []
                 list = CourtDirectory.appealCourts
-                    .map { CourtOption(domain: $0.domain, title: $0.title, level: .appeal) }
+                    .map { CourtOption(domain: $0.domain, title: $0.title, level: .appeal,
+                                       number: $0.number) }
             case (.general, .cassation):
                 magistrateDistrictCourts = []
                 list = CourtDirectory.cassationCourts
-                    .map { CourtOption(domain: $0.domain, title: $0.title, level: .cassation) }
+                    .map { CourtOption(domain: $0.domain, title: $0.title, level: .cassation,
+                                       number: $0.number) }
             case (.military, .district):
                 magistrateDistrictCourts = []
                 // Все гарнизонные суды страны (включая зарубежные, код 95) —
@@ -298,7 +323,7 @@ final class SearchModel: ObservableObject {
             case (_, .supreme):
                 list = []   // недостижимо: отсечено guard'ом выше
             }
-            courts = list.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            courts = Self.ordered(list)
 
             // Прежний выбор сохраняем, если он остался в списке; список из
             // одного суда выбираем сразу, иначе оставляем «— выберите —».

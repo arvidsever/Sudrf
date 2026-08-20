@@ -540,11 +540,11 @@ struct CalendarScreen: View {
     }
 
     private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
-        let minHeight = CGFloat(block.height)
+        let height = CGFloat(block.height)
         return Group {
             if block.isSingle, let item = block.hearings.first {
                 Button { router.openCase(item.caseNumber) } label: {
-                    weekSingleCard(item, conflict: false, minHeight: minHeight)
+                    weekSingleCard(item, conflict: false, height: height)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -555,7 +555,7 @@ struct CalendarScreen: View {
 
     private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
                                 conflict: Bool,
-                                minHeight: CGFloat) -> some View {
+                                height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
@@ -570,7 +570,12 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
+        // суда карточку не обрезают. `fixedSize` обязателен — без него `Spacer`
+        // принимает высоту, которую предлагает ZStack дня, и карточка
+        // растягивается до конца временной сетки (#83).
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -629,6 +634,7 @@ struct CalendarScreen: View {
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
         .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)

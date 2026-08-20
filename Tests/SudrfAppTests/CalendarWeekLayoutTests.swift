@@ -96,6 +96,30 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
     }
 
+    /// Контракт, на который опирается вид (#83): блок 10:00 заканчивается ровно
+    /// там, где начинается следующий, и `height` — это высота слота, которую
+    /// карточка берёт за нижнюю границу. Сам баг жил в SwiftUI-геометрии
+    /// `weekSingleCard` и этим тестом не ловится — здесь закреплены только
+    /// входные данные вида.
+    func testAdjacentBlocksMeetExactlyAtHourBoundary() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("2-3685/2026", time: "10:00"),
+            hearing("2-1/2026", time: "11:00", court: "Сыктывкарский городской суд"),
+            hearing("12-1/2026", time: "11:00", court: "Верховный суд Республики Коми")
+        ])
+        let gridHeight = CalendarWeekLayout.gridHeight(for: [blocks])
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].kind, .single)
+        XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertEqual(blocks[0].top + blocks[0].height, blocks[1].top)
+        XCTAssertLessThan(blocks[0].top + blocks[0].height, gridHeight)
+        // Конфликтная группа получает высоту по числу заседаний, а не по остатку дня.
+        XCTAssertEqual(blocks[1].kind, .conflict)
+        XCTAssertEqual(blocks[1].height, 228)   // 2 × 66 + 96
+        XCTAssertLessThan(blocks[1].top + blocks[1].height, gridHeight)
+    }
+
     func testWeekTitleAcrossMonthBoundary() {
         let start = DateUtil.parse("29.06.2026")!
         XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 июня – 5 июля")

@@ -540,11 +540,11 @@ struct CalendarScreen: View {
     }
 
     private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
-        let minHeight = CGFloat(block.height)
+        let height = CGFloat(block.height)
         return Group {
             if block.isSingle, let item = block.hearings.first {
                 Button { router.openCase(item.caseNumber) } label: {
-                    weekSingleCard(item, conflict: false, minHeight: minHeight)
+                    weekSingleCard(item, conflict: false, height: height)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -555,7 +555,7 @@ struct CalendarScreen: View {
 
     private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
                                 conflict: Bool,
-                                minHeight: CGFloat) -> some View {
+                                height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
@@ -570,7 +570,10 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        // Высота — ровно та, что посчитал `CalendarWeekLayout` (она уже учитывает
+        // и длительность, и контент). `minHeight` здесь растягивал карточку до
+        // конца колонки: `Spacer` забирал всю высоту, которую предлагал ZStack дня.
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -628,7 +631,7 @@ struct CalendarScreen: View {
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), maxHeight: CGFloat(block.height), alignment: .topLeading)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)

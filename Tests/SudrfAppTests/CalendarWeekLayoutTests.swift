@@ -96,6 +96,28 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
     }
 
+    /// Регресс #83: карточка 10:00 растягивалась вниз до конца сетки, потому что
+    /// вид брал `minHeight` вместо `height`. Раскладка всегда считала конечную
+    /// высоту — тест закрепляет, что она конечная и не зависит от соседнего
+    /// конфликтного блока в 11:00.
+    func testEarlierBlockDoesNotSpanToGridBottom() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("2-3685/2026", time: "10:00"),
+            hearing("2-1/2026", time: "11:00", court: "Сыктывкарский городской суд"),
+            hearing("12-1/2026", time: "11:00", court: "Верховный суд Республики Коми")
+        ])
+        let gridHeight = CalendarWeekLayout.gridHeight(for: [blocks])
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].kind, .single)
+        XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertEqual(blocks[0].top + blocks[0].height, blocks[1].top)
+        XCTAssertLessThan(blocks[0].top + blocks[0].height, gridHeight)
+        // Конфликтная группа тоже конечна и не съедает остаток дня.
+        XCTAssertEqual(blocks[1].kind, .conflict)
+        XCTAssertLessThan(blocks[1].top + blocks[1].height, gridHeight)
+    }
+
     func testWeekTitleAcrossMonthBoundary() {
         let start = DateUtil.parse("29.06.2026")!
         XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 июня – 5 июля")

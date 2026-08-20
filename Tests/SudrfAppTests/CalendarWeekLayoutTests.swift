@@ -96,11 +96,12 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
     }
 
-    /// Регресс #83: карточка 10:00 растягивалась вниз до конца сетки, потому что
-    /// вид брал `minHeight` вместо `height`. Раскладка всегда считала конечную
-    /// высоту — тест закрепляет, что она конечная и не зависит от соседнего
-    /// конфликтного блока в 11:00.
-    func testEarlierBlockDoesNotSpanToGridBottom() {
+    /// Контракт, на который опирается вид (#83): блок 10:00 заканчивается ровно
+    /// там, где начинается следующий, и `height` — это высота слота, которую
+    /// карточка берёт за нижнюю границу. Сам баг жил в SwiftUI-геометрии
+    /// `weekSingleCard` и этим тестом не ловится — здесь закреплены только
+    /// входные данные вида.
+    func testAdjacentBlocksMeetExactlyAtHourBoundary() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("2-3685/2026", time: "10:00"),
             hearing("2-1/2026", time: "11:00", court: "Сыктывкарский городской суд"),
@@ -113,8 +114,9 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].height, 120)
         XCTAssertEqual(blocks[0].top + blocks[0].height, blocks[1].top)
         XCTAssertLessThan(blocks[0].top + blocks[0].height, gridHeight)
-        // Конфликтная группа тоже конечна и не съедает остаток дня.
+        // Конфликтная группа получает высоту по числу заседаний, а не по остатку дня.
         XCTAssertEqual(blocks[1].kind, .conflict)
+        XCTAssertEqual(blocks[1].height, 228)   // 2 × 66 + 96
         XCTAssertLessThan(blocks[1].top + blocks[1].height, gridHeight)
     }
 

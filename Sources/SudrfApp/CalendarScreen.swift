@@ -570,10 +570,12 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        // Высота — ровно та, что посчитал `CalendarWeekLayout` (она уже учитывает
-        // и длительность, и контент). `minHeight` здесь растягивал карточку до
-        // конца колонки: `Spacer` забирал всю высоту, которую предлагал ZStack дня.
-        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+        // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
+        // суда карточку не обрезают. `fixedSize` обязателен — без него `Spacer`
+        // принимает высоту, которую предлагает ZStack дня, и карточка
+        // растягивается до конца временной сетки (#83).
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -631,7 +633,8 @@ struct CalendarScreen: View {
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), maxHeight: CGFloat(block.height), alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)

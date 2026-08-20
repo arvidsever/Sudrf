@@ -519,9 +519,15 @@ enum MovementDerivation {
         // последняя по дате»: обе ветки семантику события не проверяли, и срок
         // уезжал на произвольную строку — портал заполняет «Результат события»
         // и у промежуточных, и у канцелярских строк (#80).
-        if let decision = first.sessions.last(where: {
-            CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
-        }), let date = DateUtil.parse(decision.date) {
+        // Выбираем по ДАТЕ, а не по порядку в массиве: сессии инстанции идут
+        // как их отдал парсер (по дате их сортирует только сборка снимка), а в
+        // круге после возврата на новое рассмотрение итоговых актов может быть
+        // несколько — срок считается от последнего.
+        if let date = first.sessions
+            .filter({ CaseLifecycleResolver.isFinalActAnnouncement(
+                event: $0.event, result: $0.result) })
+            .compactMap({ DateUtil.parse($0.date) })
+            .max() {
             return date
         }
 
@@ -533,7 +539,7 @@ enum MovementDerivation {
         // строки в кандидаты больше не попадают: именно они и перебивали
         // настоящий итог, будучи позже него по дате.
         let meaningful = first.sessions.filter {
-            !CaseLifecycleResolver.isClerical(event: $0.event)
+            !CaseLifecycleResolver.isClericalEvent($0.event)
         }
         let candidates = meaningful.isEmpty ? first.sessions : meaningful
         if let withResult = candidates.last(where: { ($0.result ?? "").isEmpty == false }),

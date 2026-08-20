@@ -338,6 +338,23 @@ final class MovementDerivationTests: XCTestCase {
             event: "Судебное заседание", result: "иск удовлетворён"))
     }
 
+    /// Порядок строк в массиве сессий задаёт парсер — по дате их сортирует
+    /// только сборка снимка. Триггер должен выбираться по дате, иначе в круге
+    /// с двумя итоговыми актами срок посчитается от более раннего.
+    func testTriggerPicksLatestFinalActEvenWhenListedEarlier() {
+        let mv = movement(sessions: [
+            CaseSession(date: "20.05.2026", event: "Судебное заседание",
+                        result: "Вынесен приговор"),
+            CaseSession(date: "06.05.2026", event: "Судебное заседание",
+                        result: "Производство по делу прекращено"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(cartoteka: "u"),
+                                               today: today)
+
+        XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
+                       DateUtil.addDays(DateUtil.parse("20.05.2026")!, 15))
+    }
+
     func testNoAppealDeadlineWhenAppealExists() {
         let appeal = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
                                   judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,

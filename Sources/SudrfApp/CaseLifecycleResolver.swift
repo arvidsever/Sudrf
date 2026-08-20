@@ -373,9 +373,7 @@ enum CaseLifecycleResolver {
         "изготовлено мотивированн", "направление копи",
     ]
 
-    static func isClerical(event: String) -> Bool { isClericalEvent(event) }
-
-    private static func isClericalEvent(_ event: String) -> Bool {
+    static func isClericalEvent(_ event: String) -> Bool {
         let value = normalized(event)
         return clericalEventMarkers.contains { value.contains($0) }
     }

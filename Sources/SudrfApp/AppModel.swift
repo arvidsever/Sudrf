@@ -1268,6 +1268,7 @@ final class AppRouter: ObservableObject {
                 // Суд той же инстанции, что и ближайшее событие с номером
                 // производства (#100); фолбэк — суд записи, как раньше.
                 court: presentation?.nextEventCourt ?? rec.courtTitle,
+                recordCourt: rec.courtTitle,
                 courtTier: presentation?.currentTier
                     ?? (stage == .done ? nil : ctx.flatMap {
                         MovementDerivation.inferredTier(stage: stage, context: $0) }),
@@ -1291,6 +1292,7 @@ final class AppRouter: ObservableObject {
             recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
             court: rec.courtTitle,
+            recordCourt: rec.courtTitle,
             courtTier: ctx.map { MovementDerivation.tier(for: $0.courtLevel) },
             production: production,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
@@ -1493,9 +1495,13 @@ final class AppRouter: ObservableObject {
     }
 
     /// Вхождение запроса в номер + стороны + подборки + суд (case-insensitive).
+    /// Судов два: показываемый (инстанция ближайшего события, #100) и суд
+    /// записи. Дело, ушедшее в апелляцию, обязано находиться и по названию
+    /// своего суда первой инстанции — номер дела у него по-прежнему её.
     nonisolated static func matches(_ c: TrackedCase, query q: String) -> Bool {
         (c.caseNumber + " " + c.partiesShort + " "
-         + c.collections.joined(separator: " ") + " " + c.court)
+         + c.collections.joined(separator: " ") + " " + c.court
+         + " " + c.recordCourt)
             .lowercased().contains(q)
     }
 

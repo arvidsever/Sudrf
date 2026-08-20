@@ -244,12 +244,19 @@ struct OverviewView: View {
         let fg: Color = tone == .red ? Palette.confirmed : (tone == .blue ? Color.accentColor : Palette.proposed)
         return VStack(spacing: 1) {
             Text(DateUtil.fmt(d.date)).font(.system(size: 12.5, weight: .bold))
-            Text(DateUtil.relative(d.date)).font(.system(size: 10, weight: .semibold)).opacity(0.75)
+            Text(relativeDeadlineLabel(d.date)).font(.system(size: 10, weight: .semibold)).opacity(0.75)
         }
         .foregroundStyle(fg)
         .frame(width: 70)
         .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10).fill(fg.opacity(tone == .red ? 0.09 : 0.11)))
+    }
+
+    private func relativeDeadlineLabel(_ date: Date) -> String {
+        let diff = DateUtil.daysBetween(DateUtil.today, date)
+        if diff == 0 { return "сегодня" }
+        if diff < 0 { return "срок прошёл" }
+        return "через \(diff) " + DateUtil.plural(diff, "день", "дня", "дней")
     }
 
     // MARK: Лента

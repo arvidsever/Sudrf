@@ -419,8 +419,8 @@ enum VSRFDOM {
     private static func cardLink(of header: Element) -> (id: String, section: VSRFCardSection?)? {
         if let a = (try? header.select("a[href*='/lk/practice/']").first()) ?? nil,
            let href = try? a.attr("href"),
-           let m = firstTwoGroups(#"/lk/practice/(cases|appeals)/([0-9\-]+)"#, in: href) {
-            return (m.1, VSRFCardSection(rawValue: m.0))
+           let match = href.firstMatch(of: /\/lk\/practice\/(cases|appeals)\/([0-9-]+)/) {
+            return (String(match.2), VSRFCardSection(rawValue: String(match.1)))
         }
         var p: Element? = header.parent()
         while let cur = p {
@@ -472,9 +472,12 @@ enum VSRFDOM {
         court = court?.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).nonEmpty
         return VSRFFirstInstance(
             court: court,
-            caseNumber: firstMatch(#"Номер дела 1-ой инстанции:\s*([0-9А-Яа-яЁё\-/]+)"#, in: text),
-            judge: firstMatch(#"Судья:\s*(.+?)\s*(?:Номер дела|$)"#, in: text),
-            decisionDate: firstMatch(#"Решение\s*от\s*(\d{2}\.\d{2}\.\d{4})"#, in: text),
+            caseNumber: text.firstMatch(of: /Номер дела 1-ой инстанции:\s*([0-9А-Яа-яЁё\/-]+)/)
+                .flatMap { clean(String($0.1)).nonEmpty },
+            judge: text.firstMatch(of: /Судья:\s*(.+?)\s*(?:Номер дела|$)/)
+                .flatMap { clean(String($0.1)).nonEmpty },
+            decisionDate: text.firstMatch(of: /Решение\s*от\s*(\d{2}\.\d{2}\.\d{4})/)
+                .flatMap { clean(String($0.1)).nonEmpty },
             result: result)
     }
 
@@ -498,27 +501,12 @@ enum VSRFDOM {
             .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    private static func firstDate(in s: String) -> String? { firstMatch(#"(\d{2}\.\d{2}\.\d{4})"#, in: s) }
+    private static func firstDate(in s: String) -> String? {
+        s.firstMatch(of: /\d{2}\.\d{2}\.\d{4}/).map { String($0.output) }
+    }
     private static func stripRapporteur(_ s: String) -> String {
         guard let r = s.range(of: #"\s*Докладчик:.*$"#, options: .regularExpression) else { return s }
         return String(s[..<r.lowerBound])
-    }
-    private static func firstMatch(_ pattern: String, in s: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        guard let m = re.firstMatch(in: s, range: range) else { return nil }
-        let idx = m.numberOfRanges > 1 ? 1 : 0
-        guard let g = Range(m.range(at: idx), in: s) else { return nil }
-        let out = clean(String(s[g]))
-        return out.isEmpty ? nil : out
-    }
-    /// Две группы одного совпадения.
-    private static func firstTwoGroups(_ pattern: String, in s: String) -> (String, String)? {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(s.startIndex..<s.endIndex, in: s)
-        guard let m = re.firstMatch(in: s, range: range), m.numberOfRanges >= 3,
-              let g1 = Range(m.range(at: 1), in: s), let g2 = Range(m.range(at: 2), in: s) else { return nil }
-        return (String(s[g1]), String(s[g2]))
     }
 }
 

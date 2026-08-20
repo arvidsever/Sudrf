@@ -9,22 +9,20 @@ import Foundation
 
 enum DateUtil {
 
+    private static let ruLocale = Locale(identifier: "ru_RU")
+
     static let cal: Calendar = {
         var c = Calendar(identifier: .gregorian)
-        c.locale = Locale(identifier: "ru_RU")
+        c.locale = ruLocale
         c.firstweekday_compat()
         return c
     }()
 
-    private static let monthsGen = ["января", "февраля", "марта", "апреля", "мая",
-                                    "июня", "июля", "августа", "сентября",
-                                    "октября", "ноября", "декабря"]
-    private static let monthsNom = ["Январь", "Февраль", "Март", "Апрель", "Май",
-                                    "Июнь", "Июль", "Август", "Сентябрь",
-                                    "Октябрь", "Ноябрь", "Декабрь"]
-    private static let weekdaysFull = ["Воскресенье", "Понедельник", "Вторник",
-                                       "Среда", "Четверг", "Пятница", "Суббота"]
-    static let weekdayShort = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+    static let weekdayShort: [String] = {
+        let sundayFirst = cal.shortStandaloneWeekdaySymbols
+        return (Array(sundayFirst.dropFirst()) + Array(sundayFirst.prefix(1)))
+            .map { $0.uppercased(with: ruLocale) }
+    }()
 
     // MARK: Базовое
 
@@ -35,9 +33,6 @@ enum DateUtil {
         cal.isDate(a, inSameDayAs: b)
     }
     static func isToday(_ d: Date) -> Bool { sameDay(d, today) }
-    static func sameMonth(_ a: Date, _ b: Date) -> Bool {
-        startOfMonth(a) == startOfMonth(b)
-    }
     static func startOfWeek(_ d: Date) -> Date {
         let start = startOfDay(d)
         let offset = (cal.component(.weekday, from: start) + 5) % 7
@@ -46,11 +41,6 @@ enum DateUtil {
     static func sameWeek(_ a: Date, _ b: Date) -> Bool {
         startOfWeek(a) == startOfWeek(b)
     }
-    static func weekDays(containing d: Date) -> [Date] {
-        let start = startOfWeek(d)
-        return (0..<7).map { addDays(start, $0) }
-    }
-
     /// Разница в КАЛЕНДАРНЫХ днях (b − a). Положительная — b позже a.
     static func daysBetween(_ a: Date, _ b: Date) -> Int {
         cal.dateComponents([.day], from: startOfDay(a), to: startOfDay(b)).day ?? 0
@@ -58,10 +48,6 @@ enum DateUtil {
     static func addDays(_ d: Date, _ n: Int) -> Date {
         cal.date(byAdding: .day, value: n, to: d) ?? d
     }
-    static func addMonths(_ d: Date, _ n: Int) -> Date {
-        cal.date(byAdding: .month, value: n, to: d) ?? d
-    }
-
     // MARK: Разбор дат с сайта суда
 
     /// Парсит «дд.мм.гггг» (возможен хвост вроде «дд.мм.гггг 14:00» или мусор) в
@@ -89,54 +75,44 @@ enum DateUtil {
 
     /// «14 мая».
     static func fmt(_ d: Date) -> String {
-        "\(cal.component(.day, from: d)) \(monthsGen[cal.component(.month, from: d) - 1])"
-    }
-    /// «14 мая 2026 года» (полная дата прописью месяца).
-    static func fmtFull(_ d: Date) -> String {
-        "\(fmt(d)) \(cal.component(.year, from: d)) года"
+        d.formatted(.dateTime.locale(ruLocale).day().month(.wide))
     }
     /// «16.06» — короткая для повестки/лент.
     static func shortDM(_ d: Date) -> String {
-        String(format: "%02d.%02d", cal.component(.day, from: d), cal.component(.month, from: d))
+        d.formatted(.dateTime.locale(ruLocale).day(.twoDigits).month(.twoDigits))
     }
     /// Полное название дня недели.
     static func weekday(_ d: Date) -> String {
-        weekdaysFull[cal.component(.weekday, from: d) - 1]
+        d.formatted(.dateTime.locale(ruLocale).weekday(.wide)).capitalized(with: ruLocale)
     }
     /// Короткое «вт, 16.06» / «сегодня».
     static func dateLabel(_ d: Date) -> String {
         if isToday(d) { return "сегодня" }
-        let wd = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"][cal.component(.weekday, from: d) - 1]
+        let wd = cal.shortWeekdaySymbols[cal.component(.weekday, from: d) - 1]
+            .lowercased(with: ruLocale)
         return "\(wd), \(shortDM(d))"
     }
     /// «Июнь 2026».
     static func monthTitle(_ d: Date) -> String {
-        "\(monthsNom[cal.component(.month, from: d) - 1]) \(cal.component(.year, from: d))"
+        let month = d.formatted(.dateTime.locale(ruLocale).month(.wide)).capitalized(with: ruLocale)
+        return "\(month) \(cal.component(.year, from: d))"
     }
     /// «8 – 14 июня» / «29 июня – 5 июля».
     static func weekTitle(starting start: Date) -> String {
         let s = startOfWeek(start)
         let e = addDays(s, 6)
         let sd = cal.component(.day, from: s)
-        let ed = cal.component(.day, from: e)
         let sm = cal.component(.month, from: s)
         let em = cal.component(.month, from: e)
         let sy = cal.component(.year, from: s)
         let ey = cal.component(.year, from: e)
         if sm == em && sy == ey {
-            return "\(sd) – \(ed) \(monthsGen[sm - 1])"
+            return "\(sd) – \(fmt(e))"
         }
         if sy == ey {
-            return "\(sd) \(monthsGen[sm - 1]) – \(ed) \(monthsGen[em - 1])"
+            return "\(fmt(s)) – \(fmt(e))"
         }
-        return "\(sd) \(monthsGen[sm - 1]) \(sy) – \(ed) \(monthsGen[em - 1]) \(ey)"
-    }
-    /// «сегодня» / «через N дней» / «срок прошёл».
-    static func relative(_ d: Date) -> String {
-        let diff = daysBetween(today, d)
-        if diff == 0 { return "сегодня" }
-        if diff < 0 { return "срок прошёл" }
-        return "через \(diff) " + plural(diff, "день", "дня", "дней")
+        return "\(fmt(s)) \(sy) – \(fmt(e)) \(ey)"
     }
 
     // MARK: Грид месяца

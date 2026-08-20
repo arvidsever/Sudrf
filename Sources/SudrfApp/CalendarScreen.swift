@@ -100,7 +100,10 @@ struct CalendarScreen: View {
         while cells.count % 7 != 0 { cells.append(nil) }
         return stride(from: 0, to: cells.count, by: 7).map { Array(cells[$0..<$0+7]) }
     }
-    private var weekDays: [Date] { DateUtil.weekDays(containing: router.calWeekStart) }
+    private var weekDays: [Date] {
+        let start = DateUtil.startOfWeek(router.calWeekStart)
+        return (0..<7).map { DateUtil.addDays(start, $0) }
+    }
 
     // MARK: Режим МЕСЯЦ (4A / 4B)
 

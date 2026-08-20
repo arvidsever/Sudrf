@@ -488,15 +488,10 @@ public enum CaseCardParser {
         let headers = (try? doc.select(".casenumber, .case-num").array()) ?? []
         for header in headers {
             let text = ((try? header.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let re = try? NSRegularExpression(
-                pattern: #"^(?:ДЕЛО|ПРОИЗВОДСТВО)\s*№\s*(.{1,60})$"#,
-                options: [.caseInsensitive]
+            guard let match = text.wholeMatch(
+                of: /^(?i:ДЕЛО|ПРОИЗВОДСТВО)\s*№\s*(.{1,60})$/
             ) else { continue }
-            let ns = text as NSString
-            guard let match = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
-                  match.numberOfRanges > 1 else { continue }
-            let raw = ns.substring(with: match.range(at: 1))
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = String(match.1).trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
         }
         return nil
@@ -605,14 +600,4 @@ public enum CaseCardParser {
         return inner.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Регэксп-хелпер
-
-    private static func firstMatch(_ pattern: String, in text: String, group: Int = 1) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
-        let range = NSRange(text.startIndex..., in: text)
-        guard let m = re.firstMatch(in: text, options: [], range: range),
-              m.numberOfRanges > group,
-              let r = Range(m.range(at: group), in: text) else { return nil }
-        return String(text[r])
-    }
 }

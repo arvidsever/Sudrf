@@ -1316,15 +1316,16 @@ final class AppRouter: ObservableObject {
             .nilIfEmpty ?? rec.courtTitle
     }
 
+    /// Вид записи ленты. Раньше здесь жила своя копия предиката заседания — с
+    /// тем же дефектом «есть время ⇒ заседание» (#99), поэтому канцелярские
+    /// события помечались как заседания и в «Обзоре», и в ленте. Общий
+    /// предикат — `isHearingEvent`, а не `isHearing`: лента историческая, и
+    /// прошедшее заседание с уже наступившей законной силой должно остаться
+    /// заседанием, а не превратиться в «движение».
     private func feedKind(for session: StoredSession) -> FeedEntryKind {
-        let text = (session.event + " " + (session.result ?? "")).lowercased()
-        if !(session.time ?? "").isEmpty
-            || text.contains("заседани")
-            || text.contains("слушани")
-            || text.contains("рассмотрени") {
-            return .hearing
-        }
-        return .movement
+        CaseLifecycleResolver.isHearingEvent(
+            event: session.event, result: session.result, time: session.time)
+            ? .hearing : .movement
     }
 
     private func feedID(recordKey: String, kind: FeedEntryKind,

@@ -260,6 +260,101 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(dl?.date, DateUtil.addDays(DateUtil.parse("10.04.2026")!, 30))
     }
 
+    /// Регресс #80 на реальной раскладке уголовной карточки
+    /// (`Tests/SudrfKitTests/Fixtures/leninsky_ufa_criminal.html`):
+    ///
+    ///   22.04  Регистрация поступившего в суд дела
+    ///   22.04  Передача материалов дела судье
+    ///   24.04  Решение в отношении поступившего уголовного дела
+    ///          → Назначено судебное заседание
+    ///   06.05  Судебное заседание → Производство по делу прекращено
+    ///   15.05  Дело сдано в отдел судебного делопроизводства → 19.05
+    ///
+    /// Срок должен считаться от 06.05 — строки, объявившей итог. Прежняя
+    /// эвристика «последняя строка с непустым результатом» брала 15.05, а
+    /// строка 24.04 с заполненным результатом — назначение заседания, а не
+    /// итоговый акт.
+    func testCriminalAppealDeadlineUsesVerdictNotLastFilledResult() {
+        let mv = movement(sessions: [
+            CaseSession(date: "22.04.2026", time: "15:56",
+                        event: "Регистрация поступившего в суд дела"),
+            CaseSession(date: "22.04.2026", time: "16:59",
+                        event: "Передача материалов дела судье"),
+            CaseSession(date: "24.04.2026", time: "18:06",
+                        event: "Решение в отношении поступившего уголовного дела",
+                        result: "Назначено судебное заседание"),
+            CaseSession(date: "06.05.2026", time: "10:00", room: "Зал №1",
+                        event: "Судебное заседание",
+                        result: "Производство по делу прекращено"),
+            CaseSession(date: "15.05.2026", time: "12:23",
+                        event: "Дело сдано в отдел судебного делопроизводства",
+                        result: "19.05.2026"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(cartoteka: "u"),
+                                               today: today)
+
+        let dl = snap.deadlines.first { $0.kind == "appeal" }
+        // УПК — 15 суток со дня провозглашения (ст. 389.4).
+        XCTAssertEqual(dl?.date, DateUtil.addDays(DateUtil.parse("06.05.2026")!, 15))
+        XCTAssertNotEqual(dl?.date, DateUtil.addDays(DateUtil.parse("15.05.2026")!, 15),
+                          "канцелярская строка не должна быть триггером")
+        XCTAssertNotEqual(dl?.date, DateUtil.addDays(DateUtil.parse("24.04.2026")!, 15),
+                          "назначение заседания не является итоговым актом")
+    }
+
+    /// Приговор — явный триггер уголовного срока, даже когда позже идут
+    /// канцелярские строки с заполненными полями.
+    func testCriminalAppealDeadlineUsesSentenceRow() {
+        let mv = movement(sessions: [
+            CaseSession(date: "06.05.2026", time: "10:00", event: "Судебное заседание",
+                        result: "Вынесен приговор"),
+            CaseSession(date: "20.05.2026", time: "09:00",
+                        event: "Направление копии постановления (определения) в соответствующие органы",
+                        result: "Исполнено"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(cartoteka: "u"),
+                                               today: today)
+
+        XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
+                       DateUtil.addDays(DateUtil.parse("06.05.2026")!, 15))
+    }
+
+    /// Заполненный результат сам по себе триггером не является — проверяем
+    /// предикат напрямую, без окружения расчёта.
+    func testFilledResultAloneIsNotAFinalAct() {
+        XCTAssertFalse(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Решение в отношении поступившего уголовного дела",
+            result: "Назначено судебное заседание"))
+        XCTAssertFalse(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Дело сдано в отдел судебного делопроизводства", result: "19.05.2026"))
+        XCTAssertFalse(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Передача материалов дела судье", result: nil))
+
+        XCTAssertTrue(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Судебное заседание", result: "Производство по делу прекращено"))
+        XCTAssertTrue(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Судебное заседание", result: "Вынесен приговор"))
+        XCTAssertTrue(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "Судебное заседание", result: "иск удовлетворён"))
+    }
+
+    /// Порядок строк в массиве сессий задаёт парсер — по дате их сортирует
+    /// только сборка снимка. Триггер должен выбираться по дате, иначе в круге
+    /// с двумя итоговыми актами срок посчитается от более раннего.
+    func testTriggerPicksLatestFinalActEvenWhenListedEarlier() {
+        let mv = movement(sessions: [
+            CaseSession(date: "20.05.2026", event: "Судебное заседание",
+                        result: "Вынесен приговор"),
+            CaseSession(date: "06.05.2026", event: "Судебное заседание",
+                        result: "Производство по делу прекращено"),
+        ])
+        let snap = MovementDerivation.snapshot(from: mv, context: context(cartoteka: "u"),
+                                               today: today)
+
+        XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
+                       DateUtil.addDays(DateUtil.parse("20.05.2026")!, 15))
+    }
+
     func testNoAppealDeadlineWhenAppealExists() {
         let appeal = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
                                   judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,

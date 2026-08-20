@@ -373,7 +373,7 @@ enum CaseLifecycleResolver {
         "изготовлено мотивированн", "направление копи",
     ]
 
-    private static func isClericalEvent(_ event: String) -> Bool {
+    static func isClericalEvent(_ event: String) -> Bool {
         let value = normalized(event)
         return clericalEventMarkers.contains { value.contains($0) }
     }
@@ -612,6 +612,23 @@ enum CaseLifecycleResolver {
             || restorationDenied || acceptanceDenied
             || changedWithoutRemand || cancelledWithoutDirection || cancelledActWithNewDecision
             || meritsDecision || satisfiedWithoutRemand
+    }
+
+    /// Событие движения, которым объявлен обжалуемый итоговый акт первой
+    /// инстанции: приговор, решение по иску, постановление по КоАП.
+    ///
+    /// Нужен для выбора триггера процессуального срока (#80). Само по себе
+    /// заполненное поле «Результат события» триггером НЕ является: портал
+    /// заполняет его и у промежуточных строк, а расчёт «от последней строки с
+    /// непустым результатом» привязывал срок апелляции к произвольному
+    /// событию — по уголовным делам особенно заметно.
+    static func isFinalActAnnouncement(event: String, result: String?) -> Bool {
+        let value = normalized(event + " " + (result ?? ""))
+        // Два уже существующих словаря дополняют друг друга: конечные формулы
+        // первой инстанции знают «приговор» и «иск удовлетворён», словарь
+        // терминальных исходов — «производство прекращено», «оставлено без
+        // изменения» и отмену с новым решением.
+        return isReliableFirstTerminalResult(value) || isTerminalDisposition(value)
     }
 
     /// Конечные формулы первой инстанции. Намеренно не считаем итогом простое

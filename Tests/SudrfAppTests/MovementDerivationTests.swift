@@ -152,6 +152,99 @@ final class MovementDerivationTests: XCTestCase {
             result: nil, time: "11:00"))
     }
 
+    // MARK: Суд ближайшего события (#100)
+
+    private func presentation(_ mv: CaseMovement) -> CaseLifecyclePresentation {
+        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+        return MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context(), today: today)
+    }
+
+    /// Заседание в апелляции — подпись должна называть апелляционный суд, а не
+    /// суд первой инстанции: иначе строка обещает заседание не в том суде.
+    func testAppealHearingReportsAppealCourt() {
+        let mv = movement(sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание",
+                        result: "Вынесено решение (определение)")
+        ], instances: [
+            CaseInstance(level: .appeal, court: "Верховный суд Республики Коми",
+                         caseNumber: "33-288/2026", judge: nil,
+                         domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil,
+                         sessions: [CaseSession(date: "20.05.2026", time: "10:00", event: "Судебное заседание")])
+        ])
+
+        let out = presentation(mv)
+
+        XCTAssertEqual(out.currentReviewNumber, "33-288/2026")
+        XCTAssertEqual(out.nextEventCourt, "Верховный суд Республики Коми")
+    }
+
+    /// Кассация: тот же инвариант на следующем звене.
+    func testCassationHearingReportsCassationCourt() {
+        let mv = movement(sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание",
+                        result: "Вынесено решение (определение)")
+        ], instances: [
+            CaseInstance(level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                         caseNumber: "8Г-2723/2026", judge: nil,
+                         domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+                         sessions: [CaseSession(date: "25.05.2026", time: "11:30", event: "Судебное заседание")])
+        ])
+
+        XCTAssertEqual(presentation(mv).nextEventCourt,
+                       "Третий кассационный суд общей юрисдикции")
+    }
+
+    /// Заседания ещё нет, но номер вышестоящего производства уже показывается —
+    /// именно та комбинация, которую issue запрещает: номер апелляции с судом
+    /// первой инстанции.
+    func testReviewNumberWithoutHearingStillReportsItsOwnCourt() {
+        let mv = movement(sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание",
+                        result: "Вынесено решение (определение)")
+        ], instances: [
+            CaseInstance(level: .appeal, court: "Верховный суд Республики Коми",
+                         caseNumber: "33-288/2026", judge: nil,
+                         domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil,
+                         sessions: [CaseSession(date: "15.04.2026", event: "Жалоба принята к производству")])
+        ])
+
+        let out = presentation(mv)
+
+        XCTAssertNotNil(out.currentReviewNumber)
+        XCTAssertEqual(out.nextEventCourt, "Верховный суд Республики Коми")
+    }
+
+    /// Дело идёт только в первой инстанции — подпись не трогаем совсем, суд
+    /// берётся из записи, как раньше. Разобранный из движения заголовок суда
+    /// может отличаться формулировкой от сохранённого в записи, и подменять им
+    /// подпись issue не просит.
+    func testFirstInstanceOnlyKeepsRecordCourt() {
+        let mv = movement(sessions: [
+            CaseSession(date: "20.05.2026", time: "10:00", event: "Судебное заседание")
+        ])
+
+        let out = presentation(mv)
+
+        XCTAssertNil(out.currentReviewNumber)
+        XCTAssertNil(out.nextEventCourt)
+    }
+
+    /// Карточка-заглушка (капча/сетевая ошибка) не должна подменять верный суд
+    /// записи прочерком.
+    func testPlaceholderInstanceDoesNotOverrideCourt() {
+        let mv = movement(sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание",
+                        result: "Вынесено решение (определение)")
+        ], instances: [
+            CaseInstance(level: .appeal, court: "—", caseNumber: "—", judge: nil,
+                         domain: "vs.komi.sudrf.ru", foundByUID: false, result: nil,
+                         sessions: [])
+        ])
+
+        XCTAssertNil(presentation(mv).nextEventCourt)
+    }
+
     // MARK: Сроки
 
     func testAppealDeadlineProposedForCivilCase() {

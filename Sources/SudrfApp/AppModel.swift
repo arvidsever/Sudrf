@@ -1265,7 +1265,9 @@ final class AppRouter: ObservableObject {
                 collections: rec.collectionNames,
                 stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,
                 subject: snap.category ?? "—",
-                court: rec.courtTitle,
+                // Суд той же инстанции, что и ближайшее событие с номером
+                // производства (#100); фолбэк — суд записи, как раньше.
+                court: presentation?.nextEventCourt ?? rec.courtTitle,
                 courtTier: presentation?.currentTier
                     ?? (stage == .done ? nil : ctx.flatMap {
                         MovementDerivation.inferredTier(stage: stage, context: $0) }),

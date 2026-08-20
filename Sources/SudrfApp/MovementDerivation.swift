@@ -98,6 +98,12 @@ struct CaseLifecyclePresentation {
     /// Номер текущей инстанции пересмотра для второй строки мониторинга.
     /// Не персистируется: вычисляется из `CaseLifecycleResolver.currentInstance`.
     var currentReviewNumber: String?
+    /// Суд, к которому относится ближайшее событие. Держит инвариант #100:
+    /// номер производства, событие и суд в строке мониторинга происходят из
+    /// ОДНОЙ инстанции, иначе строка обещает заседание в суде первой
+    /// инстанции, когда оно назначено в апелляции или кассации.
+    /// `nil` — суд берётся из записи, как раньше.
+    var nextEventCourt: String?
 }
 
 // MARK: - Движок
@@ -195,6 +201,20 @@ enum MovementDerivation {
             .sorted(by: { $0.dateRef < $1.dateRef })
             .first
 
+        // Суд ближайшего события — только когда это событие ВЫШЕСТОЯЩЕЙ
+        // инстанции. Дело, идущее в первой инстанции, подписи не меняет: issue
+        // просит сохранить прежнее поведение, а суд из разобранного движения и
+        // суд из записи могут отличаться формулировкой.
+        //
+        // Заседание авторитетнее всего: у сессии свой `court`, проставленный из
+        // инстанции при сборке снимка. Иначе — суд текущего круга, и только
+        // когда в строке реально показывается его номер: именно комбинацию
+        // «номер апелляции + суд первой инстанции» issue и запрещает.
+        let currentReviewNumber = reviewNumber(for: resolution.currentInstance)
+        let reviewHearing = nextHearing.flatMap { $0.level == .first ? nil : $0 }
+        let nextEventCourt = courtLabel(reviewHearing?.court)
+            ?? (currentReviewNumber == nil ? nil : courtLabel(resolution.currentInstance?.court))
+
         var nextEvent = "—"
         var nextChip: Palette.Chip = .gray
         var nextEventDate: Date?
@@ -259,7 +279,16 @@ enum MovementDerivation {
             currentTier: resolution.isCompleted ? nil : courtTier(
                 for: resolution.currentInstance, context: context)
                 ?? inferredTier(stage: resolution.stage, context: context),
-            currentReviewNumber: reviewNumber(for: resolution.currentInstance))
+            currentReviewNumber: currentReviewNumber,
+            nextEventCourt: nextEventCourt)
+    }
+
+    /// Название суда, пригодное для подписи. Отсеивает пустое значение и
+    /// placeholder-прочерк карточки-заглушки — тем же набором, что и
+    /// `reviewNumber`, иначе подпись «—» заменила бы верный суд записи.
+    static func courtLabel(_ court: String?) -> String? {
+        let value = (court ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty || ["—", "–", "-"].contains(value) ? nil : value
     }
 
     /// Возвращает номер только реальной инстанции пересмотра. Материалы,

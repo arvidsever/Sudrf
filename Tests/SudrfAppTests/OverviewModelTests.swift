@@ -84,4 +84,40 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertEqual(AppRouter.recentFeedEntries(rows, today: today, days: 7).map(\.id),
                        ["today", "six"])
     }
+
+    // MARK: Идентификатор записи ленты (#99)
+
+    /// Вид записи — производная классификация. Пока он входил в id, уточнение
+    /// правил (#99 перевёл канцелярские события из «заседаний» в «движение»)
+    /// меняло id у давно прочитанных записей: они возвращались непрочитанными
+    /// и порождали уведомления о событиях месячной давности.
+    func testFeedIDMigrationDropsKindSegment() {
+        XCTAssertEqual(
+            AppRouter.feedIDDroppingKind("syktsud.komi.sudrf.ru/2-476/2026#feed#hearing#12345#11:00#Дело сдано"),
+            "syktsud.komi.sudrf.ru/2-476/2026#feed#12345#11:00#Дело сдано")
+        XCTAssertEqual(
+            AppRouter.feedIDDroppingKind("host/2-1/2026#feed#movement#1#—#Регистрация"),
+            "host/2-1/2026#feed#1#—#Регистрация")
+        XCTAssertEqual(
+            AppRouter.feedIDDroppingKind("host/2-1/2026#feed#act#1#—#doc1"),
+            "host/2-1/2026#feed#1#—#doc1")
+    }
+
+    /// У судов Москвы `recordKey` сам содержит «#» (MovementContext.identityKey),
+    /// поэтому разбор по разделителю сломался бы — снимаем сегмент строго после
+    /// маркера «#feed#».
+    func testFeedIDMigrationSurvivesHashInRecordKey() {
+        XCTAssertEqual(
+            AppRouter.feedIDDroppingKind("mos-gorsud.ru#77RS0023/2-5/2026#feed#hearing#9#10:00#Заседание"),
+            "mos-gorsud.ru#77RS0023/2-5/2026#feed#9#10:00#Заседание")
+    }
+
+    /// Миграция идемпотентна: новый id второй раз не режется.
+    func testFeedIDMigrationIsIdempotent() {
+        let migrated = "host/2-1/2026#feed#12345#11:00#Дело сдано"
+        XCTAssertEqual(AppRouter.feedIDDroppingKind(migrated), migrated)
+        // Текст записи, начинающийся со слова-вида, не должен быть срезан.
+        let tricky = "host/2-1/2026#feed#12345#—#hearing#что-то"
+        XCTAssertEqual(AppRouter.feedIDDroppingKind(tricky), tricky)
+    }
 }

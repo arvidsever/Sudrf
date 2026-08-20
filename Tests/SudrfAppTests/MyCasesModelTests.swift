@@ -138,6 +138,7 @@ final class MyCasesModelTests: XCTestCase {
     private func tracked(_ number: String, last: Date? = nil, next: Date? = nil) -> TrackedCase {
         TrackedCase(recordKey: "court/" + number, caseNumber: number, collections: [],
                     stage: .first, stageTag: "1-я инст.", subject: "—", court: "Сыктывкарский городской суд",
+                    recordCourt: "Сыктывкарский городской суд",
                     courtTier: .district,
                     production: ProductionType.of(number),
                     partiesShort: "Иванов А. А. ⚔ ООО «Ромашка»", statusText: "В производстве",
@@ -192,5 +193,18 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertTrue(AppRouter.matches(c, query: "новожилова"))    // подборка
         XCTAssertTrue(AppRouter.matches(c, query: "сыктывкарский"))  // суд
         XCTAssertFalse(AppRouter.matches(c, query: "петров"))
+    }
+
+    /// #100 сменил показываемый суд на инстанцию ближайшего события. Дело,
+    /// ушедшее в апелляцию, обязано находиться и по новому суду, и по суду
+    /// первой инстанции: номер дела у него по-прежнему её, и в голове
+    /// пользователя оно остаётся делом своего районного суда.
+    func testQueryMatchesBothDisplayedAndRecordCourt() {
+        var c = tracked("2-8236/2025")
+        c.court = "Верховный суд Республики Коми"
+
+        XCTAssertTrue(AppRouter.matches(c, query: "верховный"))
+        XCTAssertTrue(AppRouter.matches(c, query: "сыктывкарский"))
+        XCTAssertFalse(AppRouter.matches(c, query: "выборгский"))
     }
 }

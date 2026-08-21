@@ -583,9 +583,18 @@ enum CaseLifecycleResolver {
         let unchanged = value.contains("остав")
             && (value.contains("без удовлетвор") || value.contains("без изменен"))
         let transferDenied = value.contains("отказ") && value.contains("передач")
-        let terminated = value.contains("производств") && value.contains("прекращ")
-        let returned = (value.contains("возврат") || value.contains("возвращ"))
-            && value.contains("без рассмотр")
+        // Прекращение — итог само по себе. Требовать рядом слово «производство»
+        // нельзя: портал пишет в результате заседания просто «Прекращено»
+        // (#84). Отсекаются только прекращения промежуточных объектов вроде
+        // ходатайства или запроса.
+        let terminated = value.contains("прекращ") && !mentionsIntermediateObject(value)
+        // Возврат жалобы заявителю завершает круг и без слов «без рассмотрения»:
+        // жалоба к рассмотрению не принята, производства по ней нет (#84).
+        let complaintReturned = (value.contains("возврат") || value.contains("возвращ"))
+            && (value.contains("жалоб") || value.contains("представлен"))
+        let returned = complaintReturned
+            || ((value.contains("возврат") || value.contains("возвращ"))
+                && value.contains("без рассмотр"))
         let wholeProceedingSubject = isWholeProceedingSubject(value)
         let leftWithoutConsideration = value.contains("остав") && value.contains("без рассмотр")
             && wholeProceedingSubject
@@ -660,9 +669,15 @@ enum CaseLifecycleResolver {
 
     /// «Без рассмотрения» относится к исходу дела, только когда объектом
     /// является весь спор. Слово «дело» в «ходатайство по делу» этого не меняет.
+    /// Промежуточные объекты производства: их судьба итогом дела не является.
+    private static let intermediateObjects = ["ходатайств", "запрос", "доказательств", "отвод"]
+
+    private static func mentionsIntermediateObject(_ value: String) -> Bool {
+        intermediateObjects.contains(where: value.contains)
+    }
+
     private static func isWholeProceedingSubject(_ value: String) -> Bool {
-        let intermediateObjects = ["ходатайств", "запрос", "доказательств", "отвод"]
-        guard !intermediateObjects.contains(where: value.contains) else { return false }
+        guard !mentionsIntermediateObject(value) else { return false }
         return value.contains("иск") || value.contains("заявлен")
             || value.contains("жалоб") || value.contains("дел")
     }

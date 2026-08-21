@@ -245,6 +245,102 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertNil(presentation(mv).nextEventCourt)
     }
 
+    // MARK: Завершение круга пересмотра (#84)
+
+    private func appealRound(result: String?, sessions: [CaseSession]) -> CaseSnapshot {
+        let appeal = CaseInstance(level: .appeal, court: "Верховный суд Республики Коми",
+                                  caseNumber: "33-1/2026", judge: nil,
+                                  domain: "vs.komi.sudrf.ru", foundByUID: true,
+                                  result: result, sessions: sessions)
+        let mv = movement(sessions: [CaseSession(date: "01.04.2026", event: "Судебное заседание",
+                                                 result: "иск удовлетворён")],
+                          instances: [appeal])
+        // «Сегодня» позже всех событий круга: иначе будущее заседание само по
+        // себе делает апелляцию активной, и проверялось бы не то.
+        return MovementDerivation.snapshot(from: mv, context: context(),
+                                           today: DateUtil.parse("20.08.2026")!)
+    }
+
+    /// Кейс 1 из issue (дело 2-1878/2026): жалоба возвращена заявителю.
+    /// Прежняя формула требовала рядом слова «без рассмотрения», поэтому возврат
+    /// не считался итогом и дело висело в стадии «Апелляция».
+    func testReturnedComplaintClosesAppealRound() {
+        for text in ["Жалоба, представление возвращены заявителю",
+                     "жалоба (жалобы), представление возвращены заявителю (заявителям)"] {
+            let snap = appealRound(result: text, sessions: [
+                CaseSession(date: "09.06.2026", event: text),
+                CaseSession(date: "10.06.2026",
+                            event: "Дело сдано в отдел судебного делопроизводства"),
+                CaseSession(date: "10.06.2026", event: "Передано в экспедицию"),
+            ])
+
+            XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue, text)
+            // Пройденная апелляция остаётся в истории, но не активна.
+            XCTAssertEqual(snap.steps, ["done", "done", "todo"], text)
+        }
+    }
+
+    /// Кейс 2 из issue (дело 2-3671/2025). Причина оказалась не той, что
+    /// предполагалась: формулировка с «производством» и раньше закрывала круг,
+    /// а ломалось голое «Прекращено» в результате заседания — портал пишет
+    /// именно так, без слова «производство» рядом.
+    func testBareTerminationResultClosesAppealRound() {
+        let snap = appealRound(result: nil, sessions: [
+            CaseSession(date: "08.06.2026", time: "10:00",
+                        event: "Судебное заседание", result: "Прекращено"),
+            CaseSession(date: "08.06.2026",
+                        event: "Составлено мотивированное апелляционное определение"),
+            CaseSession(date: "10.06.2026",
+                        event: "Дело сдано в отдел судебного делопроизводства"),
+            CaseSession(date: "10.06.2026", event: "Передано в экспедицию"),
+        ])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snap.steps, ["done", "done", "todo"])
+    }
+
+    /// Формулировка с «производством» работала и до правки — закрепляем, чтобы
+    /// расширение словаря её не потеряло.
+    func testTerminationWithProceedingWordStillClosesRound() {
+        let snap = appealRound(
+            result: "производство по жалобе/представлению прекращено — отказ от жалобы; отзыв представления",
+            sessions: [CaseSession(date: "08.06.2026", event: "Рассмотрено")])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+    }
+
+    /// Технические строки после итога не воскрешают круг.
+    func testClericalRowsAfterTerminationDoNotReviveRound() {
+        let snap = appealRound(result: nil, sessions: [
+            CaseSession(date: "08.06.2026", event: "Судебное заседание", result: "Прекращено"),
+            CaseSession(date: "15.06.2026", event: "Регистрация входящей корреспонденции"),
+            CaseSession(date: "20.06.2026", event: "Дело сдано в архив"),
+        ])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
+    }
+
+    /// Обратная сторона: принятие жалобы после возврата возобновляет круг —
+    /// issue прямо оговаривает «если нет более позднего сигнала о принятии».
+    func testComplaintAcceptedAfterReturnKeepsAppealActive() {
+        let snap = appealRound(result: nil, sessions: [
+            CaseSession(date: "09.06.2026", event: "Жалоба возвращена заявителю"),
+            CaseSession(date: "20.06.2026", event: "Жалоба принята к производству"),
+        ])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
+    }
+
+    /// Прекращение промежуточного объекта итогом дела не является.
+    func testIntermediateObjectTerminationIsNotACaseOutcome() {
+        let snap = appealRound(result: nil, sessions: [
+            CaseSession(date: "08.06.2026", event: "Судебное заседание",
+                        result: "Производство по ходатайству прекращено"),
+        ])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
+    }
+
     // MARK: Сроки
 
     func testAppealDeadlineProposedForCivilCase() {

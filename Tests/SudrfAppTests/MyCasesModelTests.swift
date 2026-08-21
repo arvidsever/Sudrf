@@ -98,6 +98,61 @@ final class MyCasesModelTests: XCTestCase {
                        "Иванов А. и 2 других ⚔ ООО «Ромашка»")
     }
 
+    func testPartiesShortForKoapOrganisation() {
+        var p = CaseParties()
+        p.add(role: "Привлекаемое лицо", name: "ООО «Севертранс»", articles: "ст.12.21.2 ч.1 КоАП РФ")
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "ООО «Севертранс»")
+        XCTAssertEqual(p.leadCharges, "ст.12.21.2 ч.1 КоАП РФ")
+        XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+    }
+
+    // MARK: Категория на карточке — хвост рубрикатора
+    //
+    // Строки взяты из живых фикстур: sgs_card, ksoyu_case_card,
+    // samara_kas_appeal_card. Разделителя два — «→» и «->».
+
+    func testShortCategoryStaysWhole() {
+        XCTAssertEqual(MovementDerivation.categoryTail("Иные жилищные споры"),
+                       "Иные жилищные споры")
+    }
+
+    func testLongCategoryCollapsesToLastSection() {
+        let cat = "Споры, связанные с имущественными правами → "
+            + "Иски о взыскании сумм по договору займа, кредитному договору"
+        XCTAssertEqual(MovementDerivation.categoryTail(cat),
+                       "Иски о взыскании сумм по договору займа, кредитному договору")
+    }
+
+    func testStubSectionIsSkipped() {
+        let cat = "Споры, возникающие из трудовых отношений → "
+            + "Трудовые споры (независимо от форм собственности работодателя): → "
+            + "Дела о восстановлении на работе, государственной (муниципальной) службе → "
+            + "иные споры по делам о восстановлении на работе, государственной (муниципальной) службе"
+        XCTAssertEqual(MovementDerivation.categoryTail(cat),
+                       "Дела о восстановлении на работе, государственной (муниципальной) службе")
+    }
+
+    func testAsciiArrowAndRubricatorPrefix() {
+        let cat = "3.025 - Гл. 22 КАС РФ -> об оспаривании решений, действий (бездействия) "
+            + "должностных лиц -> прочие (об оспаривании решений, действий (бездействия) "
+            + "должностных лиц (не явл. госслужащими) органов, организаций)"
+        XCTAssertEqual(MovementDerivation.categoryTail(cat),
+                       "об оспаривании решений, действий (бездействия) должностных лиц")
+    }
+
+    /// Длинная категория без разделов сворачивать некуда — отдаём как есть,
+    /// обрезкой занимается сама карточка.
+    func testLongCategoryWithoutSectionsIsKept() {
+        let cat = "Дела о взыскании страхового возмещения по договору обязательного страхования"
+        XCTAssertEqual(MovementDerivation.categoryTail(cat), cat)
+    }
+
+    /// Единственный раздел-заглушка не должен схлопнуться в пустоту.
+    func testLoneStubSectionIsKept() {
+        let cat = "иные споры по делам о восстановлении на работе, государственной службе"
+        XCTAssertEqual(MovementDerivation.categoryTail(cat), cat)
+    }
+
     // MARK: Подсудимые — многострочная раскладка «Списком»
 
     private func upkParties(_ defendants: [(String, String)]) -> CaseParties {

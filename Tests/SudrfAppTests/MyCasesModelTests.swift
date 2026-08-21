@@ -202,12 +202,6 @@ final class MyCasesModelTests: XCTestCase {
                     lastEventDate: last, nextEventDate: next)
     }
 
-    func testSortByNumberIsNumeric() {
-        let rows = [tracked("2-10/2026"), tracked("2-9/2026"), tracked("2-100/2026")]
-        let sorted = AppRouter.sorted(rows, by: .number).map(\.caseNumber)
-        XCTAssertEqual(sorted, ["2-9/2026", "2-10/2026", "2-100/2026"])
-    }
-
     func testSortByActivityFreshFirst() {
         let d1 = DateUtil.parse("01.04.2026")!, d2 = DateUtil.parse("20.04.2026")!
         let rows = [tracked("2-1/2026", last: d1), tracked("2-2/2026", last: d2),

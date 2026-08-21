@@ -454,6 +454,13 @@ private struct NavCapsule: View {
         .padding(NavChrome.capsulePadding)
         .glassEffect(.regular, in: .capsule)
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
+        // Своя анимация переезда: снаружи на `router.section` висит
+        // `.easeOut(0.18)` для смены экранов, и слайдер по ней проскакивал
+        // рывком. Материалу нужен ход помягче и подлиннее — ближе к
+        // переключателю Calendar. Внутренний модификатор перебивает внешний
+        // для этого поддерева, смена экранов остаётся быстрой.
+        .animation(reduceMotion ? nil : .smooth(duration: 0.34, extraBounce: 0.07),
+                   value: router.section)
     }
 
     private func tab(_ s: AppSection) -> some View {

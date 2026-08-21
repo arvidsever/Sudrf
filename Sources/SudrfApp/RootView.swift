@@ -333,20 +333,31 @@ enum NavChrome {
 
 private struct NavCapsule: View {
     @EnvironmentObject var router: AppRouter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var sliderSpace
+
+    /// Постоянный идентификатор выбранного сегмента. Он один на всю капсулу:
+    /// стеклянная форма не гаснет на старой вкладке и не загорается на новой,
+    /// а переезжает между ними как один объект.
+    private enum SliderID { case selection }
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
+        // Контейнер сливает соседние стеклянные формы в одну линзу, а не кладёт
+        // их слоями (`CalendarScreen.swift:117` — тот же приём для группы кнопок).
+        // Без него слайдер был бы вторым слоем стекла поверх капсулы.
+        GlassEffectContainer(spacing: 0) {
+            HStack(spacing: 2) {
+                ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
+            }
         }
         .padding(NavChrome.capsulePadding)
         .glassEffect(.regular, in: .capsule)
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
     }
 
-    @ViewBuilder
     private func tab(_ s: AppSection) -> some View {
         let active = router.section == s
-        Button {
+        return Button {
             router.go(s)
         } label: {
             HStack(spacing: 7) {
@@ -361,14 +372,19 @@ private struct NavCapsule: View {
                         .background(Capsule().fill(Color.accentColor))
                 }
             }
-            .foregroundStyle(active ? Color.accentColor : Color.primary.opacity(0.62))
+            // Акцент в переключателе остаётся только на счётчике дел: в системном
+            // Calendar выбранная секция не красится вовсе, её выделяет материал.
+            .foregroundStyle(active ? Color.primary : Color.primary.opacity(0.62))
             .padding(.horizontal, 16)
             .frame(height: NavChrome.tabHeight)
-            .background(Capsule().fill(active ? Color.accentColor.opacity(0.13) : .clear))
-            .overlay(Capsule().strokeBorder(active ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // `.identity` вместо снятия модификатора: идентичность view не скачет,
+        // и контейнеру есть что анимировать при смене секции.
+        .glassEffect(active ? .regular.interactive() : .identity, in: .capsule)
+        .glassEffectID(active ? SliderID.selection : nil, in: sliderSpace)
+        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
     }
 }
 

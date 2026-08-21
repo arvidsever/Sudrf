@@ -167,13 +167,21 @@ enum SudrfSchemaMigrationPlan: SchemaMigrationPlan {
 struct SudrfStoreBootstrapError: LocalizedError {
     let underlying: Error
     let backupDirectory: URL?
+    /// База существовала до этого запуска. От этого зависит совет: восстановить
+    /// из копии можно только то, что было. Свежему пользователю прежний текст
+    /// предлагал восстановить копию, которой не существует.
+    var hadExistingStore: Bool = true
 
     var errorDescription: String? {
         var text = "Не удалось открыть базу отслеживаемых дел: \(underlying.localizedDescription)"
         if let backupDirectory {
             text += "\n\nРезервная копия до миграции: \(backupDirectory.path)"
         }
-        text += "\n\nSudrf заблокирован для записи. Закройте приложение и восстановите базу из копии либо передайте эту ошибку разработчику."
+        if hadExistingStore {
+            text += "\n\nSudrf заблокирован для записи. Закройте приложение и восстановите базу из копии либо передайте эту ошибку разработчику."
+        } else {
+            text += "\n\nОтслеживаемых дел в этой копии приложения ещё не было, поэтому терять нечего: закройте Sudrf, удалите папку Sudrf в Application Support и запустите снова. Если ошибка повторится — передайте её разработчику."
+        }
         return text
     }
 }
@@ -288,21 +296,57 @@ enum SudrfModelContainerFactory {
 /// возврата контейнера выполнены backup, schema migration, legacy-поля и полная
 /// проекция актов; UI получает только полностью подготовленное хранилище.
 actor PersistentStoreBootstrapper {
-    func prepareProduction() throws -> ModelContainer {
-        let storeURL = ModelConfiguration().url
+    /// `storeURL` и `defaultsSuiteName` инжектируются только тестами: боевой
+    /// путь берёт то же, что и раньше. Без этого сценарий первого запуска —
+    /// база, которой ещё нет, — нечем было проверить, кроме как на живой
+    /// машине. Имя suite, а не сам `UserDefaults`: он не `Sendable` и через
+    /// границу актора не проходит.
+    func prepareProduction(storeURL: URL? = nil,
+                           defaultsSuiteName: String? = nil) throws -> ModelContainer {
+        let defaults = defaultsSuiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        let storeURL = storeURL ?? ModelConfiguration().url
+        // Замеряем ДО всего: от этого зависит, есть ли что терять.
+        let hadExistingStore = FileManager.default.fileExists(atPath: storeURL.path)
         var backup: URL?
         do {
-            backup = try SudrfPersistentStoreBackup.prepare(storeURL: storeURL)
-            let container = try SudrfModelContainerFactory.make(
-                inMemory: false, storeURL: storeURL)
-            let context = ModelContext(container)
-            context.autosaveEnabled = false
-            try TrackedStorePreparation.prepare(context: context)
-            SudrfPersistentStoreBackup.markMigrationCompleted()
-            return container
+            backup = try SudrfPersistentStoreBackup.prepare(storeURL: storeURL,
+                                                             defaults: defaults)
+            return try open(storeURL: storeURL, defaults: defaults)
         } catch {
-            throw SudrfStoreBootstrapError(underlying: error, backupDirectory: backup)
+            // Первого запуска это касаться не должно. Базы до нас не было,
+            // отслеживаемых дел тоже — значит терять нечего, и упираться в
+            // тупик не за что. Убираем обломки неудавшегося создания (их
+            // оставляет, например, падение на первом запуске) и пробуем ещё
+            // раз. Если база БЫЛА — поведение прежнее: блокируем и не трогаем
+            // файлы, это осознанное решение v0.41.0 про сохранность данных.
+            if !hadExistingStore, let container = try? recreate(storeURL: storeURL,
+                                                               defaults: defaults) {
+                return container
+            }
+            throw SudrfStoreBootstrapError(underlying: error, backupDirectory: backup,
+                                           hadExistingStore: hadExistingStore)
         }
+    }
+
+    private func open(storeURL: URL, defaults: UserDefaults) throws -> ModelContainer {
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        try TrackedStorePreparation.prepare(context: context)
+        SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
+        return container
+    }
+
+    /// Сносит недосозданную базу и её спутники и открывает заново. Вызывается
+    /// только когда базы до запуска не существовало: удалять чужие данные этот
+    /// путь не может по построению.
+    private func recreate(storeURL: URL, defaults: UserDefaults) throws -> ModelContainer {
+        for url in [storeURL,
+                    URL(fileURLWithPath: storeURL.path + "-wal"),
+                    URL(fileURLWithPath: storeURL.path + "-shm")] {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return try open(storeURL: storeURL, defaults: defaults)
     }
 }
 

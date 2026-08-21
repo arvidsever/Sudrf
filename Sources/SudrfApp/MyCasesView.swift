@@ -15,7 +15,6 @@ import SudrfKit
 
 struct MyCasesView: View {
     @EnvironmentObject var router: AppRouter
-    @AppStorage(RefreshSettings.ttlKey) private var ttlHours = 6
     @State private var creatingCollection = false
     @State private var newCollectionName = ""
     @FocusState private var nameFieldFocused: Bool
@@ -70,34 +69,31 @@ struct MyCasesView: View {
             .glassEffect(.regular, in: .capsule)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
             Spacer()
-            refreshMenu
+            refreshButton
             sortMenu
         }
         .padding(.horizontal, 2)
     }
 
-    /// Обновление: одно компактное действие вместо кнопки, статуса и интервала
-    /// в ряд. Пока идёт обход — вместо значка вертушка, подробности в меню.
-    private var refreshMenu: some View {
-        Menu {
-            Button("Проверить все дела сейчас") { router.refreshCenter.refreshAll(force: true) }
-                .disabled(router.refreshCenter.walkProgress != nil)
-            Divider()
-            Picker("Интервал фоновой проверки", selection: $ttlHours) {
-                ForEach(RefreshSettings.ttlOptions, id: \.self) { h in Text("\(h) ч").tag(h) }
-            }
-            Divider()
-            Text(refreshStatus)
+    /// Обновление: одно действие, без меню. Интервал фоновой проверки живёт в
+    /// настройках (⌘, → «Обновление») — постоянной настройке не место в панели.
+    private var refreshButton: some View {
+        let running = router.refreshCenter.walkProgress != nil
+        return Button {
+            router.refreshCenter.refreshAll(force: true)
         } label: {
-            if router.refreshCenter.walkProgress != nil {
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: "arrow.clockwise").font(.system(size: 12))
+            ZStack {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .medium))
+                    .opacity(running ? 0 : 1)
+                if running { ProgressView().controlSize(.small) }
             }
+            .frame(width: 26, height: 26)
+            .contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .frame(width: 26, height: 26)
-        .glassEffect(.regular.interactive(), in: .capsule)
+        .buttonStyle(.plain)
+        .disabled(running)
+        .glassEffect(.regular, in: .capsule)
         .help(refreshStatus)
     }
 
@@ -419,7 +415,9 @@ struct MyCasesView: View {
                 VStack(spacing: 0) {
                     tableHeader
                     ScrollView {
-                        VStack(spacing: 0) {
+                        // LazyVStack, а не VStack: при 200+ отслеживаемых делах
+                        // обычный стек строит все строки на каждой перерисовке.
+                        LazyVStack(spacing: 0) {
                             ForEach(rows) { c in tableRow(c) }
                             if rows.isEmpty {
                                 Text("Ничего не найдено — измените запрос или снимите фильтры")
@@ -457,7 +455,7 @@ struct MyCasesView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .frame(width: 26, height: 26)
-        .glassEffect(.regular.interactive(), in: .capsule)
+        .glassEffect(.regular, in: .capsule)
         .help("Сортировка: \(router.sortBy.label)")
     }
 

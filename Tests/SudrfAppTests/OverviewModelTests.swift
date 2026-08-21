@@ -50,6 +50,57 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertNotEqual(a.id, b.id)
     }
 
+    // MARK: Retention расчётных сроков (#98)
+
+    /// Недавно пропущенный расчётный срок остаётся задачей: его ещё можно
+    /// подтвердить или исправить.
+    func testRecentlyMissedProposalStaysActionable() {
+        let recent = deadline("20", plus: -3)
+
+        XCTAssertTrue(AppRouter.isActionableDeadline(recent, today: today))
+        XCTAssertEqual(AppRouter.overdueDeadlines([recent], today: today).map(\.id), [recent.id])
+        XCTAssertEqual(AppRouter.pendingDeadlines([recent], today: today).map(\.id), [recent.id])
+    }
+
+    /// Граница grace period — ровно 14 дней, включительно.
+    func testGracePeriodBoundaryIsInclusive() {
+        let lastDay = deadline("21", plus: -AppRouter.deadlineGraceDays)
+        let dayAfter = deadline("22", plus: -AppRouter.deadlineGraceDays - 1)
+
+        XCTAssertTrue(AppRouter.isActionableDeadline(lastDay, today: today))
+        XCTAssertFalse(AppRouter.isActionableDeadline(dayAfter, today: today))
+    }
+
+    /// Древний расчётный срок уходит и из «Просроченных», и из счётчиков —
+    /// ради этого issue и заведён: колонка превратилась в архив расчётов.
+    func testStaleProposalLeavesOverdueAndCounters() {
+        let stale = deadline("23", plus: -120)
+        let fresh = deadline("24", plus: -2)
+
+        XCTAssertEqual(AppRouter.overdueDeadlines([stale, fresh], today: today).map(\.id),
+                       [fresh.id])
+        XCTAssertEqual(AppRouter.pendingDeadlines([stale, fresh], today: today).map(\.id),
+                       [fresh.id])
+        XCTAssertNil(AppRouter.pinnedDeadline([stale], today: today))
+    }
+
+    /// Подтверждённый срок — обязательство пользователя, а не наша догадка:
+    /// по возрасту он не архивируется никогда.
+    func testConfirmedDeadlineNeverExpiresByAge() {
+        let ancient = deadline("25", plus: -900, status: .confirmed)
+
+        XCTAssertTrue(AppRouter.isActionableDeadline(ancient, today: today))
+    }
+
+    /// «Ближайший» не должен подставлять древний расчётный срок, когда
+    /// актуальных нет.
+    func testPinnedFallbackSkipsStaleProposals() {
+        let stale = deadline("26", plus: -200)
+        let recent = deadline("27", plus: -1)
+
+        XCTAssertEqual(AppRouter.pinnedDeadline([stale, recent], today: today)?.id, recent.id)
+    }
+
     func testPinnedDeadlinePrefersUpcomingProposal() {
         let old = deadline("10", plus: -3)
         let next = deadline("11", plus: 4)

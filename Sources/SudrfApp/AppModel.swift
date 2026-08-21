@@ -505,9 +505,9 @@ final class AppRouter: ObservableObject {
     var isEmpty: Bool { cases.isEmpty }
     var caseCount: Int { cases.count }
     var newBadge: Int { cases.filter { $0.isNew }.count }
-    var waitingCount: Int { deadlines.filter { $0.status == .proposed }.count }
+    var waitingCount: Int { Self.pendingDeadlines(deadlines, today: DateUtil.today).count }
     var overdueDeadlineCount: Int {
-        deadlines.filter { $0.status == .proposed && $0.date < DateUtil.today }.count
+        Self.overdueDeadlines(deadlines, today: DateUtil.today).count
     }
     var monthlyHearingsCount: Int {
         let month = DateUtil.startOfMonth(DateUtil.today)
@@ -1393,16 +1393,40 @@ final class AppRouter: ObservableObject {
                                       firstLaterDays: later.first.map { DateUtil.daysBetween(today, $0.date) })
     }
 
+    /// Сколько дней истёкший расчётный срок ещё остаётся задачей.
+    ///
+    /// Пропущенный вчера срок пользователь должен увидеть и успеть подтвердить
+    /// или исправить. Срок, истёкший месяцы назад, — это история расчёта, а не
+    /// текущее обязательство: удерживать его в «Просроченных» бессрочно значит
+    /// превратить колонку в архив и обесценить красный счётчик (#98).
+    nonisolated static let deadlineGraceDays = 14
+
+    /// Срок является actionable задачей.
+    ///
+    /// Подтверждённый пользователем срок по возрасту не архивируется НИКОГДА:
+    /// это его собственное обязательство, а не наша догадка. Правило возраста
+    /// применяется только к расчётным, неподтверждённым срокам.
+    nonisolated static func isActionableDeadline(_ deadline: TrackedDeadline,
+                                                 today: Date) -> Bool {
+        guard deadline.status == .proposed else { return true }
+        // daysBetween(срок, сегодня) > 0 — срок в прошлом.
+        return DateUtil.daysBetween(deadline.date, today) <= deadlineGraceDays
+    }
+
     nonisolated static func pinnedDeadline(_ deadlines: [TrackedDeadline],
                                            today: Date) -> TrackedDeadline? {
-        let pending = deadlines.filter { $0.status == .proposed }.sorted { $0.date < $1.date }
+        let pending = deadlines
+            .filter { $0.status == .proposed && isActionableDeadline($0, today: today) }
+            .sorted { $0.date < $1.date }
         return pending.first { $0.date >= today } ?? pending.first
     }
 
     nonisolated static func overdueDeadlines(_ deadlines: [TrackedDeadline],
                                              today: Date) -> [TrackedDeadline] {
-        deadlines.filter { $0.status == .proposed && $0.date < today }
-            .sorted { $0.date < $1.date }
+        deadlines.filter {
+            $0.status == .proposed && $0.date < today && isActionableDeadline($0, today: today)
+        }
+        .sorted { $0.date < $1.date }
     }
 
     nonisolated static func remainingPendingDeadlines(_ deadlines: [TrackedDeadline],
@@ -1410,6 +1434,16 @@ final class AppRouter: ObservableObject {
                                                       today: Date) -> [TrackedDeadline] {
         deadlines.filter {
             $0.status == .proposed && $0.id != pinned?.id && $0.date >= today
+        }
+        .sorted { $0.date < $1.date }
+    }
+
+    /// Расчётные сроки, ждущие подтверждения. Общий источник для счётчика
+    /// «Обзора» и карточки «Ждут подтверждения» в повестке календаря.
+    nonisolated static func pendingDeadlines(_ deadlines: [TrackedDeadline],
+                                             today: Date) -> [TrackedDeadline] {
+        deadlines.filter {
+            $0.status == .proposed && isActionableDeadline($0, today: today)
         }
         .sorted { $0.date < $1.date }
     }

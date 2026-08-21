@@ -173,9 +173,16 @@ struct OverviewView: View {
             if let pinned {
                 pinnedDeadlineRow(pinned)
             } else {
-                Text("Все расчётные сроки подтверждены")
+                // Пустое состояние обязано различать два случая: расчётных
+                // сроков нет вовсе — и они есть, но истекли и больше не
+                // являются задачами (#98). Говорить «все подтверждены» про
+                // неподтверждённые сроки нельзя.
+                let hasProposals = router.deadlines.contains { $0.status == .proposed }
+                Text(hasProposals
+                     ? "Актуальных расчётных сроков нет"
+                     : "Все расчётные сроки подтверждены")
                     .font(.system(size: 12))
-                    .foregroundStyle(Palette.green)
+                    .foregroundStyle(hasProposals ? Color.secondary : Palette.green)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -610,6 +617,11 @@ struct DeadlineActions: View {
         if let d = router.deadline(id) {
             if router.editingDeadline == id {
                 editor
+            } else if !AppRouter.isActionableDeadline(d, today: DateUtil.today) {
+                // Расчётный срок, истёкший давно, задачей уже не является —
+                // предлагать «Подтвердить» на нём нечестно (#98). Остаётся как
+                // история расчёта в календаре и в списке всех сроков.
+                StatusChip(text: "расчётный · истёк", kind: .gray)
             } else if d.status == .proposed {
                 HStack(spacing: 6) {
                     Button("Подтвердить") { router.confirm(id) }

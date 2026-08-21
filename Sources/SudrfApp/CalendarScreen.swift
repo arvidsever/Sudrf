@@ -846,7 +846,7 @@ struct CalendarScreen: View {
     }
 
     private var waitingCard: some View {
-        let waiting = router.deadlines.filter { $0.status == .proposed }.sorted { $0.date < $1.date }
+        let waiting = AppRouter.pendingDeadlines(router.deadlines, today: DateUtil.today)
         return CardBox {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {

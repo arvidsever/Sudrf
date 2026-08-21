@@ -481,9 +481,10 @@ private struct NavCapsule: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        // `.identity` вместо снятия модификатора: идентичность view не скачет,
-        // и контейнеру есть что анимировать при смене секции.
-        .glassEffect(active ? .regular.interactive() : .identity, in: .capsule)
+        // Стекло только на активной вкладке. `.interactive()` здесь стоял и
+        // добавлял отслеживание курсора: капсула видна всегда, и перерисовка
+        // на каждое движение мыши тянула за собой весь экран.
+        .glassEffect(active ? .regular : .identity, in: .capsule)
         .glassEffectID(active ? SliderID.selection : nil, in: sliderSpace)
         .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
     }

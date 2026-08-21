@@ -47,12 +47,9 @@ cp "$BIN" "$APP/Contents/MacOS/SudrfApp"
 # `SearchPatternDirectory.byDomain` (VNKODCourts.json) на любом обновлении
 # карточки дела.
 #
-# Кладём в КОРЕНЬ .app, а не в Contents/Resources: аксессор ищет ровно по
-# `Bundle.main.bundleURL/<имя>.bundle`, а для .app это сам SudrfApp.app.
-# Второй путь у аксессора — абсолютный путь в .build машины сборки; пока .app
-# запускали из репозитория, он и спасал, а распакованный в другое место падал.
-# Раскладка нестандартная для macOS — при notarization (#69) проверить, что
-# codesign не спотыкается о бандл в корне.
+# Кладём в Contents/Resources — штатное место, которое принимает codesign.
+# Сам `Bundle.module` туда не смотрит (он ищет в корне .app, а корень занимать
+# нельзя), поэтому ресурсы читаются через `PackagedResource`.
 BIN_DIR="$(dirname "$BIN")"
 shopt -s nullglob
 BUNDLES=("$BIN_DIR"/*.bundle)
@@ -65,7 +62,7 @@ for b in "${BUNDLES[@]}"; do
     case "$(basename "$b")" in
         *Tests.bundle) continue ;;   # тестовые фикстуры в приложение не кладём
     esac
-    cp -R "$b" "$APP/"
+    cp -R "$b" "$APP/Contents/Resources/"
 done
 
 # A5: CoreML model delivery. Модель должна быть уже в Fixtures/ —

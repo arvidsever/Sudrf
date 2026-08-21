@@ -255,73 +255,57 @@ private extension JSONEncoder {
     }
 }
 
-struct AISettingsView: View {
+/// Раздел «AI и приватность» окна настроек. Экспериментальное и benchmark
+/// вынесены в отдельный раздел: у них другая аудитория, и рядом с согласием на
+/// облако им не место.
+struct AIPrivacyPane: View {
     @StateObject private var settings = AISettings.shared
-    @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var confirmingCloudConsent = false
 
     var body: some View {
         Form {
-            LabeledContent("Провайдер", value: "Groq BYOK")
-            LabeledContent("Модель", value: AISettings.personalModelID)
-            Text("Для первого личного прогона провайдер и model ID зафиксированы. Выбор вернётся после сравнительного benchmark.")
-                .font(.caption).foregroundStyle(.secondary)
-
-            SpotlightSettingsToggle()
+            Section("Провайдер") {
+                LabeledContent("Провайдер", value: "Groq BYOK")
+                LabeledContent("Модель", value: AISettings.personalModelID)
+                Text("Для первого личного прогона провайдер и model ID зафиксированы. Выбор вернётся после сравнительного benchmark.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             if settings.credentialProvider.isCloud {
-                SecureField("API/authorization key", text: $settings.draftKey)
-                Button("Сохранить ключ в Keychain") { settings.saveKey() }
-                Toggle("Разрешить облачную обработку выбранного акта", isOn: Binding(
-                    get: { settings.cloudConsent },
-                    set: { enabled in
-                        if enabled { confirmingCloudConsent = true }
-                        else { settings.revokeCloudConsent() }
-                    }))
-                Text("Внимание: выбранный судебный акт может содержать ФИО и другие персональные данные третьих лиц. Sudrf отправляет только акт по явному нажатию — никогда не базу и не фоновые данные.")
-                    .font(.caption).foregroundStyle(.orange)
-                Button("Отозвать согласие") { settings.revokeCloudConsent() }
-            }
+                Section("Ключ доступа") {
+                    SecureField("API/authorization key", text: $settings.draftKey)
+                    Button("Сохранить ключ в Keychain") { settings.saveKey() }
+                    Text("Ключ хранится в Keychain и не покидает устройство.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
 
-            Button(settings.connectionTestRunning ? "Проверка…" : "Проверить соединение") {
-                settings.testConnection()
-            }
-            .disabled(settings.connectionTestRunning)
-            Text("Проверка использует только синтетический акт и не отправляет пользовательские данные.")
-                .font(.caption).foregroundStyle(.secondary)
-
-            HStack {
-                Button("Запустить benchmark из JSON…") { settings.chooseAndRunBenchmark() }
-                    .disabled(settings.benchmarkRunning)
-                if settings.benchmarkRunning {
-                    ProgressView().controlSize(.small)
-                    Button("Отменить") { settings.cancelBenchmark() }
+                Section("Облачная обработка") {
+                    Toggle("Разрешить отправку выбранного акта", isOn: Binding(
+                        get: { settings.cloudConsent },
+                        set: { enabled in
+                            if enabled { confirmingCloudConsent = true }
+                            else { settings.revokeCloudConsent() }
+                        }))
+                    Text("Отправляется только тот акт, для которого вы явно нажали «Создать сводку», — никогда не база и не фоновые данные. Опубликованный акт может содержать ФИО и другие персональные данные третьих лиц.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Отозвать согласие", role: .destructive) { settings.revokeCloudConsent() }
                 }
             }
-            Text("Корпус и отчёт выбираются вручную и остаются вне Git.")
-                .font(.caption).foregroundStyle(.secondary)
 
-            Toggle("Apple через английский — экспериментально",
-                   isOn: $settings.appleEnglishExperimental)
-            Button(settings.translationPairPrepared
-                   ? "Проверить языковую пару русский ↔ английский"
-                   : "Подготовить языковую пару русский ↔ английский") {
-                settings.beginTranslationPreparation()
-                var configuration = TranslationSession.Configuration(
-                    source: Locale.Language(identifier: "ru"),
-                    target: Locale.Language(identifier: "en"))
-                configuration.invalidate()
-                translationConfiguration = configuration
-            }
-            Text("Режим выключен по умолчанию и сохраняет статус Experimental до отдельного go/no-go benchmark.")
-                .font(.caption).foregroundStyle(.secondary)
-
-            if let message = settings.statusMessage {
-                Text(message).font(.caption)
+            Section("Соединение") {
+                Button(settings.connectionTestRunning ? "Проверка…" : "Проверить соединение") {
+                    settings.testConnection()
+                }
+                .disabled(settings.connectionTestRunning)
+                Text("Проверка использует только синтетический акт и не отправляет пользовательские данные.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message = settings.statusMessage {
+                    Text(message).font(.caption)
+                }
             }
         }
-        .padding(20)
-        .frame(width: 610, height: 650)
+        .formStyle(.grouped)
+        .navigationTitle("AI и приватность")
         .onAppear { settings.loadKey() }
         .alert("Разрешить отправку выбранного акта в Groq?",
                isPresented: $confirmingCloudConsent) {
@@ -333,6 +317,50 @@ struct AISettingsView: View {
         } message: {
             Text("Sudrf отправит только акт, для которого вы явно нажмёте «Создать сводку». Опубликованный текст может содержать персональные данные третьих лиц.")
         }
+    }
+}
+
+/// Раздел «Экспериментальные»: то, что не предназначено для ежедневной работы.
+struct ExperimentalPane: View {
+    @StateObject private var settings = AISettings.shared
+    @State private var translationConfiguration: TranslationSession.Configuration?
+
+    var body: some View {
+        Form {
+            Section("Перевод через английский") {
+                Toggle("Apple через английский", isOn: $settings.appleEnglishExperimental)
+                Button(settings.translationPairPrepared
+                       ? "Проверить языковую пару русский ↔ английский"
+                       : "Подготовить языковую пару русский ↔ английский") {
+                    settings.beginTranslationPreparation()
+                    var configuration = TranslationSession.Configuration(
+                        source: Locale.Language(identifier: "ru"),
+                        target: Locale.Language(identifier: "en"))
+                    configuration.invalidate()
+                    translationConfiguration = configuration
+                }
+                Text("Режим выключен по умолчанию и сохраняет статус экспериментального до отдельного go/no-go benchmark.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Benchmark") {
+                HStack {
+                    Button("Запустить benchmark из JSON…") { settings.chooseAndRunBenchmark() }
+                        .disabled(settings.benchmarkRunning)
+                    if settings.benchmarkRunning {
+                        ProgressView().controlSize(.small)
+                        Button("Отменить") { settings.cancelBenchmark() }
+                    }
+                }
+                Text("Корпус и отчёт выбираются вручную и остаются вне Git.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message = settings.statusMessage {
+                    Text(message).font(.caption)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Экспериментальные")
         .translationTask(translationConfiguration) { session in
             do {
                 try await session.prepareTranslation()
@@ -361,7 +389,7 @@ struct AISettingsView: View {
     }
 }
 
-private struct SpotlightSettingsToggle: View {
+struct SpotlightSettingsToggle: View {
     @State private var enabled: Bool
 
     init() {

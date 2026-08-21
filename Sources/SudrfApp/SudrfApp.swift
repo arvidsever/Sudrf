@@ -64,7 +64,7 @@ struct SudrfApp: App {
         }
 
         Settings {
-            AISettingsView()
+            SettingsHub()
         }
     }
 }

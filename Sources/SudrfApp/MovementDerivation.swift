@@ -599,6 +599,32 @@ enum MovementDerivation {
         }
     }
 
+    /// Категория дела для карточки. Сайт суда отдаёт её разделами рубрикатора
+    /// через «→» или «->», и целиком она в строку карточки не помещается.
+    /// Пока помещается — отдаём как есть; длинную сворачиваем до последнего
+    /// раздела: он самый конкретный. Исключение — раздел-заглушка («иные…»,
+    /// «прочие…», «другие…»): он ничего не сообщает, тогда берём предыдущий.
+    ///
+    /// Порог — в символах, а не по фактической ширине: иначе одна и та же
+    /// категория была бы свёрнута в узком окне и развёрнута в широком, и
+    /// карточки в сетке перестали бы выглядеть одинаково.
+    static func categoryTail(_ category: String, limit: Int = 46) -> String {
+        let whole = category.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard whole.count > limit else { return whole }
+
+        let trim = CharacterSet(charactersIn: " :\u{00a0}\n\t")
+        let parts = whole.replacingOccurrences(of: "->", with: "→")
+            .components(separatedBy: "→")
+            .map { $0.trimmingCharacters(in: trim) }
+            .filter { !$0.isEmpty }
+        guard parts.count > 1 else { return whole }
+
+        var i = parts.count - 1
+        let stubs = ["иные", "прочие", "другие"]
+        if i > 0, stubs.contains(where: { parts[i].lowercased().hasPrefix($0) }) { i -= 1 }
+        return parts[i]
+    }
+
     /// Короткая строка сторон для карточек/таблицы.
     static func partiesShort(_ p: CaseParties) -> String {
         switch p.kind {

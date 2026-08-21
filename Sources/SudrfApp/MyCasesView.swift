@@ -220,28 +220,50 @@ struct MyCasesView: View {
         }
     }
 
+    /// Стороны одним абзацем для карточки. К ведущему лицу со статьями
+    /// добавляется вторая строка «Списком» (второй подсудимый или «и N
+    /// других») — карточка должна называть дело так же, как таблица.
+    private func partiesParagraph(_ c: TrackedCase) -> Text {
+        let lead = chargedLine(c.partiesShort, c.leadCharges)
+        guard let s = c.secondPartyLine else { return lead }
+        if let name = s.name { return Text("\(lead), \(chargedLine(name, s.articles))") }
+        if let more = s.more { return Text("\(lead) \(Text(more).foregroundStyle(.secondary))") }
+        return lead
+    }
+
     private func caseCard(_ c: TrackedCase) -> some View {
         Button { router.openCase(key: c.recordKey) } label: {
             CardBox {
                 VStack(alignment: .leading, spacing: 6) {
+                    // Корешок: номер мелким третьестепенным текстом — он
+                    // по-прежнему сканируется, но названием дела больше не
+                    // притворяется. Высота фиксирована: чип «обновлено» выше
+                    // обычной строки и иначе двигал бы всю карточку.
                     HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("№ \(CaseNumberPresentation.primary(c.caseNumber))")
-                                .font(.system(size: 13, weight: .semibold))
-                            if let review = c.currentReviewNumber {
-                                Text(review)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
+                        Text("№ \(CaseNumberPresentation.primary(c.caseNumber))")
+                            .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(.tertiary)
+                        if let review = c.currentReviewNumber {
+                            Text(review)
+                                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                .foregroundStyle(.tertiary)
                         }
                         if c.isNew { StatusChip(text: "обновлено", kind: .blue) }
                         Spacer()
                         Text(c.stageTag).font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                     }
-                    Text(c.subject).font(.system(size: 12)).foregroundStyle(.primary.opacity(0.75))
-                        .lineLimit(2).frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                    .frame(height: 20)
+                    // Главный текст карточки — стороны. Две строки бронируются
+                    // всегда: иначе дело с коротким названием поднимает свою
+                    // карточку выше соседей, и ряд сетки идёт волной.
+                    partiesParagraph(c)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(c.court).font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(c.court).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(MovementDerivation.categoryTail(c.subject))
+                        .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1)
                     StepDots(steps: c.steps)
                     Divider()
                     VStack(alignment: .leading, spacing: 2) {

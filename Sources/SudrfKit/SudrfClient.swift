@@ -468,7 +468,7 @@ final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
     /// internal (не private) — доступность ресурсов проверяется тестом.
     static let russianAnchors: [SecCertificate] = {
         ["RussianTrustedRootCA", "RussianTrustedSubCA", "RussianTrustedSubCA2024"]
-            .compactMap { Bundle.module.url(forResource: $0, withExtension: "cer") }
+            .compactMap { PackagedResource.url($0, withExtension: "cer") }
             .compactMap { try? Data(contentsOf: $0) }
             .compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
     }()

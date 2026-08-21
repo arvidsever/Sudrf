@@ -27,7 +27,7 @@ public enum SearchPatternDirectory {
     /// Индекс по хосту: и дефисная, и точечная формы указывают на одну запись,
     /// чтобы поиск работал независимо от формы, пришедшей от вызывающего.
     static let byDomain: [String: Entry] = {
-        guard let url = Bundle.module.url(forResource: "VNKODCourts", withExtension: "json"),
+        guard let url = PackagedResource.url("VNKODCourts", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let entries = try? JSONDecoder().decode([Entry].self, from: data) else {
             return [:]

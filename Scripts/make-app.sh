@@ -27,8 +27,8 @@ done
 
 APP_NAME="Sudrf"
 RELEASE_CHANNEL="Alpha"
-MARKETING_VERSION="0.42.26"
-CURRENT_PROJECT_VERSION="108"
+MARKETING_VERSION="0.42.27"
+CURRENT_PROJECT_VERSION="109"
 ARCHIVE="build/${APP_NAME}-${RELEASE_CHANNEL}-${MARKETING_VERSION}-build${CURRENT_PROJECT_VERSION}.zip"
 
 ARCHES=(--arch arm64 --arch x86_64)
@@ -40,6 +40,30 @@ BIN="$(swift build -c release --product SudrfApp "${ARCHES[@]}" --show-bin-path)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/SudrfApp"
+
+# Ресурсные бандлы SwiftPM. Без них `Bundle.module` не находит свой бандл и
+# ПАДАЕТ на assert внутри сгенерированного resource_bundle_accessor — не
+# возвращает nil, а роняет процесс. Первым это ловил
+# `SearchPatternDirectory.byDomain` (VNKODCourts.json) на любом обновлении
+# карточки дела.
+#
+# Кладём в Contents/Resources — штатное место, которое принимает codesign.
+# Сам `Bundle.module` туда не смотрит (он ищет в корне .app, а корень занимать
+# нельзя), поэтому ресурсы читаются через `PackagedResource`.
+BIN_DIR="$(dirname "$BIN")"
+shopt -s nullglob
+BUNDLES=("$BIN_DIR"/*.bundle)
+shopt -u nullglob
+[[ ${#BUNDLES[@]} -gt 0 ]] || {
+    echo "resource bundles not found in $BIN_DIR" >&2
+    exit 1
+}
+for b in "${BUNDLES[@]}"; do
+    case "$(basename "$b")" in
+        *Tests.bundle) continue ;;   # тестовые фикстуры в приложение не кладём
+    esac
+    cp -R "$b" "$APP/Contents/Resources/"
+done
 
 # A5: CoreML model delivery. Модель должна быть уже в Fixtures/ —
 # make-app.sh НЕ делает fetch (его делает CI build-test/package-app job

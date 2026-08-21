@@ -438,15 +438,15 @@ private struct NavCapsule: View {
     @Namespace private var sliderSpace
 
     var body: some View {
-        // Контейнер сливает соседние стеклянные формы в одну линзу, а не кладёт
-        // их слоями (`CalendarScreen.swift:117` — тот же приём для группы кнопок).
-        // Без него слайдер был бы вторым слоем стекла поверх капсулы.
-        GlassEffectContainer(spacing: 0) {
-            HStack(spacing: 2) {
-                ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
-            }
-            .background(slider)
+        // `GlassEffectContainer` здесь был и его пришлось убрать: он собирает
+        // стекло потомков в один слой и кладёт этот слой НАД содержимым —
+        // слайдер закрывал подпись активной вкладки. Сливать ему теперь и
+        // нечего: вкладки собственного стекла не несут, стеклянных поверхностей
+        // в капсуле ровно две — трек и слайдер, и они лежат в нужном порядке.
+        HStack(spacing: 2) {
+            ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
         }
+        .background(slider)
         .padding(NavChrome.capsulePadding)
         .glassEffect(.regular, in: .capsule)
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))

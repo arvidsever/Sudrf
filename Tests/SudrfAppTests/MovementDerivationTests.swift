@@ -331,6 +331,18 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
     }
 
+    /// Возврат дела ИЗ вышестоящей инстанции — не итог, а продолжение движения:
+    /// формула содержит и «возвращено», и «жалобы», поэтому без проверки
+    /// адресата круг закрывался бы преждевременно.
+    func testFileReturnedFromHigherCourtIsNotATerminalOutcome() {
+        let snap = appealRound(result: nil, sessions: [
+            CaseSession(date: "09.06.2026",
+                        event: "Возвращено из вышестоящей инстанции после рассмотрения жалобы"),
+        ])
+
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
+    }
+
     /// Прекращение промежуточного объекта итогом дела не является.
     func testIntermediateObjectTerminationIsNotACaseOutcome() {
         let snap = appealRound(result: nil, sessions: [

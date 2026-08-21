@@ -588,10 +588,14 @@ enum CaseLifecycleResolver {
         // (#84). Отсекаются только прекращения промежуточных объектов вроде
         // ходатайства или запроса.
         let terminated = value.contains("прекращ") && !mentionsIntermediateObject(value)
-        // Возврат жалобы заявителю завершает круг и без слов «без рассмотрения»:
+        // Возврат жалобы ЗАЯВИТЕЛЮ завершает круг и без слов «без рассмотрения»:
         // жалоба к рассмотрению не принята, производства по ней нет (#84).
+        // Адресат обязателен: без него под формулу попадал бы и возврат дела ИЗ
+        // вышестоящей инстанции («возвращено из вышестоящей инстанции после
+        // рассмотрения жалобы»), а это не итог, а продолжение движения.
         let complaintReturned = (value.contains("возврат") || value.contains("возвращ"))
             && (value.contains("жалоб") || value.contains("представлен"))
+            && value.contains("заявител")
         let returned = complaintReturned
             || ((value.contains("возврат") || value.contains("возвращ"))
                 && value.contains("без рассмотр"))
@@ -667,8 +671,6 @@ enum CaseLifecycleResolver {
             || instance.actID != nil || instance.actURL != nil
     }
 
-    /// «Без рассмотрения» относится к исходу дела, только когда объектом
-    /// является весь спор. Слово «дело» в «ходатайство по делу» этого не меняет.
     /// Промежуточные объекты производства: их судьба итогом дела не является.
     private static let intermediateObjects = ["ходатайств", "запрос", "доказательств", "отвод"]
 
@@ -676,6 +678,8 @@ enum CaseLifecycleResolver {
         intermediateObjects.contains(where: value.contains)
     }
 
+    /// «Без рассмотрения» относится к исходу дела, только когда объектом
+    /// является весь спор. Слово «дело» в «ходатайство по делу» этого не меняет.
     private static func isWholeProceedingSubject(_ value: String) -> Bool {
         guard !mentionsIntermediateObject(value) else { return false }
         return value.contains("иск") || value.contains("заявлен")

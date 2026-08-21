@@ -610,6 +610,11 @@ struct DeadlineActions: View {
         if let d = router.deadline(id) {
             if router.editingDeadline == id {
                 editor
+            } else if !AppRouter.isActionableDeadline(d, today: DateUtil.today) {
+                // Расчётный срок, истёкший давно, задачей уже не является —
+                // предлагать «Подтвердить» на нём нечестно (#98). Остаётся как
+                // история расчёта в календаре и в списке всех сроков.
+                StatusChip(text: "расчётный · истёк", kind: .gray)
             } else if d.status == .proposed {
                 HStack(spacing: 6) {
                     Button("Подтвердить") { router.confirm(id) }

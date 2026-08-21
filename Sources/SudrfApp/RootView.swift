@@ -107,9 +107,20 @@ private struct OperationalRootView: View {
                     .transition(.opacity)
             }
 
-            NavCapsule()
-                .environmentObject(router)
-                .padding(.top, NavChrome.topPadding)
+            // Полоса навигации: капсула строго по центру окна, глобальный поиск
+            // прижат вправо. ZStack, а не HStack со Spacer'ами, — иначе ширина
+            // поля сдвигала бы капсулу с центра.
+            ZStack {
+                NavCapsule()
+                HStack {
+                    Spacer(minLength: 0)
+                    GlobalSearchField()
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .environmentObject(router)
+            .padding(.top, NavChrome.topPadding)
+            .padding(.horizontal, 20)
         }
         .ignoresSafeArea()
         .background(WindowChrome())
@@ -329,6 +340,96 @@ enum NavChrome {
     static let capsuleHeight: CGFloat = tabHeight + capsulePadding * 2
     /// Верхний отступ контента любого экрана под капсулой.
     static let contentInset: CGFloat = topPadding + capsuleHeight + contentGap
+}
+
+/// Глобальный поиск Spotlight в верхней полосе окна — по решению автора он
+/// стоит в правом углу вровень с нав-капсулой и виден на всех четырёх экранах:
+/// ищет по всем делам и актам, а не по текущему разделу.
+private struct GlobalSearchField: View {
+    @EnvironmentObject var router: AppRouter
+    @State private var presented = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            TextField("Поиск по делам и актам", text: $router.globalQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11.5))
+                .onSubmit {
+                    router.searchSpotlight()
+                    presented = true
+                }
+            if router.globalSearching {
+                ProgressView().controlSize(.mini)
+            } else if !router.globalQuery.isEmpty {
+                Button {
+                    router.clearSpotlightSearch()
+                    presented = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 245, height: 26)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
+        .disabled(!router.spotlightEnabled)
+        .popover(isPresented: $presented, arrowEdge: .bottom) {
+            popover
+        }
+    }
+
+    private var popover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Локальный поиск Spotlight")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12).padding(.vertical, 10)
+            Divider()
+            if router.globalSearching && router.globalSearchResults.isEmpty {
+                HStack { ProgressView().controlSize(.small); Text("Ищу…") }
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            } else if let error = router.globalSearchError {
+                Text(error).font(.system(size: 11.5)).foregroundStyle(.secondary).padding(14)
+            } else if router.globalSearchResults.isEmpty {
+                Text("Ничего не найдено")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(router.globalSearchResults) { hit in
+                            Button {
+                                router.handleDeepLink(hit.url)
+                                presented = false
+                            } label: {
+                                HStack(alignment: .top, spacing: 9) {
+                                    Image(systemName: hit.isCourtAct ? "doc.text" : "briefcase")
+                                        .frame(width: 16).foregroundStyle(Color.accentColor)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.title).font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(.primary).lineLimit(2)
+                                        if !hit.subtitle.isEmpty {
+                                            Text(hit.subtitle).font(.system(size: 10.5))
+                                                .foregroundStyle(.secondary).lineLimit(2)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 11).padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider().padding(.leading, 36)
+                        }
+                    }
+                }
+                .frame(maxHeight: 360)
+            }
+        }
+        .frame(width: 390)
+    }
 }
 
 private struct NavCapsule: View {

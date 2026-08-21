@@ -167,19 +167,23 @@ enum ProductionType: String, CaseIterable {
 // MARK: - Сортировка таблицы «Списком»
 
 enum CaseSort: CaseIterable {
-    case activity, nextEvent, number
+    case activity, nextEvent
     var label: String {
         switch self {
         case .activity:  return "по активности"
         case .nextEvent: return "по ближайшему событию"
-        case .number:    return "по номеру дела"
         }
     }
     var hint: String {
         switch self {
         case .activity:  return "свежие изменения в деле — сверху"
         case .nextEvent: return "ближайшее заседание или срок — сверху"
-        case .number:    return "по возрастанию номера"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .activity:  return "clock.arrow.circlepath"
+        case .nextEvent: return "calendar"
         }
     }
 }

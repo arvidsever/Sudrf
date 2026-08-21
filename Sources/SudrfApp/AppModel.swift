@@ -1545,8 +1545,6 @@ final class AppRouter: ObservableObject {
             return rows.sorted { ($0.lastEventDate ?? .distantPast) > ($1.lastEventDate ?? .distantPast) }
         case .nextEvent:
             return rows.sorted { ($0.nextEventDate ?? .distantFuture) < ($1.nextEventDate ?? .distantFuture) }
-        case .number:
-            return rows.sorted { $0.caseNumber.compare($1.caseNumber, options: .numeric) == .orderedAscending }
         }
     }
 

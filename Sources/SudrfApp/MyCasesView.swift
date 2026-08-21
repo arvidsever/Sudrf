@@ -18,7 +18,6 @@ struct MyCasesView: View {
     @AppStorage(RefreshSettings.ttlKey) private var ttlHours = 6
     @State private var creatingCollection = false
     @State private var newCollectionName = ""
-    @State private var globalSearchPresented = false
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -71,109 +70,35 @@ struct MyCasesView: View {
             .glassEffect(.regular, in: .capsule)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
             Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "sparkle.magnifyingglass")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                TextField("Поиск по делам и актам", text: $router.globalQuery)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .onSubmit {
-                        router.searchSpotlight()
-                        globalSearchPresented = true
-                    }
-                if router.globalSearching {
-                    ProgressView().controlSize(.mini)
-                } else if !router.globalQuery.isEmpty {
-                    Button {
-                        router.clearSpotlightSearch()
-                        globalSearchPresented = false
-                    } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 9)
-            .frame(width: 245, height: 26)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.045)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
-            .disabled(!router.spotlightEnabled)
-            .popover(isPresented: $globalSearchPresented, arrowEdge: .bottom) {
-                globalSearchPopover
-            }
-            Toggle("Spotlight", isOn: Binding(
-                get: { router.spotlightEnabled },
-                set: { router.setSpotlightEnabled($0) }))
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .help("Индексировать в системном Spotlight реквизиты, стороны и полный текст актов. Включено по умолчанию; при отключении индекс Sudrf удаляется.")
-            Text(refreshStatus).font(.system(size: 11)).foregroundStyle(.tertiary)
-            Menu {
-                Picker("Интервал обновления", selection: $ttlHours) {
-                    ForEach(RefreshSettings.ttlOptions, id: \.self) { h in
-                        Text("\(h) ч").tag(h)
-                    }
-                }
-            } label: {
-                Label("каждые \(ttlHours) ч", systemImage: "clock.arrow.circlepath")
-                    .font(.system(size: 11))
-            }
-            .buttonStyle(.glass).controlSize(.small)
-            .help("Как часто обновлять движение отслеживаемых дел в фоне")
-            Button("Проверить все") { router.refreshCenter.refreshAll(force: true) }
-                .buttonStyle(.glass).controlSize(.small)
-                .disabled(router.refreshCenter.walkProgress != nil)
+            refreshMenu
+            sortMenu
         }
         .padding(.horizontal, 2)
     }
 
-    private var globalSearchPopover: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Локальный поиск Spotlight")
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 12).padding(.vertical, 10)
+    /// Обновление: одно компактное действие вместо кнопки, статуса и интервала
+    /// в ряд. Пока идёт обход — вместо значка вертушка, подробности в меню.
+    private var refreshMenu: some View {
+        Menu {
+            Button("Проверить все дела сейчас") { router.refreshCenter.refreshAll(force: true) }
+                .disabled(router.refreshCenter.walkProgress != nil)
             Divider()
-            if router.globalSearching && router.globalSearchResults.isEmpty {
-                HStack { ProgressView().controlSize(.small); Text("Ищу…") }
-                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
-            } else if let error = router.globalSearchError {
-                Text(error).font(.system(size: 11.5)).foregroundStyle(.secondary).padding(14)
-            } else if router.globalSearchResults.isEmpty {
-                Text("Ничего не найдено")
-                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(14)
+            Picker("Интервал фоновой проверки", selection: $ttlHours) {
+                ForEach(RefreshSettings.ttlOptions, id: \.self) { h in Text("\(h) ч").tag(h) }
+            }
+            Divider()
+            Text(refreshStatus)
+        } label: {
+            if router.refreshCenter.walkProgress != nil {
+                ProgressView().controlSize(.mini)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(router.globalSearchResults) { hit in
-                            Button {
-                                router.handleDeepLink(hit.url)
-                                globalSearchPresented = false
-                            } label: {
-                                HStack(alignment: .top, spacing: 9) {
-                                    Image(systemName: hit.isCourtAct ? "doc.text" : "briefcase")
-                                        .frame(width: 16).foregroundStyle(Color.accentColor)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(hit.title).font(.system(size: 12, weight: .medium))
-                                            .foregroundStyle(.primary).lineLimit(2)
-                                        if !hit.subtitle.isEmpty {
-                                            Text(hit.subtitle).font(.system(size: 10.5))
-                                                .foregroundStyle(.secondary).lineLimit(2)
-                                        }
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 11).padding(.vertical, 8)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            Divider().padding(.leading, 36)
-                        }
-                    }
-                }
-                .frame(maxHeight: 360)
+                Image(systemName: "arrow.clockwise").font(.system(size: 12))
             }
         }
-        .frame(width: 390)
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .frame(width: 26, height: 26)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .help(refreshStatus)
     }
 
     private var refreshStatus: String {
@@ -209,17 +134,17 @@ struct MyCasesView: View {
         switch router.myView {
         case .stages:
             return router.stageCounts.compactMap { (st, _) in
-                let cs = router.casesIn(stage: st)
+                let cs = sortedGroup(router.casesIn(stage: st))
                 return cs.isEmpty ? nil : (st.label, cs)
             }
         case .prods:
             return ProductionType.allCases.compactMap { p in
-                let cs = router.cases.filter { $0.production == p }
+                let cs = sortedGroup(router.cases.filter { $0.production == p })
                 return cs.isEmpty ? nil : (p.side, cs)
             }
         default: // .clients → «По подборкам»
             return router.collections.dropFirst().compactMap { (name, _) in
-                let cs = router.casesIn(collection: name)
+                let cs = sortedGroup(router.casesIn(collection: name))
                 return cs.isEmpty ? nil : (name, cs)
             }
         }
@@ -234,6 +159,13 @@ struct MyCasesView: View {
         if let name = s.name { return Text("\(lead), \(chargedLine(name, s.articles))") }
         if let more = s.more { return Text("\(lead) \(Text(more).foregroundStyle(.secondary))") }
         return lead
+    }
+
+    /// Сортировка внутри группы. Контрол переехал в тулбар и виден во всех
+    /// четырёх режимах — значит и действовать должен во всех, а не только в
+    /// «Списком», где он стоял раньше.
+    private func sortedGroup(_ rows: [TrackedCase]) -> [TrackedCase] {
+        AppRouter.sorted(rows, by: router.sortBy)
     }
 
     private func caseCard(_ c: TrackedCase) -> some View {
@@ -480,7 +412,6 @@ struct MyCasesView: View {
                 Text(router.folder).font(.system(size: 13, weight: .bold))
                 Text(countLabel(rows.count)).font(.system(size: 11.5)).foregroundStyle(.tertiary)
                 Spacer()
-                sortMenu
             }
             .padding(.horizontal, 2)
 
@@ -522,16 +453,12 @@ struct MyCasesView: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text("Сортировка:").foregroundStyle(.tertiary)
-                Text(router.sortBy.label).fontWeight(.semibold).foregroundStyle(.secondary)
-                Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(.tertiary)
-            }
-            .font(.system(size: 11.5))
-            .padding(.horizontal, 11).frame(height: 26)
+            Image(systemName: "arrow.up.arrow.down").font(.system(size: 11.5))
         }
-        .menuStyle(.borderlessButton)
-        .glassEffect(.regular, in: .capsule)
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .frame(width: 26, height: 26)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .help("Сортировка: \(router.sortBy.label)")
     }
 
     // Колонки: точка · «Дело · вид» · «Стороны · суд» · «Статус · событие» · «Дальше».

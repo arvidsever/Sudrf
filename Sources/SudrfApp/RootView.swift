@@ -437,11 +437,6 @@ private struct NavCapsule: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var sliderSpace
 
-    /// Постоянный идентификатор выбранного сегмента. Он один на всю капсулу:
-    /// стеклянная форма не гаснет на старой вкладке и не загорается на новой,
-    /// а переезжает между ними как один объект.
-    private enum SliderID { case selection }
-
     var body: some View {
         // Контейнер сливает соседние стеклянные формы в одну линзу, а не кладёт
         // их слоями (`CalendarScreen.swift:117` — тот же приём для группы кнопок).
@@ -450,17 +445,29 @@ private struct NavCapsule: View {
             HStack(spacing: 2) {
                 ForEach(AppSection.allCases, id: \.self) { s in tab(s) }
             }
+            .background(slider)
         }
         .padding(NavChrome.capsulePadding)
         .glassEffect(.regular, in: .capsule)
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
-        // Своя анимация переезда: снаружи на `router.section` висит
-        // `.easeOut(0.18)` для смены экранов, и слайдер по ней проскакивал
-        // рывком. Материалу нужен ход помягче и подлиннее — ближе к
-        // переключателю Calendar. Внутренний модификатор перебивает внешний
-        // для этого поддерева, смена экранов остаётся быстрой.
         .animation(reduceMotion ? nil : .smooth(duration: 0.34, extraBounce: 0.07),
                    value: router.section)
+    }
+
+    /// Выделение выбранной секции — ОДНА капсула, которая переезжает.
+    ///
+    /// Через `matchedGeometryEffect` она берёт рамку у активной вкладки:
+    /// меняется `router.section` — меняется источник, и SwiftUI интерполирует
+    /// рамку, то есть капсула действительно едет и меняет ширину по пути.
+    ///
+    /// Морфинг средствами стекла (`glassEffectID` + `.matchedGeometry`) здесь
+    /// не сработал: форма гасла на старой вкладке и зажигалась на новой,
+    /// перескоком. Анимируем рамку сами — материал едет вместе с ней.
+    private var slider: some View {
+        Capsule()
+            .fill(.clear)
+            .glassEffect(.regular, in: .capsule)
+            .matchedGeometryEffect(id: router.section, in: sliderSpace, isSource: false)
     }
 
     private func tab(_ s: AppSection) -> some View {
@@ -488,12 +495,9 @@ private struct NavCapsule: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        // Стекло только на активной вкладке. `.interactive()` здесь стоял и
-        // добавлял отслеживание курсора: капсула видна всегда, и перерисовка
-        // на каждое движение мыши тянула за собой весь экран.
-        .glassEffect(active ? .regular : .identity, in: .capsule)
-        .glassEffectID(active ? SliderID.selection : nil, in: sliderSpace)
-        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+        // Каждая вкладка — источник геометрии для слайдера; сама она стекла
+        // не несёт, иначе слоёв стало бы столько же, сколько вкладок.
+        .matchedGeometryEffect(id: s, in: sliderSpace, isSource: true)
     }
 }
 

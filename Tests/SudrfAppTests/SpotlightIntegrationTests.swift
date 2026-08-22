@@ -347,6 +347,43 @@ final class SpotlightIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testVersionFourManifestForcesExpirationPolicyReindex() async throws {
+        struct Envelope: Codable {
+            let version: Int
+            let manifest: SpotlightManifest
+        }
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        store.upsert(context: context, snapshot: nil,
+                     movement: makeMovement(text: "Актуальный акт."), collections: [])
+        let suite = "SpotlightVersionFourManifestTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(try JSONEncoder().encode(Envelope(
+            version: 4,
+            manifest: SpotlightManifest(
+                cases: [context.key: "unchanged"],
+                acts: ["\(context.key)#act-1": SpotlightActManifestEntry(
+                    fingerprint: "unchanged", caseKey: context.key)]))),
+            forKey: "manifest")
+        let writer = RecordingSpotlightWriter()
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        try await indexer.synchronize()
+
+        let state = await writer.snapshot()
+        XCTAssertEqual(state.deleteAllCount, 1)
+        XCTAssertEqual(state.indexedCaseIDs, [context.key])
+        XCTAssertEqual(state.indexedActIDs, ["\(context.key)#act-1"])
+        let saved = await manifest.loadSnapshot()
+        XCTAssertFalse(saved.requiresFullRebuild)
+    }
+
+    @MainActor
     func testFastOffThenOnLeavesSpotlightPopulated() async throws {
         let fixture = try makeToggleFixture()
         let off = Task { try await fixture.indexer.setEnabled(false, revision: 1) }

@@ -231,9 +231,11 @@ criteria #99 требуют не терять слушания с вариати
 
 **#148 Apple Calendar** — определить владельца данных и направление синхронизации до
 реализации: односторонний export заметно дешевле полноценной двусторонней синхронизации.
+После #155 синхронизацию строить как проекцию устойчивых `CaseEvent`, а не отдельный diff.
 
 **#149 сервер и push** — меняет локальную архитектуру и стоимость эксплуатации; брать
-после решения, нужен ли постоянно работающий backend для персонального приложения.
+после решения, нужен ли постоянно работающий backend для персонального приложения, и
+после стабилизации event contract #155, чтобы сервер не заводил вторую семантику изменений.
 
 **#150 Казначейство** — объединять с #113 в один блок исполнения: сначала установить
 доступные официальные источники и идентификатор для связи исполнительного листа с делом.
@@ -277,7 +279,8 @@ criteria #99 требуют не терять слушания с вариати
 **#70 rules engine** — зонтик над #56/#111/#125/#128. В нём же развязать стадию и
 расчётный срок: сейчас `resolveTerminalFirst` завершает дело при отсутствии срока
 апелляции (разбор — в комментарии к #70). Делать после того, как блок сроков накопит
-кейсы; фикстуры #80 годятся как негативные.
+кейсы; фикстуры #80 годятся как негативные. Rules engine остаётся владельцем юридической
+формулы/provenance, но downstream deadline events должны использовать contract #155.
 
 ### Полнота цепочки
 **#87** фоновое обнаружение вышестоящей инстанции · **#89** карточка КСОЮ без движения ·
@@ -291,16 +294,42 @@ HTML-фикстуры от автора: страница поиска по `2-8
 App Intents на холодном старте · **#64** persistence commits.
 
 ### Инфраструктура
-**#69** Developer ID + notarization: сертификат создан, Developer ID export и hardened
-runtime проверены в #95; остались notary credentials, отправка, stapling и release job ·
-**#149** сервер + push · **#68** Source Health · **#65** canary · **#66** APPLE-6 ·
-**#67** live-case session из `AppRouter`.
+**#155** единый `CaseSnapshot → semantic CaseEvent` contract: сначала shadow journal и
+snapshot→events fixtures, затем перевод ленты/локальных уведомлений на него; это опора для
+#148 и #149, а не backend-задача сама по себе · **#69** Developer ID + notarization:
+сертификат создан, Developer ID export и hardened runtime проверены в #95; остались notary
+credentials, отправка, stapling и release job · **#149** сервер + push (после #155) ·
+**#68** Source Health · **#65** canary · **#66** APPLE-6 · **#67** live-case session из
+`AppRouter`.
 
 ### Новые источники — последними
 **#106** Москва → **#107** СПб → **#108** общий модуль · **#113 + #150** исполнение через
 ФССП/Казначейство. #118 дешевле и не конфликтует.
 
 ---
+
+## Архитектурный baseline из open-source review
+
+Подробная фиксация: `Docs/architecture/open-source-reference.md`.
+
+Главный вывод — **не менять стек**, а сделать единым контур определения изменений:
+
+`source adapter → normalized snapshot → identity/reconciliation → semantic diff → CaseEvent → projections`.
+
+Референсы используются по частям: Juriscraper — adapter/fixture discipline; CourtSniffer —
+актуальные SUDRF protocol quirks и registry; sudrfscraper/sudrfparser — corpus/legacy
+oracle; старый sudrf-proxy — модель `snapshot → refresh → diff → changes`; CourtListener —
+только будущий scale reference для backend.
+
+**Порядок внедрения:** сначала стабилизировать correctness/identity и текущие фикстуры →
+#155 в shadow mode → сверка новых events с действующей лентой → сделать journal источником
+ленты/локальных уведомлений → связать #70 → затем #148 → diagnostics/scheduler/canary →
+новые sources → только потом #149, если always-on backend действительно нужен.
+
+Не тащить в desktop MVP Selenium/Puppeteer, Redis/PostgreSQL/Celery/Elasticsearch и не
+переписывать SwiftData без измеренного bottleneck. Browser automation остаётся fallback,
+а не обычным транспортом. Номер дела не использовать как фундаментальный identity —
+#94/#132 уже показывают смену/множественность номеров одного производства.
 
 ## Рабочие договорённости
 

@@ -208,7 +208,7 @@ private struct EnforcementBlock: View {
                 Label("Исполнение", systemImage: "doc.text")
                     .font(.system(size: 12.5, weight: .bold))
                 Spacer()
-                if let onRefresh {
+                if documents.contains(where: { $0.isTreasuryEligible }), let onRefresh {
                     Button { onRefresh() } label: {
                         if isRefreshing {
                             HStack(spacing: 5) {
@@ -259,12 +259,8 @@ private struct CourtEnforcementRow: View {
     let record: EnforcementRecord?
     @State private var historyExpanded = false
 
-    private var isPaper: Bool {
-        !((document.blankNumber ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    }
-
     private var isBailiffDocument: Bool {
-        !isPaper || (document.recipient?.localizedCaseInsensitiveContains("пристав") ?? false)
+        !document.isTreasuryEligible
     }
 
     var body: some View {
@@ -286,7 +282,7 @@ private struct CourtEnforcementRow: View {
             if let recipient = document.recipient {
                 Text(recipient).font(.system(size: 11)).foregroundStyle(.tertiary)
             }
-            if isPaper {
+            if document.isTreasuryEligible {
                 treasuryState
             }
         }

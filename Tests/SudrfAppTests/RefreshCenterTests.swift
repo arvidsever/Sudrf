@@ -37,9 +37,13 @@ final class RefreshCenterTests: XCTestCase {
 
     private actor FixedMovement: MovementProviding {
         let value: CaseMovement
+        private(set) var calls = 0
         init(_ value: CaseMovement) { self.value = value }
         func movement(for base: CaseSearchResult, court: Court,
-                      cartoteka: Cartoteka) async throws -> CaseMovement { value }
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            return value
+        }
     }
 
     private actor UnavailableMovement: MovementProviding {
@@ -650,6 +654,60 @@ final class RefreshCenterTests: XCTestCase {
         let checkedDocuments = await treasury.documents
         XCTAssertEqual(Set(checkedDocuments), Set(paper.map(\.id)))
         XCTAssertEqual(rec.enforcementRecords.count, 3)
+    }
+
+    func testTreasurySkipsPaperWritDirectedToBailiffs() async throws {
+        let key = store.all()[0].key
+        let treasuryWrit = paperWrit("treasury", blank: "ФС № 1")
+        let bailiffWrit = CourtEnforcementDocument(
+            id: "bailiff", blankNumber: "ФС № 2", courtStatus: "Выдан",
+            recipient: "Специализированный отдел судебных приставов")
+        var movement = successMV!
+        movement.executionDocuments = [treasuryWrit, bailiffWrit]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let checkedDocuments = await treasury.documents
+        XCTAssertEqual(checkedDocuments, [treasuryWrit.id])
+        XCTAssertEqual(rec.enforcementRecords.map(\.courtDocumentID), [treasuryWrit.id])
+    }
+
+    func testPeriodicWalkChecksOnlyTreasuryWhenCourtCacheIsFresh() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.movementFetchedAt = Date()
+        let service = FixedMovement(movement)
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   })
+
+        center.refreshAll(force: false)
+        for _ in 0..<100 where rec.enforcementRecords.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let checkedDocuments = await treasury.documents
+        let courtCalls = await service.calls
+        XCTAssertEqual(checkedDocuments, [writ.id])
+        XCTAssertEqual(courtCalls, 0,
+                       "свежую карточку суда не нужно запрашивать ради Казначейства")
+        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .notFound)
     }
 
     func testTreasuryErrorPreservesLastSuccessWithoutNewBadge() async throws {

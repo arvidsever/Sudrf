@@ -7,6 +7,17 @@ import Foundation
 /// поэтому равенство проверяется напрямую по целым структурам.
 final class MovementCodableTests: XCTestCase {
 
+    func testTreasuryEligibilityExcludesElectronicAndBailiffDocuments() {
+        let treasury = CourtEnforcementDocument(blankNumber: "ФС № 123")
+        let electronic = CourtEnforcementDocument(electronicID: "11RS#1")
+        let bailiff = CourtEnforcementDocument(
+            blankNumber: "ФС № 456", recipient: "ОСП ФССП России")
+
+        XCTAssertTrue(treasury.isTreasuryEligible)
+        XCTAssertFalse(electronic.isTreasuryEligible)
+        XCTAssertFalse(bailiff.isTreasuryEligible)
+    }
+
     func testMovementRoundTrip() throws {
         let mv = MovementService.demoMovement(uid: "11RS0001-01-2026-000001-11",
                                               caseNumber: "2-3204/2026")

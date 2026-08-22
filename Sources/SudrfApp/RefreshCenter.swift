@@ -244,12 +244,16 @@ final class RefreshCenter: ObservableObject {
         }
         let now = Date()
         let ttl = RefreshSettings.ttl
-        let keys = store.all().filter { rec in
-            force
+        var courtKeys = Set<String>()
+        let keys = store.all().compactMap { rec -> String? in
+            let courtDue = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
-                || needsEnforcementRefresh(rec, now: now, ttl: ttl)
-        }.map(\.key)
+            let enforcementDue = force || needsEnforcementRefresh(rec, now: now, ttl: ttl)
+            if courtDue { courtKeys.insert(rec.key) }
+            return courtDue || enforcementDue ? rec.key : nil
+        }
         guard !keys.isEmpty else { return }
+        let dueCourtKeys = courtKeys
 
         // Группируем дела по домашнему суду (displayDomain денормализован в записи —
         // декодировать контекст не нужно). Порядок дел внутри суда сохраняется.
@@ -279,12 +283,16 @@ final class RefreshCenter: ObservableObject {
                 var next = 0
                 func addWorker() {
                     guard next < courts.count else { return }
-                    let courtKeys = courts[next]
+                    let caseKeys = courts[next]
                     next += 1
                     group.addTask { [weak self] in
-                        for key in courtKeys {
+                        for key in caseKeys {
                             if Task.isCancelled { return }
-                            _ = await self?.refresh(key: key, forceEnforcement: force)?.value
+                            if dueCourtKeys.contains(key) {
+                                _ = await self?.refresh(key: key, forceEnforcement: force)?.value
+                            } else {
+                                _ = await self?.startEnforcementRefresh(key: key, force: false)?.value
+                            }
                             await self?.bumpWalkProgress(total: total, generation: gen)
                         }
                     }
@@ -351,6 +359,7 @@ final class RefreshCenter: ObservableObject {
     private func startEnforcementRefresh(key: String, force: Bool) -> Task<Void, Never>? {
         if let existing = enforcementTasks[key] { return existing }
         guard let record = store.record(forKey: key),
+              !treasuryEnforcementDocuments(for: record).isEmpty,
               force || needsEnforcementRefresh(record, now: Date(), ttl: RefreshSettings.ttl)
         else { return nil }
 
@@ -370,7 +379,7 @@ final class RefreshCenter: ObservableObject {
     /// судебного refresh и не трогает кэш движения/снимок.
     private func performEnforcementRefresh(key: String) async {
         guard let record = store.record(forKey: key) else { return }
-        let documents = paperEnforcementDocuments(for: record)
+        let documents = treasuryEnforcementDocuments(for: record)
         guard !documents.isEmpty else { return }
 
         let previous = record.enforcementRecords
@@ -427,16 +436,16 @@ final class RefreshCenter: ObservableObject {
         if hasSuccess { onEnforcementRefreshed?(key) }
     }
 
-    private func paperEnforcementDocuments(for record: TrackedCaseRecord) -> [CourtEnforcementDocument] {
-        (record.movement?.executionDocuments ?? []).filter {
-            !($0.blankNumber?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        }
+    private func treasuryEnforcementDocuments(
+        for record: TrackedCaseRecord
+    ) -> [CourtEnforcementDocument] {
+        (record.movement?.executionDocuments ?? []).filter(\.isTreasuryEligible)
     }
 
     private func needsEnforcementRefresh(_ record: TrackedCaseRecord, now: Date,
                                          ttl: TimeInterval) -> Bool {
         let records = record.enforcementRecords
-        return paperEnforcementDocuments(for: record).contains { document in
+        return treasuryEnforcementDocuments(for: record).contains { document in
             guard let saved = records.first(where: {
                 $0.source == .treasury && $0.courtDocumentID == document.id
             }) else { return true }

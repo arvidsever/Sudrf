@@ -201,6 +201,15 @@ public struct CourtEnforcementDocument: Codable, Sendable, Equatable, Identifiab
         Self.normalizedNumber(blankNumber)
     }
 
+    /// Казначейство ищем только для бумажного листа, который суд не направил
+    /// приставам. Электронные ИД и явные получатели ФССП остаются в общем UI,
+    /// но ждут отдельного источника.
+    public var isTreasuryEligible: Bool {
+        guard !normalizedBlankNumber.isEmpty else { return false }
+        let recipient = Self.normalize(recipient).lowercased()
+        return !recipient.contains("пристав") && !recipient.contains("фссп")
+    }
+
     static func normalize(_ value: String?) -> String {
         guard let value else { return "" }
         return value

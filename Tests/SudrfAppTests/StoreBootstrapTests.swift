@@ -1,0 +1,99 @@
+import XCTest
+import SwiftData
+@testable import SudrfApp
+
+/// Первый запуск: базы ещё нет. Проверяется весь боевой путь целиком —
+/// резервная копия, открытие контейнера, подготовка store и проекция актов, —
+/// а не только создание `ModelContainer`. До этих тестов сценарий первого
+/// запуска нечем было проверить, кроме как на живой машине.
+final class StoreBootstrapTests: XCTestCase {
+
+    private var root: URL!
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("StoreBootstrapTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        suiteName = "StoreBootstrapTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDownWithError() throws {
+        defaults.removePersistentDomain(forName: suiteName)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private var freshStoreURL: URL! { root.appendingPathComponent("default.store") }
+
+    func testFirstLaunchWithoutExistingStoreSucceeds() async throws {
+        XCTAssertFalse(FileManager.default.fileExists(atPath: freshStoreURL.path),
+                       "предусловие: базы ещё нет")
+
+        let store = freshStoreURL!, suite = suiteName!
+        let container = try await PersistentStoreBootstrapper()
+            .prepareProduction(storeURL: store, defaultsSuiteName: suite)
+
+        let context = ModelContext(container)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<TrackedCaseRecord>()).count, 0,
+                       "новая база пуста, но открыта")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: freshStoreURL.path),
+                      "база создана по указанному пути")
+    }
+
+    /// Резервную копию не из чего делать, и это не ошибка: копирование должно
+    /// молча пропускаться, а не валить запуск.
+    func testFirstLaunchMakesNoBackup() throws {
+        let backups = root.appendingPathComponent("store-backups")
+        XCTAssertNil(try SudrfPersistentStoreBackup.prepare(
+            storeURL: freshStoreURL, backupRoot: backups, defaults: defaults))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backups.path))
+    }
+
+    /// Обломки от упавшего первого запуска: спутники SQLite есть, самой базы
+    /// нет. Именно такую форму оставляет падение при старте — приложение не
+    /// должно из-за них упираться в тупик.
+    func testFirstLaunchRecoversFromLeftoverSidecars() async throws {
+        try Data("garbage".utf8).write(to: URL(fileURLWithPath: freshStoreURL.path + "-wal"))
+        try Data("garbage".utf8).write(to: URL(fileURLWithPath: freshStoreURL.path + "-shm"))
+
+        let store = freshStoreURL!, suite = suiteName!
+        let container = try await PersistentStoreBootstrapper()
+            .prepareProduction(storeURL: store, defaultsSuiteName: suite)
+
+        let context = ModelContext(container)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<TrackedCaseRecord>()).count, 0)
+    }
+
+    /// Совет «восстановите базу из копии» бессмысленен, когда базы не было.
+    func testErrorTextDependsOnWhetherStoreExisted() {
+        struct Boom: Error {}
+        let fresh = SudrfStoreBootstrapError(underlying: Boom(), backupDirectory: nil,
+                                             hadExistingStore: false)
+        XCTAssertFalse(fresh.errorDescription?.contains("восстановите базу из копии") ?? true)
+        XCTAssertTrue(fresh.errorDescription?.contains("терять нечего") ?? false)
+
+        let existing = SudrfStoreBootstrapError(underlying: Boom(), backupDirectory: nil,
+                                                hadExistingStore: true)
+        XCTAssertTrue(existing.errorDescription?.contains("восстановите базу из копии") ?? false)
+    }
+
+    /// Второй запуск открывает уже созданную базу и видит сохранённое дело.
+    func testSecondLaunchReopensExistingStore() async throws {
+        let store = freshStoreURL!, suite = suiteName!
+        let first = try await PersistentStoreBootstrapper()
+            .prepareProduction(storeURL: store, defaultsSuiteName: suite)
+        let writing = ModelContext(first)
+        writing.insert(TrackedCaseRecord(
+            key: "court/2-1/2026", collections: [], caseNumber: "2-1/2026",
+            courtTitle: "Тестовый районный суд", displayDomain: "court.sudrf.ru",
+            contextData: Data(), snapshotData: nil))
+        try writing.save()
+
+        let second = try await PersistentStoreBootstrapper()
+            .prepareProduction(storeURL: store, defaultsSuiteName: suite)
+        let reading = ModelContext(second)
+        XCTAssertEqual(try reading.fetch(FetchDescriptor<TrackedCaseRecord>()).count, 1)
+    }
+}

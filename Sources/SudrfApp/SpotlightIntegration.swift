@@ -227,25 +227,50 @@ protocol SpotlightIndexWriting: Sendable {
 }
 
 actor SystemSpotlightWriter: SpotlightIndexWriting {
-    private let index = CSSearchableIndex.default()
+    private let index = CSSearchableIndex(name: "Sudrf")
+    private let legacyIndex = CSSearchableIndex.default()
 
     func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {
-        if !cases.isEmpty { try await index.indexAppEntities(cases) }
-        if !acts.isEmpty { try await index.indexAppEntities(acts) }
+        let items = cases.map(Self.searchableItem(for:))
+            + acts.map(Self.searchableItem(for:))
+        if !items.isEmpty { try await index.indexSearchableItems(items) }
     }
 
     func delete(caseIDs: [String], actIDs: [String]) async throws {
-        if !caseIDs.isEmpty {
-            try await index.deleteAppEntities(identifiedBy: caseIDs, ofType: CaseEntity.self)
-        }
-        if !actIDs.isEmpty {
-            try await index.deleteAppEntities(identifiedBy: actIDs, ofType: CourtActEntity.self)
+        let identifiers = caseIDs + actIDs
+        if !identifiers.isEmpty {
+            try await index.deleteSearchableItems(withIdentifiers: identifiers)
         }
     }
 
     func deleteAll() async throws {
-        try await index.deleteAppEntities(ofType: CaseEntity.self)
-        try await index.deleteAppEntities(ofType: CourtActEntity.self)
+        // До v0.42.33 Sudrf прототипировал интеграцию на default index.
+        // Удаляем возможные старые записи при полном rebuild, но не позволяем
+        // ошибке legacy-индекса сорвать восстановление production-индекса.
+        try? await legacyIndex.deleteAppEntities(ofType: CaseEntity.self)
+        try? await legacyIndex.deleteAppEntities(ofType: CourtActEntity.self)
+        try? await legacyIndex.deleteSearchableItems(withDomainIdentifiers: [
+            "ru.sudrf.case", "ru.sudrf.court-act",
+        ])
+        try await index.deleteAllSearchableItems()
+    }
+
+    private nonisolated static func searchableItem(for entity: CaseEntity) -> CSSearchableItem {
+        let attributes = entity.attributeSet
+        attributes.associateAppEntity(entity)
+        return CSSearchableItem(uniqueIdentifier: entity.id,
+                                domainIdentifier: attributes.domainIdentifier,
+                                attributeSet: attributes)
+    }
+
+    private nonisolated static func searchableItem(
+        for entity: CourtActEntity
+    ) -> CSSearchableItem {
+        let attributes = entity.attributeSet
+        attributes.associateAppEntity(entity)
+        return CSSearchableItem(uniqueIdentifier: entity.id,
+                                domainIdentifier: attributes.domainIdentifier,
+                                attributeSet: attributes)
     }
 }
 
@@ -293,7 +318,7 @@ actor SpotlightManifestStore {
             return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: false)
         }
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
-              envelope.version == 2 else {
+              envelope.version == 4 else {
             // v1/corrupt manifest не является основанием оставлять возможные
             // stale записи в системном индексе: следующий sync делает purge.
             return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: true)
@@ -304,7 +329,7 @@ actor SpotlightManifestStore {
     func load() -> SpotlightManifest { loadSnapshot().manifest }
 
     func save(_ manifest: SpotlightManifest) {
-        defaults.set(try? JSONEncoder().encode(Envelope(version: 2, manifest: manifest)),
+        defaults.set(try? JSONEncoder().encode(Envelope(version: 4, manifest: manifest)),
                      forKey: key)
     }
 }
@@ -551,6 +576,24 @@ struct SpotlightSearchHit: Sendable, Hashable, Identifiable {
 final class SpotlightSearchSession {
     private var query: CSUserQuery?
 
+    static func makeQueryContext() -> CSUserQueryContext {
+        let context = CSUserQueryContext()
+        context.fetchAttributes = [
+            "title",
+            "displayName",
+            "contentDescription",
+            "contentURL",
+        ]
+        context.enableRankedResults = true
+        context.disableSemanticSearch = false
+        context.maxResultCount = 50
+        context.maxRankedResultCount = 50
+        context.filterQueries = [
+            "domainIdentifier == 'ru.sudrf.case' || domainIdentifier == 'ru.sudrf.court-act'"
+        ]
+        return context
+    }
+
     func cancel() {
         query?.cancel()
         query = nil
@@ -567,14 +610,7 @@ final class SpotlightSearchSession {
             return
         }
 
-        let context = CSUserQueryContext()
-        context.enableRankedResults = true
-        context.disableSemanticSearch = false
-        context.maxResultCount = 50
-        context.maxRankedResultCount = 50
-        context.filterQueries = [
-            "domainIdentifier == 'ru.sudrf.case' || domainIdentifier == 'ru.sudrf.court-act'"
-        ]
+        let context = Self.makeQueryContext()
         let query = CSUserQuery(userQueryString: trimmed, userQueryContext: context)
         self.query = query
 
@@ -591,7 +627,7 @@ final class SpotlightSearchSession {
         query.start()
     }
 
-    nonisolated private static func hit(from item: CSSearchableItem) -> SpotlightSearchHit? {
+    nonisolated static func hit(from item: CSSearchableItem) -> SpotlightSearchHit? {
         let attributes = item.attributeSet
         guard let url = attributes.contentURL,
               let deepLink = SudrfDeepLink(url: url) else { return nil }

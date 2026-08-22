@@ -83,8 +83,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         # Публичная версия и внутренний билд; Info.plist ссылается на них.
-        MARKETING_VERSION: "0.42.32"
-        CURRENT_PROJECT_VERSION: "114"
+        MARKETING_VERSION: "0.42.33"
+        CURRENT_PROJECT_VERSION: "115"
         # Дублирует ключ Info.plist — чтобы General → App Category показывал «Productivity».
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

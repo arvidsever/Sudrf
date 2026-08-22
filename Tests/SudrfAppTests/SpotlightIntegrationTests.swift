@@ -201,6 +201,25 @@ final class SpotlightIntegrationTests: XCTestCase {
         XCTAssertTrue(actEntity.attributeSet.textContent?.contains("Мотивировка") == true)
         XCTAssertEqual(SudrfDeepLink(url: try XCTUnwrap(actEntity.attributeSet.contentURL)),
                        .courtAct(caseKey: context.key, sourceActID: "act-1"))
+
+        let item = CSSearchableItem(uniqueIdentifier: caseEntity.id,
+                                    domainIdentifier: caseEntity.attributeSet.domainIdentifier,
+                                    attributeSet: caseEntity.attributeSet)
+        let hit = try XCTUnwrap(SpotlightSearchSession.hit(from: item))
+        XCTAssertEqual(hit.id, context.key)
+        XCTAssertEqual(hit.url, caseEntity.attributeSet.contentURL)
+        XCTAssertEqual(hit.title, caseEntity.attributeSet.title)
+        XCTAssertFalse(hit.isCourtAct)
+    }
+
+    @MainActor
+    func testSearchRequestsEveryAttributeUsedToBuildHits() {
+        XCTAssertEqual(Set(SpotlightSearchSession.makeQueryContext().fetchAttributes), [
+            "title",
+            "displayName",
+            "contentDescription",
+            "contentURL",
+        ])
     }
 
     @MainActor

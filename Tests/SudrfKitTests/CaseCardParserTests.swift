@@ -169,6 +169,27 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.actText, act.body)                   // обратная совместимость
     }
 
+    func testExecutionDocumentsAreParsedByColumnHeaders() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("execution_documents_card"))
+
+        XCTAssertEqual(card.executionDocuments.count, 5)
+        XCTAssertEqual(card.executionDocuments.filter { $0.blankNumber != nil }.count, 3)
+        XCTAssertEqual(card.executionDocuments.filter { $0.electronicID != nil }.count, 2)
+
+        let paper = try XCTUnwrap(card.executionDocuments.first { $0.blankNumber == "ФС № 049373812" })
+        XCTAssertEqual(paper.date, "21.08.2025")
+        XCTAssertEqual(paper.courtStatus, "Выдан")
+        XCTAssertEqual(paper.recipient, "Взыскатель")
+        XCTAssertEqual(card.executionDocuments.first { $0.blankNumber == "ФС № 049373814" }?.courtStatus,
+                       "Возвращен")
+
+        let electronic = try XCTUnwrap(card.executionDocuments.first {
+            $0.electronicID == "11RS0001#2-7212/2025#4"
+        })
+        XCTAssertNil(electronic.blankNumber)
+        XCTAssertEqual(electronic.recipient, "Василеостровский районный отдел судебных приставов")
+    }
+
     // MARK: - Апелляция (ВС РК)
 
     func testAppealCard() throws {

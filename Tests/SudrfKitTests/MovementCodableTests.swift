@@ -7,6 +7,17 @@ import Foundation
 /// поэтому равенство проверяется напрямую по целым структурам.
 final class MovementCodableTests: XCTestCase {
 
+    func testTreasuryEligibilityExcludesElectronicAndBailiffDocuments() {
+        let treasury = CourtEnforcementDocument(blankNumber: "ФС № 123")
+        let electronic = CourtEnforcementDocument(electronicID: "11RS#1")
+        let bailiff = CourtEnforcementDocument(
+            blankNumber: "ФС № 456", recipient: "ОСП ФССП России")
+
+        XCTAssertTrue(treasury.isTreasuryEligible)
+        XCTAssertFalse(electronic.isTreasuryEligible)
+        XCTAssertFalse(bailiff.isTreasuryEligible)
+    }
+
     func testMovementRoundTrip() throws {
         let mv = MovementService.demoMovement(uid: "11RS0001-01-2026-000001-11",
                                               caseNumber: "2-3204/2026")
@@ -39,5 +50,35 @@ final class MovementCodableTests: XCTestCase {
                                             from: JSONEncoder().encode(inst))
         XCTAssertEqual(back.captchaFormURL, inst.captchaFormURL)
         XCTAssertEqual(back.level, .appeal)
+    }
+
+    func testOldMovementWithoutExecutionDocumentsStillDecodes() throws {
+        let movement = MovementService.demoMovement(uid: "uid", caseNumber: "2-1/2026")
+        let encoded = try JSONEncoder().encode(movement)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "executionDocuments")
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(CaseMovement.self, from: oldData)
+        XCTAssertNil(decoded.executionDocuments)
+        XCTAssertEqual(decoded.uid, movement.uid)
+    }
+
+    func testCourtExecutionDocumentStableIDPrefersPaperNumber() throws {
+        let paper = CourtEnforcementDocument(date: "21.08.2025",
+                                             blankNumber: "ФС № 049373812",
+                                             electronicID: "11RS0001#2-7212/2025#4",
+                                             courtStatus: "Выдан", recipient: "Взыскатель")
+        let same = CourtEnforcementDocument(date: "21.08.2025",
+                                            blankNumber: "ФС № 049373812",
+                                            electronicID: "different", courtStatus: "Выдан",
+                                            recipient: "Взыскатель")
+        XCTAssertEqual(paper.id, same.id)
+        XCTAssertEqual(paper.normalizedBlankNumber, "ФС049373812")
+        XCTAssertEqual(CourtEnforcementDocument.normalizedNumber("фс № 049373812"),
+                       paper.normalizedBlankNumber)
+        let back = try JSONDecoder().decode(CourtEnforcementDocument.self,
+                                            from: JSONEncoder().encode(paper))
+        XCTAssertEqual(back, paper)
     }
 }

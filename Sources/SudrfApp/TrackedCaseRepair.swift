@@ -583,6 +583,17 @@ final class TrackedCaseRepairCoordinator {
         survivor.context = context
         survivor.judicialUID = context.judicialUID.map(TrackedStore.normalizedUID)
         survivor.movement = movement.map(MovementCachePolicy.stripped(forPersist:))
+        let courtDocuments = movement?.executionDocuments
+            ?? all.flatMap { $0.movement?.executionDocuments ?? [] }
+        let enforcementRecords = all.flatMap(\.enforcementRecords).sorted {
+            ($0.lastSuccessAt ?? $0.lastAttemptAt ?? .distantPast)
+                < ($1.lastSuccessAt ?? $1.lastAttemptAt ?? .distantPast)
+        }
+        survivor.enforcementRecords = enforcementRecords.reduce(into: [EnforcementRecord]()) {
+            records, record in
+            records = TrackedStore.reconciledEnforcementRecords(
+                existing: records, updates: [record], courtDocuments: courtDocuments)
+        }
         survivor.movementFetchedAt = nil
         if let movement {
             var snapshot = MovementDerivation.snapshot(from: movement, context: context)
@@ -717,6 +728,11 @@ final class TrackedCaseRepairCoordinator {
             if out.uid.isEmpty { out.uid = movement.uid }
             if out.category == nil { out.category = movement.category }
             if out.parties.isEmpty { out.parties = movement.parties }
+            var documents = out.executionDocuments ?? []
+            for document in movement.executionDocuments ?? [] where !documents.contains(where: { $0.id == document.id }) {
+                documents.append(document)
+            }
+            out.executionDocuments = documents.isEmpty ? nil : documents
             out.inForce = out.inForce || movement.inForce
         }
         out.instances.sort { MovementService.instanceOrderKey($0) < MovementService.instanceOrderKey($1) }
@@ -790,7 +806,9 @@ final class TrackedCaseRepairCoordinator {
                             caseNumber: context.caseNumber,
                             inForce: card.legalForceDate != nil,
                             instances: [inst], complaints: [:], acts: acts,
-                            actBodies: bodies, category: card.category, parties: card.parties)
+                            actBodies: bodies, category: card.category, parties: card.parties,
+                            executionDocuments: card.executionDocuments.isEmpty
+                                ? nil : card.executionDocuments)
     }
 
     static func knownCard(from ctx: MovementContext) -> KnownCard? {

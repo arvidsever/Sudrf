@@ -135,17 +135,22 @@ public struct CaseMovement: Sendable, Equatable, Codable {
     /// она не даёт частичному ответу затереть сохранённые инстанции этого суда.
     /// Optional сохраняет декодирование старых записей кэша без миграции.
     public var incompleteHigherCourtDomains: [String]?
+    /// Исполнительные документы базовой карточки. Optional сохраняет
+    /// backward-compatible декодирование старых кэшей.
+    public var executionDocuments: [CourtEnforcementDocument]?
 
     public init(uid: String, caseNumber: String, inForce: Bool,
                 instances: [CaseInstance], complaints: [String: PrivateComplaint],
                 acts: [CaseAct], actBodies: [String: String] = [:],
                 category: String? = nil, parties: CaseParties = CaseParties(),
-                incompleteHigherCourtDomains: [String]? = nil) {
+                incompleteHigherCourtDomains: [String]? = nil,
+                executionDocuments: [CourtEnforcementDocument]? = nil) {
         self.uid = uid; self.caseNumber = caseNumber; self.inForce = inForce
         self.instances = instances; self.complaints = complaints
         self.acts = acts; self.actBodies = actBodies
         self.category = category; self.parties = parties
         self.incompleteHigherCourtDomains = incompleteHigherCourtDomains
+        self.executionDocuments = executionDocuments
     }
 }
 
@@ -680,7 +685,9 @@ public actor MovementService: MovementProviding {
                             acts: sortedActs, actBodies: actBodies,
                             category: baseCard.category, parties: parties,
                             incompleteHigherCourtDomains: incompleteHigherCourtDomains.isEmpty
-                                ? nil : incompleteHigherCourtDomains)
+                                ? nil : incompleteHigherCourtDomains,
+                            executionDocuments: baseCard.executionDocuments.isEmpty
+                                ? nil : baseCard.executionDocuments)
     }
 
     /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).

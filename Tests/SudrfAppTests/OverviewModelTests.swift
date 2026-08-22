@@ -125,6 +125,18 @@ final class OverviewModelTests: XCTestCase {
                                                      unreadOnly: false, query: "акт").map(\.id), ["b"])
     }
 
+    func testEnforcementFeedUsesRSSGUIDAndStaysUnreadIndependentlyOfCaseState() {
+        let id = AppRouter.enforcementFeedID(recordKey: "court/2-1/2026", guid: "rss-guid-42")
+        XCTAssertEqual(id, "court/2-1/2026#enforcement#rss-guid-42")
+
+        let entry = feed(id, kind: .enforcement, plus: 0, unread: true,
+                         text: "Исполнительный документ принят")
+        XCTAssertEqual(
+            AppRouter.filteredFeedEntries([entry], filter: .enforcement,
+                                          unreadOnly: true, query: "").map(\.id),
+            [id])
+    }
+
     func testRecentFeedUsesRollingSevenDays() {
         let rows = [
             feed("today", kind: .movement, plus: 0, unread: false),

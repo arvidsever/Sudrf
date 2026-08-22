@@ -50,6 +50,12 @@ struct CaseMovementView: View {
     var onRefresh: (() -> Void)? = nil
     var hasPendingRefreshCaptcha: Bool = false
     var onSolvePendingRefreshCaptcha: (() -> Void)? = nil
+    /// Внешние статусы хранятся отдельно от судебного движения: поиск может
+    /// показать листы без сети, а мониторинг добавляет результаты Казначейства.
+    var enforcementRecords: [EnforcementRecord] = []
+    var isRefreshingEnforcement = false
+    var enforcementError: String? = nil
+    var onRefreshEnforcement: (() -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -82,6 +88,12 @@ struct CaseMovementView: View {
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
+                if let documents = movement.executionDocuments, !documents.isEmpty {
+                    EnforcementBlock(documents: documents, records: enforcementRecords,
+                                     isRefreshing: isRefreshingEnforcement,
+                                     error: enforcementError,
+                                     onRefresh: onRefreshEnforcement)
+                }
             }
             .padding(16)
         }
@@ -175,6 +187,174 @@ struct CaseMovementView: View {
         fmt.locale = Locale(identifier: "ru_RU")
         fmt.unitsStyle = .short
         return "обновлено " + fmt.localizedString(for: lastUpdated, relativeTo: Date())
+    }
+}
+
+// MARK: - Исполнение
+
+/// Судебные реквизиты показываем и в карточке из поиска: сеть Казначейства для
+/// этого не нужна. Состояние внешней проверки добавляется ниже этой строки в
+/// отслеживаемой карточке.
+private struct EnforcementBlock: View {
+    let documents: [CourtEnforcementDocument]
+    let records: [EnforcementRecord]
+    let isRefreshing: Bool
+    let error: String?
+    var onRefresh: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label("Исполнение", systemImage: "doc.text")
+                    .font(.system(size: 12.5, weight: .bold))
+                Spacer()
+                if documents.contains(where: { $0.isTreasuryEligible }), let onRefresh {
+                    Button { onRefresh() } label: {
+                        if isRefreshing {
+                            HStack(spacing: 5) {
+                                ProgressView().controlSize(.mini)
+                                Text("Проверяю Казначейство…")
+                            }
+                        } else {
+                            Label("Проверить Казначейство", systemImage: "arrow.clockwise")
+                                .lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(isRefreshing)
+                    .help("Проверить Казначейство")
+                }
+                Text("\(documents.count)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 13).padding(.vertical, 9)
+            if let error {
+                Text("Не удалось проверить: \(error)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 13).padding(.bottom, 7)
+            }
+            ForEach(documents) { document in
+                CourtEnforcementRow(
+                    document: document,
+                    record: records.first {
+                        $0.courtDocumentID == document.id && $0.source == .treasury
+                    })
+                    .overlay(Divider(), alignment: .top)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .textBackgroundColor))
+                .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.06)))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct CourtEnforcementRow: View {
+    let document: CourtEnforcementDocument
+    let record: EnforcementRecord?
+    @State private var historyExpanded = false
+
+    private var isBailiffDocument: Bool {
+        !document.isTreasuryEligible
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(document.blankNumber ?? document.electronicID ?? "Исполнительный документ")
+                    .font(.system(size: 12, weight: .semibold))
+                if isBailiffDocument {
+                    TinyChip(text: "ФССП · автопроверка недоступна", color: .secondary)
+                }
+                Spacer(minLength: 8)
+                if let date = document.date {
+                    Text(date).font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+            }
+            if let status = document.courtStatus {
+                Text("Суд: \(status)").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+            if let recipient = document.recipient {
+                Text(recipient).font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+            if document.isTreasuryEligible {
+                treasuryState
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var treasuryState: some View {
+        if let record {
+            switch record.discoveryState {
+            case .found:
+                if let organization = record.organization {
+                    Text([organization, record.subdivision].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if !record.status.isEmpty {
+                    Text("Казначейство: \(record.status)")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                if let sourceUpdated = record.sourceUpdatedRaw {
+                    Text("Изменено источником: \(sourceUpdated)")
+                        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                }
+                if let sourceURL = record.sourceURL {
+                    Link("app.roskazna.ru", destination: sourceURL)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+            case .notFound:
+                Text("Казначейство: не найдено")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+            case .ambiguous:
+                Text("Казначейство: несколько совпадений")
+                    .font(.system(size: 11.5)).foregroundStyle(.orange)
+            case .error:
+                Text("Казначейство: не удалось проверить")
+                    .font(.system(size: 11.5)).foregroundStyle(.orange)
+            }
+
+            if let checkedAt = record.lastAttemptAt {
+                let checkedLabel = checkedAt.formatted(
+                    .dateTime.locale(Locale(identifier: "ru_RU"))
+                        .day().month(.abbreviated).year().hour().minute())
+                Text("Последняя проверка: \(checkedLabel)")
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            }
+            if let error = record.error {
+                Text(error).font(.system(size: 10.5)).foregroundStyle(.orange)
+            }
+            if !record.events.isEmpty {
+                Button {
+                    historyExpanded.toggle()
+                } label: {
+                    Text("История \(historyExpanded ? "▾" : "▸")")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                if historyExpanded {
+                    ForEach(record.events) { event in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(event.date.map { DateUtil.fmt($0) } ?? event.dateRaw ?? "—")
+                                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            Text(event.text).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        } else {
+            Text("Казначейство ещё не проверялось")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
     }
 }
 

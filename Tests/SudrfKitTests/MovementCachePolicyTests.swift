@@ -18,10 +18,12 @@ final class MovementCachePolicyTests: XCTestCase {
     }
 
     private func movement(_ instances: [CaseInstance],
-                          acts: [CaseAct] = [], bodies: [String: String] = [:]) -> CaseMovement {
+                          acts: [CaseAct] = [], bodies: [String: String] = [:],
+                          executionDocuments: [CourtEnforcementDocument]? = nil) -> CaseMovement {
         CaseMovement(uid: "11RS0001-01-2026-000001-11", caseNumber: "2-1/2026",
                      inForce: false, instances: instances, complaints: [:],
-                     acts: acts, actBodies: bodies)
+                     acts: acts, actBodies: bodies,
+                     executionDocuments: executionDocuments)
     }
 
     func testPlaceholderDoesNotOverwriteRealInstance() {
@@ -56,6 +58,19 @@ final class MovementCachePolicyTests: XCTestCase {
         let fresh = movement([instance(domain: "vs.komi.sudrf.ru", captcha: true)])
         let merged = MovementCachePolicy.merge(fresh: fresh, cached: nil)
         XCTAssertNotNil(merged.instances[0].captchaFormURL)
+    }
+
+    func testPartialFreshMovementPreservesCachedExecutionDocuments() {
+        let documents = [CourtEnforcementDocument(date: "21.08.2025",
+                                                   blankNumber: "ФС № 049373812",
+                                                   courtStatus: "Выдан")]
+        let cached = movement([instance(domain: "syktsud.komi.sudrf.ru")],
+                              executionDocuments: documents)
+        let fresh = movement([instance(domain: "syktsud.komi.sudrf.ru")])
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertEqual(merged.executionDocuments, documents)
     }
 
     func testStripRemovesPlaceholdersOnly() {

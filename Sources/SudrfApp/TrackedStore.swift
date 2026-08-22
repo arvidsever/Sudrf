@@ -231,6 +231,9 @@ final class TrackedCaseRecord {
     var movementData: Data? = nil
     /// Когда движение в последний раз получено с портала (TTL кэша).
     var movementFetchedAt: Date? = nil
+    /// Записи об исполнении — JSON. Optional + default позволяют легко
+    /// добавить поле к уже существующим SwiftData-записям.
+    var enforcementData: Data? = nil
 
     init(key: String, collections: [String], caseNumber: String, courtTitle: String,
          displayDomain: String, contextData: Data, snapshotData: Data?) {
@@ -278,6 +281,19 @@ final class TrackedCaseRecord {
             }
         }
     }
+    var enforcementRecords: [EnforcementRecord] {
+        get {
+            enforcementData.flatMap {
+                Self.decode([EnforcementRecord].self, from: $0, what: "enforcement")
+            } ?? []
+        }
+        set {
+            do { enforcementData = try JSONEncoder().encode(newValue) }
+            catch {
+                storeLog.error("Не удалось закодировать enforcement; прежние данные сохранены: \(error, privacy: .public)")
+            }
+        }
+    }
 
     private static func decode<T: Decodable>(_ type: T.Type, from data: Data, what: String) -> T? {
         do { return try JSONDecoder().decode(type, from: data) }
@@ -285,6 +301,114 @@ final class TrackedCaseRecord {
             storeLog.error("Не удалось декодировать \(what, privacy: .public): \(error, privacy: .public)")
             return nil
         }
+    }
+}
+
+extension TrackedStore {
+    /// Обновление исполнения дополняет кэш: пустой ответ суда или ошибка
+    /// Казначейства не являются командой удалить уже известный лист.
+    nonisolated static func reconciledEnforcementRecords(
+        existing: [EnforcementRecord], updates: [EnforcementRecord],
+        courtDocuments: [CourtEnforcementDocument]
+    ) -> [EnforcementRecord] {
+        var output = existing
+        for update in updates {
+            if let index = matchingEnforcementIndex(for: update, in: output,
+                                                     courtDocuments: courtDocuments) {
+                output[index] = mergedEnforcementRecord(existing: output[index], update: update)
+            } else {
+                output.append(update)
+            }
+        }
+        return output
+    }
+
+    /// `seenAt` меняется только от нового результата сопоставления или новой
+    /// официальной записи истории. Время проверки и транспортная ошибка не
+    /// создают ложный бейдж «обновлено».
+    nonisolated static func enforcementHasUserVisibleChange(
+        previous: [EnforcementRecord], current: [EnforcementRecord],
+        courtDocuments: [CourtEnforcementDocument]
+    ) -> Bool {
+        for record in current {
+            guard let index = matchingEnforcementIndex(for: record, in: previous,
+                                                        courtDocuments: courtDocuments) else {
+                return record.discoveryState != .error
+            }
+            let old = previous[index]
+            if old.discoveryState != record.discoveryState,
+               record.discoveryState != .error { return true }
+            let oldEventIDs = Set(old.events.map(\.id))
+            if record.events.contains(where: { !oldEventIDs.contains($0.id) }) { return true }
+        }
+        return false
+    }
+
+    private nonisolated static func matchingEnforcementIndex(
+        for candidate: EnforcementRecord, in records: [EnforcementRecord],
+        courtDocuments: [CourtEnforcementDocument]
+    ) -> Int? {
+        if let sourceRecordID = candidate.sourceRecordID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sourceRecordID.isEmpty,
+           let index = records.firstIndex(where: {
+               $0.source == candidate.source && $0.sourceRecordID == sourceRecordID
+           }) {
+            return index
+        }
+        let blank = normalizedEnforcementBlank(for: candidate, courtDocuments: courtDocuments)
+        guard !blank.isEmpty else { return nil }
+        return records.firstIndex {
+            $0.source == candidate.source
+                && normalizedEnforcementBlank(for: $0, courtDocuments: courtDocuments) == blank
+        }
+    }
+
+    private nonisolated static func normalizedEnforcementBlank(
+        for record: EnforcementRecord, courtDocuments: [CourtEnforcementDocument]
+    ) -> String {
+        let value = courtDocuments.first(where: { $0.id == record.courtDocumentID })?.blankNumber
+            ?? record.courtDocumentID
+        return value.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private nonisolated static func mergedEnforcementRecord(
+        existing: EnforcementRecord, update: EnforcementRecord
+    ) -> EnforcementRecord {
+        var merged = existing
+        var events = existing.events
+        for event in update.events {
+            if let index = events.firstIndex(where: { $0.id == event.id }) {
+                events[index] = event
+            } else {
+                events.append(event)
+            }
+        }
+        let existingAttempt = existing.lastAttemptAt ?? existing.lastSuccessAt ?? .distantPast
+        let updateAttempt = update.lastAttemptAt ?? update.lastSuccessAt ?? .distantPast
+        let updateIsNewer = updateAttempt > existingAttempt
+
+        switch update.discoveryState {
+        case .found:
+            if updateIsNewer {
+                merged = update
+            }
+            merged.events = events
+        case .notFound, .ambiguous:
+            if updateIsNewer {
+                merged.discoveryState = update.discoveryState
+                merged.lastAttemptAt = update.lastAttemptAt ?? merged.lastAttemptAt
+                merged.lastSuccessAt = update.lastSuccessAt ?? merged.lastAttemptAt
+                merged.error = nil
+            }
+            merged.events = events
+        case .error:
+            if updateIsNewer {
+                merged.lastAttemptAt = update.lastAttemptAt ?? merged.lastAttemptAt
+                merged.error = update.error
+            }
+            merged.events = events
+        }
+        return merged
     }
 }
 

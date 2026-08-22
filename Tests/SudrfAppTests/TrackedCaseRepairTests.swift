@@ -153,6 +153,63 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(store.all().count, 1)
     }
 
+    func testUIDMergePreservesExecutionDocumentsAndEnforcementHistory() async throws {
+        let store = TrackedStore(inMemory: true)
+        let first = context(level: .first, number: "2-7212/2025",
+                            domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                            courtLevel: .district)
+        let appeal = context(level: .appeal, number: "33-4818/2025",
+                             domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                             courtLevel: .subject)
+        let sharedWrit = CourtEnforcementDocument(id: "writ-shared", blankNumber: "ФС № 1")
+        let appealWrit = CourtEnforcementDocument(id: "writ-appeal", blankNumber: "ФС № 2")
+        var firstMovement = movement(level: .first, number: first.caseNumber,
+                                     domain: first.searchDomain, actID: "first-act")
+        var appealMovement = movement(level: .appeal, number: appeal.caseNumber,
+                                      domain: appeal.searchDomain, actID: "appeal-act")
+        firstMovement.executionDocuments = [sharedWrit]
+        appealMovement.executionDocuments = [sharedWrit, appealWrit]
+        let survivor = store.upsert(context: first, snapshot: nil, movement: firstMovement,
+                                    collections: [])
+        let duplicate = store.upsert(context: appeal, snapshot: nil, movement: appealMovement,
+                                    collections: [])
+        let oldEvent = EnforcementEvent(guid: "rss-old", date: .now, text: "Принят", sourceOrder: 0)
+        let freshEvent = EnforcementEvent(guid: "rss-fresh", date: .now, text: "Исполнен", sourceOrder: 1)
+        survivor.enforcementRecords = [EnforcementRecord(
+            courtDocumentID: sharedWrit.id, source: .treasury, sourceRecordID: "source-1",
+            status: "Исполнен", events: [freshEvent],
+            lastAttemptAt: Date(timeIntervalSince1970: 200),
+            lastSuccessAt: Date(timeIntervalSince1970: 200))]
+        duplicate.enforcementRecords = [
+            EnforcementRecord(courtDocumentID: sharedWrit.id, source: .treasury,
+                              sourceRecordID: "source-1", status: "Исполняется", events: [oldEvent],
+                              lastAttemptAt: Date(timeIntervalSince1970: 100),
+                              lastSuccessAt: Date(timeIntervalSince1970: 100)),
+            EnforcementRecord(courtDocumentID: appealWrit.id, source: .treasury,
+                              discoveryState: .notFound, status: "",
+                              lastAttemptAt: Date(timeIntervalSince1970: 100),
+                              lastSuccessAt: Date(timeIntervalSince1970: 100))
+        ]
+        store.save()
+
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: unusedResolver(), defaults: defaults())
+        _ = await coordinator.runAll()
+
+        let merged = try XCTUnwrap(store.record(forKey: first.key))
+        XCTAssertEqual(Set(merged.movement?.executionDocuments?.map(\.id) ?? []),
+                       Set([sharedWrit.id, appealWrit.id]))
+        XCTAssertEqual(merged.enforcementRecords.count, 2)
+        let shared = try XCTUnwrap(merged.enforcementRecords.first {
+            $0.courtDocumentID == sharedWrit.id
+        })
+        XCTAssertEqual(shared.status, "Исполнен", "более свежая запись survivor имеет приоритет")
+        XCTAssertEqual(Set(shared.events.map(\.id)), Set([oldEvent.id, freshEvent.id]))
+        XCTAssertEqual(merged.enforcementRecords.first {
+            $0.courtDocumentID == appealWrit.id
+        }?.discoveryState, .notFound)
+    }
+
     func testPromotesPreliminaryNumberAndPrunesItsMovement() async throws {
         let store = TrackedStore(inMemory: true)
         let preliminary = context(level: .first, number: "М-2417/2026",

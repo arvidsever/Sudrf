@@ -542,7 +542,11 @@ private struct CaseCardHost: View {
                     refreshNote: router.refreshNote,
                     onRefresh: { router.refreshOpenCase() },
                     hasPendingRefreshCaptcha: router.openCaseCaptchaRequest != nil,
-                    onSolvePendingRefreshCaptcha: { router.beginOpenCaseCaptcha() })
+                    onSolvePendingRefreshCaptcha: { router.beginOpenCaseCaptcha() },
+                    enforcementRecords: router.openEnforcementRecords,
+                    isRefreshingEnforcement: router.isRefreshingOpenEnforcement,
+                    enforcementError: router.openEnforcementError,
+                    onRefreshEnforcement: { router.refreshOpenEnforcement() })
                     .frame(maxWidth: .infinity)
                 if !mv.acts.isEmpty {
                     LiveActsPane().frame(width: 400)

@@ -37,9 +37,13 @@ final class RefreshCenterTests: XCTestCase {
 
     private actor FixedMovement: MovementProviding {
         let value: CaseMovement
+        private(set) var calls = 0
         init(_ value: CaseMovement) { self.value = value }
         func movement(for base: CaseSearchResult, court: Court,
-                      cartoteka: Cartoteka) async throws -> CaseMovement { value }
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            return value
+        }
     }
 
     private actor UnavailableMovement: MovementProviding {
@@ -55,6 +59,30 @@ final class RefreshCenterTests: XCTestCase {
         func movement(for base: CaseSearchResult, court: Court,
                       cartoteka: Cartoteka) async throws -> CaseMovement {
             throw SudrfError.captchaRequired(formURL: url)
+        }
+    }
+
+    private actor ScriptedTreasury {
+        enum Outcome: Sendable {
+            case lookup(EnforcementLookup)
+            case failure
+        }
+
+        private var outcomes: [Outcome]
+        private(set) var documents: [String] = []
+
+        init(_ outcomes: [Outcome]) { self.outcomes = outcomes }
+
+        func discover(_ document: CourtEnforcementDocument,
+                      caseNumber: String?, court: String?) async throws -> EnforcementLookup {
+            documents.append(document.id)
+            guard !outcomes.isEmpty else {
+                return EnforcementLookup(state: .notFound)
+            }
+            switch outcomes.removeFirst() {
+            case .lookup(let value): return value
+            case .failure: throw URLError(.notConnectedToInternet)
+            }
         }
     }
 
@@ -88,6 +116,25 @@ final class RefreshCenterTests: XCTestCase {
         return CaseMovement(uid: "uid-A1", caseNumber: "2-100/2026",
                             inForce: false, instances: [inst],
                             complaints: [:], acts: [])
+    }
+
+    private func paperWrit(_ id: String = "court-writ-1",
+                            blank: String = "ФС № 123456") -> CourtEnforcementDocument {
+        CourtEnforcementDocument(id: id, blankNumber: blank, courtStatus: "Выдан")
+    }
+
+    private func enforcementRecord(document: CourtEnforcementDocument,
+                                   state: EnforcementDiscoveryState = .found,
+                                   status: String = "Исполнено",
+                                   events: [EnforcementEvent] = [],
+                                   attemptedAt: Date? = nil,
+                                   error: String? = nil) -> EnforcementRecord {
+        EnforcementRecord(courtDocumentID: document.id, source: .treasury,
+                          discoveryState: state, sourceRecordID: "source-\(document.id)",
+                          status: status, organization: "УФК", subdivision: "Отдел",
+                          events: events, lastAttemptAt: attemptedAt,
+                          lastSuccessAt: state == .error ? nil : attemptedAt,
+                          error: error)
     }
 
     // MARK: - setUp / tearDown
@@ -418,6 +465,31 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNil(rec.seenAt, "новый результат инстанции должен вернуть бейдж")
     }
 
+    func testNewCourtWritMarksSeenCaseAsUpdated() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let oldMovement = successMV!
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.snapshot = MovementDerivation.snapshot(from: oldMovement, context: ctx)
+        rec.movement = oldMovement
+        rec.seenAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+        var updatedMovement = oldMovement
+        updatedMovement.executionDocuments = [CourtEnforcementDocument(
+            blankNumber: "ФС № 123456", courtStatus: "Выдан")]
+        let service = FixedMovement(updatedMovement)
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refresh(key: key)?.value
+
+        XCTAssertNil(rec.seenAt, "новый исполнительный лист должен вернуть бейдж")
+    }
+
     func testTransientHigherCourtStubDoesNotMarkSeenCaseAsUpdated() async throws {
         let ctx = makeContext()
         let key = store.all()[0].key
@@ -515,6 +587,216 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt,
                        "неудачная попытка не должна выглядеть успешным обновлением")
         XCTAssertNotNil(center.lastErrors[key])
+    }
+
+    func testTreasuryRefreshRunsAfterCourtFailureAndSavesResult() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var cached = successMV!
+        cached.executionDocuments = [writ]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = cached
+        rec.snapshot = MovementDerivation.snapshot(from: cached, context: ctx)
+        rec.movementFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let event = EnforcementEvent(guid: "rss-1", date: Date(), text: "Документ принят",
+                                     sourceOrder: 0)
+        let result = enforcementRecord(document: writ, status: "Исполняется", events: [event])
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .found, record: result))])
+        let unavailable = UnavailableMovement()
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in unavailable },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(document, caseNumber: number, court: court)
+                                   })
+        var refreshes = 0
+        center.onEnforcementRefreshed = { _ in refreshes += 1 }
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .failed = execution?.outcome else {
+            return XCTFail("ошибка суда не должна маскироваться успехом Казначейства")
+        }
+        let checkedDocuments = await treasury.documents
+        XCTAssertEqual(checkedDocuments, [writ.id])
+        XCTAssertEqual(rec.movement, cached, "ошибка суда не должна стереть кэш")
+        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .found)
+        XCTAssertEqual(rec.enforcementRecords.first?.events.map(\.id), [event.id])
+        XCTAssertNotNil(center.lastErrors[key])
+        XCTAssertEqual(refreshes, 1)
+    }
+
+    func testTreasuryChecksExactlyThreePaperWritsAndSkipsTwoElectronicIDs() async throws {
+        let key = store.all()[0].key
+        let paper = [
+            paperWrit("paper-1", blank: "ФС № 1"),
+            paperWrit("paper-2", blank: "ФС № 2"),
+            paperWrit("paper-3", blank: "ФС № 3")
+        ]
+        let electronic = [
+            CourtEnforcementDocument(id: "electronic-1", electronicID: "11RS#1"),
+            CourtEnforcementDocument(id: "electronic-2", electronicID: "11RS#2")
+        ]
+        var movement = successMV!
+        movement.executionDocuments = paper + electronic
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let treasury = ScriptedTreasury(Array(repeating: .lookup(
+            EnforcementLookup(state: .notFound)), count: paper.count))
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let checkedDocuments = await treasury.documents
+        XCTAssertEqual(Set(checkedDocuments), Set(paper.map(\.id)))
+        XCTAssertEqual(rec.enforcementRecords.count, 3)
+    }
+
+    func testTreasurySkipsPaperWritDirectedToBailiffs() async throws {
+        let key = store.all()[0].key
+        let treasuryWrit = paperWrit("treasury", blank: "ФС № 1")
+        let bailiffWrit = CourtEnforcementDocument(
+            id: "bailiff", blankNumber: "ФС № 2", courtStatus: "Выдан",
+            recipient: "Специализированный отдел судебных приставов")
+        var movement = successMV!
+        movement.executionDocuments = [treasuryWrit, bailiffWrit]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let checkedDocuments = await treasury.documents
+        XCTAssertEqual(checkedDocuments, [treasuryWrit.id])
+        XCTAssertEqual(rec.enforcementRecords.map(\.courtDocumentID), [treasuryWrit.id])
+    }
+
+    func testPeriodicWalkChecksOnlyTreasuryWhenCourtCacheIsFresh() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.movementFetchedAt = Date()
+        let service = FixedMovement(movement)
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   })
+
+        center.refreshAll(force: false)
+        for _ in 0..<100 where rec.enforcementRecords.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let checkedDocuments = await treasury.documents
+        let courtCalls = await service.calls
+        XCTAssertEqual(checkedDocuments, [writ.id])
+        XCTAssertEqual(courtCalls, 0,
+                       "свежую карточку суда не нужно запрашивать ради Казначейства")
+        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .notFound)
+    }
+
+    func testTreasuryErrorPreservesLastSuccessWithoutNewBadge() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let oldEvent = EnforcementEvent(guid: "rss-old", date: Date(), text: "Принят",
+                                        sourceOrder: 0)
+        let oldSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        let old = enforcementRecord(document: writ, status: "Исполняется", events: [oldEvent],
+                                    attemptedAt: oldSuccess)
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.enforcementRecords = [old]
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_100)
+        rec.seenAt = seenAt
+        let treasury = ScriptedTreasury([.failure])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let saved = try XCTUnwrap(rec.enforcementRecords.first)
+        XCTAssertEqual(saved.discoveryState, .found)
+        XCTAssertEqual(saved.status, "Исполняется")
+        XCTAssertEqual(saved.events, [oldEvent])
+        XCTAssertEqual(saved.lastSuccessAt, oldSuccess)
+        XCTAssertNotNil(saved.error)
+        XCTAssertEqual(rec.seenAt, seenAt)
+        XCTAssertNotNil(center.enforcementError(forKey: key))
+    }
+
+    func testTreasuryRechecksNotFoundAndTerminalWritsAfterSharedTTL() async throws {
+        let key = store.all()[0].key
+        let missing = paperWrit("court-writ-missing", blank: "ФС № 111")
+        let terminal = paperWrit("court-writ-terminal", blank: "ФС № 222")
+        var movement = successMV!
+        movement.executionDocuments = [missing, terminal]
+        let stale = Date.distantPast
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.enforcementRecords = [
+            enforcementRecord(document: missing, state: .notFound, status: "", attemptedAt: stale),
+            enforcementRecord(document: terminal, state: .found, status: "Исполнено", attemptedAt: stale)
+        ]
+        let treasury = ScriptedTreasury([
+            .lookup(EnforcementLookup(state: .notFound)),
+            .lookup(EnforcementLookup(state: .found,
+                                      record: enforcementRecord(document: terminal,
+                                                                 status: "Исполнено")))
+        ])
+        let service = FixedMovement(movement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(document, caseNumber: number, court: court)
+                                   })
+
+        _ = await center.refresh(key: key)?.value
+
+        let checkedDocuments = await treasury.documents
+        XCTAssertEqual(Set(checkedDocuments), Set([missing.id, terminal.id]))
+        XCTAssertEqual(Set(rec.enforcementRecords.map(\.discoveryState)), Set([.notFound, .found]))
+    }
+
+    func testInitialTreasuryDiscoveryMakesSeenCaseUnreadAndNotifiesRouter() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.seenAt = Date()
+        let treasury = ScriptedTreasury([.lookup(EnforcementLookup(state: .notFound))])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(document, caseNumber: number, court: court)
+                                   })
+        var refreshes = 0
+        center.onEnforcementRefreshed = { _ in refreshes += 1 }
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        XCTAssertNil(rec.seenAt)
+        XCTAssertEqual(refreshes, 1)
+        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .notFound)
     }
 
     func testHigherCourtCaptchaStubDoesNotPersistCassationStage() async throws {

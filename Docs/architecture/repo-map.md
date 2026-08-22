@@ -34,6 +34,7 @@
 | Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
 | Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests` |
+| Исполнительные листы и Казначейство | `Sources/SudrfKit/Enforcement.swift`, `CaseCardParser.swift` | `Movement.swift`, `Sources/SudrfApp/RefreshCenter.swift`, `TrackedStore.swift`, `CaseMovementView.swift`, `AppModel.swift` | `TreasuryClientTests`, `CaseCardParserTests`, `RefreshCenterTests`, `DataCatalogTests`, `OverviewModelTests` |
 | Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
 | Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebViewCoordinator.swift`, `RefreshCenter.swift` | `CaptchaWebView.swift`, `CaptchaAssistSheet.swift`, `CaptchaFlowDecisions.swift`, `CaptchaSolverFactory.swift`, `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
 | Текст судебного акта и AI-резюме | `Sources/SudrfApp/AppModel.swift` (`loadSelectedActSummary`, `generateSelectedActSummary`) | `SummaryOperationState.swift`, `AISummaryCoordinator.swift`, `AIProviders.swift`, `AISettings.swift`, `AppleAISummarizers.swift`, `Sources/SudrfKit/ActDocument.swift`, `ActSummary.swift` | `ActDocumentTests`, `ActSummaryTests`, `AISummaryPipelineTests`, `CorrectivePassTests` |
@@ -79,6 +80,18 @@
 корневом `AGENTS.md`, раздел «Captcha auto-solver». Для выбора файлов и тестов
 используйте строку «Автоматическая или ручная CAPTCHA» в таблице маршрутов.
 
+### Исполнение
+
+`CaseCardParser` извлекает все строки таблицы исполнительных документов и
+передаёт их в `CaseMovement.executionDocuments`. Для отслеживаемого дела
+`RefreshCenter` независимо от исхода запроса суда проверяет каждый бумажный
+лист через actor-`клиент` `TreasuryClient`, аддитивно сливает ответ в
+`TrackedCaseRecord.enforcementData` и проецирует новые RSS `guid` в ленту.
+
+Суд и Казначейство — два независимых источника: ошибка одного не стирает
+последний успех другого. Электронные ИД и листы, адресованные приставам,
+только отображаются; сетевого клиента ФССП пока нет.
+
 ### Судебный акт и AI
 
 Выбранный акт преобразуется в `ActDocument` с устойчивыми идентификаторами
@@ -104,6 +117,10 @@
   использует: у него cp1251, CAPTCHA, вариант хоста и отдельный HTTP-фолбэк.
 - HTML судов — нестабильный внешний контракт. Новый вариант страницы должен
   сопровождаться классификатором/парсером и фикстурным регрессионным тестом.
+- При ошибке или неоднозначном ответе Казначейства нельзя удалять прежнюю историю
+  или автоматически выбирать первую запись. RSS-ссылки на старый домен являются
+  только источником `documentId`; пользовательские URL строятся на HTTPS
+  `app.roskazna.ru`.
 - Миграции и резервное копирование SwiftData выполняются до создания рабочего
   `AppRouter`. При ошибке загрузки нельзя переходить на незаметную временную БД.
 - AI получает только явно выбранный акт. `ActSummaryValidator` должен проверять

@@ -100,14 +100,20 @@ final class RefreshCenter: ObservableObject {
     struct WalkProgress: Equatable { var done: Int; var total: Int }
 
     @Published private(set) var refreshing: Set<String> = []
+    @Published private(set) var refreshingEnforcement: Set<String> = []
     @Published private(set) var walkProgress: WalkProgress? = nil
     @Published private(set) var lastErrors: [String: String] = [:]
+    @Published private(set) var enforcementErrors: [String: String] = [:]
     @Published private var captchaPending = CaptchaPendingQueue()
 
     /// После успешного обновления записи (ключ, слитая карточка для показа).
     var onRefreshed: ((String, CaseMovement) -> Void)?
     /// При ошибке обновления (ключ, короткий текст).
     var onRefreshFailed: ((String, String) -> Void)?
+    /// После успешной проверки исполнения AppRouter перестраивает ленту и
+    /// открытую карточку. Ошибка источника сюда не попадает: суд уже получил
+    /// собственный независимый outcome.
+    var onEnforcementRefreshed: ((String) -> Void)?
     /// Ключ открытой сейчас карточки — фоновое обновление не должно гасить
     /// ей бейдж «обновлено» (см. правило seenAt в задаче обновления).
     var openedKey: (() -> String?)?
@@ -134,7 +140,12 @@ final class RefreshCenter: ObservableObject {
     /// `MovementService` через `ctx.makeService(...)`; подменяется в тестах,
     /// чтобы скриптовать `service.movement(...)` без сети.
     private let serviceBuilder: (MovementContext) -> any MovementProviding
+    /// Инъекция замыкания оставляет production-клиент actor-ом, но даёт тестам
+    /// детерминированный источник без одноразового protocol/factory слоя.
+    private let treasuryDiscover: (CourtEnforcementDocument, String?, String?) async throws
+        -> EnforcementLookup
     private var tasks: [String: Task<RefreshExecution, Never>] = [:]
+    private var enforcementTasks: [String: Task<Void, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
     /// своим завершением сбросить walkTask/walkProgress нового обхода.
@@ -146,7 +157,9 @@ final class RefreshCenter: ObservableObject {
          captchaSettings: CaptchaSettings? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
-         serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil) {
+         serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil,
+         treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
+            -> EnforcementLookup)? = nil) {
         self.store = store
         self.client = client
         self.captchaSolver = captchaSolver
@@ -166,9 +179,17 @@ final class RefreshCenter: ObservableObject {
             await AutoCaptchaSolver.solve(formURL: url, client: c,
                                           solver: s, settings: settings)
         }
+        let treasury = TreasuryClient()
+        self.treasuryDiscover = treasuryDiscover ?? { document, caseNumber, court in
+            try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
+        }
     }
 
     func isRefreshing(_ key: String) -> Bool { refreshing.contains(key) }
+    func isRefreshingEnforcement(_ key: String) -> Bool { refreshingEnforcement.contains(key) }
+    func enforcementError(forKey key: String?) -> String? {
+        key.flatMap { enforcementErrors[$0] }
+    }
 
     var captchaPendingGroups: [CaptchaPendingGroup] { captchaPending.groups }
 
@@ -221,11 +242,18 @@ final class RefreshCenter: ObservableObject {
         } else if walkTask != nil {
             return
         }
+        let now = Date()
         let ttl = RefreshSettings.ttl
-        let keys = store.all().filter { rec in
-            force || rec.movementFetchedAt.map { Date().timeIntervalSince($0) > ttl } ?? true
-        }.map(\.key)
+        var courtKeys = Set<String>()
+        let keys = store.all().compactMap { rec -> String? in
+            let courtDue = force
+                || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
+            let enforcementDue = force || needsEnforcementRefresh(rec, now: now, ttl: ttl)
+            if courtDue { courtKeys.insert(rec.key) }
+            return courtDue || enforcementDue ? rec.key : nil
+        }
         guard !keys.isEmpty else { return }
+        let dueCourtKeys = courtKeys
 
         // Группируем дела по домашнему суду (displayDomain денормализован в записи —
         // декодировать контекст не нужно). Порядок дел внутри суда сохраняется.
@@ -255,12 +283,16 @@ final class RefreshCenter: ObservableObject {
                 var next = 0
                 func addWorker() {
                     guard next < courts.count else { return }
-                    let courtKeys = courts[next]
+                    let caseKeys = courts[next]
                     next += 1
                     group.addTask { [weak self] in
-                        for key in courtKeys {
+                        for key in caseKeys {
                             if Task.isCancelled { return }
-                            _ = await self?.refresh(key: key)?.value
+                            if dueCourtKeys.contains(key) {
+                                _ = await self?.refresh(key: key, forceEnforcement: force)?.value
+                            } else {
+                                _ = await self?.startEnforcementRefresh(key: key, force: false)?.value
+                            }
                             await self?.bumpWalkProgress(total: total, generation: gen)
                         }
                     }
@@ -290,7 +322,7 @@ final class RefreshCenter: ObservableObject {
 
     /// Запускает (или возвращает уже идущее) обновление дела по ключу записи.
     @discardableResult
-    func refresh(key: String) -> Task<RefreshExecution, Never>? {
+    func refresh(key: String, forceEnforcement: Bool = false) -> Task<RefreshExecution, Never>? {
         if let existing = tasks[key] { return existing }
         guard store.record(forKey: key) != nil else { return nil }
 
@@ -300,6 +332,8 @@ final class RefreshCenter: ObservableObject {
                 return RefreshExecution(effectiveKey: key, outcome: .notFound)
             }
             let execution = await self.performRefresh(key: key)
+            _ = await self.startEnforcementRefresh(
+                key: execution.effectiveKey, force: forceEnforcement)?.value
             self.refreshing.remove(key)
             self.tasks[key] = nil
             return execution
@@ -313,6 +347,111 @@ final class RefreshCenter: ObservableObject {
     func refreshForIntent(key: String) async -> CaseRefreshOutcome {
         guard let task = refresh(key: key) else { return .notFound }
         return await task.value.outcome
+    }
+
+    /// Ручная проверка исполнения. Судебное обновление не требуется: для
+    /// запроса используются уже сохранённые бумажные реквизиты листов.
+    @discardableResult
+    func refreshEnforcement(key: String) -> Task<Void, Never>? {
+        startEnforcementRefresh(key: key, force: true)
+    }
+
+    private func startEnforcementRefresh(key: String, force: Bool) -> Task<Void, Never>? {
+        if let existing = enforcementTasks[key] { return existing }
+        guard let record = store.record(forKey: key),
+              !treasuryEnforcementDocuments(for: record).isEmpty,
+              force || needsEnforcementRefresh(record, now: Date(), ttl: RefreshSettings.ttl)
+        else { return nil }
+
+        refreshingEnforcement.insert(key)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performEnforcementRefresh(key: key)
+            self.refreshingEnforcement.remove(key)
+            self.enforcementTasks[key] = nil
+        }
+        enforcementTasks[key] = task
+        return task
+    }
+
+    /// Суд может не ответить, но ранее сохранённые исполнительные листы всё
+    /// равно проверяются. Ошибка Казначейства сохраняется отдельно от исхода
+    /// судебного refresh и не трогает кэш движения/снимок.
+    private func performEnforcementRefresh(key: String) async {
+        guard let record = store.record(forKey: key) else { return }
+        let documents = treasuryEnforcementDocuments(for: record)
+        guard !documents.isEmpty else { return }
+
+        let previous = record.enforcementRecords
+        var updates: [EnforcementRecord] = []
+        var errors: [String] = []
+        for document in documents {
+            let attemptedAt = Date()
+            do {
+                let lookup = try await treasuryDiscover(document, record.caseNumber, record.courtTitle)
+                var update = lookup.record ?? EnforcementRecord(
+                    courtDocumentID: document.id, source: .treasury,
+                    discoveryState: lookup.state, status: "", lastAttemptAt: attemptedAt)
+                update.discoveryState = lookup.state
+                update.lastAttemptAt = attemptedAt
+                if lookup.state != .error {
+                    update.lastSuccessAt = update.lastSuccessAt ?? attemptedAt
+                    update.error = nil
+                }
+                updates.append(update)
+            } catch {
+                let message = error.localizedDescription
+                errors.append(message)
+                if var update = previous.first(where: {
+                    $0.source == .treasury && $0.courtDocumentID == document.id
+                }) {
+                    // Ошибка транспорта не меняет последний строгий результат
+                    // сопоставления и не стирает статус/историю.
+                    update.lastAttemptAt = attemptedAt
+                    update.error = message
+                    updates.append(update)
+                } else {
+                    updates.append(EnforcementRecord(
+                        courtDocumentID: document.id, source: .treasury,
+                        discoveryState: .error, status: "", lastAttemptAt: attemptedAt,
+                        error: message))
+                }
+            }
+        }
+
+        let current = TrackedStore.reconciledEnforcementRecords(
+            existing: previous, updates: updates, courtDocuments: record.movement?.executionDocuments ?? [])
+        let changed = TrackedStore.enforcementHasUserVisibleChange(
+            previous: previous, current: current, courtDocuments: record.movement?.executionDocuments ?? [])
+        record.enforcementRecords = current
+        if changed && openedKey?() != key { record.seenAt = nil }
+        store.save()
+
+        let hasSuccess = updates.contains { $0.discoveryState != .error }
+        if errors.isEmpty {
+            enforcementErrors[key] = nil
+        } else {
+            enforcementErrors[key] = errors.joined(separator: "\n")
+        }
+        if hasSuccess { onEnforcementRefreshed?(key) }
+    }
+
+    private func treasuryEnforcementDocuments(
+        for record: TrackedCaseRecord
+    ) -> [CourtEnforcementDocument] {
+        (record.movement?.executionDocuments ?? []).filter(\.isTreasuryEligible)
+    }
+
+    private func needsEnforcementRefresh(_ record: TrackedCaseRecord, now: Date,
+                                         ttl: TimeInterval) -> Bool {
+        let records = record.enforcementRecords
+        return treasuryEnforcementDocuments(for: record).contains { document in
+            guard let saved = records.first(where: {
+                $0.source == .treasury && $0.courtDocumentID == document.id
+            }) else { return true }
+            let checkedAt = saved.lastAttemptAt ?? saved.lastSuccessAt ?? .distantPast
+            return now.timeIntervalSince(checkedAt) > ttl
+        }
     }
 
     private func performRefresh(key: String) async -> RefreshExecution {

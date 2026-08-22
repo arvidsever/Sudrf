@@ -255,22 +255,26 @@ actor SystemSpotlightWriter: SpotlightIndexWriting {
         try await index.deleteAllSearchableItems()
     }
 
-    private nonisolated static func searchableItem(for entity: CaseEntity) -> CSSearchableItem {
+    nonisolated static func searchableItem(for entity: CaseEntity) -> CSSearchableItem {
         let attributes = entity.attributeSet
         attributes.associateAppEntity(entity)
-        return CSSearchableItem(uniqueIdentifier: entity.id,
-                                domainIdentifier: attributes.domainIdentifier,
-                                attributeSet: attributes)
+        let item = CSSearchableItem(uniqueIdentifier: entity.id,
+                                    domainIdentifier: attributes.domainIdentifier,
+                                    attributeSet: attributes)
+        item.expirationDate = .distantFuture
+        return item
     }
 
-    private nonisolated static func searchableItem(
+    nonisolated static func searchableItem(
         for entity: CourtActEntity
     ) -> CSSearchableItem {
         let attributes = entity.attributeSet
         attributes.associateAppEntity(entity)
-        return CSSearchableItem(uniqueIdentifier: entity.id,
-                                domainIdentifier: attributes.domainIdentifier,
-                                attributeSet: attributes)
+        let item = CSSearchableItem(uniqueIdentifier: entity.id,
+                                    domainIdentifier: attributes.domainIdentifier,
+                                    attributeSet: attributes)
+        item.expirationDate = .distantFuture
+        return item
     }
 }
 
@@ -318,8 +322,8 @@ actor SpotlightManifestStore {
             return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: false)
         }
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
-              envelope.version == 4 else {
-            // v1/corrupt manifest не является основанием оставлять возможные
+              envelope.version == 5 else {
+            // Старый/corrupt manifest не является основанием оставлять возможные
             // stale записи в системном индексе: следующий sync делает purge.
             return Snapshot(manifest: SpotlightManifest(), requiresFullRebuild: true)
         }
@@ -329,7 +333,7 @@ actor SpotlightManifestStore {
     func load() -> SpotlightManifest { loadSnapshot().manifest }
 
     func save(_ manifest: SpotlightManifest) {
-        defaults.set(try? JSONEncoder().encode(Envelope(version: 4, manifest: manifest)),
+        defaults.set(try? JSONEncoder().encode(Envelope(version: 5, manifest: manifest)),
                      forKey: key)
     }
 }

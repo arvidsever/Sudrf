@@ -425,7 +425,7 @@ private struct GlobalSearchField: View {
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(minHeight: 160, maxHeight: 360)
             }
         }
         .frame(width: 390)

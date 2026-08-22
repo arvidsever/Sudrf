@@ -361,7 +361,7 @@ oracle; старый sudrf-proxy — модель `snapshot → refresh → diff
 swift build && swift test
 ```
 
-678 тестов, 5 пропущено. Визуальные правки тестами не ловятся:
+701 тест, 5 пропущено. Визуальные правки тестами не ловятся:
 
 ```bash
 xcodegen generate && bash Scripts/make-app.sh

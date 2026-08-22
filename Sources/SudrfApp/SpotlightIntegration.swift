@@ -255,22 +255,26 @@ actor SystemSpotlightWriter: SpotlightIndexWriting {
         try await index.deleteAllSearchableItems()
     }
 
-    private nonisolated static func searchableItem(for entity: CaseEntity) -> CSSearchableItem {
+    nonisolated static func searchableItem(for entity: CaseEntity) -> CSSearchableItem {
         let attributes = entity.attributeSet
         attributes.associateAppEntity(entity)
-        return CSSearchableItem(uniqueIdentifier: entity.id,
-                                domainIdentifier: attributes.domainIdentifier,
-                                attributeSet: attributes)
+        let item = CSSearchableItem(uniqueIdentifier: entity.id,
+                                    domainIdentifier: attributes.domainIdentifier,
+                                    attributeSet: attributes)
+        item.expirationDate = .distantFuture
+        return item
     }
 
-    private nonisolated static func searchableItem(
+    nonisolated static func searchableItem(
         for entity: CourtActEntity
     ) -> CSSearchableItem {
         let attributes = entity.attributeSet
         attributes.associateAppEntity(entity)
-        return CSSearchableItem(uniqueIdentifier: entity.id,
-                                domainIdentifier: attributes.domainIdentifier,
-                                attributeSet: attributes)
+        let item = CSSearchableItem(uniqueIdentifier: entity.id,
+                                    domainIdentifier: attributes.domainIdentifier,
+                                    attributeSet: attributes)
+        item.expirationDate = .distantFuture
+        return item
     }
 }
 

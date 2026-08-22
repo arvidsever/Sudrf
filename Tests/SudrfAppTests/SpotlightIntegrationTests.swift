@@ -202,6 +202,11 @@ final class SpotlightIntegrationTests: XCTestCase {
         XCTAssertEqual(SudrfDeepLink(url: try XCTUnwrap(actEntity.attributeSet.contentURL)),
                        .courtAct(caseKey: context.key, sourceActID: "act-1"))
 
+        let caseItem = SystemSpotlightWriter.searchableItem(for: caseEntity)
+        let actItem = SystemSpotlightWriter.searchableItem(for: actEntity)
+        XCTAssertEqual(caseItem.expirationDate, Date.distantFuture)
+        XCTAssertEqual(actItem.expirationDate, Date.distantFuture)
+
         let item = CSSearchableItem(uniqueIdentifier: caseEntity.id,
                                     domainIdentifier: caseEntity.attributeSet.domainIdentifier,
                                     attributeSet: caseEntity.attributeSet)

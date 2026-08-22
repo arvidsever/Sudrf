@@ -40,4 +40,34 @@ final class MovementCodableTests: XCTestCase {
         XCTAssertEqual(back.captchaFormURL, inst.captchaFormURL)
         XCTAssertEqual(back.level, .appeal)
     }
+
+    func testOldMovementWithoutExecutionDocumentsStillDecodes() throws {
+        let movement = MovementService.demoMovement(uid: "uid", caseNumber: "2-1/2026")
+        let encoded = try JSONEncoder().encode(movement)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "executionDocuments")
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(CaseMovement.self, from: oldData)
+        XCTAssertNil(decoded.executionDocuments)
+        XCTAssertEqual(decoded.uid, movement.uid)
+    }
+
+    func testCourtExecutionDocumentStableIDPrefersPaperNumber() throws {
+        let paper = CourtEnforcementDocument(date: "21.08.2025",
+                                             blankNumber: "ФС № 049373812",
+                                             electronicID: "11RS0001#2-7212/2025#4",
+                                             courtStatus: "Выдан", recipient: "Взыскатель")
+        let same = CourtEnforcementDocument(date: "21.08.2025",
+                                            blankNumber: "ФС № 049373812",
+                                            electronicID: "different", courtStatus: "Выдан",
+                                            recipient: "Взыскатель")
+        XCTAssertEqual(paper.id, same.id)
+        XCTAssertEqual(paper.normalizedBlankNumber, "ФС049373812")
+        XCTAssertEqual(CourtEnforcementDocument.normalizedNumber("фс № 049373812"),
+                       paper.normalizedBlankNumber)
+        let back = try JSONDecoder().decode(CourtEnforcementDocument.self,
+                                            from: JSONEncoder().encode(paper))
+        XCTAssertEqual(back, paper)
+    }
 }

@@ -75,6 +75,7 @@ public enum CaseCardParser {
         let appeals = parseAppeals(doc)
         let parties = parseParties(doc)
         let lowerCourt = parseLowerCourt(doc)
+        let executionDocuments = parseExecutionDocuments(doc)
 
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
@@ -90,7 +91,8 @@ public enum CaseCardParser {
                         acts: acts,
                         appeals: appeals,
                         parties: parties,
-                        lowerCourt: lowerCourt)
+                        lowerCourt: lowerCourt,
+                        executionDocuments: executionDocuments)
     }
 
     // MARK: - Винтажная карточка (VNKOD-суды)
@@ -128,6 +130,7 @@ public enum CaseCardParser {
         }
 
         let acts = vintageActs(doc)
+        let executionDocuments = parseExecutionDocuments(doc)
 
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
@@ -147,7 +150,8 @@ public enum CaseCardParser {
                         acts: acts,
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
                         parties: vintageParties(doc),
-                        lowerCourt: parseLowerCourt(doc))
+                        lowerCourt: parseLowerCourt(doc),
+                        executionDocuments: executionDocuments)
     }
 
     /// Вкладка по имени: #tab_content_<name>.
@@ -480,6 +484,93 @@ public enum CaseCardParser {
             judge: map["судья (мировой судья) первой инстанции"]
                 ?? map["судья первой инстанции"])
         return ref.isEmpty ? nil : ref
+    }
+
+    // MARK: - Исполнительные листы
+
+    /// Таблица «ИСПОЛНИТЕЛЬНЫЕ ЛИСТЫ» встречается в современных и винтажных
+    /// карточках с одинаковыми заголовками, но с разным порядком вкладок.
+    /// Поэтому ищем её по пяти колонкам, а не по номеру `contN`/названию
+    /// вкладки. В строке допускаются пустые бумажный или электронный номер:
+    /// реальные карточки публикуют оба вида документа в одной таблице.
+    private static func parseExecutionDocuments(_ doc: Document) -> [CourtEnforcementDocument] {
+        let required = ["date", "blank", "electronic", "status", "recipient"]
+        for table in (try? doc.select("table").array()) ?? [] {
+            let rows = directRows(table)
+            var columns: [String: Int] = [:]
+            var headerIndex: Int?
+            for (index, row) in rows.enumerated() {
+                let cells = (try? row.select("td, th").array()) ?? []
+                let headers = cells.map { normalizeHeader((try? $0.text()) ?? "") }
+                for (column, text) in headers.enumerated() {
+                    if text.contains("дата выдачи") { columns["date"] = column }
+                    else if text.contains("серия") && text.contains("номер") && text.contains("бланка") {
+                        columns["blank"] = column
+                    } else if text.contains("номер электронного") && text.contains("ид") {
+                        columns["electronic"] = column
+                    } else if text == "статус" || text.hasPrefix("статус ") {
+                        columns["status"] = column
+                    } else if text.contains("кому выдан") {
+                        columns["recipient"] = column
+                    }
+                }
+                if required.allSatisfy({ columns[$0] != nil }) {
+                    headerIndex = index
+                    break
+                }
+            }
+            guard let headerIndex else { continue }
+
+            var result: [CourtEnforcementDocument] = []
+            for row in rows.dropFirst(headerIndex + 1) {
+                let cells = directCells(row, tags: ["td"])
+                guard !cells.isEmpty else { continue }
+                func value(_ key: String) -> String? {
+                    guard let column = columns[key], column < cells.count else { return nil }
+                    let text = ((try? cells[column].text()) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    return text.isEmpty ? nil : text
+                }
+                let document = CourtEnforcementDocument(
+                    date: value("date"),
+                    blankNumber: value("blank"),
+                    electronicID: value("electronic"),
+                    courtStatus: value("status"),
+                    recipient: value("recipient"))
+                guard document.date != nil || document.blankNumber != nil
+                        || document.electronicID != nil || document.courtStatus != nil
+                        || document.recipient != nil else { continue }
+                result.append(document)
+            }
+            return result
+        }
+        return []
+    }
+
+    private static func normalizeHeader(_ value: String) -> String {
+        value.replacingOccurrences(of: "\u{00A0}", with: " ")
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func directRows(_ table: Element) -> [Element] {
+        var rows: [Element] = []
+        for child in table.children().array() {
+            if child.tagName().lowercased() == "tr" {
+                rows.append(child)
+            } else if ["thead", "tbody", "tfoot"].contains(child.tagName().lowercased()) {
+                rows.append(contentsOf: child.children().array().filter {
+                    $0.tagName().lowercased() == "tr"
+                })
+            }
+        }
+        return rows
+    }
+
+    private static func directCells(_ row: Element, tags: Set<String>) -> [Element] {
+        row.children().array().filter { tags.contains($0.tagName().lowercased()) }
     }
 
     /// Номер дела из заголовка карточки: «ДЕЛО № …» / «ПРОИЗВОДСТВО № …».

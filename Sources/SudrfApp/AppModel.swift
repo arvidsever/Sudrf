@@ -154,6 +154,16 @@ final class AppRouter: ObservableObject {
         refreshCenter.captchaPendingRequest(forKey: openedKey)
     }
 
+    var openEnforcementRecords: [EnforcementRecord] {
+        openedKey.flatMap { store.record(forKey: $0)?.enforcementRecords } ?? []
+    }
+
+    var isRefreshingOpenEnforcement: Bool {
+        openedKey.map { refreshCenter.isRefreshingEnforcement($0) } ?? false
+    }
+
+    var openEnforcementError: String? { refreshCenter.enforcementError(forKey: openedKey) }
+
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
@@ -197,6 +207,9 @@ final class AppRouter: ObservableObject {
         }
         refreshCenter.onRefreshFailed = { [weak self] key, text in
             self?.applyRefreshFailed(key: key, error: text)
+        }
+        refreshCenter.onEnforcementRefreshed = { [weak self] key in
+            self?.applyEnforcementRefreshed(key: key)
         }
         // Вложенный ObservableObject сам по себе не перерисовывает вьюхи,
         // наблюдающие router, — пробрасываем его objectWillChange.
@@ -365,7 +378,11 @@ final class AppRouter: ObservableObject {
     /// Принудительное обновление открытой карточки (кнопка «Обновить»).
     func refreshOpenCase() {
         refreshNote = nil
-        if let key = openedKey { refreshCenter.refresh(key: key) }
+        if let key = openedKey { refreshCenter.refresh(key: key, forceEnforcement: true) }
+    }
+
+    func refreshOpenEnforcement() {
+        if let key = openedKey { refreshCenter.refreshEnforcement(key: key) }
     }
 
     private func closeLiveCard() {
@@ -765,6 +782,10 @@ final class AppRouter: ObservableObject {
         }
     }
 
+    private func applyEnforcementRefreshed(key: String) {
+        reload(notifyNew: true, spotlightScope: .cases([key]))
+    }
+
     func selectAct(_ id: String) { selectedActID = id }
     func highlightSelectedActParagraph(_ id: String) { highlightedParagraphID = id }
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
@@ -1132,6 +1153,27 @@ final class AppRouter: ObservableObject {
             cs.append(makeTrackedCase(rec: rec, snap: snap, stage: stage,
                                       presentation: presentation))
 
+            let client = snap.map { clientName(rec: rec, snap: $0) } ?? rec.courtTitle
+            let unreadByCase = rec.seenAt == nil
+            // История Казначейства хранит устойчивый RSS guid. Статус не входит
+            // в id: его переформулировка источником не должна воскрешать уже
+            // прочитанную строку как новое уведомление.
+            for record in rec.enforcementRecords where record.source == .treasury {
+                for event in record.events {
+                    guard let date = event.date ?? event.dateRaw.flatMap(DateUtil.parse) else { continue }
+                    guard let guid = event.guid?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !guid.isEmpty else { continue }
+                    let diff = DateUtil.daysBetween(date, today)
+                    guard diff >= 0 && diff <= 45 else { continue }
+                    let id = Self.enforcementFeedID(recordKey: rec.key, guid: guid)
+                    feedItems.append(FeedEntry(
+                        id: id, dayHead: nil, date: date, time: "—", recordKey: rec.key,
+                        caseNumber: rec.caseNumber, client: client, kind: .enforcement,
+                        text: event.text, actID: nil,
+                        isUnread: !readIDs.contains(id)))
+                }
+            }
+
             guard let snap else { continue }
 
             // Завершившийся круг может всё ещё содержать состоявшееся сегодня
@@ -1151,8 +1193,6 @@ final class AppRouter: ObservableObject {
                     caseNumber: rec.caseNumber, basis: dl.basis, calLabel: dl.calLabel,
                     date: dl.date, status: DeadlineStatus(rawValue: dl.statusRaw) ?? .proposed))
             }
-            let client = clientName(rec: rec, snap: snap)
-            let unreadByCase = rec.seenAt == nil
             // Лента: события движения за последние 45 дней.
             for s in snap.sessions {
                 guard let d = s.date else { continue }
@@ -1342,6 +1382,10 @@ final class AppRouter: ObservableObject {
     private func feedID(recordKey: String,
                         date: Date, time: String, text: String) -> String {
         "\(recordKey)#feed#\(Int(date.timeIntervalSinceReferenceDate))#\(time)#\(text)"
+    }
+
+    nonisolated static func enforcementFeedID(recordKey: String, guid: String) -> String {
+        "\(recordKey)#enforcement#\(guid)"
     }
 
     /// Одноразовая миграция id, сохранённых до того, как вид перестал входить

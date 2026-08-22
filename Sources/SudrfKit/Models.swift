@@ -148,6 +148,75 @@ public struct LowerCourtReference: Sendable, Equatable, Codable {
     }
 }
 
+/// Реквизиты одного исполнительного листа из вкладки «Исполнительные листы».
+///
+/// Судебная карточка публикует бумажные и электронные документы в одной
+/// таблице. `date` сохраняется в том виде, в котором его отдал суд (как и
+/// остальные даты карточки), чтобы не потерять значение при смене формата.
+public struct CourtEnforcementDocument: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public var date: String?
+    public var blankNumber: String?
+    public var electronicID: String?
+    public var courtStatus: String?
+    public var recipient: String?
+
+    public init(id: String? = nil,
+                date: String? = nil,
+                blankNumber: String? = nil,
+                electronicID: String? = nil,
+                courtStatus: String? = nil,
+                recipient: String? = nil) {
+        self.date = Self.clean(date)
+        self.blankNumber = Self.clean(blankNumber)
+        self.electronicID = Self.clean(electronicID)
+        self.courtStatus = Self.clean(courtStatus)
+        self.recipient = Self.clean(recipient)
+        self.id = id ?? Self.makeID(date: self.date,
+                                    blankNumber: self.blankNumber,
+                                    electronicID: self.electronicID,
+                                    courtStatus: self.courtStatus,
+                                    recipient: self.recipient)
+    }
+
+    /// Stable identity used to reconcile a row after a refresh. It deliberately
+    /// avoids Swift's process-randomised `hashValue`.
+    public static func makeID(date: String?, blankNumber: String?, electronicID: String?,
+                              courtStatus: String?, recipient: String?) -> String {
+        let number = normalizedNumber(blankNumber ?? electronicID)
+        let key = number.isEmpty
+            ? [date, courtStatus, recipient].map { normalize($0) }.joined(separator: "|")
+            : number
+        return "court-enforcement:\(key.isEmpty ? "row" : key)"
+    }
+
+    /// Canonical number for exact source matching (spaces, punctuation and
+    /// case markers such as «№» do not affect identity).
+    public static func normalizedNumber(_ value: String?) -> String {
+        normalize(value).uppercased().filter { $0.isNumber || $0.isLetter }
+    }
+
+    /// Canonical paper number used by source matching and reconciliation.
+    public var normalizedBlankNumber: String {
+        Self.normalizedNumber(blankNumber)
+    }
+
+    static func normalize(_ value: String?) -> String {
+        guard let value else { return "" }
+        return value
+            .replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "Ё", with: "Е")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let value = normalize(value)
+        return value.isEmpty ? nil : value
+    }
+}
+
 public struct CaseCard: Sendable {
     public var rawText: String          // весь текст карточки (для отладки/фолбэка)
     public var actText: String?         // текст первого судебного акта (для обратной совместимости)
@@ -164,6 +233,8 @@ public struct CaseCard: Sendable {
     public var appeals: [AppealRecord]  // вкладка «Обжалование» (в карточке 1-й инстанции)
     public var parties: CaseParties     // вкладка «СТОРОНЫ ПО ДЕЛУ» (истцы/ответчики/третьи)
     public var lowerCourt: LowerCourtReference? // «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ»
+    /// Исполнительные листы из таблицы «ИСПОЛНИТЕЛЬНЫЕ ЛИСТЫ».
+    public var executionDocuments: [CourtEnforcementDocument]
 
     public init(rawText: String, actText: String?,
                 sessions: [CaseSession] = [], judge: String? = nil, result: String? = nil,
@@ -172,7 +243,8 @@ public struct CaseCard: Sendable {
                 legalForceDate: String? = nil,
                 acts: [CaseActText] = [], appeals: [AppealRecord] = [],
                 parties: CaseParties = CaseParties(),
-                lowerCourt: LowerCourtReference? = nil) {
+                lowerCourt: LowerCourtReference? = nil,
+                executionDocuments: [CourtEnforcementDocument] = []) {
         self.rawText = rawText
         self.actText = actText
         self.sessions = sessions
@@ -188,10 +260,11 @@ public struct CaseCard: Sendable {
         self.appeals = appeals
         self.parties = parties
         self.lowerCourt = lowerCourt
+        self.executionDocuments = executionDocuments
     }
 }
 
-public enum SudrfError: Error, CustomStringConvertible {
+public enum SudrfError: Error, CustomStringConvertible, LocalizedError {
     /// На форме/выдаче обнаружена капча. Решать её программно нельзя —
     /// нужно открыть `formURL` в браузере и ввести код вручную.
     case captchaRequired(formURL: URL)
@@ -243,4 +316,6 @@ public enum SudrfError: Error, CustomStringConvertible {
             return "Суд \(domain) не отвечает по сети (\(code.rawValue)) после \(attempt) попыток."
         }
     }
+
+    public var errorDescription: String? { description }
 }

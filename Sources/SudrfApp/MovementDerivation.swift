@@ -414,6 +414,7 @@ enum MovementDerivation {
             && CaseLifecycleResolver.realInstances(in: lhs)
                 == CaseLifecycleResolver.realInstances(in: rhs)
             && lhs.complaints == rhs.complaints
+            && lhs.executionDocuments == rhs.executionDocuments
     }
 
     // MARK: Заседания

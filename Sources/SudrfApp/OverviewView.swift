@@ -587,6 +587,7 @@ struct OverviewView: View {
         case .act:      return (Palette.green, Palette.green.opacity(0.14))
         case .hearing:  return (Color.accentColor, Color.accentColor.opacity(0.12))
         case .movement: return (.secondary, Color.primary.opacity(0.06))
+        case .enforcement: return (Palette.confirmed, Palette.confirmed.opacity(0.12))
         }
     }
 

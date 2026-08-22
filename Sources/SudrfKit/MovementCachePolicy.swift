@@ -29,6 +29,17 @@ public enum MovementCachePolicy {
         var actBodies = fresh.actBodies
         var changed = false
 
+        // A partial refresh can return a valid movement while its base card
+        // temporarily omits the execution table. Preserve the last successful
+        // documents just like cached real higher-court instances.
+        var executionDocuments = fresh.executionDocuments
+        if (fresh.executionDocuments?.isEmpty ?? true),
+           let cachedDocuments = cached.executionDocuments,
+           !cachedDocuments.isEmpty {
+            executionDocuments = cachedDocuments
+            changed = true
+        }
+
         func restoreCachedRealInstances(for canonical: String) -> Bool {
             let realInstances = cached.instances.filter {
                 SudrfHost.moduleHost($0.domain) == canonical
@@ -102,6 +113,7 @@ public enum MovementCachePolicy {
         out.instances = instances
         out.acts = acts
         out.actBodies = actBodies
+        out.executionDocuments = executionDocuments
         out.incompleteHigherCourtDomains = nil
         return out
     }

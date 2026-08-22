@@ -201,13 +201,14 @@ enum CalMode: CaseIterable { case month, week, agenda
 enum OverviewRoute { case dashboard, fullFeed }
 
 enum FeedEntryKind: String, CaseIterable, Hashable {
-    case hearing, act, movement
+    case hearing, act, movement, enforcement
 
     var title: String {
         switch self {
         case .hearing:  return "Заседания"
         case .act:      return "Судебные акты"
         case .movement: return "Движение дела"
+        case .enforcement: return "Исполнение"
         }
     }
 
@@ -216,12 +217,13 @@ enum FeedEntryKind: String, CaseIterable, Hashable {
         case .hearing:  return "заседание"
         case .act:      return "акт"
         case .movement: return "движение"
+        case .enforcement: return "исполнение"
         }
     }
 }
 
 enum FeedTypeFilter: CaseIterable, Hashable {
-    case all, hearing, act, movement
+    case all, hearing, act, movement, enforcement
 
     var title: String {
         switch self {
@@ -229,6 +231,7 @@ enum FeedTypeFilter: CaseIterable, Hashable {
         case .hearing:  return FeedEntryKind.hearing.title
         case .act:      return FeedEntryKind.act.title
         case .movement: return FeedEntryKind.movement.title
+        case .enforcement: return FeedEntryKind.enforcement.title
         }
     }
 
@@ -238,6 +241,7 @@ enum FeedTypeFilter: CaseIterable, Hashable {
         case .hearing:  return .hearing
         case .act:      return .act
         case .movement: return .movement
+        case .enforcement: return .enforcement
         }
     }
 }

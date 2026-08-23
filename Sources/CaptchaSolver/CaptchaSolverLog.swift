@@ -99,7 +99,7 @@ public final class CaptchaSolverLog: @unchecked Sendable {
     @discardableResult
     public func logCandidates(host: String,
                               kind: CaptchaKind,
-                              submitted: String,
+                              submitted: String?,
                               confidence: Double,
                               alternatives: [(text: String, confidence: Double)],
                               preprocessed: Bool) -> URL? {
@@ -112,7 +112,7 @@ public final class CaptchaSolverLog: @unchecked Sendable {
         lines.append("host=\(host)")
         lines.append("kind=\(kind.label)")
         lines.append("preprocessed=\(preprocessed ? "yes" : "no")")
-        lines.append("submitted=\(submitted)")
+        lines.append("submitted=\(submitted ?? "(not sent)")")
         lines.append(String(format: "confidence=%.4f", confidence))
         lines.append("alternatives:")
         for (i, alt) in alternatives.enumerated() {

@@ -119,11 +119,78 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertEqual(result.value, "12345")
     }
 
+    func testStrictFSSPDispatchNeverFallsBackToOtherModel() async throws {
+        let dispatch = KindDispatchingStrategy(
+            primary: ThrowingProvider(error: TestError.failed),
+            fallback: StubAttemptProvider(value: "vision", confidence: 1),
+            primaryKinds: [.fsspDigits],
+            fallbackOnPrimaryFailure: false)
+
+        let result = try await dispatch.solve(
+            pngData: Data(), kind: .fsspDigits, host: "fssp.gov.ru")
+
+        XCTAssertEqual(result, .empty)
+    }
+
     func testCoreMLCompatibleOutputRequiresFiveASCIIDigits() {
         XCTAssertTrue(CoreMLCaptchaStrategy.isCompatibleOutput("12345"))
         XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("1234"))
         XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("12AB5"))
         XCTAssertFalse(CoreMLCaptchaStrategy.isCompatibleOutput("１２３４５"))
+    }
+
+    func testFSSPEligibilityRequiresEveryObjectiveThreshold() {
+        let eligible = FSSPModelEligibility(
+            uniqueCorpusCount: 2_000,
+            regressionFixtureCount: 30,
+            heldOutStringAccuracy: 0.97,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.99)
+        XCTAssertTrue(eligible.isEligible)
+
+        XCTAssertFalse(FSSPModelEligibility(
+            uniqueCorpusCount: 1_999,
+            regressionFixtureCount: 30,
+            heldOutStringAccuracy: 0.97,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.99).isEligible)
+        XCTAssertFalse(FSSPModelEligibility(
+            uniqueCorpusCount: 2_000,
+            regressionFixtureCount: 29,
+            heldOutStringAccuracy: 0.97,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.99).isEligible)
+        XCTAssertFalse(FSSPModelEligibility(
+            uniqueCorpusCount: 2_000,
+            regressionFixtureCount: 30,
+            heldOutStringAccuracy: 0.969,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.99).isEligible)
+        XCTAssertFalse(FSSPModelEligibility(
+            uniqueCorpusCount: 2_000,
+            regressionFixtureCount: 30,
+            heldOutStringAccuracy: 0.97,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.989).isEligible)
+    }
+
+    func testFSSPModelDiscoveryFailsClosedWithoutEligibleReport() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("FSSPModelGate-\(UUID().uuidString)", isDirectory: true)
+        let model = root.appendingPathComponent("model-captcha-fssp.mlmodelc", isDirectory: true)
+        try FileManager.default.createDirectory(at: model, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertNil(CoreMLModelDiscovery.eligibleFSSPURL(modelURL: model))
+        let report = FSSPModelEligibility(
+            uniqueCorpusCount: 2_000,
+            regressionFixtureCount: 30,
+            heldOutStringAccuracy: 0.97,
+            acceptedAt090Count: 100,
+            acceptedAt090Accuracy: 0.99)
+        let reportURL = root.appendingPathComponent("model-captcha-fssp-eligibility.json")
+        try JSONEncoder().encode(report).write(to: reportURL)
+        XCTAssertEqual(CoreMLModelDiscovery.eligibleFSSPURL(modelURL: model), model)
     }
 
     func testKindDispatchingPropagatesCancellation() async {
@@ -286,6 +353,31 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
                 "A4 regression: \(entry.filename) expected=\(entry.expected) got=\(entry.attempt.value) conf=\(String(format: "%.3f", entry.attempt.confidence))")
         }
     }
+
+    func testEligibleFSSPModelMatchesManualRegressionFixtures() async throws {
+        guard let modelURL = Bundle.module.url(
+            forResource: "model-captcha-fssp", withExtension: "mlmodelc",
+            subdirectory: "Fixtures"),
+              let labelsURL = Bundle.module.url(
+                forResource: "Fixtures/fssp/regression", withExtension: "tsv"),
+              let tsv = try? String(contentsOf: labelsURL, encoding: .utf8) else {
+            throw XCTSkip("eligible FSSP model and 30 manual fixtures are not available yet")
+        }
+        let rows = tsv.split(separator: "\n").dropFirst().compactMap { line -> (String, String)? in
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count == 2 else { return nil }
+            return (URL(fileURLWithPath: String(fields[0])).lastPathComponent, String(fields[1]))
+        }
+        XCTAssertGreaterThanOrEqual(rows.count, 30)
+        let strategy = try CoreMLCaptchaStrategy(modelURL: modelURL, kind: .fsspDigits)
+        for (filename, expected) in rows {
+            let url = try XCTUnwrap(Bundle.module.url(
+                forResource: "Fixtures/fssp/\(filename)", withExtension: nil))
+            let attempt = try await strategy.solve(
+                pngData: Data(contentsOf: url), kind: .fsspDigits, host: "fssp.gov.ru")
+            XCTAssertEqual(attempt.value, expected, filename)
+        }
+    }
 }
 
 /// Стаб для теста диспетчеризации. Возвращает фиксированный `label`
@@ -312,4 +404,8 @@ private struct ThrowingProvider: CaptchaSolvingProvider {
     func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
         throw error
     }
+}
+
+private enum TestError: Error {
+    case failed
 }

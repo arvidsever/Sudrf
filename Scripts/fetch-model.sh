@@ -21,6 +21,8 @@ set -euo pipefail
 
 ASSET_TAG=""
 FIXTURES_DIR=""
+MODEL_NAME="model-captcha-numeric"
+MANIFEST_NAME="MODEL_MANIFEST.sha256"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,6 +36,16 @@ while [[ $# -gt 0 ]]; do
             FIXTURES_DIR="$2"
             shift 2
             ;;
+        --model-name)
+            [[ $# -ge 2 ]] || { echo "--model-name requires a value" >&2; exit 2; }
+            MODEL_NAME="$2"
+            shift 2
+            ;;
+        --manifest)
+            [[ $# -ge 2 ]] || { echo "--manifest requires a value" >&2; exit 2; }
+            MANIFEST_NAME="$2"
+            shift 2
+            ;;
         *)
             echo "unknown arg: $1" >&2
             exit 2
@@ -45,7 +57,9 @@ done
 [[ -n "$FIXTURES_DIR" ]] || { echo "--fixtures-dir required" >&2; exit 2; }
 [[ -d "$FIXTURES_DIR" && ! -L "$FIXTURES_DIR" ]] || { echo "--fixtures-dir not a directory: $FIXTURES_DIR" >&2; exit 2; }
 
-MANIFEST="$FIXTURES_DIR/MODEL_MANIFEST.sha256"
+[[ "$MODEL_NAME" =~ ^model-captcha-[a-z0-9-]+$ ]] || { echo "invalid --model-name: $MODEL_NAME" >&2; exit 2; }
+[[ "$MANIFEST_NAME" != */* ]] || { echo "--manifest must be a filename" >&2; exit 2; }
+MANIFEST="$FIXTURES_DIR/$MANIFEST_NAME"
 [[ -f "$MANIFEST" ]] || { echo "manifest not found: $MANIFEST (pre-A5 commit required)" >&2; exit 1; }
 
 # Staging в ТОЙ ЖЕ файловой системе, что и workspace, чтобы `mv` был
@@ -56,7 +70,7 @@ trap 'rm -rf "$STAGING"' EXIT
 
 # 1. Download с GitHub Release
 gh release download "$ASSET_TAG" \
-    --pattern "model-captcha-numeric-v*.zip" \
+    --pattern "$MODEL_NAME-v*.zip" \
     --dir "$STAGING" \
     --clobber || { echo "gh release download failed (tag=$ASSET_TAG)" >&2; exit 1; }
 
@@ -65,7 +79,7 @@ gh release download "$ASSET_TAG" \
 mapfile_compat=()
 while IFS= read -r path; do
     mapfile_compat+=("$path")
-done < <(find "$STAGING" -maxdepth 1 -type f -name 'model-captcha-numeric-v*.zip' -print)
+done < <(find "$STAGING" -maxdepth 1 -type f -name "$MODEL_NAME-v*.zip" -print)
 if [[ ${#mapfile_compat[@]} -ne 1 ]]; then
     echo "expected exactly 1 model ZIP in $STAGING, got ${#mapfile_compat[@]}" >&2
     exit 1
@@ -77,15 +91,16 @@ unzip -o "$ZIP" -d "$STAGING" || { echo "unzip failed: $ZIP" >&2; exit 1; }
 
 # 4. Verify ДО mv (verify-before-replace).
 bash "$(dirname "$0")/verify-model.sh" \
-    --model-dir "$STAGING/model-captcha-numeric.mlmodelc" \
-    --manifest "$MANIFEST" || { echo "verify failed" >&2; exit 1; }
+    --model-dir "$STAGING/$MODEL_NAME.mlmodelc" \
+    --manifest "$MANIFEST" \
+    --model-name "$MODEL_NAME" || { echo "verify failed" >&2; exit 1; }
 
 # 5. Replace: best-effort atomic rename в одной FS.
 #    Между `rm` и `mv` короткий gap; single-job CI не запускает fetch
 #    параллельно, поэтому никто не увидит пустой target.
-TARGET="$FIXTURES_DIR/model-captcha-numeric.mlmodelc"
+TARGET="$FIXTURES_DIR/$MODEL_NAME.mlmodelc"
 [[ -d "$TARGET" ]] && rm -rf "$TARGET"
-mv "$STAGING/model-captcha-numeric.mlmodelc" "$TARGET" || { echo "mv failed: $STAGING → $TARGET" >&2; exit 1; }
+mv "$STAGING/$MODEL_NAME.mlmodelc" "$TARGET" || { echo "mv failed: $STAGING → $TARGET" >&2; exit 1; }
 
 # 6. Cleanup (unzip + оставшийся ZIP).
 rm -rf "$STAGING"

@@ -132,7 +132,7 @@ final class AppRouter: ObservableObject {
     private let captchaSolver: CaptchaSolver
     private let captchaSettings: CaptchaSettings
     private let fsspClient: FSSPClient
-    private let fsspCaptchaCorpus = FSSPCaptchaCorpus.shared
+    private let fsspCaptchaCorpus = CorpusStore.shared
     private var fsspCaptchaRequestID: UUID?
     private let summaryConfigurationProvider: @MainActor @Sendable () throws
         -> ConfiguredActSummarizer
@@ -225,6 +225,10 @@ final class AppRouter: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
+                // Auto-solve has already exhausted its bounded background
+                // loop before `.captchaRequired` was persisted. The explicit
+                // button must fetch one fresh task and show it immediately,
+                // not silently start another three model attempts.
                 let step = try await self.fsspClient.discover(document: document)
                 self.handleFreshFSSPStep(step, document: document,
                                          caseKey: caseKey, requestID: requestID)
@@ -251,8 +255,11 @@ final class AppRouter: ObservableObject {
                     self.updateFSSPCaptcha(
                         replacement, message: "Код не принят. Введите цифры с новой картинки.")
                 case .found, .notFound, .ambiguous:
-                    _ = await self.fsspCaptchaCorpus.addAccepted(
-                        png: presentation.challenge.imagePNG, code: code)
+                    _ = await self.fsspCaptchaCorpus.add(
+                        png: presentation.challenge.imagePNG,
+                        code: code,
+                        host: presentation.challenge.requestURL.host ?? "fssp.gov.ru",
+                        kind: .fsspDigits)
                     self.applyFSSPStep(step, document: presentation.document,
                                        caseKey: presentation.caseKey)
                     if self.fsspCaptcha?.id == presentation.id {

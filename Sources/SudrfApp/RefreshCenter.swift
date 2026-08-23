@@ -175,6 +175,7 @@ final class RefreshCenter: ObservableObject {
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
             -> EnforcementLookup)? = nil,
          fsspClient: FSSPClient? = nil,
+         fsspAutoModelEnabled: Bool? = nil,
          fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil) {
         self.store = store
         self.client = client
@@ -200,8 +201,20 @@ final class RefreshCenter: ObservableObject {
             try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
         }
         let fssp = fsspClient ?? FSSPClient()
+        let fsspModelEnabled = fsspAutoModelEnabled
+            ?? CaptchaSolverFactory.hasEligibleFSSPModel()
         self.fsspDiscover = fsspDiscover ?? { document in
-            try await fssp.discover(document: document)
+            if let captchaSolver, let captchaSettings {
+                return await FSSPAutoCaptchaSolver.solve(
+                    document: document,
+                    client: fssp,
+                    solver: captchaSolver,
+                    enabled: fsspModelEnabled && captchaSettings.isEffectivelyEnabled,
+                    settings: .init(
+                        maxAttempts: captchaSettings.maxAttempts,
+                        minConfidence: captchaSettings.minConfidence))
+            }
+            return try await fssp.discover(document: document)
         }
     }
 

@@ -26,17 +26,20 @@ public struct KindDispatchingStrategy: CaptchaSolvingProvider {
     public let primaryKinds: Set<CaptchaKind>
     public let minPrimaryConfidence: Double
     public let primaryAttemptIsCompatible: @Sendable (CaptchaAttempt) -> Bool
+    public let fallbackOnPrimaryFailure: Bool
 
     public init(primary: any CaptchaSolvingProvider,
                 fallback: any CaptchaSolvingProvider,
                 primaryKinds: Set<CaptchaKind> = [.sudrfToken],
                 minPrimaryConfidence: Double = 0,
-                primaryAttemptIsCompatible: @escaping @Sendable (CaptchaAttempt) -> Bool = { _ in true }) {
+                primaryAttemptIsCompatible: @escaping @Sendable (CaptchaAttempt) -> Bool = { _ in true },
+                fallbackOnPrimaryFailure: Bool = true) {
         self.primary = primary
         self.fallback = fallback
         self.primaryKinds = primaryKinds
         self.minPrimaryConfidence = minPrimaryConfidence
         self.primaryAttemptIsCompatible = primaryAttemptIsCompatible
+        self.fallbackOnPrimaryFailure = fallbackOnPrimaryFailure
     }
 
     public func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
@@ -45,11 +48,13 @@ public struct KindDispatchingStrategy: CaptchaSolvingProvider {
                 let attempt = try await primary.solve(pngData: pngData, kind: kind, host: host)
                 guard attempt.confidence >= minPrimaryConfidence,
                       primaryAttemptIsCompatible(attempt) else {
+                    if !fallbackOnPrimaryFailure { return .empty }
                     return try await fallback.solve(pngData: pngData, kind: kind, host: host)
                 }
                 return attempt
             } catch {
                 if error is CancellationError { throw error }
+                if !fallbackOnPrimaryFailure { return .empty }
                 // CoreML-specific сбои → fallback. Не превращаем в
                 // .empty здесь: пусть caller увидит, что CoreML
                 // не справился, и сделает сам. Vision-fallback ниже

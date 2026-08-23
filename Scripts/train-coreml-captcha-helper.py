@@ -32,6 +32,8 @@ Scripts/train-coreml-captcha-helper.py
 """
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -76,11 +78,12 @@ def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
 
 class CaptchaSample:
     """Один captcha после binarize: маска + 5-цифровая метка."""
-    __slots__ = ("mask", "label")
+    __slots__ = ("mask", "label", "digest")
 
-    def __init__(self, mask: np.ndarray, label: list[int]):
+    def __init__(self, mask: np.ndarray, label: list[int], digest: str):
         self.mask = mask  # (20, 64) float32 ∈ [0, 1]
         self.label = label  # length-5 list of int in 0..9
+        self.digest = digest
 
     def to_tensor(self) -> torch.Tensor:
         # (1, 20, 64) — one sample, one channel. `train_epoch` stacks
@@ -108,12 +111,15 @@ def load_corpus(tsv_path: Path) -> list[CaptchaSample]:
                 continue
             try:
                 with open(path_str, "rb") as fp:
-                    mask = binarize_and_downsample(fp.read())
+                    png = fp.read()
+                    mask = binarize_and_downsample(png)
             except Exception as e:
                 print(f"  skip {path_str}: {e}", file=sys.stderr)
                 skipped += 1
                 continue
-            samples.append(CaptchaSample(mask, [int(c) for c in label_str]))
+            samples.append(CaptchaSample(
+                mask, [int(c) for c in label_str], hashlib.sha256(png).hexdigest()
+            ))
     print(f"loaded {len(samples)} samples from {tsv_path.name} (skipped {skipped})")
     return samples
 
@@ -180,21 +186,33 @@ def evaluate(model: CaptchaNet,
     correct_per_digit = np.zeros(5, dtype=np.int64)
     total = 0
     correct_string = 0
+    accepted_at_090 = 0
+    accepted_correct_at_090 = 0
     for s in samples:
         x = s.to_tensor().unsqueeze(0).to(device)
         y = np.array(s.label, dtype=np.int64)
         logits = model(x)  # (1, 5, 10)
         pred = logits.argmax(dim=-1).cpu().numpy()[0]  # (5,)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+        confidence = float(min(probs[k, pred[k]] for k in range(5)))
         for k in range(5):
             if pred[k] == y[k]:
                 correct_per_digit[k] += 1
         if np.array_equal(pred, y):
             correct_string += 1
+            if confidence >= 0.90:
+                accepted_correct_at_090 += 1
+        if confidence >= 0.90:
+            accepted_at_090 += 1
         total += 1
     return {
         "per_digit": (correct_per_digit / max(1, total)).tolist(),
         "string": correct_string / max(1, total),
         "total": total,
+        "accepted_at_090": accepted_at_090,
+        "accepted_accuracy_at_090": (
+            accepted_correct_at_090 / accepted_at_090 if accepted_at_090 else 0.0
+        ),
     }
 
 
@@ -213,7 +231,16 @@ def main():
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--device", default="cpu", choices=["cpu", "mps"])
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--eligibility-output", type=Path,
+                   help="write FSSP eligibility JSON only when every gate passes")
+    p.add_argument("--regression-tsv", type=Path,
+                   help="manually verified FSSP regression fixtures")
+    p.add_argument("--model-name", default="model-captcha-numeric")
     args = p.parse_args()
+
+    # A failed retrain must never inherit a previously passing runtime gate.
+    if args.eligibility_output and args.eligibility_output.exists():
+        args.eligibility_output.unlink()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -230,6 +257,29 @@ def main():
     if not train or not test:
         print("error: empty corpus (run train-coreml-captcha.swift first)", file=sys.stderr)
         sys.exit(1)
+    regression: list[CaptchaSample] = []
+    if args.eligibility_output:
+        if args.model_name != "model-captcha-fssp":
+            print("error: FSSP eligibility requires --model-name model-captcha-fssp", file=sys.stderr)
+            sys.exit(1)
+        if args.output.name != "model-captcha-fssp.mlmodelc":
+            print("error: FSSP output must be model-captcha-fssp.mlmodelc", file=sys.stderr)
+            sys.exit(1)
+        if not args.regression_tsv:
+            print("error: --regression-tsv required for FSSP eligibility", file=sys.stderr)
+            sys.exit(1)
+        regression = load_corpus(args.regression_tsv)
+        train_hashes = {sample.digest for sample in train}
+        test_hashes = {sample.digest for sample in test}
+        if train_hashes & test_hashes:
+            print("error: duplicate SHA-256 across train and held-out sets", file=sys.stderr)
+            sys.exit(1)
+        if len(train_hashes | test_hashes) < 2_000:
+            print("error: FSSP corpus has fewer than 2000 unique images", file=sys.stderr)
+            sys.exit(1)
+        if len({sample.digest for sample in regression}) < 30:
+            print("error: FSSP regression set has fewer than 30 unique fixtures", file=sys.stderr)
+            sys.exit(1)
 
     # 2) Train.
     model = CaptchaNet().to(device)
@@ -240,7 +290,7 @@ def main():
         opt, milestones=args.milestones, gamma=0.5
     )
     print(f"model params: {sum(p.numel() for p in model.parameters())}")
-    best_per_digit = 0.0
+    best_score = 0.0
     best_state = None
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
@@ -258,15 +308,16 @@ def main():
             f"test per-string {per_string:.3f} | "
             f"lr {opt.param_groups[0]['lr']:.4f} | {elapsed:.1f}s"
         )
-        if per_digit_mean > best_per_digit:
-            best_per_digit = per_digit_mean
+        selection_score = per_string if args.eligibility_output else per_digit_mean
+        if selection_score > best_score:
+            best_score = selection_score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     if best_state is None:
         print("error: training produced no improvement", file=sys.stderr)
         sys.exit(1)
     model.load_state_dict(best_state)
-    print(f"best per-digit: {best_per_digit:.3f}")
+    print(f"best selection score: {best_score:.3f}")
 
     # 3) Convert to CoreML.
     print("converting to CoreML...")
@@ -335,16 +386,46 @@ def main():
 
     # 6) Print final report.
     final_eval = evaluate(model, test, device)
+    regression_eval = evaluate(model, regression, device) if regression else None
     print()
     print("=== final report ===")
     print(f"per-digit:  {final_eval['per_digit']}")
     print(f"per-string: {final_eval['string']:.3f}  "
           f"({int(final_eval['string'] * final_eval['total'])}/{final_eval['total']})")
     print(f"model:      {args.output}")
+    if regression_eval:
+        print(f"regression exact: {regression_eval['string']:.3f}  "
+              f"({int(regression_eval['string'] * regression_eval['total'])}/{regression_eval['total']})")
     print()
     print("next step: place this .mlmodelc/ in")
     print(f"  {args.output}")
     print("and run `swift test` — CoreMLCaptchaStrategyTests will use it.")
+
+    if args.eligibility_output:
+        unique_count = len({sample.digest for sample in train + test})
+        accepted_count = final_eval["accepted_at_090"]
+        accepted_accuracy = final_eval["accepted_accuracy_at_090"]
+        if final_eval["string"] < 0.97:
+            print("error: held-out exact-string accuracy is below 0.97", file=sys.stderr)
+            sys.exit(1)
+        if accepted_count == 0 or accepted_accuracy < 0.99:
+            print("error: accepted-answer accuracy at 0.90 is below 0.99", file=sys.stderr)
+            sys.exit(1)
+        report = {
+            "version": 1,
+            "modelName": args.model_name,
+            "split": "sha256-80-20",
+            "uniqueCorpusCount": unique_count,
+            "regressionFixtureCount": len({sample.digest for sample in regression}),
+            "heldOutStringAccuracy": final_eval["string"],
+            "acceptedAt090Count": accepted_count,
+            "acceptedAt090Accuracy": accepted_accuracy,
+        }
+        args.eligibility_output.parent.mkdir(parents=True, exist_ok=True)
+        args.eligibility_output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        print(f"eligibility: {args.eligibility_output}")
 
 
 if __name__ == "__main__":

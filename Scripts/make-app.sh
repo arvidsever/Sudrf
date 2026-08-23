@@ -82,6 +82,25 @@ MODEL_DIR="$MODEL_FIXTURES_DIR/model-captcha-numeric.mlmodelc"
 bash Scripts/verify-model.sh --model-dir "$MODEL_DIR" --manifest "$MODEL_MANIFEST"
 cp -R "$MODEL_DIR" "$APP/Contents/Resources/"
 
+# FSSP model remains optional until its objective training gate has produced
+# both the SHA manifest and eligibility report. Once either marker is tracked,
+# packaging fails unless the complete second model is present and verified.
+FSSP_MODEL_MANIFEST="$MODEL_FIXTURES_DIR/MODEL_FSSP_MANIFEST.sha256"
+FSSP_ELIGIBILITY="$MODEL_FIXTURES_DIR/model-captcha-fssp-eligibility.json"
+FSSP_MODEL_DIR="$MODEL_FIXTURES_DIR/model-captcha-fssp.mlmodelc"
+if [[ -f "$FSSP_MODEL_MANIFEST" || -f "$FSSP_ELIGIBILITY" ]]; then
+    [[ -f "$FSSP_MODEL_MANIFEST" && -f "$FSSP_ELIGIBILITY" && -d "$FSSP_MODEL_DIR" ]] || {
+        echo "incomplete FSSP model release inputs" >&2
+        exit 1
+    }
+    bash Scripts/verify-model.sh \
+        --model-dir "$FSSP_MODEL_DIR" \
+        --manifest "$FSSP_MODEL_MANIFEST" \
+        --model-name model-captcha-fssp
+    cp -R "$FSSP_MODEL_DIR" "$APP/Contents/Resources/"
+    cp "$FSSP_ELIGIBILITY" "$APP/Contents/Resources/"
+fi
+
 # Иконка: собираем .icns из PNG ассет-каталога (iconutil есть в macOS).
 ICONSET="build/AppIcon.iconset"
 SRC="Assets.xcassets/AppIcon.appiconset"

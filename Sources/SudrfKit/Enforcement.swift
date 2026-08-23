@@ -12,7 +12,49 @@ public enum EnforcementDiscoveryState: String, Codable, Sendable, Equatable {
     case found
     case notFound
     case ambiguous
+    /// Фоновый поиск ФССП остановился на CAPTCHA. Последний подтверждённый
+    /// результат другого источника при этом остаётся нетронутым.
+    case captchaRequired
     case error
+}
+
+/// Поля одной строки Банка данных исполнительных производств ФССП.
+///
+/// Значения намеренно хранятся в том виде, в каком их публикует ФССП: один
+/// результат не даёт основания выводить искусственный статус производства.
+public struct BailiffEnforcementDetails: Codable, Sendable, Equatable {
+    public var proceedingNumber: String?
+    public var proceedingOpenedRaw: String?
+    public var previousProceedingNumbers: [String]
+    public var debtor: String?
+    public var executiveDocumentDetails: String?
+    public var endOrTermination: String?
+    public var subjectAndOutstandingBalance: String?
+    public var department: String?
+    public var bailiff: String?
+    public var bailiffPhone: String?
+
+    public init(proceedingNumber: String? = nil,
+                proceedingOpenedRaw: String? = nil,
+                previousProceedingNumbers: [String] = [],
+                debtor: String? = nil,
+                executiveDocumentDetails: String? = nil,
+                endOrTermination: String? = nil,
+                subjectAndOutstandingBalance: String? = nil,
+                department: String? = nil,
+                bailiff: String? = nil,
+                bailiffPhone: String? = nil) {
+        self.proceedingNumber = proceedingNumber
+        self.proceedingOpenedRaw = proceedingOpenedRaw
+        self.previousProceedingNumbers = previousProceedingNumbers
+        self.debtor = debtor
+        self.executiveDocumentDetails = executiveDocumentDetails
+        self.endOrTermination = endOrTermination
+        self.subjectAndOutstandingBalance = subjectAndOutstandingBalance
+        self.department = department
+        self.bailiff = bailiff
+        self.bailiffPhone = bailiffPhone
+    }
 }
 
 /// Одно изменение стадии исполнения из RSS-истории Казначейства.
@@ -61,7 +103,7 @@ public struct EnforcementRecord: Codable, Sendable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case courtDocumentID, source, discoveryState, sourceRecordID, status,
              organization, subdivision, sourceUpdatedRaw, events, lastAttemptAt,
-             lastSuccessAt, error, sourceURL
+             lastSuccessAt, error, sourceURL, bailiffDetails
     }
 
     public var courtDocumentID: String
@@ -80,6 +122,9 @@ public struct EnforcementRecord: Codable, Sendable, Equatable, Identifiable {
     public var lastSuccessAt: Date?
     public var error: String?
     public var sourceURL: URL?
+    /// Точные поля строки ФССП. `nil` сохраняет формат ранее записанных JSON
+    /// blobs и не требует миграции SwiftData.
+    public var bailiffDetails: BailiffEnforcementDetails?
 
     public var id: String { "\(source.rawValue):\(courtDocumentID)" }
 
@@ -95,7 +140,8 @@ public struct EnforcementRecord: Codable, Sendable, Equatable, Identifiable {
                 lastAttemptAt: Date? = nil,
                 lastSuccessAt: Date? = nil,
                 error: String? = nil,
-                sourceURL: URL? = nil) {
+                sourceURL: URL? = nil,
+                bailiffDetails: BailiffEnforcementDetails? = nil) {
         self.courtDocumentID = courtDocumentID
         self.source = source
         self.discoveryState = discoveryState
@@ -109,6 +155,7 @@ public struct EnforcementRecord: Codable, Sendable, Equatable, Identifiable {
         self.lastSuccessAt = lastSuccessAt
         self.error = error
         self.sourceURL = sourceURL
+        self.bailiffDetails = bailiffDetails
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,6 +174,8 @@ public struct EnforcementRecord: Codable, Sendable, Equatable, Identifiable {
         lastSuccessAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessAt)
         error = try values.decodeIfPresent(String.self, forKey: .error)
         sourceURL = try values.decodeIfPresent(URL.self, forKey: .sourceURL)
+        bailiffDetails = try values.decodeIfPresent(BailiffEnforcementDetails.self,
+                                                    forKey: .bailiffDetails)
     }
 }
 

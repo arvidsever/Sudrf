@@ -125,8 +125,25 @@ final class DataCatalogTests: XCTestCase {
             courtDocumentID: oldDocument.id, source: .treasury, sourceRecordID: "source-old",
             status: "Исполняется", events: [firstEvent], lastAttemptAt: firstCheckedAt,
             lastSuccessAt: firstCheckedAt)
-        tracked.enforcementRecords = [old]
-        XCTAssertEqual(tracked.enforcementRecords, [old])
+        let bailiffDetails = BailiffEnforcementDetails(
+            proceedingNumber: "587893/26/98078-ИП",
+            previousProceedingNumbers: ["737102/25/98078-ИП"],
+            debtor: "МКУ ДЕКАБРИСТ", department: "СОСП по г. Санкт-Петербургу",
+            bailiff: "ДЯДЧЕНКО Е. В.", bailiffPhone: "+7(920)084-63-47")
+        let bailiff = EnforcementRecord(
+            courtDocumentID: oldDocument.id, source: .bailiffs,
+            discoveryState: .found, sourceRecordID: bailiffDetails.proceedingNumber,
+            status: "", lastAttemptAt: firstCheckedAt, lastSuccessAt: firstCheckedAt,
+            bailiffDetails: bailiffDetails)
+        tracked.enforcementRecords = [old, bailiff]
+        XCTAssertEqual(tracked.enforcementRecords, [old, bailiff])
+
+        var changedBailiff = bailiff
+        changedBailiff.bailiffDetails?.bailiffPhone = "+7 (000) 000-00-00"
+        XCTAssertTrue(TrackedStore.enforcementHasUserVisibleChange(
+            previous: [bailiff], current: [changedBailiff],
+            courtDocuments: [oldDocument]),
+            "изменение опубликованных полей ФССП должно вернуть бейдж")
 
         let secondEvent = EnforcementEvent(guid: "rss-2", date: refreshedCheckedAt,
                                            text: "Исполнен", sourceOrder: 1)
@@ -138,9 +155,12 @@ final class DataCatalogTests: XCTestCase {
             existing: tracked.enforcementRecords, updates: [update],
             courtDocuments: [oldDocument, refreshedDocument])
 
-        XCTAssertEqual(merged.count, 1, "один бумажный лист не должен дублироваться")
-        XCTAssertEqual(merged[0].sourceRecordID, "source-new")
-        XCTAssertEqual(Set(merged[0].events.map(\.id)), Set([firstEvent.id, secondEvent.id]))
+        let treasuryMerged = try XCTUnwrap(merged.first { $0.source == .treasury })
+        let bailiffMerged = try XCTUnwrap(merged.first { $0.source == .bailiffs })
+        XCTAssertEqual(merged.count, 2, "два независимых источника одного листа должны сохраниться")
+        XCTAssertEqual(treasuryMerged.sourceRecordID, "source-new")
+        XCTAssertEqual(Set(treasuryMerged.events.map(\.id)), Set([firstEvent.id, secondEvent.id]))
+        XCTAssertEqual(bailiffMerged.bailiffDetails, bailiffDetails)
         XCTAssertEqual(TrackedStore.reconciledEnforcementRecords(
             existing: merged, updates: [], courtDocuments: [refreshedDocument]), merged,
             "пустой ответ не удаляет последний успешный статус")

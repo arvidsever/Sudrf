@@ -56,6 +56,9 @@ struct CaseMovementView: View {
     var isRefreshingEnforcement = false
     var enforcementError: String? = nil
     var onRefreshEnforcement: (() -> Void)? = nil
+    /// Открыть свежую задачу CAPTCHA ФССП для конкретного документа. Фоновый
+    /// refresh этот callback не вызывает: он лишь сохраняет `.captchaRequired`.
+    var onSolveFSSPCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
 
     var body: some View {
         ScrollView {
@@ -92,7 +95,8 @@ struct CaseMovementView: View {
                     EnforcementBlock(documents: documents, records: enforcementRecords,
                                      isRefreshing: isRefreshingEnforcement,
                                      error: enforcementError,
-                                     onRefresh: onRefreshEnforcement)
+                                     onRefresh: onRefreshEnforcement,
+                                     onSolveCaptcha: onSolveFSSPCaptcha)
                 }
             }
             .padding(16)
@@ -201,6 +205,7 @@ private struct EnforcementBlock: View {
     let isRefreshing: Bool
     let error: String?
     var onRefresh: (() -> Void)? = nil
+    var onSolveCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -208,22 +213,22 @@ private struct EnforcementBlock: View {
                 Label("Исполнение", systemImage: "doc.text")
                     .font(.system(size: 12.5, weight: .bold))
                 Spacer()
-                if documents.contains(where: { $0.isTreasuryEligible }), let onRefresh {
+                if !documents.isEmpty, let onRefresh {
                     Button { onRefresh() } label: {
                         if isRefreshing {
                             HStack(spacing: 5) {
                                 ProgressView().controlSize(.mini)
-                                Text("Проверяю Казначейство…")
+                                Text("Проверяю исполнение…")
                             }
                         } else {
-                            Label("Проверить Казначейство", systemImage: "arrow.clockwise")
+                            Label("Проверить исполнение", systemImage: "arrow.clockwise")
                                 .lineLimit(1)
                         }
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
                     .disabled(isRefreshing)
-                    .help("Проверить Казначейство")
+                    .help("Проверить исполнение")
                 }
                 Text("\(documents.count)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -238,9 +243,13 @@ private struct EnforcementBlock: View {
             ForEach(documents) { document in
                 CourtEnforcementRow(
                     document: document,
-                    record: records.first {
+                    treasuryRecord: records.first {
                         $0.courtDocumentID == document.id && $0.source == .treasury
-                    })
+                    },
+                    fsspRecord: records.first {
+                        $0.courtDocumentID == document.id && $0.source == .bailiffs
+                    },
+                    onSolveCaptcha: onSolveCaptcha)
                     .overlay(Divider(), alignment: .top)
             }
         }
@@ -256,21 +265,16 @@ private struct EnforcementBlock: View {
 
 private struct CourtEnforcementRow: View {
     let document: CourtEnforcementDocument
-    let record: EnforcementRecord?
+    let treasuryRecord: EnforcementRecord?
+    let fsspRecord: EnforcementRecord?
+    let onSolveCaptcha: ((CourtEnforcementDocument) -> Void)?
     @State private var historyExpanded = false
-
-    private var isBailiffDocument: Bool {
-        !document.isTreasuryEligible
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(document.blankNumber ?? document.electronicID ?? "Исполнительный документ")
                     .font(.system(size: 12, weight: .semibold))
-                if isBailiffDocument {
-                    TinyChip(text: "ФССП · автопроверка недоступна", color: .secondary)
-                }
                 Spacer(minLength: 8)
                 if let date = document.date {
                     Text(date).font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -283,15 +287,16 @@ private struct CourtEnforcementRow: View {
                 Text(recipient).font(.system(size: 11)).foregroundStyle(.tertiary)
             }
             if document.isTreasuryEligible {
-                treasuryState
+                treasuryState(record: treasuryRecord)
             }
+            fsspState
         }
         .padding(.horizontal, 13).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private var treasuryState: some View {
+    private func treasuryState(record: EnforcementRecord?) -> some View {
         if let record {
             switch record.discoveryState {
             case .found:
@@ -316,6 +321,9 @@ private struct CourtEnforcementRow: View {
                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
             case .ambiguous:
                 Text("Казначейство: несколько совпадений")
+                    .font(.system(size: 11.5)).foregroundStyle(.orange)
+            case .captchaRequired:
+                Text("Казначейство: требуется проверка на сайте")
                     .font(.system(size: 11.5)).foregroundStyle(.orange)
             case .error:
                 Text("Казначейство: не удалось проверить")
@@ -354,6 +362,89 @@ private struct CourtEnforcementRow: View {
         } else {
             Text("Казначейство ещё не проверялось")
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private var fsspState: some View {
+        Divider().padding(.vertical, 3)
+        if let record = fsspRecord {
+            switch record.discoveryState {
+            case .found:
+                // Наличие строки в Банке данных само по себе не доказывает,
+                // что производство сейчас исполняется. Показываем только
+                // нейтральную формулировку из плана интеграции.
+                Text("Найдено в Банке данных ФССП")
+                    .font(.system(size: 11.5, weight: .medium))
+                if let details = record.bailiffDetails {
+                    BailiffDetailsView(details: details)
+                }
+            case .notFound:
+                Text("ФССП: не найдено")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+            case .ambiguous:
+                Text("ФССП: несколько совпадений")
+                    .font(.system(size: 11.5)).foregroundStyle(.orange)
+            case .captchaRequired:
+                HStack(spacing: 8) {
+                    Text("ФССП: требуется CAPTCHA")
+                        .font(.system(size: 11.5)).foregroundStyle(.orange)
+                    if let onSolveCaptcha {
+                        Button("Ввести код") { onSolveCaptcha(document) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+            case .error:
+                Text("ФССП: не удалось проверить")
+                    .font(.system(size: 11.5)).foregroundStyle(.orange)
+            }
+            if let error = record.error {
+                Text(error).font(.system(size: 10.5)).foregroundStyle(.orange)
+            }
+            if let checkedAt = record.lastAttemptAt {
+                let checkedLabel = checkedAt.formatted(
+                    .dateTime.locale(Locale(identifier: "ru_RU"))
+                        .day().month(.abbreviated).year().hour().minute())
+                Text("Последняя проверка ФССП: \(checkedLabel)")
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            }
+        } else {
+            Text("ФССП ещё не проверялась")
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+        }
+    }
+}
+
+private struct BailiffDetailsView: View {
+    let details: BailiffEnforcementDetails
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            detail("ИП", details.proceedingNumber)
+            detail("Возбуждено", details.proceedingOpenedRaw)
+            if !details.previousProceedingNumbers.isEmpty {
+                detail("Предыдущие номера",
+                       details.previousProceedingNumbers.joined(separator: ", "))
+            }
+            detail("Должник", details.debtor)
+            detail("Реквизиты ИД", details.executiveDocumentDetails)
+            detail("Окончание/прекращение", details.endOrTermination)
+            detail("Предмет и остаток", details.subjectAndOutstandingBalance)
+            detail("Подразделение", details.department)
+            detail("Пристав", details.bailiff)
+            detail("Телефон", details.bailiffPhone)
+        }
+        .font(.system(size: 10.5))
+        .padding(.top, 3)
+    }
+
+    @ViewBuilder
+    private func detail(_ label: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty {
+            Text("\(label): \(value)")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

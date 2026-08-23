@@ -154,6 +154,17 @@ private struct OperationalRootView: View {
             ImportSheet()
                 .environmentObject(router)
         }
+        .sheet(item: $router.fsspCaptcha) { presentation in
+            FSSPCaptchaSheet(
+                challenge: presentation.challenge,
+                documentNumber: presentation.document.electronicID
+                    ?? presentation.document.blankNumber
+                    ?? "—",
+                isSubmitting: presentation.isSubmitting,
+                message: presentation.message,
+                onSubmit: { router.submitFSSPCaptcha($0, for: presentation) },
+                onCancel: { router.dismissFSSPCaptcha() })
+        }
         .sheet(isPresented: Binding(
             get: { router.spotlightOnboardingRequired },
             set: { _ in })) {
@@ -546,7 +557,8 @@ private struct CaseCardHost: View {
                     enforcementRecords: router.openEnforcementRecords,
                     isRefreshingEnforcement: router.isRefreshingOpenEnforcement,
                     enforcementError: router.openEnforcementError,
-                    onRefreshEnforcement: { router.refreshOpenEnforcement() })
+                    onRefreshEnforcement: { router.refreshOpenEnforcement() },
+                    onSolveFSSPCaptcha: { router.beginFSSPCaptcha(for: $0) })
                     .frame(maxWidth: .infinity)
                 if !mv.acts.isEmpty {
                     LiveActsPane().frame(width: 400)

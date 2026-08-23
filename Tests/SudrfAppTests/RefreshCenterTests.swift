@@ -86,6 +86,56 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor ScriptedFSSP {
+        enum Outcome: Sendable {
+            case step(FSSPSearchStep)
+            case failure
+        }
+
+        private var outcomes: [Outcome]
+        private(set) var documents: [String] = []
+
+        init(_ outcomes: [Outcome]) { self.outcomes = outcomes }
+
+        func discover(_ document: CourtEnforcementDocument) async throws -> FSSPSearchStep {
+            documents.append(document.id)
+            guard !outcomes.isEmpty else {
+                return .notFound(EnforcementLookup(state: .notFound))
+            }
+            switch outcomes.removeFirst() {
+            case .step(let value): return value
+            case .failure: throw URLError(.notConnectedToInternet)
+            }
+        }
+    }
+
+    private actor SuspendedFSSP {
+        private var started = false
+        private var continuation: CheckedContinuation<Void, Never>?
+        let step: FSSPSearchStep
+
+        init(step: FSSPSearchStep) { self.step = step }
+
+        func discover(_ document: CourtEnforcementDocument) async -> FSSPSearchStep {
+            started = true
+            await withCheckedContinuation { continuation = $0 }
+            return step
+        }
+
+        func waitUntilStarted() async {
+            while !started { await Task.yield() }
+        }
+
+        func resume() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    private func noFSSP(_ document: CourtEnforcementDocument) async throws -> FSSPSearchStep {
+        .notFound(EnforcementLookup(state: .notFound))
+    }
+
     /// `CaptchaSolvingProvider`-стаб, который `RefreshCenter` не должен
     /// вызывать: шаг авто-решения капчи в тестах перекрыт `autoSolve`-
     /// замыканием в init. Нужен только потому, что `CaptchaSolver`
@@ -135,6 +185,22 @@ final class RefreshCenterTests: XCTestCase {
                           events: events, lastAttemptAt: attemptedAt,
                           lastSuccessAt: state == .error ? nil : attemptedAt,
                           error: error)
+    }
+
+    private func bailiffRecord(document: CourtEnforcementDocument,
+                               state: EnforcementDiscoveryState = .found,
+                               attemptedAt: Date? = nil,
+                               details: BailiffEnforcementDetails? = nil,
+                               error: String? = nil) -> EnforcementRecord {
+        EnforcementRecord(
+            courtDocumentID: document.id, source: .bailiffs,
+            discoveryState: state,
+            sourceRecordID: details?.proceedingNumber,
+            status: "",
+            lastAttemptAt: attemptedAt,
+            lastSuccessAt: state == .found ? attemptedAt : nil,
+            error: error,
+            bailiffDetails: details)
     }
 
     // MARK: - setUp / tearDown
@@ -483,7 +549,8 @@ final class RefreshCenterTests: XCTestCase {
                                    serviceBuilder: { _ in service },
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
 
         _ = await center.refresh(key: key)?.value
 
@@ -608,7 +675,8 @@ final class RefreshCenterTests: XCTestCase {
                                    serviceBuilder: { _ in unavailable },
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
         var refreshes = 0
         center.onEnforcementRefreshed = { _ in refreshes += 1 }
 
@@ -620,8 +688,11 @@ final class RefreshCenterTests: XCTestCase {
         let checkedDocuments = await treasury.documents
         XCTAssertEqual(checkedDocuments, [writ.id])
         XCTAssertEqual(rec.movement, cached, "ошибка суда не должна стереть кэш")
-        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .found)
-        XCTAssertEqual(rec.enforcementRecords.first?.events.map(\.id), [event.id])
+        let treasuryRecord = try XCTUnwrap(rec.enforcementRecords.first {
+            $0.source == .treasury
+        })
+        XCTAssertEqual(treasuryRecord.discoveryState, .found)
+        XCTAssertEqual(treasuryRecord.events.map(\.id), [event.id])
         XCTAssertNotNil(center.lastErrors[key])
         XCTAssertEqual(refreshes, 1)
     }
@@ -643,17 +714,25 @@ final class RefreshCenterTests: XCTestCase {
         rec.movement = movement
         let treasury = ScriptedTreasury(Array(repeating: .lookup(
             EnforcementLookup(state: .notFound)), count: paper.count))
+        let fssp = ScriptedFSSP(Array(repeating: .step(
+            .notFound(EnforcementLookup(state: .notFound))), count: 5))
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(
                                            document, caseNumber: number, court: court)
+                                   },
+                                   fsspDiscover: { document in
+                                       try await fssp.discover(document)
                                    })
 
         _ = await center.refreshEnforcement(key: key)?.value
 
         let checkedDocuments = await treasury.documents
+        let fsspDocuments = await fssp.documents
         XCTAssertEqual(Set(checkedDocuments), Set(paper.map(\.id)))
-        XCTAssertEqual(rec.enforcementRecords.count, 3)
+        XCTAssertEqual(fsspDocuments, (paper + electronic).map(\.id))
+        XCTAssertEqual(rec.enforcementRecords.filter { $0.source == .treasury }.count, 3)
+        XCTAssertEqual(rec.enforcementRecords.filter { $0.source == .bailiffs }.count, 5)
     }
 
     func testTreasurySkipsPaperWritDirectedToBailiffs() async throws {
@@ -671,13 +750,15 @@ final class RefreshCenterTests: XCTestCase {
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(
                                            document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
 
         _ = await center.refreshEnforcement(key: key)?.value
 
         let checkedDocuments = await treasury.documents
         XCTAssertEqual(checkedDocuments, [treasuryWrit.id])
-        XCTAssertEqual(rec.enforcementRecords.map(\.courtDocumentID), [treasuryWrit.id])
+        XCTAssertEqual(rec.enforcementRecords.filter { $0.source == .treasury }
+            .map(\.courtDocumentID), [treasuryWrit.id])
     }
 
     func testPeriodicWalkChecksOnlyTreasuryWhenCourtCacheIsFresh() async throws {
@@ -695,7 +776,8 @@ final class RefreshCenterTests: XCTestCase {
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(
                                            document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
 
         center.refreshAll(force: false)
         for _ in 0..<100 where rec.enforcementRecords.isEmpty {
@@ -707,7 +789,9 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(checkedDocuments, [writ.id])
         XCTAssertEqual(courtCalls, 0,
                        "свежую карточку суда не нужно запрашивать ради Казначейства")
-        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .notFound)
+        XCTAssertEqual(rec.enforcementRecords.first {
+            $0.source == .treasury
+        }?.discoveryState, .notFound)
     }
 
     func testTreasuryErrorPreservesLastSuccessWithoutNewBadge() async throws {
@@ -720,20 +804,25 @@ final class RefreshCenterTests: XCTestCase {
         let oldSuccess = Date(timeIntervalSince1970: 1_700_000_000)
         let old = enforcementRecord(document: writ, status: "Исполняется", events: [oldEvent],
                                     attemptedAt: oldSuccess)
+        var oldFSSP = old
+        oldFSSP.source = .bailiffs
+        oldFSSP.discoveryState = .notFound
+        oldFSSP.status = ""
         let rec = try XCTUnwrap(store.record(forKey: key))
         rec.movement = movement
-        rec.enforcementRecords = [old]
+        rec.enforcementRecords = [old, oldFSSP]
         let seenAt = Date(timeIntervalSince1970: 1_700_000_100)
         rec.seenAt = seenAt
         let treasury = ScriptedTreasury([.failure])
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
 
         _ = await center.refreshEnforcement(key: key)?.value
 
-        let saved = try XCTUnwrap(rec.enforcementRecords.first)
+        let saved = try XCTUnwrap(rec.enforcementRecords.first { $0.source == .treasury })
         XCTAssertEqual(saved.discoveryState, .found)
         XCTAssertEqual(saved.status, "Исполняется")
         XCTAssertEqual(saved.events, [oldEvent])
@@ -767,7 +856,8 @@ final class RefreshCenterTests: XCTestCase {
                                    serviceBuilder: { _ in service },
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
 
         _ = await center.refresh(key: key)?.value
 
@@ -788,7 +878,8 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    treasuryDiscover: { document, number, court in
                                        try await treasury.discover(document, caseNumber: number, court: court)
-                                   })
+                                   },
+                                   fsspDiscover: noFSSP)
         var refreshes = 0
         center.onEnforcementRefreshed = { _ in refreshes += 1 }
 
@@ -796,7 +887,99 @@ final class RefreshCenterTests: XCTestCase {
 
         XCTAssertNil(rec.seenAt)
         XCTAssertEqual(refreshes, 1)
-        XCTAssertEqual(rec.enforcementRecords.first?.discoveryState, .notFound)
+        XCTAssertEqual(rec.enforcementRecords.first {
+            $0.source == .treasury
+        }?.discoveryState, .notFound)
+    }
+
+    func testFSSPCaptchaPreservesLastBailiffResultAndSeenMarker() async throws {
+        let key = store.all()[0].key
+        let document = CourtEnforcementDocument(id: "electronic", electronicID: "11RS#captcha")
+        var movement = successMV!
+        movement.executionDocuments = [document]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let oldDetails = BailiffEnforcementDetails(
+            proceedingNumber: "587893/26/98078-ИП", debtor: "МКУ ДЕКАБРИСТ",
+            department: "СОСП по г. Санкт-Петербургу")
+        let old = bailiffRecord(document: document,
+                               attemptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                               details: oldDetails)
+        rec.enforcementRecords = [old]
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_100)
+        rec.seenAt = seenAt
+        let challenge = FSSPCaptchaChallenge(
+            courtDocumentID: document.id, codeID: "captcha-1", imagePNG: Data([1, 2, 3]),
+            requestURL: URL(string: "https://is-go.fssp.gov.ru/ajax_search?code_id=captcha-1")!)
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            fsspDiscover: { _ in .captchaRequired(challenge) })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let saved = try XCTUnwrap(rec.enforcementRecords.first { $0.source == .bailiffs })
+        XCTAssertEqual(saved.discoveryState, .captchaRequired)
+        XCTAssertEqual(saved.bailiffDetails, oldDetails)
+        XCTAssertEqual(saved.lastSuccessAt, old.lastSuccessAt)
+        XCTAssertEqual(rec.seenAt, seenAt,
+                       "сама CAPTCHA не является новым изменением данных ФССП")
+        XCTAssertNil(center.enforcementError(forKey: key))
+    }
+
+    func testFSSPTransportErrorPreservesLastBailiffResult() async throws {
+        let key = store.all()[0].key
+        let document = CourtEnforcementDocument(id: "electronic", electronicID: "11RS#error")
+        var movement = successMV!
+        movement.executionDocuments = [document]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let oldDetails = BailiffEnforcementDetails(
+            proceedingNumber: "123/26/98078-ИП", subjectAndOutstandingBalance: "10 000 руб.")
+        let old = bailiffRecord(document: document,
+                               attemptedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                               details: oldDetails)
+        rec.enforcementRecords = [old]
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            fsspDiscover: { _ in throw URLError(.notConnectedToInternet) })
+
+        _ = await center.refreshEnforcement(key: key)?.value
+
+        let saved = try XCTUnwrap(rec.enforcementRecords.first { $0.source == .bailiffs })
+        XCTAssertEqual(saved.discoveryState, .found)
+        XCTAssertEqual(saved.bailiffDetails, oldDetails)
+        XCTAssertNotNil(saved.error)
+        XCTAssertNotNil(center.enforcementError(forKey: key))
+    }
+
+    func testBackgroundCaptchaCannotOverwriteConcurrentManualSuccess() async throws {
+        let key = store.all()[0].key
+        let document = CourtEnforcementDocument(id: "electronic", electronicID: "11RS#race")
+        var movement = successMV!
+        movement.executionDocuments = [document]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        let challenge = FSSPCaptchaChallenge(
+            courtDocumentID: document.id, codeID: "stale", imagePNG: Data([1]),
+            requestURL: URL(string: "https://is-go.fssp.gov.ru/ajax_search?code_id=stale")!)
+        let suspended = SuspendedFSSP(step: .captchaRequired(challenge))
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            fsspDiscover: { document in await suspended.discover(document) })
+
+        let background = try XCTUnwrap(center.refreshEnforcement(key: key))
+        await suspended.waitUntilStarted()
+        let details = BailiffEnforcementDetails(proceedingNumber: "1/26/98078-ИП")
+        let manualRecord = bailiffRecord(document: document, attemptedAt: Date(), details: details)
+        center.applyFSSPSearchStep(
+            key: key, document: document,
+            step: .found(EnforcementLookup(state: .found, record: manualRecord)))
+        await suspended.resume()
+        await background.value
+
+        let saved = try XCTUnwrap(rec.enforcementRecords.first { $0.source == .bailiffs })
+        XCTAssertEqual(saved.discoveryState, .found)
+        XCTAssertEqual(saved.bailiffDetails, details)
     }
 
     func testHigherCourtCaptchaStubDoesNotPersistCassationStage() async throws {

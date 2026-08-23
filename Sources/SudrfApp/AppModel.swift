@@ -131,6 +131,9 @@ final class AppRouter: ObservableObject {
     /// на оба пути.
     private let captchaSolver: CaptchaSolver
     private let captchaSettings: CaptchaSettings
+    private let fsspClient: FSSPClient
+    private let fsspCaptchaCorpus = FSSPCaptchaCorpus.shared
+    private var fsspCaptchaRequestID: UUID?
     private let summaryConfigurationProvider: @MainActor @Sendable () throws
         -> ConfiguredActSummarizer
     private var refreshCenterSink: AnyCancellable? = nil
@@ -164,6 +167,134 @@ final class AppRouter: ObservableObject {
 
     var openEnforcementError: String? { refreshCenter.enforcementError(forKey: openedKey) }
 
+    // MARK: FSSP CAPTCHA presentation
+
+    /// Фоновая проверка ФССП не открывает окно. RootView показывает этот лист
+    /// только после явного действия пользователя в строке документа.
+    @Published var fsspCaptcha: FSSPCaptchaPresentation?
+
+    func presentFSSPCaptcha(for document: CourtEnforcementDocument,
+                            caseKey: String,
+                            requestID: UUID,
+                            challenge: FSSPCaptchaChallenge,
+                            message: String? = nil,
+                            isSubmitting: Bool = false) {
+        fsspCaptcha = FSSPCaptchaPresentation(caseKey: caseKey,
+                                               requestID: requestID,
+                                               document: document,
+                                               challenge: challenge,
+                                               message: message,
+                                               isSubmitting: isSubmitting)
+    }
+
+    func updateFSSPCaptcha(_ challenge: FSSPCaptchaChallenge,
+                           message: String? = nil,
+                           isSubmitting: Bool = false) {
+        guard let current = fsspCaptcha else { return }
+        fsspCaptcha = FSSPCaptchaPresentation(caseKey: current.caseKey,
+                                               requestID: current.requestID,
+                                               document: current.document,
+                                               challenge: challenge,
+                                               message: message,
+                                               isSubmitting: isSubmitting)
+    }
+
+    func setFSSPCaptchaSubmitting(_ submitting: Bool,
+                                  message: String? = nil) {
+        guard let current = fsspCaptcha else { return }
+        fsspCaptcha = FSSPCaptchaPresentation(caseKey: current.caseKey,
+                                               requestID: current.requestID,
+                                               document: current.document,
+                                               challenge: current.challenge,
+                                               message: message ?? current.message,
+                                               isSubmitting: submitting)
+    }
+
+    func dismissFSSPCaptcha() {
+        fsspCaptcha = nil
+        fsspCaptchaRequestID = nil
+    }
+
+    /// Явное действие пользователя всегда начинает с новой задачи ФССП.
+    /// Сохранённое фоновое состояние содержит только `.captchaRequired`, но не
+    /// просроченные изображение и `code_id`.
+    func beginFSSPCaptcha(for document: CourtEnforcementDocument) {
+        guard let caseKey = openedKey else { return }
+        let requestID = UUID()
+        fsspCaptchaRequestID = requestID
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let step = try await self.fsspClient.discover(document: document)
+                self.handleFreshFSSPStep(step, document: document,
+                                         caseKey: caseKey, requestID: requestID)
+            } catch is CancellationError {
+                return
+            } catch {
+                self.applyFSSPStep(.error(error.localizedDescription),
+                                   document: document, caseKey: caseKey)
+            }
+        }
+    }
+
+    func submitFSSPCaptcha(_ code: String, for presentation: FSSPCaptchaPresentation) {
+        guard fsspCaptcha?.id == presentation.id else { return }
+        setFSSPCaptchaSubmitting(true, message: "Проверяю код…")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let step = try await self.fsspClient.submit(
+                    code: code, for: presentation.challenge, document: presentation.document)
+                switch step {
+                case .captchaRequired(let replacement):
+                    guard self.fsspCaptcha?.id == presentation.id else { return }
+                    self.updateFSSPCaptcha(
+                        replacement, message: "Код не принят. Введите цифры с новой картинки.")
+                case .found, .notFound, .ambiguous:
+                    _ = await self.fsspCaptchaCorpus.addAccepted(
+                        png: presentation.challenge.imagePNG, code: code)
+                    self.applyFSSPStep(step, document: presentation.document,
+                                       caseKey: presentation.caseKey)
+                    if self.fsspCaptcha?.id == presentation.id {
+                        self.dismissFSSPCaptcha()
+                    }
+                case .error(let message):
+                    if self.fsspCaptcha?.id == presentation.id {
+                        self.setFSSPCaptchaSubmitting(false, message: message)
+                    }
+                }
+            } catch is CancellationError {
+                if self.fsspCaptcha?.id == presentation.id {
+                    self.setFSSPCaptchaSubmitting(false)
+                }
+            } catch {
+                if self.fsspCaptcha?.id == presentation.id {
+                    self.setFSSPCaptchaSubmitting(false, message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func handleFreshFSSPStep(_ step: FSSPSearchStep,
+                                     document: CourtEnforcementDocument,
+                                     caseKey: String,
+                                     requestID: UUID) {
+        switch step {
+        case .captchaRequired(let challenge):
+            guard fsspCaptchaRequestID == requestID, openedKey == caseKey else { return }
+            presentFSSPCaptcha(for: document, caseKey: caseKey,
+                               requestID: requestID, challenge: challenge)
+        case .found, .notFound, .ambiguous, .error:
+            applyFSSPStep(step, document: document, caseKey: caseKey)
+        }
+    }
+
+    private func applyFSSPStep(_ step: FSSPSearchStep,
+                               document: CourtEnforcementDocument,
+                               caseKey: String) {
+        refreshCenter.applyFSSPSearchStep(key: caseKey, document: document, step: step)
+    }
+
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
@@ -185,6 +316,8 @@ final class AppRouter: ObservableObject {
         self.spotlightOnboardingRequired = !UserDefaults.standard.bool(
             forKey: SpotlightPreferenceStore.onboardingKey)
         let captchaSettings = suppliedCaptchaSettings ?? .shared
+        let fsspClient = FSSPClient()
+        self.fsspClient = fsspClient
         let configuredSolver = CaptchaSolverFactory.make(settings: captchaSettings)
         self.captchaSolver = configuredSolver
         self.captchaSettings = captchaSettings
@@ -194,7 +327,8 @@ final class AppRouter: ObservableObject {
             captchaSolver: configuredSolver, captchaSettings: captchaSettings)
         refreshCenter = RefreshCenter(store: store, client: client,
                                        captchaSolver: configuredSolver,
-                                       captchaSettings: captchaSettings)
+                                       captchaSettings: captchaSettings,
+                                       fsspClient: fsspClient)
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
             let outcome = await self.repairCoordinator.repairIfNeeded(key: key)
@@ -387,7 +521,8 @@ final class AppRouter: ObservableObject {
 
     private func closeLiveCard() {
         liveMovement = nil; loadingMovement = false; movementError = nil
-        selectedActID = nil; captcha = nil
+        selectedActID = nil; captcha = nil; fsspCaptcha = nil
+        fsspCaptchaRequestID = nil
         openedKey = nil; movementFetchedAt = nil; refreshNote = nil
         currentEntityActivity?.invalidate()
         currentEntityActivity = nil

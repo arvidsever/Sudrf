@@ -335,9 +335,19 @@ identity/reconciliation. Один УИД + новая строка registry са
 помочь #87, но первая product-функция #156 остаётся узкой и проверяемой.
 
 ### Надёжность
-**#82**, **#88** CAPTCHA · **#79** ложный «неизвестный формат» · **#78** мировые «ничего не
-найдено» · **#81** военные суды · **#43** несвежая сводка · **#45** рендер актов · **#46**
-App Intents на холодном старте · **#64** persistence commits.
+**#82**, **#88**, **#164** CAPTCHA · **#79** ложный «неизвестный формат» · **#78** мировые
+«ничего не найдено» · **#81** военные суды · **#43** несвежая сводка · **#45** рендер актов ·
+**#46** App Intents на холодном старте · **#64** persistence commits.
+
+**#164 — CAPTCHA мировых судей `*.msudrf.ru` является отдельным session protocol, а не
+вариантом `sudrfToken`.** Эмпирика уже лежала в `changelog-v0.39.15.md`: `kcaptchaForm`
+отправляет POST `captcha-response`, картинка загружается с `/captcha.php`, `captchaid` нет,
+а успешность хранится в cookies. Manual WebView-flow уже работает; нужно добавить
+auto-unlock. Предпочтительный путь после open-source review — HTTP-first: GET challenge и
+PNG, OCR `.kcaptcha`, POST ответа в той же cookie jar, затем повтор исходного поиска;
+скрытый `WKWebView` оставить fallback, только если live-вариант реально требует браузер.
+Не синтезировать фиктивный `captchaid`: в общей CAPTCHA-модели различать token challenge и
+session challenge/session-unlocked result.
 
 Для source reliability общий invariant: HTTP 200 ещё не означает usable snapshot.
 CAPTCHA, maintenance/stub, partial parse и временная пустая выдача должны сохранять
@@ -379,9 +389,13 @@ adapter.
   миграции.
 - **HTTP-first.** `URLSession` + cookies/session continuity + CP1251 + trust roots +
   throttle/retry/backoff — штатный transport. Selenium/Puppeteer/browser automation —
-  только fallback для источника, который объективно нельзя получить обычным HTTP.
+  только fallback для источника, который объективно нельзя получить обычным HTTP. Для
+  `msudrf` #164 это означает сначала реализовать KCAPTCHA как HTTP session-unlock, а не
+  сразу переносить Puppeteer/WKWebView-подход референсов.
 - **Transport не знает процессуальной семантики.** Его ответственность: HTTP, redirects,
-  charset, TLS, cookies, throttling, retry, CAPTCHA continuation, host health.
+  charset, TLS, cookies, throttling, retry, CAPTCHA continuation, host health. CAPTCHA
+  protocol при этом может быть token-based или session-based — транспорт обязан сохранить
+  это различие, а не свести всё к фиктивному `captchaid`.
 - **Source adapter не знает UI.** Он строит URL, классифицирует response, извлекает
   source-native identity и нормализует listing/detail в общую модель. По мере добавления
   #106/#107/#108 вводить capabilities/adapter registry вместо разрастающихся `if source`.
@@ -404,8 +418,13 @@ adapter.
 **A. Надёжный source state — до semantic events.**
 
 Закрыть/стабилизировать source correctness, identity и partial-state кейсы, которые могут
-сделать новый snapshot ложным: #94/#132, #82/#88/#89, #79/#78 и связанные фикстуры. Не
-требуется ждать всех UI/reliability issues; нужен именно пригодный normalized input.
+сделать новый snapshot ложным: #94/#132, #82/#88/#89/#164, #79/#78 и связанные фикстуры.
+Не требуется ждать всех UI/reliability issues; нужен именно пригодный normalized input.
+
+Для `msudrf` gate включает не только распознавание `kcaptchaForm`, но и проверяемый
+continuation contract: challenge page → `/captcha.php` → POST `captcha-response` →
+session unlocked → исходный listing, всё в одной cookie session. CAPTCHA failure не равна
+нулевой выдаче.
 
 Gate: один и тот же response детерминированно даёт либо usable normalized snapshot, либо
 явный partial/error outcome; не существует пути «плохой HTML → пустой valid snapshot».
@@ -487,8 +506,9 @@ backend должны выдавать совместимые event IDs/semantics
 2. `old snapshot + new snapshot → expected CaseEvent[]`.
 
 Постоянный pathology corpus: CP1251; canonical/alternate host; CAPTCHA и post-CAPTCHA
-session; maintenance/error page с HTTP 200; honest zero-results против unknown; duplicate
-rows; missing/unstable UID; renumbering; partial KSOYU; stale links; vintage SUDRF;
+session; **`msudrf` KCAPTCHA (`kcaptchaForm` + `/captcha.php` + POST + cookie continuity)**;
+maintenance/error page с HTTP 200; honest zero-results против unknown; duplicate rows;
+missing/unstable UID; renumbering; partial KSOYU; stale links; vintage SUDRF;
 Moscow/non-standard magistrates; `r_juid` с уже известной карточкой, новой карточкой и
 временной пустой/ошибочной выдачей.
 
@@ -500,7 +520,9 @@ fixtures: ложное юридически значимое событие оп
 
 - **Juriscraper** — adapter/fixture discipline и отделение scraper от persistence/app.
 - **CourtSniffer** — актуальные SUDRF protocol quirks, official court code, adapter registry,
-  CAPTCHA/session observations; не Puppeteer/RuCaptcha/TLS bypass как default.
+  CAPTCHA/session observations; для `msudrf` особенно ценен принцип сохранения browser/
+  HTTP session после CAPTCHA. Не переносить Puppeteer/RuCaptcha/TLS bypass как default —
+  #164 сначала проверяет тот же протокол чистым HTTP.
 - **tochno-st/sudrfscraper** и **dataout-org/sudrfparser** — corpus/legacy oracle, не stack.
 - **OlegSirik/sudrf-proxy** — `discovery → local snapshot → refresh → diff → changes` как
   product mental model.

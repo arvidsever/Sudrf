@@ -337,7 +337,17 @@ extension TrackedStore {
             }
             let old = previous[index]
             if old.discoveryState != record.discoveryState,
-               record.discoveryState != .error { return true }
+               record.discoveryState != .error,
+               record.discoveryState != .captchaRequired { return true }
+            if record.source == .bailiffs,
+               old.sourceRecordID != record.sourceRecordID
+                || old.status != record.status
+                || old.organization != record.organization
+                || old.subdivision != record.subdivision
+                || old.sourceUpdatedRaw != record.sourceUpdatedRaw
+                || old.bailiffDetails != record.bailiffDetails {
+                return true
+            }
             let oldEventIDs = Set(old.events.map(\.id))
             if record.events.contains(where: { !oldEventIDs.contains($0.id) }) { return true }
         }
@@ -398,6 +408,16 @@ extension TrackedStore {
                 merged.discoveryState = update.discoveryState
                 merged.lastAttemptAt = update.lastAttemptAt ?? merged.lastAttemptAt
                 merged.lastSuccessAt = update.lastSuccessAt ?? merged.lastAttemptAt
+                merged.error = nil
+            }
+            merged.events = events
+        case .captchaRequired:
+            // A fresh challenge is not a new enforcement fact. Retain the
+            // last successful status/details while recording that the source
+            // needs a human response.
+            if updateIsNewer {
+                merged.discoveryState = .captchaRequired
+                merged.lastAttemptAt = update.lastAttemptAt ?? merged.lastAttemptAt
                 merged.error = nil
             }
             merged.events = events

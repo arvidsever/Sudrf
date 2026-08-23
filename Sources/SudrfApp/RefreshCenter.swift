@@ -17,6 +17,16 @@ import Foundation
 import SudrfKit
 import CaptchaSolver
 
+private extension CourtEnforcementDocument {
+    /// FSSP accepts the electronic identifier when present and otherwise the
+    /// paper writ number. Empty HTML cells are not searchable documents.
+    var fsspNumber: String? {
+        let value = [electronicID, blankNumber].compactMap { $0 }
+            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct CaptchaPendingGroup: Equatable, Identifiable {
     var host: String
     var requests: [CaptchaPendingRequest]
@@ -144,6 +154,10 @@ final class RefreshCenter: ObservableObject {
     /// детерминированный источник без одноразового protocol/factory слоя.
     private let treasuryDiscover: (CourtEnforcementDocument, String?, String?) async throws
         -> EnforcementLookup
+    /// FSSP uses a separate public search flow and its own CAPTCHA. Keep the
+    /// lookup seam beside the Treasury seam so tests never need the live
+    /// service, while production still uses the actor client.
+    private let fsspDiscover: (CourtEnforcementDocument) async throws -> FSSPSearchStep
     private var tasks: [String: Task<RefreshExecution, Never>] = [:]
     private var enforcementTasks: [String: Task<Void, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
@@ -159,7 +173,9 @@ final class RefreshCenter: ObservableObject {
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
          serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil,
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
-            -> EnforcementLookup)? = nil) {
+            -> EnforcementLookup)? = nil,
+         fsspClient: FSSPClient? = nil,
+         fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil) {
         self.store = store
         self.client = client
         self.captchaSolver = captchaSolver
@@ -182,6 +198,10 @@ final class RefreshCenter: ObservableObject {
         let treasury = TreasuryClient()
         self.treasuryDiscover = treasuryDiscover ?? { document, caseNumber, court in
             try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
+        }
+        let fssp = fsspClient ?? FSSPClient()
+        self.fsspDiscover = fsspDiscover ?? { document in
+            try await fssp.discover(document: document)
         }
     }
 
@@ -356,10 +376,40 @@ final class RefreshCenter: ObservableObject {
         startEnforcementRefresh(key: key, force: true)
     }
 
+    /// Сохраняет результат явного ручного шага CAPTCHA тем же способом, что
+    /// фоновая проверка. Картинка и `code_id` в хранилище не попадают.
+    func applyFSSPSearchStep(key: String, document: CourtEnforcementDocument,
+                             step: FSSPSearchStep) {
+        guard let record = store.record(forKey: key) else { return }
+        let previous = record.enforcementRecords
+        let attemptedAt = Date()
+        let update: EnforcementRecord
+        switch step {
+        case .error(let message):
+            update = fsspErrorUpdate(document: document, previous: previous,
+                                     attemptedAt: attemptedAt, message: message)
+            enforcementErrors[key] = "ФССП: \(message)"
+        case .captchaRequired, .found, .notFound, .ambiguous:
+            guard let lookup = step.lookup else { return }
+            update = sourceUpdate(lookup: lookup, document: document,
+                                  source: .bailiffs, attemptedAt: attemptedAt)
+            enforcementErrors[key] = nil
+        }
+        let documents = record.movement?.executionDocuments ?? []
+        let current = TrackedStore.reconciledEnforcementRecords(
+            existing: previous, updates: [update], courtDocuments: documents)
+        let changed = TrackedStore.enforcementHasUserVisibleChange(
+            previous: previous, current: current, courtDocuments: documents)
+        record.enforcementRecords = current
+        if changed && openedKey?() != key { record.seenAt = nil }
+        store.save()
+        onEnforcementRefreshed?(key)
+    }
+
     private func startEnforcementRefresh(key: String, force: Bool) -> Task<Void, Never>? {
         if let existing = enforcementTasks[key] { return existing }
         guard let record = store.record(forKey: key),
-              !treasuryEnforcementDocuments(for: record).isEmpty,
+              !enforcementDocuments(for: record).isEmpty,
               force || needsEnforcementRefresh(record, now: Date(), ttl: RefreshSettings.ttl)
         else { return nil }
 
@@ -379,55 +429,81 @@ final class RefreshCenter: ObservableObject {
     /// судебного refresh и не трогает кэш движения/снимок.
     private func performEnforcementRefresh(key: String) async {
         guard let record = store.record(forKey: key) else { return }
-        let documents = treasuryEnforcementDocuments(for: record)
+        let documents = enforcementDocuments(for: record)
         guard !documents.isEmpty else { return }
 
         let previous = record.enforcementRecords
         var updates: [EnforcementRecord] = []
         var errors: [String] = []
         for document in documents {
+            // FSSP is checked for every document carrying an electronic ID or
+            // paper number. A CAPTCHA is a persisted source state, not a
+            // transport failure; the manual UI can then fetch a fresh task.
+            if document.fsspNumber != nil {
+                let attemptedAt = Date()
+                do {
+                    let step = try await fsspDiscover(document)
+                    switch step {
+                    case .captchaRequired(_):
+                        if let lookup = step.lookup {
+                            updates.append(sourceUpdate(
+                                lookup: lookup, document: document, source: .bailiffs,
+                                attemptedAt: attemptedAt))
+                        }
+                    case .found(let lookup), .notFound(let lookup), .ambiguous(let lookup):
+                        updates.append(sourceUpdate(
+                            lookup: lookup, document: document, source: .bailiffs,
+                            attemptedAt: attemptedAt))
+                    case .error(let message):
+                        errors.append("ФССП: \(message)")
+                        updates.append(fsspErrorUpdate(
+                            document: document, previous: previous,
+                            attemptedAt: attemptedAt, message: message))
+                    }
+                } catch {
+                    let message = error.localizedDescription
+                    errors.append("ФССП: \(message)")
+                    updates.append(fsspErrorUpdate(
+                        document: document, previous: previous,
+                        attemptedAt: attemptedAt, message: message))
+                }
+            }
+
+            // Treasury remains deliberately narrower: only paper documents
+            // not explicitly directed to bailiffs are eligible there.
+            guard document.isTreasuryEligible else { continue }
             let attemptedAt = Date()
             do {
                 let lookup = try await treasuryDiscover(document, record.caseNumber, record.courtTitle)
-                var update = lookup.record ?? EnforcementRecord(
-                    courtDocumentID: document.id, source: .treasury,
-                    discoveryState: lookup.state, status: "", lastAttemptAt: attemptedAt)
-                update.discoveryState = lookup.state
-                update.lastAttemptAt = attemptedAt
-                if lookup.state != .error {
-                    update.lastSuccessAt = update.lastSuccessAt ?? attemptedAt
-                    update.error = nil
-                }
-                updates.append(update)
+                updates.append(sourceUpdate(
+                    lookup: lookup, document: document, source: .treasury,
+                    attemptedAt: attemptedAt))
             } catch {
                 let message = error.localizedDescription
-                errors.append(message)
-                if var update = previous.first(where: {
-                    $0.source == .treasury && $0.courtDocumentID == document.id
-                }) {
-                    // Ошибка транспорта не меняет последний строгий результат
-                    // сопоставления и не стирает статус/историю.
-                    update.lastAttemptAt = attemptedAt
-                    update.error = message
-                    updates.append(update)
-                } else {
-                    updates.append(EnforcementRecord(
-                        courtDocumentID: document.id, source: .treasury,
-                        discoveryState: .error, status: "", lastAttemptAt: attemptedAt,
-                        error: message))
-                }
+                errors.append("Казначейство: \(message)")
+                updates.append(treasuryErrorUpdate(
+                    document: document, previous: previous,
+                    attemptedAt: attemptedAt, message: message))
             }
         }
 
+        // Сеть могла ждать CAPTCHA/throttle, пока ручной поток уже сохранил
+        // более свежий результат. Сливаем в актуальное состояние записи, а не
+        // в снимок, сделанный до await.
+        let latest = record.enforcementRecords
         let current = TrackedStore.reconciledEnforcementRecords(
-            existing: previous, updates: updates, courtDocuments: record.movement?.executionDocuments ?? [])
+            existing: latest, updates: updates,
+            courtDocuments: record.movement?.executionDocuments ?? [])
         let changed = TrackedStore.enforcementHasUserVisibleChange(
-            previous: previous, current: current, courtDocuments: record.movement?.executionDocuments ?? [])
+            previous: latest, current: current,
+            courtDocuments: record.movement?.executionDocuments ?? [])
         record.enforcementRecords = current
         if changed && openedKey?() != key { record.seenAt = nil }
         store.save()
 
-        let hasSuccess = updates.contains { $0.discoveryState != .error }
+        let hasSuccess = updates.contains {
+            $0.discoveryState != .error
+        }
         if errors.isEmpty {
             enforcementErrors[key] = nil
         } else {
@@ -436,22 +512,99 @@ final class RefreshCenter: ObservableObject {
         if hasSuccess { onEnforcementRefreshed?(key) }
     }
 
-    private func treasuryEnforcementDocuments(
+    /// Every court row with a searchable identifier belongs to FSSP; Treasury
+    /// keeps its existing eligibility rule. The small computed property also
+    /// prevents an empty court row from creating a permanent error record.
+    private func enforcementDocuments(
         for record: TrackedCaseRecord
     ) -> [CourtEnforcementDocument] {
-        (record.movement?.executionDocuments ?? []).filter(\.isTreasuryEligible)
+        (record.movement?.executionDocuments ?? []).filter {
+            $0.fsspNumber != nil || $0.isTreasuryEligible
+        }
     }
 
     private func needsEnforcementRefresh(_ record: TrackedCaseRecord, now: Date,
                                          ttl: TimeInterval) -> Bool {
         let records = record.enforcementRecords
-        return treasuryEnforcementDocuments(for: record).contains { document in
-            guard let saved = records.first(where: {
-                $0.source == .treasury && $0.courtDocumentID == document.id
-            }) else { return true }
-            let checkedAt = saved.lastAttemptAt ?? saved.lastSuccessAt ?? .distantPast
-            return now.timeIntervalSince(checkedAt) > ttl
+        return enforcementDocuments(for: record).contains { document in
+            if document.fsspNumber != nil {
+                guard let saved = records.first(where: {
+                    $0.source == .bailiffs && $0.courtDocumentID == document.id
+                }) else { return true }
+                let checkedAt = saved.lastAttemptAt ?? saved.lastSuccessAt ?? .distantPast
+                if now.timeIntervalSince(checkedAt) > ttl { return true }
+            }
+            if document.isTreasuryEligible {
+                guard let saved = records.first(where: {
+                    $0.source == .treasury && $0.courtDocumentID == document.id
+                }) else { return true }
+                let checkedAt = saved.lastAttemptAt ?? saved.lastSuccessAt ?? .distantPast
+                return now.timeIntervalSince(checkedAt) > ttl
+            }
+            return false
         }
+    }
+
+    private func sourceUpdate(
+        lookup: EnforcementLookup,
+        document: CourtEnforcementDocument,
+        source: EnforcementChannel,
+        attemptedAt: Date
+    ) -> EnforcementRecord {
+        var update = lookup.record ?? EnforcementRecord(
+            courtDocumentID: document.id, source: source,
+            discoveryState: lookup.state, status: "", lastAttemptAt: attemptedAt)
+        update.courtDocumentID = document.id
+        update.source = source
+        update.discoveryState = lookup.state
+        update.lastAttemptAt = attemptedAt
+        if lookup.state != .error && lookup.state != .captchaRequired {
+            update.lastSuccessAt = update.lastSuccessAt ?? attemptedAt
+            update.error = nil
+        }
+        return update
+    }
+
+    private func sourceErrorUpdate(
+        document: CourtEnforcementDocument,
+        previous: [EnforcementRecord],
+        source: EnforcementChannel,
+        attemptedAt: Date,
+        message: String
+    ) -> EnforcementRecord {
+        var update = previous.first {
+            $0.source == source && $0.courtDocumentID == document.id
+        } ?? EnforcementRecord(
+            courtDocumentID: document.id, source: source,
+            discoveryState: .error, status: "", lastAttemptAt: attemptedAt,
+            error: message)
+        update.courtDocumentID = document.id
+        update.source = source
+        update.lastAttemptAt = attemptedAt
+        update.error = message
+        return update
+    }
+
+    private func fsspErrorUpdate(
+        document: CourtEnforcementDocument,
+        previous: [EnforcementRecord],
+        attemptedAt: Date,
+        message: String
+    ) -> EnforcementRecord {
+        sourceErrorUpdate(document: document, previous: previous,
+                          source: .bailiffs, attemptedAt: attemptedAt,
+                          message: message)
+    }
+
+    private func treasuryErrorUpdate(
+        document: CourtEnforcementDocument,
+        previous: [EnforcementRecord],
+        attemptedAt: Date,
+        message: String
+    ) -> EnforcementRecord {
+        sourceErrorUpdate(document: document, previous: previous,
+                          source: .treasury, attemptedAt: attemptedAt,
+                          message: message)
     }
 
     private func performRefresh(key: String) async -> RefreshExecution {

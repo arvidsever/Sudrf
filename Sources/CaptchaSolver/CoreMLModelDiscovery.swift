@@ -157,6 +157,17 @@ public struct FSSPBootstrapReport: Codable, Sendable, Equatable {
     }
 
     public var isAutoCollectionEligible: Bool {
+        isRecognitionEligible
+            && acceptedAt098Count >= 10
+            && acceptedAt098Accuracy.isFinite
+            && acceptedAt098Accuracy >= 1.0
+            && acceptedAt098Accuracy <= 1
+    }
+
+    /// A model that has not reached the held-out exact-accuracy floor is not
+    /// useful even as a manual suggestion: its low-confidence output is just
+    /// the per-position class frequency learned from the corpus.
+    public var isRecognitionEligible: Bool {
         version == 1
             && modelName == CoreMLModelDiscovery.fsspBootstrapModelName
             && split == "sha256-mod5-v1"
@@ -165,10 +176,6 @@ public struct FSSPBootstrapReport: Codable, Sendable, Equatable {
             && heldOutStringAccuracy.isFinite
             && heldOutStringAccuracy >= 0.80
             && heldOutStringAccuracy <= 1
-            && acceptedAt098Count >= 10
-            && acceptedAt098Accuracy.isFinite
-            && acceptedAt098Accuracy >= 1.0
-            && acceptedAt098Accuracy <= 1
             && preprocessorVersion == FSSPPreprocessor.version
     }
 

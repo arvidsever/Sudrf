@@ -100,6 +100,15 @@ private enum FSSPCaptchaLabBootstrapModel {
                 automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
+        guard report.isRecognitionEligible else {
+            let accuracy = report.heldOutStringAccuracy.formatted(
+                .percent.precision(.fractionLength(0)))
+            return .init(
+                status: "Черновая модель отклонена: точность held-out \(accuracy); нужен минимум 80%",
+                trainedCorpusCount: report.uniqueCorpusCount,
+                automaticSubmissionAllowed: false,
+                recognize: { _ in nil })
+        }
         guard let strategy = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .fsspDigits) else {
             return .init(
                 status: "Черновая CoreML-модель не загружается",

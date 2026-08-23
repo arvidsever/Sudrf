@@ -32,7 +32,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREPROCESSOR_VERSION = "fssp-max-rgb-box-v1"
+PREPROCESSOR_VERSION = "fssp-alpha-box-v2"
 MODEL_NAME = "model-captcha-fssp-bootstrap"
 REPORT_NAME = f"{MODEL_NAME}-report.json"
 SPLIT_NAME = "sha256-mod5-v1"
@@ -66,8 +66,8 @@ def fssp_full_frame_box_average(png_bytes: bytes, np_module, image_module):
     """Return the exact 64x20 FSSP mask used by Swift inference.
 
     No resize, crop, threshold, or interpolation is performed. Each source
-    pixel contributes max(R,G,B)/255 and each output cell is the arithmetic
-    mean over its deterministic integer range.
+    pixel contributes alpha/255 and each output cell is the arithmetic mean
+    over its deterministic integer range.
     """
 
     from io import BytesIO
@@ -77,8 +77,8 @@ def fssp_full_frame_box_average(png_bytes: bytes, np_module, image_module):
             raise ValueError(
                 f"FSSP CAPTCHA must be 240x80, got {image.width}x{image.height}"
             )
-        rgb = np_module.asarray(image.convert("RGB"), dtype=np_module.float32)
-    strength = rgb.max(axis=2) / 255.0
+        rgba = np_module.asarray(image.convert("RGBA"), dtype=np_module.float32)
+    strength = rgba[:, :, 3] / 255.0
     output = np_module.zeros((MASK_HEIGHT, MASK_WIDTH), dtype=np_module.float32)
     for output_y in range(MASK_HEIGHT):
         y0 = output_y * SOURCE_HEIGHT // MASK_HEIGHT
@@ -134,6 +134,7 @@ def evaluate_torch(model, samples, device, np_module, torch_module, threshold: f
     exact = 0
     accepted = 0
     accepted_correct = 0
+    correct_digits = 0
     with torch_module.no_grad():
         for sample in samples:
             logits = model(sample.to_tensor().unsqueeze(0).to(device))
@@ -143,6 +144,9 @@ def evaluate_torch(model, samples, device, np_module, torch_module, threshold: f
                 float(probabilities[index, prediction[index]]) for index in range(5)
             )
             correct = all(prediction[index] == sample.label[index] for index in range(5))
+            correct_digits += sum(
+                int(prediction[index] == sample.label[index]) for index in range(5)
+            )
             exact += int(correct)
             if confidence >= threshold:
                 accepted += 1
@@ -150,6 +154,7 @@ def evaluate_torch(model, samples, device, np_module, torch_module, threshold: f
     return {
         "total": total,
         "string": exact / max(1, total),
+        "digit": correct_digits / max(1, total * 5),
         "accepted": accepted,
         "accepted_accuracy": accepted_correct / max(1, accepted),
     }
@@ -307,9 +312,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--regression-tsv", type=Path)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--batch", type=int, default=24)
-    parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu")
     parser.add_argument("--minimum", type=int, default=200)
@@ -360,25 +365,23 @@ def main(argv: list[str] | None = None) -> int:
             device_name = "cpu"
         device = torch_module.device(device_name)
         model = helper.CaptchaNet().to(device)
-        optimizer = torch_module.optim.SGD(
-            model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4
+        optimizer = torch_module.optim.Adam(
+            model.parameters(), lr=args.lr, weight_decay=1e-4
         )
-        scheduler = torch_module.optim.lr_scheduler.MultiStepLR(
-            optimizer, milestones=[10, 16, 22], gamma=0.5
-        )
-        best_score = -1.0
+        best_score = (-1.0, -1.0)
         best_state = None
         for epoch in range(1, args.epochs + 1):
             loss = helper.train_epoch(model, optimizer, train, args.batch, device)
-            scheduler.step()
             metrics = evaluate_torch(model, held_out, device, np_module, torch_module, 0.98)
             print(
                 f"epoch {epoch:2d} loss={loss:.4f} "
                 f"held-out-exact={metrics['string']:.3f} "
+                f"held-out-digit={metrics['digit']:.3f} "
                 f"accepted@.98={metrics['accepted']}"
             )
-            if metrics["string"] > best_score:
-                best_score = metrics["string"]
+            score = (metrics["string"], metrics["digit"])
+            if score > best_score:
+                best_score = score
                 best_state = {
                     key: value.detach().cpu().clone()
                     for key, value in model.state_dict().items()

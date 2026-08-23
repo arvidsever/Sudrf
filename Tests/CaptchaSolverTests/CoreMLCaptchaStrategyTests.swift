@@ -44,8 +44,8 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertGreaterThan(nonZero, 0, "real captcha must have non-zero ink cells after binarize")
     }
 
-    func testFSSPPreprocessorUsesFullFrameMaxRGBBoxAverage() throws {
-        let png = makeFSSPGradientPNG()
+    func testFSSPPreprocessorUsesFullFrameAlphaBoxAverageWithoutVerticalFlip() throws {
+        let png = makeFSSPAlphaGradientPNG()
         let mask = try FSSPPreprocessor.process(pngData: png)
         XCTAssertEqual(mask.count, 64 * 20)
 
@@ -55,7 +55,7 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertEqual(mask[31], Float(64) / 255, accuracy: 0.002)
         XCTAssertEqual(mask[32], Float(192) / 255, accuracy: 0.002)
         XCTAssertEqual(mask[63], Float(192) / 255, accuracy: 0.002)
-        XCTAssertEqual(mask[64 * 19 + 32], Float(192) / 255, accuracy: 0.002)
+        XCTAssertEqual(mask[64 * 19 + 32], Float(96) / 255, accuracy: 0.002)
     }
 
     func testFSSPPreprocessorRejectsNonNativeFrame() {
@@ -203,6 +203,7 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
             acceptedAt098Accuracy: 1.0,
             trainedAt: Date(timeIntervalSince1970: 0))
         XCTAssertTrue(eligible.isAutoCollectionEligible)
+        XCTAssertTrue(eligible.isRecognitionEligible)
         let encoded = try! JSONEncoder().encode(eligible)
         let decoded = try! JSONDecoder().decode(FSSPBootstrapReport.self, from: encoded)
         XCTAssertEqual(decoded, eligible)
@@ -219,6 +220,12 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
             heldOutStringAccuracy: 0.80,
             acceptedAt098Count: 10,
             acceptedAt098Accuracy: 0.999).isAutoCollectionEligible)
+        XCTAssertFalse(FSSPBootstrapReport(
+            uniqueCorpusCount: 200,
+            heldOutCount: 30,
+            heldOutStringAccuracy: 0,
+            acceptedAt098Count: 0,
+            acceptedAt098Accuracy: 0).isRecognitionEligible)
     }
 
     func testFSSPModelDiscoveryFailsClosedWithoutEligibleReport() throws {
@@ -447,20 +454,26 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
     }
 }
 
-private func makeFSSPGradientPNG() -> Data {
+private func makeFSSPAlphaGradientPNG() -> Data {
     let width = FSSPPreprocessor.sourceWidth
     let height = FSSPPreprocessor.sourceHeight
     var pixels = [UInt8](repeating: 0, count: width * height * 4)
     for y in 0..<height {
         for x in 0..<width {
-            let value: (UInt8, UInt8, UInt8) = x < width / 2
-                ? (64, 0, 0)
-                : (0, 192, 0)
+            let alpha: UInt8
+            if y >= height / 2 {
+                alpha = 96
+            } else if x < width / 2 {
+                alpha = 64
+            } else {
+                alpha = 192
+            }
             let offset = (y * width + x) * 4
-            pixels[offset] = value.0
-            pixels[offset + 1] = value.1
-            pixels[offset + 2] = value.2
-            pixels[offset + 3] = 255
+            // Premultiplied RGBA: colour values cannot exceed alpha.
+            pixels[offset] = alpha
+            pixels[offset + 1] = 0
+            pixels[offset + 2] = 0
+            pixels[offset + 3] = alpha
         }
     }
     let context = CGContext(

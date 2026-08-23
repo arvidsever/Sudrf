@@ -79,14 +79,14 @@ def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
 
 
 def fssp_full_frame_box_average(png_bytes: bytes) -> np.ndarray:
-    """240x80 RGB -> 64x20 max(R,G,B)/255 box average."""
-    img = Image.open(BytesIO(png_bytes)).convert("RGB")
+    """240x80 RGBA -> 64x20 alpha/255 box average."""
+    img = Image.open(BytesIO(png_bytes)).convert("RGBA")
     if img.size != (FSSP_INPUT_W, FSSP_INPUT_H):
         raise ValueError(
             f"FSSP CAPTCHA must be 240x80, got {img.width}x{img.height}"
         )
     arr = np.asarray(img, dtype=np.float32)
-    strength = arr.max(axis=2) / 255.0
+    strength = arr[:, :, 3] / 255.0
     out = np.zeros((MASK_H, MASK_W), dtype=np.float32)
     for oy in range(MASK_H):
         y0, y1 = oy * FSSP_INPUT_H // MASK_H, (oy + 1) * FSSP_INPUT_H // MASK_H

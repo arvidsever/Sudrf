@@ -4,13 +4,12 @@ import ImageIO
 
 /// Deterministic preprocessing contract for the FSSP CAPTCHA model.
 ///
-/// FSSP serves a 240x80 image on a black background. Unlike the GАС
-/// (`sudrfToken`) CAPTCHA, its foreground is not a fixed teal colour. The
-/// model therefore receives the full frame, reduced by box averaging, where
-/// each source pixel contributes `max(R, G, B) / 255`.
+/// FSSP serves a palette PNG with a transparent background and opaque strokes.
+/// Unlike the GАС (`sudrfToken`) CAPTCHA, stroke colours vary widely. The model
+/// therefore receives the full alpha mask reduced by box averaging.
 public enum FSSPPreprocessor {
 
-    public static let version = "fssp-max-rgb-box-v1"
+    public static let version = "fssp-alpha-box-v2"
     public static let sourceWidth = 240
     public static let sourceHeight = 80
     public static let outputWidth = 64
@@ -43,12 +42,10 @@ public enum FSSPPreprocessor {
             throw CaptchaSolverError.coreImageContextUnavailable
         }
 
-        // Bitmap contexts have a lower-left drawing origin while the PNG
-        // trainer works in top-left rows. Make that convention explicit and
-        // keep interpolation out of this integer-size render.
+        // Core Graphics decodes this raster into the same top-to-bottom byte
+        // order that Pillow uses. An explicit Y flip here would make runtime
+        // inference disagree with the trainer.
         context.interpolationQuality = .none
-        context.translateBy(x: 0, y: CGFloat(sourceHeight))
-        context.scaleBy(x: 1, y: -1)
         context.draw(image, in: CGRect(x: 0, y: 0,
                                        width: sourceWidth, height: sourceHeight))
 
@@ -65,10 +62,7 @@ public enum FSSPPreprocessor {
                 for y in y0..<y1 {
                     for x in x0..<x1 {
                         let offset = (y * sourceWidth + x) * 4
-                        let r = pixels[offset]
-                        let g = pixels[offset + 1]
-                        let b = pixels[offset + 2]
-                        sum += Float(max(r, max(g, b))) / 255.0
+                        sum += Float(pixels[offset + 3]) / 255.0
                         count += 1
                     }
                 }

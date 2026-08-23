@@ -14,7 +14,9 @@ let package = Package(
         .library(name: "SudrfKit", targets: ["SudrfKit"]),
         .library(name: "CaptchaSolver", targets: ["CaptchaSolver"]),
         .executable(name: "sudrf-cli", targets: ["sudrf-cli"]),
-        .executable(name: "SudrfApp", targets: ["SudrfApp"])
+        .executable(name: "SudrfApp", targets: ["SudrfApp"]),
+        // Developer-only executable; it is not linked into SudrfApp.
+        .executable(name: "fssp-captcha-lab", targets: ["FSSPCaptchaLab"])
     ],
     dependencies: [
         // SwiftSoup запинен точно на 2.7.7: версии 2.8+ (байтовый парсер ByteSlice)
@@ -52,6 +54,10 @@ let package = Package(
             dependencies: ["SudrfKit", "CaptchaSolver"],
             resources: [.process("Resources")]
         ),
+        .executableTarget(
+            name: "FSSPCaptchaLab",
+            dependencies: ["SudrfKit", "CaptchaSolver"]
+        ),
         .target(name: "CaptchaSolver"),
         .testTarget(
             name: "SudrfKitTests",
@@ -68,6 +74,10 @@ let package = Package(
             name: "CaptchaSolverTests",
             dependencies: ["CaptchaSolver", "SudrfKit"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "FSSPCaptchaLabTests",
+            dependencies: ["FSSPCaptchaLab", "SudrfKit", "CaptchaSolver"]
         )
     ],
     swiftLanguageModes: [.v6]

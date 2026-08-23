@@ -24,7 +24,8 @@ Scripts/train-coreml-captcha-helper.py
     --epochs 30 --batch 24 --lr 0.02
 
 Зависимости:
-  pip install torch coremltools numpy pillow
+  Scripts/setup-fssp-bootstrap.sh (фиксирует coremltools 9.0, torch 2.7.0,
+  numpy 1.26.4 и Pillow 11.3.0)
 
 После завершения файл `model-captcha-numeric.mlmodelc/` будет лежать
 в `Tests/CaptchaSolverTests/Fixtures/`. `swift test` подхватит его
@@ -54,6 +55,7 @@ INK_THRESH_SQ = 80 * 80  # squared RGB distance
 
 INPUT_W, INPUT_H = 100, 30
 MASK_W, MASK_H = 64, 20
+FSSP_INPUT_W, FSSP_INPUT_H = 240, 80
 
 
 def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
@@ -76,6 +78,24 @@ def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
     return out
 
 
+def fssp_full_frame_box_average(png_bytes: bytes) -> np.ndarray:
+    """240x80 RGB -> 64x20 max(R,G,B)/255 box average."""
+    img = Image.open(BytesIO(png_bytes)).convert("RGB")
+    if img.size != (FSSP_INPUT_W, FSSP_INPUT_H):
+        raise ValueError(
+            f"FSSP CAPTCHA must be 240x80, got {img.width}x{img.height}"
+        )
+    arr = np.asarray(img, dtype=np.float32)
+    strength = arr.max(axis=2) / 255.0
+    out = np.zeros((MASK_H, MASK_W), dtype=np.float32)
+    for oy in range(MASK_H):
+        y0, y1 = oy * FSSP_INPUT_H // MASK_H, (oy + 1) * FSSP_INPUT_H // MASK_H
+        for ox in range(MASK_W):
+            x0, x1 = ox * FSSP_INPUT_W // MASK_W, (ox + 1) * FSSP_INPUT_W // MASK_W
+            out[oy, ox] = strength[y0:y1, x0:x1].mean()
+    return out
+
+
 class CaptchaSample:
     """Один captcha после binarize: маска + 5-цифровая метка."""
     __slots__ = ("mask", "label", "digest")
@@ -91,7 +111,7 @@ class CaptchaSample:
         return torch.from_numpy(self.mask).float().unsqueeze(0)
 
 
-def load_corpus(tsv_path: Path) -> list[CaptchaSample]:
+def load_corpus(tsv_path: Path, preprocessor=binarize_and_downsample) -> list[CaptchaSample]:
     """Читает TSV формата `<file>\t<5digits>` (см. train-coreml-captcha.swift)."""
     samples: list[CaptchaSample] = []
     skipped = 0
@@ -112,7 +132,7 @@ def load_corpus(tsv_path: Path) -> list[CaptchaSample]:
             try:
                 with open(path_str, "rb") as fp:
                     png = fp.read()
-                    mask = binarize_and_downsample(png)
+                    mask = preprocessor(png)
             except Exception as e:
                 print(f"  skip {path_str}: {e}", file=sys.stderr)
                 skipped += 1
@@ -216,6 +236,49 @@ def evaluate(model: CaptchaNet,
     }
 
 
+def evaluate_compiled(model_path: Path,
+                      samples: list[CaptchaSample],
+                      threshold: float = 0.90) -> dict:
+    """Evaluate the compiled CoreML artifact, not its PyTorch source."""
+    import coremltools as ct
+
+    compiled_type = getattr(ct.models, "CompiledMLModel", None)
+    if compiled_type is None:
+        raise RuntimeError("coremltools.models.CompiledMLModel is unavailable")
+    compiled = compiled_type(str(model_path))
+    correct_string = 0
+    accepted = 0
+    accepted_correct = 0
+    for sample in samples:
+        result = compiled.predict({
+            "inkMask": np.asarray(sample.mask, dtype=np.float32)[None, None, :, :]
+        })
+        logits = np.asarray(result["digits"], dtype=np.float32)
+        if logits.shape != (1, 5, 10):
+            raise RuntimeError(
+                f"compiled CoreML output shape is {logits.shape}, expected (1, 5, 10)"
+            )
+        logits = logits[0]
+        shifted = logits - logits.max(axis=1, keepdims=True)
+        probabilities = np.exp(shifted)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+        prediction = logits.argmax(axis=1)
+        confidence = min(float(probabilities[index, prediction[index]]) for index in range(5))
+        correct = bool(np.array_equal(prediction, np.asarray(sample.label)))
+        correct_string += int(correct)
+        if confidence >= threshold:
+            accepted += 1
+            accepted_correct += int(correct)
+    total = len(samples)
+    return {
+        "per_digit": [],
+        "string": correct_string / max(1, total),
+        "total": total,
+        "accepted_at_090": accepted,
+        "accepted_accuracy_at_090": accepted_correct / max(1, accepted),
+    }
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--train-tsv", required=True, type=Path)
@@ -252,8 +315,13 @@ def main():
     print(f"device: {device}")
 
     # 1) Load corpus.
-    train = load_corpus(args.train_tsv)
-    test = load_corpus(args.test_tsv)
+    preprocessor = (
+        fssp_full_frame_box_average
+        if args.model_name == "model-captcha-fssp"
+        else binarize_and_downsample
+    )
+    train = load_corpus(args.train_tsv, preprocessor=preprocessor)
+    test = load_corpus(args.test_tsv, preprocessor=preprocessor)
     if not train or not test:
         print("error: empty corpus (run train-coreml-captcha.swift first)", file=sys.stderr)
         sys.exit(1)
@@ -268,7 +336,7 @@ def main():
         if not args.regression_tsv:
             print("error: --regression-tsv required for FSSP eligibility", file=sys.stderr)
             sys.exit(1)
-        regression = load_corpus(args.regression_tsv)
+        regression = load_corpus(args.regression_tsv, preprocessor=preprocessor)
         train_hashes = {sample.digest for sample in train}
         test_hashes = {sample.digest for sample in test}
         if train_hashes & test_hashes:
@@ -385,7 +453,17 @@ def main():
     shutil.rmtree(pkg_path)
 
     # 6) Print final report.
-    final_eval = evaluate(model, test, device)
+    # Eligibility must be based on the artifact that Swift will load. The
+    # ordinary numeric trainer keeps its historical PyTorch report, while the
+    # FSSP release gate fails closed if compiled CoreML cannot be evaluated.
+    if args.eligibility_output:
+        try:
+            final_eval = evaluate_compiled(args.output, test, threshold=0.90)
+        except Exception as error:
+            print(f"error: compiled CoreML evaluation failed: {error}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        final_eval = evaluate(model, test, device)
     regression_eval = evaluate(model, regression, device) if regression else None
     print()
     print("=== final report ===")
@@ -408,13 +486,13 @@ def main():
         if final_eval["string"] < 0.97:
             print("error: held-out exact-string accuracy is below 0.97", file=sys.stderr)
             sys.exit(1)
-        if accepted_count == 0 or accepted_accuracy < 0.99:
-            print("error: accepted-answer accuracy at 0.90 is below 0.99", file=sys.stderr)
+        if accepted_count < 100 or accepted_accuracy < 0.99:
+            print("error: accepted-answer gate requires at least 100 answers at 0.90 with accuracy >= 0.99", file=sys.stderr)
             sys.exit(1)
         report = {
             "version": 1,
             "modelName": args.model_name,
-            "split": "sha256-80-20",
+            "split": "sha256-mod5-v1",
             "uniqueCorpusCount": unique_count,
             "regressionFixtureCount": len({sample.digest for sample in regression}),
             "heldOutStringAccuracy": final_eval["string"],

@@ -17,6 +17,7 @@
 | `SudrfKit` | Сеть, HTML-парсинг, справочники судов, цели обжалования, модели и сбор движения дела | Зависит только от `SwiftSoup` и системных framework |
 | `CaptchaSolver` | Локальное распознавание CAPTCHA через Vision/CoreML | Не зависит от `SudrfKit` |
 | `SudrfApp` | SwiftUI, SwiftData, фоновые обновления, CAPTCHA-адаптер, AI и системные интеграции | Зависит от `SudrfKit` и `CaptchaSolver` |
+| `fssp-captcha-lab` | Отдельная developer-лаборатория для подтверждения CAPTCHA ФССП и обучения локальной bootstrap-модели; в обычный `.app` не входит | Зависит от `SudrfKit` и `CaptchaSolver` |
 | `sudrf-cli` | Командный интерфейс к поиску, карточкам и справочникам | Зависит от `SudrfKit` и `ArgumentParser` |
 
 Источник графа таргетов — `Package.swift`. Прямого ребра между таргетами
@@ -37,6 +38,7 @@
 | Исполнительные листы и Казначейство | `Sources/SudrfKit/Enforcement.swift`, `CaseCardParser.swift` | `Movement.swift`, `Sources/SudrfApp/RefreshCenter.swift`, `TrackedStore.swift`, `CaseMovementView.swift`, `AppModel.swift` | `TreasuryClientTests`, `CaseCardParserTests`, `RefreshCenterTests`, `DataCatalogTests`, `OverviewModelTests` |
 | Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
 | Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebViewCoordinator.swift`, `RefreshCenter.swift` | `CaptchaWebView.swift`, `CaptchaAssistSheet.swift`, `CaptchaFlowDecisions.swift`, `CaptchaSolverFactory.swift`, `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
+| Лаборатория CAPTCHA ФССП | `Sources/FSSPCaptchaLab/FSSPCaptchaLabModel.swift`, `FSSPCaptchaLabRuntime.swift` | `Sources/CaptchaSolver/FSSPPreprocessor.swift`, `CoreMLModelDiscovery.swift`, `CorpusStore.swift`, `Sources/SudrfKit/FSSPClient.swift`, `Scripts/train-fssp-bootstrap.py` | `FSSPCaptchaLabModelTests`, `CoreMLCaptchaStrategyTests`, `test_prepare_fssp_corpus.py` |
 | Текст судебного акта и AI-резюме | `Sources/SudrfApp/AppModel.swift` (`loadSelectedActSummary`, `generateSelectedActSummary`) | `SummaryOperationState.swift`, `AISummaryCoordinator.swift`, `AIProviders.swift`, `AISettings.swift`, `AppleAISummarizers.swift`, `Sources/SudrfKit/ActDocument.swift`, `ActSummary.swift` | `ActDocumentTests`, `ActSummaryTests`, `AISummaryPipelineTests`, `CorrectivePassTests` |
 | Spotlight, deep links, App Intents | `Sources/SudrfApp/SpotlightIntegration.swift`, `AppIntentsIntegration.swift` | `DataCatalog.swift`, `CurrentEntityActivityFactory.swift`, `AppModel.swift` (`handleDeepLink`) | `SpotlightIntegrationTests`, `CurrentEntityActivityTests` |
 | CLI или справочники судов | `Sources/sudrf-cli/SudrfCLI.swift` | `Sources/SudrfKit/CourtDirectory.swift`, `DistrictCourtResolver.swift`, `Cartoteka.swift`, `CaseIndexClassifier.swift` | `CourtDirectoryTests`, `DistrictResolverTests`, `CartotekaRegistryTests`, `CaseIndexClassifierTests` |
@@ -84,13 +86,15 @@
 
 `CaseCardParser` извлекает все строки таблицы исполнительных документов и
 передаёт их в `CaseMovement.executionDocuments`. Для отслеживаемого дела
-`RefreshCenter` независимо от исхода запроса суда проверяет каждый бумажный
-лист через actor-`клиент` `TreasuryClient`, аддитивно сливает ответ в
+`RefreshCenter` независимо проверяет каждый документ через actor-клиенты
+`TreasuryClient` и `FSSPClient`, аддитивно сливает ответы в
 `TrackedCaseRecord.enforcementData` и проецирует новые RSS `guid` в ленту.
 
-Суд и Казначейство — два независимых источника: ошибка одного не стирает
-последний успех другого. Электронные ИД и листы, адресованные приставам,
-только отображаются; сетевого клиента ФССП пока нет.
+Суд, Казначейство и ФССП — независимые источники: ошибка или CAPTCHA одного
+не стирает последний успех другого. Фоновый запрос ФССП сохраняет pending-
+состояние, а ручной ответ проходит через отдельный лист и тот же `FSSPClient`.
+Developer-лаборатория использует этот клиент и `CorpusStore`, но её bootstrap-
+модель имеет отдельное имя и никогда не участвует в production-discovery.
 
 ### Судебный акт и AI
 

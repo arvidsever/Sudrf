@@ -260,26 +260,24 @@ criteria #99 требуют не терять слушания с вариати
 пустую базу после обычного перезапуска, #44 рапортует «обновлено» при откате транзакции.
 Оба про сохранность данных. Отклонение от порядка handoff — решение за автором.
 
-**#148 Apple Calendar** — определить владельца данных и направление синхронизации до
-реализации. Архитектурный default после review: **односторонняя проекция Sudrf → Calendar**.
-Судебное состояние остаётся source of truth; изменение/удаление `EKEvent` пользователем не
-должно менять `CaseEvent` или snapshot. Если нужен пользовательский override/заметка — это
-отдельный локальный слой поверх события, а не обратная запись в данные суда. Полноценную
-двустороннюю синхронизацию брать только по явному решению автора. В любом варианте после
-#155 Calendar не имеет собственного diff-engine и синхронизируется по устойчивой semantic
-identity события.
+## Архитектурные решения автора — 23.08.2026
 
-**#149 сервер и push** — меняет стоимость эксплуатации, но **не должен менять доменную
-семантику клиента**. Брать только после стабилизации #155: сервер получает/воспроизводит те
-же normalized snapshots и `CaseEvent`, чтобы local refresh и APNs не дублировали события.
-Развилка автора: считать always-on backend обязательной частью продукта или включать его
-только если ограничения фонового macOS-refresh реально мешают мониторингу.
+**#155 — поднять в высокий приоритет.** После ближайшего блока correctness/data-safety,
+не дожидаясь закрытия всего накопленного UI/reliability backlog, реализовать #155 в shadow
+mode. Следующие крупные функции по возможности строить уже поверх event journal, а не
+размножать текущие независимые эвристики изменений.
 
-**Приоритет архитектурного backbone (#155).** Развилка не про саму архитектуру, а про место
-в очереди: (а) поднять #155 сразу после ближайшего блока correctness/data-safety и делать
-следующие функции уже поверх event journal; либо (б) сначала добить весь накопленный UI/
-reliability backlog. Рекомендация review — вариант (а), но shadow mode позволяет сделать
-это без одномоментного перевода пользовательской ленты.
+**#148 Apple Calendar — первая версия только Sudrf → Calendar.** Судебное состояние и
+`CaseEvent` остаются source of truth. Изменение или удаление `EKEvent` пользователем не
+меняет snapshot/CaseEvent; Calendar — проекция. Двустороннюю синхронизацию в первый scope
+не включать. Если позже понадобятся пользовательские заметки/override, хранить их отдельным
+локальным слоем, не смешивая с данными суда.
+
+**#149 сервер + APNs — обязательная часть продукта, но позже.** Это не условная задача
+«если локального background refresh окажется мало»: always-on backend точно строим, но
+только после стабилизации локального event contract #155 и базовой source reliability.
+Сервер не заводит вторую доменную модель: он воспроизводит/потребляет те же normalized
+snapshots и semantic `CaseEvent`, а затем масштабирует scheduling/delivery.
 
 ---
 
@@ -347,13 +345,14 @@ CAPTCHA, maintenance/stub, partial parse и временная пустая вы
 порождать ложное «удалено/отменено» и не должны делать карточку свежей на полный TTL.
 
 ### Инфраструктура
-**#155** единый `CaseSnapshot → semantic CaseEvent` contract: сначала shadow journal и
-snapshot→events fixtures, затем перевод ленты/локальных уведомлений на него; это опора для
-#70/#148/#149, а не backend-задача сама по себе · **#69** Developer ID + notarization:
-сертификат создан, Developer ID export и hardened runtime проверены в #95; остались notary
-credentials, отправка, stapling и release job · **#149** сервер + push (после #155) ·
-**#68** Source Health · **#65** canary · **#66** APPLE-6 · **#67** live-case session из
-`AppRouter`.
+**#155** единый `CaseSnapshot → semantic CaseEvent` contract: **высокий приоритет после
+ближайшего correctness/data-safety блока**; сначала shadow journal и snapshot→events
+fixtures, затем перевод ленты/локальных уведомлений на него. Это опора для #70/#148/#149,
+а не backend-задача сама по себе · **#69** Developer ID + notarization: сертификат создан,
+Developer ID export и hardened runtime проверены в #95; остались notary credentials,
+отправка, stapling и release job · **#149** сервер + push — обязательный поздний этап после
+#155/source reliability · **#68** Source Health · **#65** canary · **#66** APPLE-6 · **#67**
+live-case session из `AppRouter`.
 
 ### Новые источники — последними
 **#106** Москва → **#107** СПб → **#108** общий модуль. ФССП #113 уже подключена поверх
@@ -423,6 +422,9 @@ Gate: повторное обнаружение той же карточки д�
 
 **C. #155 — shadow `CaseSnapshot → CaseEvent`.**
 
+**Приоритет подтверждён автором 23.08.2026:** эту фазу брать сразу после ближайшего блока
+correctness/data-safety, не дожидаясь закрытия всего UI/reliability backlog.
+
 Сохранять последний normalized snapshot и append-only journal, но первое время не менять
 действующую ленту. На каждом refresh считать semantic events параллельно и сравнивать с
 текущим поведением. Event ID стабилен между relaunch/refetch и пригоден для дедупликации
@@ -444,11 +446,12 @@ Rules engine владеет формулой срока, trigger/evidence и pro
 expired/superseded` — финальный vocabulary определить в #155/#70) не заводит отдельный
 feed-specific ID.
 
-**F. #148 Calendar — projection, не второй database.**
+**F. #148 Calendar — односторонняя projection, не второй database.**
 
-После event identity маппинг `CaseEvent/event state ↔ EKEvent` становится технически
-прямым: перенос/отмена обновляют существующий Calendar event. Рекомендуемый первый scope —
-односторонняя проекция Sudrf → Calendar; развилка автора зафиксирована выше.
+**Решение автора 23.08.2026:** первый scope — только Sudrf → Apple Calendar. После event
+identity маппинг `CaseEvent/event state ↔ EKEvent` становится технически прямым: перенос/
+отмена обновляют существующий Calendar event. Обратное изменение `EKEvent` не меняет
+судебное состояние в Sudrf; двустороннюю синхронизацию в этот этап не включать.
 
 **G. Refresh health, scheduler и canary — после устойчивой семантики state/event.**
 
@@ -467,13 +470,14 @@ starvation/лишнюю нагрузку; не строить очередь р�
 source identity, normalized snapshot и fixture suite; UI не получает новый `if Moscow`
 или `if magistrate`, если различие можно выразить adapter capability.
 
-**I. #149 backend — последняя проекция/исполнитель того же contract.**
+**I. #149 backend — обязательный поздний этап того же contract.**
 
-Если always-on monitoring нужен, сервер масштабирует ingestion/scheduling, но не вводит
-вторую модель дела и второй diff-engine. Local refresh и backend должны выдавать
-совместимые event IDs/semantics, чтобы одно изменение не приходило пользователю дважды.
-PostgreSQL/Redis/queues/search index появляются только при серверной нагрузке, которая их
-обосновывает; в desktop их нет.
+**Решение автора 23.08.2026:** always-on backend и APNs точно входят в продукт, но позже.
+После стабилизации #155 и базовой source reliability сервер масштабирует ingestion/
+scheduling/delivery, не вводя вторую модель дела и второй diff-engine. Local refresh и
+backend должны выдавать совместимые event IDs/semantics, чтобы одно изменение не приходило
+пользователю дважды. PostgreSQL/Redis/queues/search index появляются только при серверной
+нагрузке, которая их обосновывает; в desktop их нет.
 
 ### Fixture/test contract
 

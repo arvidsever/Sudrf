@@ -145,6 +145,22 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         XCTAssertEqual(retrainModel.challenge?.codeID, "after")
     }
 
+    func testRetrainingRealignsToHundredsAfterLateTraining() async {
+        let harness = Harness()
+        harness.corpus = 400
+        harness.reportedCorpusCount = 308
+        harness.trainingResults = [.succeeded("realigned training")]
+        harness.afterTraining = { harness.reportedCorpusCount = 400 }
+        harness.discoverSteps = [.captchaRequired(challenge("after-training"))]
+        let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
+
+        await model.start()
+
+        XCTAssertEqual(harness.trainingCalls, 1)
+        XCTAssertEqual(harness.markedTrainedCounts, [400])
+        XCTAssertEqual(model.challenge?.codeID, "after-training")
+    }
+
     func testFailedTrainingDoesNotLoopAtTheSameCorpusCount() async {
         let harness = Harness()
         harness.corpus = 200

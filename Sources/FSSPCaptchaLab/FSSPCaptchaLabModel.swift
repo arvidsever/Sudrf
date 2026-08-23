@@ -333,7 +333,9 @@ final class FSSPCaptchaLabModel: ObservableObject {
         guard count >= Self.firstTrainingCount,
               failedTrainingAtCorpusCount != count else { return false }
         guard let trainedCount = modelProvider.trainedCorpusCount else { return true }
-        return count >= trainedCount + Self.retrainingIncrement
+        let nextBoundary = (trainedCount / Self.retrainingIncrement + 1)
+            * Self.retrainingIncrement
+        return count >= nextBoundary
     }
 
     private func scheduleFreshChallenge(generation currentGeneration: Int) {

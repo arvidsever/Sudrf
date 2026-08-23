@@ -261,12 +261,25 @@ criteria #99 требуют не терять слушания с вариати
 Оба про сохранность данных. Отклонение от порядка handoff — решение за автором.
 
 **#148 Apple Calendar** — определить владельца данных и направление синхронизации до
-реализации: односторонний export заметно дешевле полноценной двусторонней синхронизации.
-После #155 синхронизацию строить как проекцию устойчивых `CaseEvent`, а не отдельный diff.
+реализации. Архитектурный default после review: **односторонняя проекция Sudrf → Calendar**.
+Судебное состояние остаётся source of truth; изменение/удаление `EKEvent` пользователем не
+должно менять `CaseEvent` или snapshot. Если нужен пользовательский override/заметка — это
+отдельный локальный слой поверх события, а не обратная запись в данные суда. Полноценную
+двустороннюю синхронизацию брать только по явному решению автора. В любом варианте после
+#155 Calendar не имеет собственного diff-engine и синхронизируется по устойчивой semantic
+identity события.
 
-**#149 сервер и push** — меняет локальную архитектуру и стоимость эксплуатации; брать
-после решения, нужен ли постоянно работающий backend для персонального приложения, и
-после стабилизации event contract #155, чтобы сервер не заводил вторую семантику изменений.
+**#149 сервер и push** — меняет стоимость эксплуатации, но **не должен менять доменную
+семантику клиента**. Брать только после стабилизации #155: сервер получает/воспроизводит те
+же normalized snapshots и `CaseEvent`, чтобы local refresh и APNs не дублировали события.
+Развилка автора: считать always-on backend обязательной частью продукта или включать его
+только если ограничения фонового macOS-refresh реально мешают мониторингу.
+
+**Приоритет архитектурного backbone (#155).** Развилка не про саму архитектуру, а про место
+в очереди: (а) поднять #155 сразу после ближайшего блока correctness/data-safety и делать
+следующие функции уже поверх event journal; либо (б) сначала добить весь накопленный UI/
+reliability backlog. Рекомендация review — вариант (а), но shadow mode позволяет сделать
+это без одномоментного перевода пользовательской ленты.
 
 ---
 
@@ -311,20 +324,32 @@ criteria #99 требуют не терять слушания с вариати
 формулы/provenance, но downstream deadline events должны использовать contract #155.
 
 ### Полнота цепочки
-**#87** фоновое обнаружение вышестоящей инстанции · **#89** карточка КСОЮ без движения ·
-**#104** ВС РФ — **не greenfield**, discovery уже подключён к refresh
-(`Movement.swift:648-664`), это отладка. ⚠️ `vsrf.ru` недоступен из песочницы, нужны
-HTML-фикстуры от автора: страница поиска по `2-8236/2025` и карточка `3-КФ26-187-К3`.
+**#87** фоновое обнаружение вышестоящей инстанции · **#156** поиск дела после передачи по
+подсудности через `name_op=r_juid` · **#89** карточка КСОЮ без движения · **#104** ВС РФ —
+**не greenfield**, discovery уже подключён к refresh (`Movement.swift:648-664`), это
+отладка. ⚠️ `vsrf.ru` недоступен из песочницы, нужны HTML-фикстуры от автора: страница
+поиска по `2-8236/2025` и карточка `3-КФ26-187-К3`.
+
+`r_juid` считать **evidence source, а не источником истины**: registry по известному УИД
+может подсказать карточку другого суда/новый номер, но auto-link допускается только после
+identity/reconciliation. Один УИД + новая строка registry сами по себе не доказывают
+«передачу по подсудности». Парсер registry лучше делать generic, чтобы тот же сигнал мог
+помочь #87, но первая product-функция #156 остаётся узкой и проверяемой.
 
 ### Надёжность
 **#82**, **#88** CAPTCHA · **#79** ложный «неизвестный формат» · **#78** мировые «ничего не
 найдено» · **#81** военные суды · **#43** несвежая сводка · **#45** рендер актов · **#46**
 App Intents на холодном старте · **#64** persistence commits.
 
+Для source reliability общий invariant: HTTP 200 ещё не означает usable snapshot.
+CAPTCHA, maintenance/stub, partial parse и временная пустая выдача должны сохранять
+последний успешный state и отдельно фиксироваться как refresh attempt; они не могут
+порождать ложное «удалено/отменено» и не должны делать карточку свежей на полный TTL.
+
 ### Инфраструктура
 **#155** единый `CaseSnapshot → semantic CaseEvent` contract: сначала shadow journal и
 snapshot→events fixtures, затем перевод ленты/локальных уведомлений на него; это опора для
-#148 и #149, а не backend-задача сама по себе · **#69** Developer ID + notarization:
+#70/#148/#149, а не backend-задача сама по себе · **#69** Developer ID + notarization:
 сертификат создан, Developer ID export и hardened runtime проверены в #95; остались notary
 credentials, отправка, stapling и release job · **#149** сервер + push (после #155) ·
 **#68** Source Health · **#65** canary · **#66** APPLE-6 · **#67** live-case session из
@@ -338,28 +363,159 @@ adapter.
 
 ---
 
-## Архитектурный baseline из open-source review
+## Архитектурная дорожка из open-source review
 
-Подробная фиксация: `Docs/architecture/open-source-reference.md`.
+Подробная фиксация: `Docs/architecture/open-source-reference.md` и
+`Docs/architecture/reference-alexxmirny-sudrf-parser.md`.
 
-Главный вывод — **не менять стек**, а сделать единым контур определения изменений:
+Главный вывод — **не менять стек**, а сделать явными контракты между уже существующими
+слоями. Целевая цепочка:
 
-`source adapter → normalized snapshot → identity/reconciliation → semantic diff → CaseEvent → projections`.
+`transport → source adapter → normalized snapshot → identity/reconciliation → semantic diff → append-only CaseEvent journal → projections`.
 
-Референсы используются по частям: Juriscraper — adapter/fixture discipline; CourtSniffer —
-актуальные SUDRF protocol quirks и registry; sudrfscraper/sudrfparser — corpus/legacy
-oracle; старый sudrf-proxy — модель `snapshot → refresh → diff → changes`; CourtListener —
-только будущий scale reference для backend.
+### Архитектурные invariants
 
-**Порядок внедрения:** сначала стабилизировать correctness/identity и текущие фикстуры →
-#155 в shadow mode → сверка новых events с действующей лентой → сделать journal источником
-ленты/локальных уведомлений → связать #70 → затем #148 → diagnostics/scheduler/canary →
-новые sources → только потом #149, если always-on backend действительно нужен.
+- **Swift/SwiftUI/SwiftData остаются.** SwiftData не менять без измеренного bottleneck;
+  сначала добавить логические сущности snapshot/event/refresh-attempt и нормальные
+  миграции.
+- **HTTP-first.** `URLSession` + cookies/session continuity + CP1251 + trust roots +
+  throttle/retry/backoff — штатный transport. Selenium/Puppeteer/browser automation —
+  только fallback для источника, который объективно нельзя получить обычным HTTP.
+- **Transport не знает процессуальной семантики.** Его ответственность: HTTP, redirects,
+  charset, TLS, cookies, throttling, retry, CAPTCHA continuation, host health.
+- **Source adapter не знает UI.** Он строит URL, классифицирует response, извлекает
+  source-native identity и нормализует listing/detail в общую модель. По мере добавления
+  #106/#107/#108 вводить capabilities/adapter registry вместо разрастающихся `if source`.
+- **Domain не зависит от presentation.** Identity/reconciliation, стадии, сроки и semantic
+  diff живут вне View/notification formatter.
+- **Номер дела — атрибут, не primary key.** Court identity — официальный код, где он
+  надёжен; карточка/производство — УИД либо source-native ID, scoped по court/source;
+  logical case — граф связанных карточек. #94/#132/#156 — обязательные regression cases.
+- **Последний хороший snapshot не стирается плохим fetch.** HTTP 200 stub, CAPTCHA,
+  partial/unknown response и parse error — отдельный refresh outcome, а не новое пустое
+  состояние дела.
+- **Raw JSON diff запрещён как пользовательская семантика.** `alexxmirny/sudrf_parser`
+  полезно подтверждает модель snapshot→diff→notification, но его positional array diff
+  — negative reference: перестановка строк/косметика не должны создавать события.
+- **Все downstream-проекции читают один event contract.** Лента, локальные notifications,
+  badges, Spotlight, Calendar и будущий APNs не сравнивают snapshots самостоятельно.
 
-Не тащить в desktop MVP Selenium/Puppeteer, Redis/PostgreSQL/Celery/Elasticsearch и не
-переписывать SwiftData без измеренного bottleneck. Browser automation остаётся fallback,
-а не обычным транспортом. Номер дела не использовать как фундаментальный identity —
-#94/#132 уже показывают смену/множественность номеров одного производства.
+### Фазы и gates
+
+**A. Надёжный source state — до semantic events.**
+
+Закрыть/стабилизировать source correctness, identity и partial-state кейсы, которые могут
+сделать новый snapshot ложным: #94/#132, #82/#88/#89, #79/#78 и связанные фикстуры. Не
+требуется ждать всех UI/reliability issues; нужен именно пригодный normalized input.
+
+Gate: один и тот же response детерминированно даёт либо usable normalized snapshot, либо
+явный partial/error outcome; не существует пути «плохой HTML → пустой valid snapshot».
+
+**B. Identity/reconciliation и discovery evidence.**
+
+Использовать official court code + УИД/source-native IDs и хранить смену display number как
+историю identity, а не как новое несвязанное дело. #156 добавляет `r_juid` как независимый
+registry/evidence source для передачи по подсудности; #87 использует те же reconciliation
+правила при фоновом discovery. Manual и periodic discovery обязаны сходиться к одной цепочке.
+
+Gate: повторное обнаружение той же карточки другим маршрутом не создаёт дубль; новая
+карточка с новым номером может быть связана без опоры на строковое равенство номера.
+
+**C. #155 — shadow `CaseSnapshot → CaseEvent`.**
+
+Сохранять последний normalized snapshot и append-only journal, но первое время не менять
+действующую ленту. На каждом refresh считать semantic events параллельно и сравнивать с
+текущим поведением. Event ID стабилен между relaunch/refetch и пригоден для дедупликации
+локального и будущего серверного notification path.
+
+Gate: identical snapshot → 0 events; reordering/whitespace/publish timestamp → 0 events;
+новое заседание/акт/инстанция → ровно одно событие; partial fetch → 0 ложных cancel/delete.
+
+**D. Event journal становится источником пользовательских изменений.**
+
+После shadow-сверки перевести на journal ленту и локальные notifications, затем badges и
+прочие производные. Старые presentation strings не участвуют в event identity. Историю
+не пересобирать заново при изменении formatter, иначе старые уведомления «воскреснут».
+
+**E. #70 подключается как юридическая семантика поверх того же contract.**
+
+Rules engine владеет формулой срока, trigger/evidence и provenance; #155 владеет общей
+семантикой события/dedup/projections. Deadline lifecycle (`proposed/confirmed/changed/
+expired/superseded` — финальный vocabulary определить в #155/#70) не заводит отдельный
+feed-specific ID.
+
+**F. #148 Calendar — projection, не второй database.**
+
+После event identity маппинг `CaseEvent/event state ↔ EKEvent` становится технически
+прямым: перенос/отмена обновляют существующий Calendar event. Рекомендуемый первый scope —
+односторонняя проекция Sudrf → Calendar; развилка автора зафиксирована выше.
+
+**G. Refresh health, scheduler и canary — после устойчивой семантики state/event.**
+
+#87/#68/#65 должны различать `lastAttempt` и `lastSuccess`, не считать partial успешным
+refresh и давать evidence, почему источник не обновился. Только после этого имеет смысл
+адаптивный scheduler: приоритет по близости заседания/срока, свежим изменениям, ожиданию
+higher instance, предыдущим ошибкам, TTL и недавнему открытию пользователем; для внешних
+сбоев — exponential backoff + jitter и при необходимости host circuit breaker.
+
+Отдельный scheduler issue заводить только если простой TTL после #87/#68 реально создаёт
+starvation/лишнюю нагрузку; не строить очередь ради архитектурной красоты.
+
+**H. Новые source families — поверх contract, а не рядом с ним.**
+
+#106 Москва → #107 СПб → #108 общий модуль. Новый источник обязан дать capabilities,
+source identity, normalized snapshot и fixture suite; UI не получает новый `if Moscow`
+или `if magistrate`, если различие можно выразить adapter capability.
+
+**I. #149 backend — последняя проекция/исполнитель того же contract.**
+
+Если always-on monitoring нужен, сервер масштабирует ingestion/scheduling, но не вводит
+вторую модель дела и второй diff-engine. Local refresh и backend должны выдавать
+совместимые event IDs/semantics, чтобы одно изменение не приходило пользователю дважды.
+PostgreSQL/Redis/queues/search index появляются только при серверной нагрузке, которая их
+обосновывает; в desktop их нет.
+
+### Fixture/test contract
+
+Для каждого важного portal family нужны **два независимых уровня regression fixtures**:
+
+1. `HTML/response → normalized snapshot`;
+2. `old snapshot + new snapshot → expected CaseEvent[]`.
+
+Постоянный pathology corpus: CP1251; canonical/alternate host; CAPTCHA и post-CAPTCHA
+session; maintenance/error page с HTTP 200; honest zero-results против unknown; duplicate
+rows; missing/unstable UID; renumbering; partial KSOYU; stale links; vintage SUDRF;
+Moscow/non-standard magistrates; `r_juid` с уже известной карточкой, новой карточкой и
+временной пустой/ошибочной выдачей.
+
+#65 live canary ловит внешний drift; fixtures не дают сломать уже исправленное поведение
+при адаптации к этому drift. Для semantic event rule обязательны positive **и negative**
+fixtures: ложное юридически значимое событие опаснее пропущенного cosmetic change.
+
+### Что брать из reference projects
+
+- **Juriscraper** — adapter/fixture discipline и отделение scraper от persistence/app.
+- **CourtSniffer** — актуальные SUDRF protocol quirks, official court code, adapter registry,
+  CAPTCHA/session observations; не Puppeteer/RuCaptcha/TLS bypass как default.
+- **tochno-st/sudrfscraper** и **dataout-org/sudrfparser** — corpus/legacy oracle, не stack.
+- **OlegSirik/sudrf-proxy** — `discovery → local snapshot → refresh → diff → changes` как
+  product mental model.
+- **alexxmirny/sudrf_parser** — свежий минимальный `fetch → snapshot → diff → changelog →
+  notification`, `r_juid` и content/header-based parsing; raw field/index diff и URL-hash
+  identity использовать только как антипример.
+- **CourtListener** — future server-scale ingestion/workers/search reference, только для #149.
+
+### Явно не делать
+
+- не replatform-ить рабочий native client на Python/Node/Java;
+- не делать browser automation штатным транспортом обычных `sud_delo` страниц;
+- не отключать TLS verification ради проблемного суда;
+- не считать CAPTCHA/error/unknown HTML за `0 results`;
+- не использовать human case number или URL как identity;
+- не строить feed/Calendar/server notifications через независимые diff-алгоритмы;
+- не переписывать SwiftData до измеренной проблемы;
+- не тащить Elasticsearch/Redis/Celery/queue infrastructure до server-scale workload;
+- не ставить LLM/AI в critical path процессуального статуса, identity или срока.
 
 ## Рабочие договорённости
 

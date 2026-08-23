@@ -12,8 +12,10 @@ import Vision
 /// возвращает пусто).
 ///
 /// Архитектура (см. `Scripts/train-coreml-captcha-helper.py`):
-///   вход 100×30 RGB → бинарная маска «чернил» (порог по цвету
-///   ~(2, 103, 154)) → downsample 100×30 → 64×20 (box-averaging)
+///   `.sudrfToken`: вход 100×30 RGB → бинарная маска «чернил» (порог по
+///   цвету ~(2, 103, 154)) → downsample 100×30 → 64×20 (box-averaging);
+///   `.fsspDigits`: полный кадр 240×80 → max(R,G,B)/255 → 64×20
+///   (box-averaging), см. `FSSPPreprocessor`.
 ///   → `MLMultiArray` формы `[1, 1, 20, 64]` (NCHW)
 ///   → 5 softmax-голов по 10 цифр каждая
 ///   → единственный выход `digits` формы `[1, 5, 10]`
@@ -79,7 +81,7 @@ public actor CoreMLCaptchaStrategy: CaptchaSolvingProvider {
     public func solve(pngData: Data, kind: CaptchaKind, host: String?) async throws -> CaptchaAttempt {
         guard kind == self.kind else { return .empty }
         let started = Date()
-        let mask = try Self.binarizeAndDownsample(pngData: pngData)
+        let mask = try Self.mask(pngData: pngData, kind: self.kind)
         let input = try Self.makeInput(name: inputName, mask: mask)
         let output: MLFeatureProvider
         do {
@@ -102,7 +104,7 @@ public actor CoreMLCaptchaStrategy: CaptchaSolvingProvider {
     /// модели). Используется для candidates diagnostic.
     public func topCandidates(pngData: Data, kind: CaptchaKind, host: String?, n: Int = 3) async throws -> (candidates: [(text: String, confidence: Double)], preprocessed: Bool) {
         guard kind == self.kind else { return ([], false) }
-        let mask = try Self.binarizeAndDownsample(pngData: pngData)
+        let mask = try Self.mask(pngData: pngData, kind: self.kind)
         let input = try Self.makeInput(name: inputName, mask: mask)
         let output = try await compiledModel.prediction(from: input)
         let all = try Self.allFiveDigitStrings(output: output, outputName: outputName, n: n * 4)
@@ -112,6 +114,17 @@ public actor CoreMLCaptchaStrategy: CaptchaSolvingProvider {
     }
 
     // MARK: - Preprocessing
+
+    /// Selects the preprocessing contract without changing the existing
+    /// sudrf path. The teal-distance implementation below is intentionally
+    /// kept byte-for-byte for `.sudrfToken`; FSSP has a separate full-frame
+    /// mask because its foreground colours vary.
+    static func mask(pngData: Data, kind: CaptchaKind) throws -> [Float] {
+        if kind == .fsspDigits {
+            return try FSSPPreprocessor.process(pngData: pngData)
+        }
+        return try binarizeAndDownsample(pngData: pngData)
+    }
 
     /// 100×30 RGB → бинарная маска «чернил» (порог по RGB-расстоянию
     /// от судрфовского teal (2, 103, 154)) → downsample 100×30 → 64×20

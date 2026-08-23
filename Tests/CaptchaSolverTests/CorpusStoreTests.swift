@@ -88,6 +88,7 @@ final class CorpusStoreTests: XCTestCase {
         let store = CorpusStore(baseDir: tmpDir)
         await store.markTrained(kind: .sudrfToken, count: 3)
         await store.markTrained(kind: .kcaptcha, count: 2)
+        await store.markTrained(kind: .fsspDigits, count: 7)
         await store.flushManifest()
 
         let reopened = CorpusStore(baseDir: tmpDir)
@@ -99,6 +100,9 @@ final class CorpusStoreTests: XCTestCase {
         XCTAssertEqual(manifest.textLastTrainedCount, 2)
         XCTAssertEqual(manifest.textPendingSinceLastTrain, 0)
         XCTAssertNotNil(manifest.textLastTrainedAt)
+        XCTAssertEqual(manifest.fsspLastTrainedCount, 7)
+        XCTAssertEqual(manifest.fsspPendingSinceLastTrain, 0)
+        XCTAssertNotNil(manifest.fsspLastTrainedAt)
     }
 
     /// Text-captcha length distribution трекается в manifest. Сейчас
@@ -137,5 +141,39 @@ final class CorpusStoreTests: XCTestCase {
         let text = await store.ceiling(for: .kcaptcha)
         XCTAssertEqual(numeric, 5000)
         XCTAssertEqual(text, 5000)
+    }
+
+    func testFSSPCorpusRequiresFiveDigitsAndDeduplicatesBySHA256() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([1, 2, 3])
+        let invalid = await store.add(
+            png: png, code: "1234", host: "fssp.gov.ru", kind: .fsspDigits)
+        XCTAssertNil(invalid)
+
+        let firstAdded = await store.add(
+            png: png, code: "58872", host: "fssp.gov.ru", kind: .fsspDigits)
+        let duplicateAdded = await store.add(
+            png: png, code: "58872", host: "fssp.gov.ru", kind: .fsspDigits)
+        let conflictingAdded = await store.add(
+            png: png, code: "70120", host: "fssp.gov.ru", kind: .fsspDigits)
+        let first = try XCTUnwrap(firstAdded)
+        let duplicate = try XCTUnwrap(duplicateAdded)
+        XCTAssertEqual(first, duplicate)
+        XCTAssertNil(conflictingAdded)
+        XCTAssertTrue(first.path.contains("/solved-fssp/58872_"))
+        let count = await store.currentCount(kind: .fsspDigits)
+        let pending = await store.pendingSinceLastTrain(kind: .fsspDigits)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(pending, 1)
+    }
+
+    func testOldManifestDecodesWithEmptyFSSPMetadata() throws {
+        let old = Data(#"{"version":1,"numericCeiling":5000,"textCeiling":5000,"numericLastTrainedCount":1,"numericPendingSinceLastTrain":0,"textLastTrainedCount":2,"textPendingSinceLastTrain":0,"fifoPolicy":"oldestFirst","textLengthDistribution":{}}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let manifest = try decoder.decode(CorpusStore.Manifest.self, from: old)
+        XCTAssertEqual(manifest.fsspCeiling, 5000)
+        XCTAssertEqual(manifest.fsspLastTrainedCount, 0)
+        XCTAssertEqual(manifest.fsspPendingSinceLastTrain, 0)
     }
 }

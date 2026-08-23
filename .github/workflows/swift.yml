@@ -24,6 +24,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
+      - name: Fetch eligible FSSP CoreML model
+        if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-fssp-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-fssp --manifest MODEL_FSSP_MANIFEST.sha256
+
       - name: Install XcodeGen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
 
@@ -48,6 +54,9 @@ jobs:
 
       - name: Run tests
         run: swift test -Xswiftc -strict-concurrency=complete
+
+      - name: Test FSSP corpus split gate
+        run: python3 -m unittest discover -s Tests/ScriptTests
 
   # GitHub пока не публикует отдельный macos-27 label. Job запускает вторую
   # линию, как только Xcode 27 появляется в hosted image. До этого он явно
@@ -99,6 +108,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
+      - name: Fetch eligible FSSP CoreML model
+        if: steps.xcode27.outputs.available == 'true' && hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-fssp-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-fssp --manifest MODEL_FSSP_MANIFEST.sha256
+
       - name: Build with Xcode 27 SDK and macOS 26 deployment target
         if: steps.xcode27.outputs.available == 'true'
         run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
@@ -121,6 +136,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
 
+      - name: Fetch eligible FSSP CoreML model
+        if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-fssp-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-fssp --manifest MODEL_FSSP_MANIFEST.sha256
+
       - name: Package .app (noninteractive)
         run: bash Scripts/make-app.sh --ci
 
@@ -129,6 +150,15 @@ jobs:
           bash Scripts/verify-model.sh \
             --model-dir build/SudrfApp.app/Contents/Resources/model-captcha-numeric.mlmodelc \
             --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_MANIFEST.sha256
+
+      - name: Verify .app contains eligible FSSP model (full)
+        if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
+        run: |
+          bash Scripts/verify-model.sh \
+            --model-dir build/SudrfApp.app/Contents/Resources/model-captcha-fssp.mlmodelc \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256 \
+            --model-name model-captcha-fssp
+          test -f build/SudrfApp.app/Contents/Resources/model-captcha-fssp-eligibility.json
 
       - name: Ad-hoc sign + verify
         run: |

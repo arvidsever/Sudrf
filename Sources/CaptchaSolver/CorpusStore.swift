@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Хранилище корпуса captcha-изображений, на которых солвер учится.
@@ -32,6 +33,10 @@ public actor CorpusStore {
         public var textLastTrainedAt: Date?
         public var textLastTrainedCount: Int
         public var textPendingSinceLastTrain: Int
+        public var fsspCeiling: Int
+        public var fsspLastTrainedAt: Date?
+        public var fsspLastTrainedCount: Int
+        public var fsspPendingSinceLastTrain: Int
         public var fifoPolicy: String
         public var textLengthDistribution: [Int: Int]
 
@@ -44,6 +49,10 @@ public actor CorpusStore {
                     textLastTrainedAt: Date? = nil,
                     textLastTrainedCount: Int = 0,
                     textPendingSinceLastTrain: Int = 0,
+                    fsspCeiling: Int = 5000,
+                    fsspLastTrainedAt: Date? = nil,
+                    fsspLastTrainedCount: Int = 0,
+                    fsspPendingSinceLastTrain: Int = 0,
                     fifoPolicy: String = "oldestFirst",
                     textLengthDistribution: [Int: Int] = [:]) {
             self.version = version
@@ -55,8 +64,39 @@ public actor CorpusStore {
             self.textLastTrainedAt = textLastTrainedAt
             self.textLastTrainedCount = textLastTrainedCount
             self.textPendingSinceLastTrain = textPendingSinceLastTrain
+            self.fsspCeiling = fsspCeiling
+            self.fsspLastTrainedAt = fsspLastTrainedAt
+            self.fsspLastTrainedCount = fsspLastTrainedCount
+            self.fsspPendingSinceLastTrain = fsspPendingSinceLastTrain
             self.fifoPolicy = fifoPolicy
             self.textLengthDistribution = textLengthDistribution
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case version, numericCeiling, textCeiling
+            case numericLastTrainedAt, numericLastTrainedCount, numericPendingSinceLastTrain
+            case textLastTrainedAt, textLastTrainedCount, textPendingSinceLastTrain
+            case fsspCeiling, fsspLastTrainedAt, fsspLastTrainedCount, fsspPendingSinceLastTrain
+            case fifoPolicy, textLengthDistribution
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            numericCeiling = try c.decodeIfPresent(Int.self, forKey: .numericCeiling) ?? 5000
+            textCeiling = try c.decodeIfPresent(Int.self, forKey: .textCeiling) ?? 5000
+            numericLastTrainedAt = try c.decodeIfPresent(Date.self, forKey: .numericLastTrainedAt)
+            numericLastTrainedCount = try c.decodeIfPresent(Int.self, forKey: .numericLastTrainedCount) ?? 0
+            numericPendingSinceLastTrain = try c.decodeIfPresent(Int.self, forKey: .numericPendingSinceLastTrain) ?? 0
+            textLastTrainedAt = try c.decodeIfPresent(Date.self, forKey: .textLastTrainedAt)
+            textLastTrainedCount = try c.decodeIfPresent(Int.self, forKey: .textLastTrainedCount) ?? 0
+            textPendingSinceLastTrain = try c.decodeIfPresent(Int.self, forKey: .textPendingSinceLastTrain) ?? 0
+            fsspCeiling = try c.decodeIfPresent(Int.self, forKey: .fsspCeiling) ?? 5000
+            fsspLastTrainedAt = try c.decodeIfPresent(Date.self, forKey: .fsspLastTrainedAt)
+            fsspLastTrainedCount = try c.decodeIfPresent(Int.self, forKey: .fsspLastTrainedCount) ?? 0
+            fsspPendingSinceLastTrain = try c.decodeIfPresent(Int.self, forKey: .fsspPendingSinceLastTrain) ?? 0
+            fifoPolicy = try c.decodeIfPresent(String.self, forKey: .fifoPolicy) ?? "oldestFirst"
+            textLengthDistribution = try c.decodeIfPresent([Int: Int].self, forKey: .textLengthDistribution) ?? [:]
         }
     }
 
@@ -86,8 +126,10 @@ public actor CorpusStore {
         try? fm.createDirectory(at: self.baseDir, withIntermediateDirectories: true)
         let numeric = self.baseDir.appendingPathComponent("solved-numeric", isDirectory: true)
         let text = self.baseDir.appendingPathComponent("solved-text", isDirectory: true)
+        let fssp = self.baseDir.appendingPathComponent("solved-fssp", isDirectory: true)
         try? fm.createDirectory(at: numeric, withIntermediateDirectories: true)
         try? fm.createDirectory(at: text, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: fssp, withIntermediateDirectories: true)
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         self.isoFormatter = iso
@@ -116,6 +158,27 @@ public actor CorpusStore {
     @discardableResult
     public func add(png: Data, code: String, host: String, kind: CaptchaKind) -> URL? {
         let dir = self.dir(for: kind)
+        if kind == .fsspDigits {
+            guard !png.isEmpty, code.utf8.count == 5,
+                  code.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+            let digest = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
+            let url = dir.appendingPathComponent("\(code)_\(digest).png")
+            if fm.fileExists(atPath: url.path) { return url }
+            // The split key is the image hash, so one PNG may exist only
+            // once even if a later manual entry supplies a conflicting code.
+            // Keep the first confirmed label and let neither a typo nor a
+            // duplicate leak across train and held-out sets.
+            if let names = try? fm.contentsOfDirectory(atPath: dir.path),
+               names.contains(where: { $0.hasSuffix("_\(digest).png") }) {
+                return nil
+            }
+            do { try png.write(to: url, options: .atomic) } catch { return nil }
+            manifest.version = max(manifest.version, 2)
+            manifest.fsspPendingSinceLastTrain += 1
+            evictIfNeeded(kind: kind)
+            scheduleManifestWrite()
+            return url
+        }
         let safeHost = host.replacingOccurrences(of: "/", with: "_")
                             .replacingOccurrences(of: ":", with: "")
         let ts = dateFormatter.string(from: Date())
@@ -133,6 +196,8 @@ public actor CorpusStore {
         case .kcaptcha:
             manifest.textPendingSinceLastTrain += 1
             manifest.textLengthDistribution[code.count, default: 0] += 1
+        case .fsspDigits:
+            break
         }
         evictIfNeeded(kind: kind)
         scheduleManifestWrite()
@@ -180,6 +245,7 @@ public actor CorpusStore {
         switch kind {
         case .sudrfToken: return manifest.numericCeiling
         case .kcaptcha:   return manifest.textCeiling
+        case .fsspDigits: return manifest.fsspCeiling
         }
     }
 
@@ -190,6 +256,7 @@ public actor CorpusStore {
         switch kind {
         case .sudrfToken: manifest.numericCeiling = value
         case .kcaptcha:   manifest.textCeiling = value
+        case .fsspDigits: manifest.fsspCeiling = value
         }
         scheduleManifestWrite()
     }
@@ -198,6 +265,7 @@ public actor CorpusStore {
         switch kind {
         case .sudrfToken: return manifest.numericPendingSinceLastTrain
         case .kcaptcha:   return manifest.textPendingSinceLastTrain
+        case .fsspDigits: return manifest.fsspPendingSinceLastTrain
         }
     }
 
@@ -213,6 +281,10 @@ public actor CorpusStore {
             manifest.textLastTrainedAt = Date()
             manifest.textLastTrainedCount = count
             manifest.textPendingSinceLastTrain = 0
+        case .fsspDigits:
+            manifest.fsspLastTrainedAt = Date()
+            manifest.fsspLastTrainedCount = count
+            manifest.fsspPendingSinceLastTrain = 0
         }
         scheduleManifestWrite()
     }
@@ -223,6 +295,7 @@ public actor CorpusStore {
         switch kind {
         case .sudrfToken: return baseDir.appendingPathComponent("solved-numeric", isDirectory: true)
         case .kcaptcha:   return baseDir.appendingPathComponent("solved-text", isDirectory: true)
+        case .fsspDigits: return baseDir.appendingPathComponent("solved-fssp", isDirectory: true)
         }
     }
 

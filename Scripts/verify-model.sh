@@ -6,6 +6,7 @@ set -euo pipefail
 
 MODEL_DIR=""
 MANIFEST=""
+MODEL_NAME="model-captcha-numeric"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -19,6 +20,11 @@ while [[ $# -gt 0 ]]; do
             MANIFEST="$2"
             shift 2
             ;;
+        --model-name)
+            [[ $# -ge 2 ]] || { echo "--model-name requires a value" >&2; exit 2; }
+            MODEL_NAME="$2"
+            shift 2
+            ;;
         *)
             echo "unknown arg: $1" >&2
             exit 2
@@ -28,6 +34,7 @@ done
 
 [[ -d "$MODEL_DIR" && ! -L "$MODEL_DIR" ]] || { echo "invalid --model-dir: $MODEL_DIR" >&2; exit 1; }
 [[ -f "$MANIFEST" ]] || { echo "invalid --manifest: $MANIFEST" >&2; exit 1; }
+[[ "$MODEL_NAME" =~ ^model-captcha-[a-z0-9-]+$ ]] || { echo "invalid --model-name: $MODEL_NAME" >&2; exit 1; }
 
 MANIFEST_RAW=$(mktemp)
 MANIFEST_PATHS=$(mktemp)
@@ -54,7 +61,7 @@ awk -F'\t' '{ print $2 }' "$MANIFEST_RAW" | sort > "$MANIFEST_PATHS"
 while IFS=$'\t' read -r hash rel; do
     [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || { echo "bad hash: $hash" >&2; exit 1; }
     case "$rel" in
-        model-captcha-numeric.mlmodelc/*) ;;
+        "$MODEL_NAME".mlmodelc/*) ;;
         *) echo "bad manifest path: $rel" >&2; exit 1 ;;
     esac
     [[ "$rel" != *..* && "$rel" != /* ]] || { echo "unsafe manifest path: $rel" >&2; exit 1; }
@@ -72,7 +79,7 @@ if bad_nodes=$(find "$MODEL_DIR" -mindepth 1 ! -type d ! -type f -print) && [[ -
 fi
 
 ACTUAL_PATHS=$(mktemp)
-(cd "$MODEL_DIR" && find . -type f | sed 's|^\./|model-captcha-numeric.mlmodelc/|' | sort) > "$ACTUAL_PATHS"
+(cd "$MODEL_DIR" && find . -type f | sed "s|^\\./|$MODEL_NAME.mlmodelc/|" | sort) > "$ACTUAL_PATHS"
 
 if unlisted=$(comm -23 "$ACTUAL_PATHS" "$MANIFEST_PATHS") && [[ -n "$unlisted" ]]; then
     echo "unlisted model files: $unlisted" >&2
@@ -85,7 +92,7 @@ if missing=$(comm -13 "$ACTUAL_PATHS" "$MANIFEST_PATHS") && [[ -n "$missing" ]];
 fi
 
 while IFS= read -r rel; do
-    suffix=${rel#model-captcha-numeric.mlmodelc/}
+    suffix=${rel#"$MODEL_NAME".mlmodelc/}
     actual=$(shasum -a 256 "$MODEL_DIR/$suffix" | awk '{print $1}')
     expected=$(awk -F'\t' -v rel="$rel" '$2 == rel { print $1; exit }' "$MANIFEST_RAW")
     [[ "$actual" == "$expected" ]] || { echo "hash mismatch: $rel" >&2; exit 1; }

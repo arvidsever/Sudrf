@@ -107,7 +107,7 @@ public struct VisionOCRStrategy: CaptchaSolvingProvider {
         // → conf=0.00 на spb-капчах с rotated digits.
         request.minimumTextHeight = 0.2
         switch kind {
-        case .sudrfToken:
+        case .sudrfToken, .fsspDigits:
             request.recognitionLanguages = ["en-US"]
         case .kcaptcha:
             request.recognitionLanguages = ["ru-RU", "en-US"]
@@ -158,6 +158,8 @@ private extension CaptchaKind {
             // и цифры. Бывший regex `^[0-9A-Za-zА-Яа-я]{3,6}$` был
             // избыточно широк — практический алфавит kcaptcha у́же.
             return try! NSRegularExpression(pattern: "^[а-я0-9]{5,6}$")
+        case .fsspDigits:
+            return try! NSRegularExpression(pattern: "^[0-9]{5}$")
         }
     }
 }

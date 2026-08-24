@@ -89,8 +89,15 @@ private struct FSSPCaptchaLabView: View {
                     .interpolation(.none)
                     .scaledToFit()
                     .padding(18)
+                if model.state == .recognizing {
+                    activityOverlay("Модель распознаёт CAPTCHA")
+                } else if model.state == .submitting {
+                    activityOverlay("Код отправлен — ждём ФССП")
+                }
             } else if model.state == .training {
                 ProgressView("Обучение черновой модели")
+            } else if model.state == .retryWaiting {
+                ProgressView("Пауза после ответа ФССП")
             } else if model.state == .loading {
                 ProgressView("Запрашиваем новую CAPTCHA")
             } else {
@@ -104,9 +111,19 @@ private struct FSSPCaptchaLabView: View {
             .strokeBorder(Color.primary.opacity(0.09)))
     }
 
+    private func activityOverlay(_ title: String) -> some View {
+        ProgressView(title)
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private var answerField: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if let suggested = model.suggestedCode,
+            if model.state == .submitting, let code = model.lastSubmittedCode {
+                Text("Отправлен код \(code); ожидаем ответ сервера ФССП.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let suggested = model.suggestedCode,
                let confidence = model.suggestionConfidence {
                 Text("Модель предлагает \(suggested) (\(confidence.formatted(.percent.precision(.fractionLength(0)))))")
                     .font(.caption)
@@ -157,12 +174,27 @@ private struct FSSPCaptchaLabView: View {
                     Text("\(model.corpusCount) уникальных PNG")
                 }
                 GridRow {
+                    Text("Отправлено")
+                    Text("\(model.submittedCount)")
+                }
+                GridRow {
                     Text("Успехи")
                     Text("ручных \(model.manualAcceptedCount) · автоматических \(model.automaticAcceptedCount)")
                 }
                 GridRow {
                     Text("Отказы")
                     Text("\(model.rejectedCount); после каждого берётся новая CAPTCHA")
+                }
+                GridRow {
+                    Text("Ошибки")
+                    Text("\(model.errorCount)")
+                }
+                if !model.lastOutcome.isEmpty {
+                    GridRow {
+                        Text("Последний ответ")
+                        Text(model.lastOutcome)
+                            .lineLimit(2)
+                    }
                 }
                 GridRow {
                     Text("Модель")

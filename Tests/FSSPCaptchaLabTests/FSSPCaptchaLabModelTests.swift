@@ -46,8 +46,8 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         await failedModel.submitManual(code: "12345")
 
         XCTAssertTrue(failed.savedCodes.isEmpty)
-        XCTAssertEqual(failedModel.state, .loading)
-        XCTAssertTrue(failedModel.message.contains("Повторяем запрос автоматически"))
+        XCTAssertEqual(failedModel.state, .retryWaiting)
+        XCTAssertTrue(failedModel.message.contains("Пауза 60 секунд"))
         failedModel.stop()
     }
 
@@ -79,6 +79,7 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         await automaticModel.start()
 
         XCTAssertEqual(automatic.submittedCodes, ["70120"])
+        XCTAssertEqual(automaticModel.submittedCount, 1)
         XCTAssertEqual(automaticModel.automaticAcceptedCount, 1)
         XCTAssertEqual(automaticModel.manualAcceptedCount, 0)
         automaticModel.stop()
@@ -101,6 +102,7 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         await waitUntil { model.automaticAcceptedCount == 1 }
 
         XCTAssertEqual(harness.submittedCodes, Array(repeating: "12345", count: 5))
+        XCTAssertEqual(model.submittedCount, 5)
         XCTAssertEqual(model.rejectedCount, 4)
         XCTAssertEqual(model.automaticAcceptedCount, 1)
         XCTAssertEqual(harness.savedCodes, ["12345"])
@@ -115,12 +117,15 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
             .captchaRequired(challenge("recovered"))
         ]
         harness.submitSteps = [.error("stop")]
+        harness.retryWaitResponses = [true, false]
         let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
 
         await model.start()
-        await waitUntil { harness.submittedCodes == ["54321"] }
+        await waitUntil { model.errorCount == 2 && harness.retryWaitCalls == 2 }
 
         XCTAssertEqual(harness.submittedCodes, ["54321"])
+        XCTAssertEqual(model.errorCount, 2)
+        XCTAssertGreaterThanOrEqual(harness.retryWaitCalls, 2)
         XCTAssertTrue(harness.savedCodes.isEmpty)
         model.stop()
     }
@@ -236,6 +241,8 @@ private final class Harness {
     var submittedCodes: [String] = []
     var markedTrainedCounts: [Int] = []
     var trainingCalls = 0
+    var retryWaitCalls = 0
+    var retryWaitResponses: [Bool] = []
     var saveAdvancesCorpus = true
     var afterTraining: (() -> Void)?
 
@@ -264,6 +271,10 @@ private final class Harness {
                 self.trainingCalls += 1
                 self.afterTraining?()
                 return self.next(&self.trainingResults, fallback: .failed("unexpected training"))
+            },
+            waitBeforeRetry: {
+                self.retryWaitCalls += 1
+                return self.next(&self.retryWaitResponses, fallback: false)
             }
         )
     }

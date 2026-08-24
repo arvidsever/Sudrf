@@ -33,6 +33,7 @@ struct FSSPCaptchaLabDependencies {
     var markTrained: @MainActor (Int) async -> Void
     var loadModel: @MainActor () -> FSSPCaptchaLabModelProvider
     var train: @MainActor (URL) async -> FSSPCaptchaLabTrainingResult
+    var waitBeforeRetry: @MainActor () async -> Bool
 }
 
 @MainActor
@@ -45,8 +46,10 @@ final class FSSPCaptchaLabModel: ObservableObject {
     enum State: Equatable {
         case idle
         case loading
+        case recognizing
         case awaitingManualInput
         case submitting
+        case retryWaiting
         case training
         case trainingFailed
         case error
@@ -65,7 +68,11 @@ final class FSSPCaptchaLabModel: ObservableObject {
     @Published private(set) var corpusCount = 0
     @Published private(set) var manualAcceptedCount = 0
     @Published private(set) var automaticAcceptedCount = 0
+    @Published private(set) var submittedCount = 0
     @Published private(set) var rejectedCount = 0
+    @Published private(set) var errorCount = 0
+    @Published private(set) var lastSubmittedCode: String?
+    @Published private(set) var lastOutcome = ""
     @Published private(set) var modelStatus: String
     @Published private(set) var message = ""
     @Published private(set) var trainingLog = "Обучение ещё не запускалось."
@@ -89,7 +96,8 @@ final class FSSPCaptchaLabModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        state == .loading || state == .submitting || state == .training
+        state == .loading || state == .recognizing || state == .submitting
+            || state == .retryWaiting || state == .training
     }
 
     func start() async {
@@ -187,6 +195,7 @@ final class FSSPCaptchaLabModel: ObservableObject {
               challenge?.codeID == freshChallenge.codeID else { return }
         guard let attempt,
               CoreMLCaptchaStrategy.isCompatibleOutput(attempt.value) else {
+            state = .awaitingManualInput
             message = "Модель не распознала эту CAPTCHA; автоматически запрашиваем следующую."
             scheduleFreshChallenge(generation: currentGeneration)
             return
@@ -194,6 +203,7 @@ final class FSSPCaptchaLabModel: ObservableObject {
 
         suggestedCode = attempt.value
         suggestionConfidence = attempt.confidence
+        state = .awaitingManualInput
         await submit(code: attempt.value, source: .automatic)
     }
 
@@ -207,7 +217,10 @@ final class FSSPCaptchaLabModel: ObservableObject {
             return
         }
         let currentGeneration = generation
+        submittedCount += 1
+        lastSubmittedCode = code
         state = .submitting
+        message = "Код \(code) отправлен. Ждём ответ ФССП."
         let step = await dependencies.submit(code, challenge, activeDocumentID)
         guard isCurrent(currentGeneration) else { return }
         switch step {
@@ -216,6 +229,7 @@ final class FSSPCaptchaLabModel: ObservableObject {
                            step: step, generation: currentGeneration)
         case .captchaRequired(let replacement):
             rejectedCount += 1
+            lastOutcome = "Код \(code) отклонён ФССП; получена новая CAPTCHA."
             if source == .automatic {
                 show(replacement)
                 scheduleModelAttempt(for: replacement, generation: currentGeneration)
@@ -252,6 +266,7 @@ final class FSSPCaptchaLabModel: ObservableObject {
         message = saved
             ? "Ответ принят ФССП: \(result). Пара добавлена в корпус."
             : "Ответ принят ФССП: \(result). Не удалось сохранить PNG в корпус."
+        lastOutcome = message
         self.challenge = nil
         suggestedCode = nil
         suggestionConfidence = nil
@@ -335,15 +350,25 @@ final class FSSPCaptchaLabModel: ObservableObject {
     }
 
     private func scheduleRetry(after error: String, generation currentGeneration: Int) {
-        state = .loading
+        errorCount += 1
+        state = .retryWaiting
         challenge = nil
         suggestedCode = nil
         suggestionConfidence = nil
         activeDocumentID = nil
-        message = "\(error) Повторяем запрос автоматически."
+        lastOutcome = error
+        message = "\(error) Пауза 60 секунд, затем повторим автоматически."
         // FSSPClient keeps the three-second interval, Retry-After and its own
-        // one network retry; the lab only starts the next logical attempt.
-        scheduleFreshChallenge(generation: currentGeneration)
+        // one network retry; the longer lab pause also lets a CAPTCHA attempt
+        // block expire instead of keeping it alive with immediate requests.
+        Task { [weak self] in
+            guard let self else { return }
+            guard await self.dependencies.waitBeforeRetry(),
+                  !Task.isCancelled,
+                  self.isCurrent(currentGeneration),
+                  self.state == .retryWaiting else { return }
+            await self.requestFreshChallenge(generation: currentGeneration)
+        }
     }
 
     private func scheduleTrainingRetry(generation currentGeneration: Int) {
@@ -361,8 +386,8 @@ final class FSSPCaptchaLabModel: ObservableObject {
         challenge = freshChallenge
         suggestedCode = nil
         suggestionConfidence = nil
-        state = .awaitingManualInput
-        message = "CAPTCHA распознаётся и отправляется автоматически."
+        state = .recognizing
+        message = "Модель распознаёт CAPTCHA."
     }
 
     private var normalizedDocumentID: String {

@@ -51,6 +51,14 @@ enum FSSPCaptchaLabRuntime {
                 await FSSPCaptchaLabProcessRunner.run(
                     trainingRoot: root,
                     repositoryRoot: repositoryRoot)
+            },
+            waitBeforeRetry: {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                    return true
+                } catch {
+                    return false
+                }
             }
         )
     }

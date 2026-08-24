@@ -273,6 +273,14 @@ public actor FSSPClient {
 
     private static func resultStep(page: Document,
                                    document: CourtEnforcementDocument) throws -> FSSPSearchStep {
+        let pageText = (try? page.text()) ?? ""
+        if pageText.localizedCaseInsensitiveContains(
+            "Количество неверных попыток ввода кода превышено"
+        ) {
+            return .error(
+                "ФССП временно ограничила ввод CAPTCHA после серии неверных ответов."
+            )
+        }
         let target = searchNumber(for: document).map(CourtEnforcementDocument.normalizedNumber) ?? ""
         guard !target.isEmpty else {
             return .error("Суд не опубликовал номер исполнительного документа для поиска ФССП.")

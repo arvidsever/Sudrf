@@ -66,10 +66,10 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         }
     }
 
-    func testOnlyEligibleModelAt098AutomaticallySubmits() async {
+    func testOnlyEligibleModelAt050AutomaticallySubmits() async {
         let automatic = Harness()
         automatic.modelAutoEligible = true
-        automatic.recognition = CaptchaAttempt(value: "70120", confidence: 0.98, duration: 0)
+        automatic.recognition = CaptchaAttempt(value: "70120", confidence: 0.50, duration: 0)
         automatic.discoverSteps = [.captchaRequired(challenge("auto")), .error("done")]
         automatic.submitSteps = [.found(EnforcementLookup(state: .found))]
         let automaticModel = FSSPCaptchaLabModel(dependencies: automatic.dependencies())
@@ -82,7 +82,7 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
 
         let lowConfidence = Harness()
         lowConfidence.modelAutoEligible = true
-        lowConfidence.recognition = CaptchaAttempt(value: "70120", confidence: 0.979, duration: 0)
+        lowConfidence.recognition = CaptchaAttempt(value: "70120", confidence: 0.499, duration: 0)
         lowConfidence.discoverSteps = [.captchaRequired(challenge("manual"))]
         let lowConfidenceModel = FSSPCaptchaLabModel(dependencies: lowConfidence.dependencies())
 

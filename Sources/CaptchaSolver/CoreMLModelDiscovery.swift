@@ -1,14 +1,10 @@
 import Foundation
 
-/// Ищет скомпилированную CoreML-модель для числовой sudrf captcha.
+/// Ищет скомпилированную CoreML-модель для числовой sudrf CAPTCHA.
 /// Порядок поиска:
-///   1. `~/Library/Application Support/Sudrf/model-captcha-numeric.mlmodelc/`
-///      — позволяет пользователю переопределить модель без перебилда.
-///   2. `Bundle.main.url(forResource: "model-captcha-numeric",
-///      withExtension: "mlmodelc")` — модель, зашитая в app bundle.
-/// Возвращает `nil`, если ни там, ни там модель не найдена —
-/// `CoreMLCaptchaStrategy` не инициализируется, и солвер работает
-/// на `VisionOCRStrategy` (текущее поведение до v0.38.8).
+///   1. `~/Library/Application Support/Sudrf/model-captcha-numeric.mlmodelc/`;
+///   2. модель из app bundle.
+/// Возвращает `nil`, если модели нет, оставляя существующий Vision fallback.
 public enum CoreMLModelDiscovery {
 
     public static let numericModelName = "model-captcha-numeric"
@@ -19,27 +15,26 @@ public enum CoreMLModelDiscovery {
     /// data, but the ordinary app only searches `fsspModelName` below.
     public static let fsspBootstrapModelName = "model-captcha-fssp-bootstrap"
     public static let fsspBootstrapReportName = "model-captcha-fssp-bootstrap-report"
+    public static let fsspSplit = "sha256-mod10-v2"
+    public static let fsspArchitectureVersion = "fssp-shared-cnn-v2"
 
     public static func discoverURL() -> URL? {
         discoverURL(named: numericModelName)
     }
 
     /// FSSP is intentionally fail-closed: merely placing a model on disk is
-    /// not enough. The adjacent eligibility report must prove the corpus,
-    /// fixture and held-out thresholds from the integration plan.
+    /// not enough. The adjacent eligibility report must prove the production
+    /// corpus, fixture and independent-exam thresholds.
     public static func discoverEligibleFSSPURL() -> URL? {
-        let locations = candidateLocations(named: fsspModelName)
-        for modelURL in locations {
+        for modelURL in candidateLocations(named: fsspModelName) {
             if eligibleFSSPURL(modelURL: modelURL) != nil { return modelURL }
         }
         return nil
     }
 
     static func eligibleFSSPURL(modelURL: URL) -> URL? {
-        guard modelURL.lastPathComponent == "\(fsspModelName).mlmodelc" else {
-            return nil
-        }
-        guard FileManager.default.fileExists(atPath: modelURL.path) else { return nil }
+        guard modelURL.lastPathComponent == "\(fsspModelName).mlmodelc",
+              FileManager.default.fileExists(atPath: modelURL.path) else { return nil }
         let reportURL = modelURL.deletingLastPathComponent()
             .appendingPathComponent("\(fsspEligibilityName).json")
         guard let data = try? Data(contentsOf: reportURL),
@@ -67,56 +62,107 @@ public enum CoreMLModelDiscovery {
     }
 }
 
-/// Machine-readable output of the FSSP training/evaluation pipeline.
-/// The release SHA manifest protects the files in delivery; this report is
-/// the runtime switch that keeps an unqualified model disabled.
+/// Machine-readable proof that a production FSSP model passed the independent
+/// examination. Schema v1 is intentionally not decodable as this type.
 public struct FSSPModelEligibility: Codable, Sendable, Equatable {
     public let version: Int
     public let modelName: String
     public let split: String
     public let uniqueCorpusCount: Int
     public let regressionFixtureCount: Int
-    public let heldOutStringAccuracy: Double
+    public let trainCount: Int
+    public let trainStringAccuracy: Double
+    public let trainDigitAccuracy: Double
+    public let validationCount: Int
+    public let validationStringAccuracy: Double
+    public let validationDigitAccuracy: Double
+    public let examCount: Int
+    public let examStringAccuracy: Double
+    public let examDigitAccuracy: Double
     public let acceptedAt090Count: Int
     public let acceptedAt090Accuracy: Double
+    public let trainedAt: String
+    public let preprocessorVersion: String
+    public let architectureVersion: String
+    public let coreMLParityPassed: Bool
+    public let coreMLMaxLogitDifference: Double
 
-    public init(version: Int = 1,
-                modelName: String = CoreMLModelDiscovery.fsspModelName,
-                split: String = "sha256-mod5-v1",
-                uniqueCorpusCount: Int,
-                regressionFixtureCount: Int,
-                heldOutStringAccuracy: Double,
-                acceptedAt090Count: Int,
-                acceptedAt090Accuracy: Double) {
+    public init(
+        version: Int = 2,
+        modelName: String = CoreMLModelDiscovery.fsspModelName,
+        split: String = CoreMLModelDiscovery.fsspSplit,
+        uniqueCorpusCount: Int,
+        regressionFixtureCount: Int,
+        trainCount: Int,
+        trainStringAccuracy: Double,
+        trainDigitAccuracy: Double,
+        validationCount: Int,
+        validationStringAccuracy: Double,
+        validationDigitAccuracy: Double,
+        examCount: Int,
+        examStringAccuracy: Double,
+        examDigitAccuracy: Double,
+        acceptedAt090Count: Int,
+        acceptedAt090Accuracy: Double,
+        trainedAt: String,
+        preprocessorVersion: String = FSSPPreprocessor.version,
+        architectureVersion: String = CoreMLModelDiscovery.fsspArchitectureVersion,
+        coreMLParityPassed: Bool,
+        coreMLMaxLogitDifference: Double
+    ) {
         self.version = version
         self.modelName = modelName
         self.split = split
         self.uniqueCorpusCount = uniqueCorpusCount
         self.regressionFixtureCount = regressionFixtureCount
-        self.heldOutStringAccuracy = heldOutStringAccuracy
+        self.trainCount = trainCount
+        self.trainStringAccuracy = trainStringAccuracy
+        self.trainDigitAccuracy = trainDigitAccuracy
+        self.validationCount = validationCount
+        self.validationStringAccuracy = validationStringAccuracy
+        self.validationDigitAccuracy = validationDigitAccuracy
+        self.examCount = examCount
+        self.examStringAccuracy = examStringAccuracy
+        self.examDigitAccuracy = examDigitAccuracy
         self.acceptedAt090Count = acceptedAt090Count
         self.acceptedAt090Accuracy = acceptedAt090Accuracy
+        self.trainedAt = trainedAt
+        self.preprocessorVersion = preprocessorVersion
+        self.architectureVersion = architectureVersion
+        self.coreMLParityPassed = coreMLParityPassed
+        self.coreMLMaxLogitDifference = coreMLMaxLogitDifference
     }
 
     public var isEligible: Bool {
-        version == 1
+        hasCurrentFSSPContract(
+            version: version,
+            split: split,
+            preprocessorVersion: preprocessorVersion,
+            architectureVersion: architectureVersion,
+            coreMLParityPassed: coreMLParityPassed,
+            coreMLMaxLogitDifference: coreMLMaxLogitDifference,
+            trainedAt: trainedAt
+        )
             && modelName == CoreMLModelDiscovery.fsspModelName
-            && split == "sha256-mod5-v1"
             && uniqueCorpusCount >= 2_000
             && regressionFixtureCount >= 30
-            && heldOutStringAccuracy.isFinite
-            && heldOutStringAccuracy >= 0.97
-            && heldOutStringAccuracy <= 1
+            && hasValidEvaluation(
+                count: trainCount, stringAccuracy: trainStringAccuracy, digitAccuracy: trainDigitAccuracy)
+            && hasValidEvaluation(
+                count: validationCount, stringAccuracy: validationStringAccuracy,
+                digitAccuracy: validationDigitAccuracy)
+            && hasValidEvaluation(
+                count: examCount, stringAccuracy: examStringAccuracy, digitAccuracy: examDigitAccuracy)
+            && examStringAccuracy >= 0.97
             && acceptedAt090Count >= 100
-            && acceptedAt090Accuracy.isFinite
+            && acceptedAt090Count <= examCount
+            && isProbability(acceptedAt090Accuracy)
             && acceptedAt090Accuracy >= 0.99
-            && acceptedAt090Accuracy <= 1
     }
 }
 
-/// Report written next to the lab-only bootstrap model. It is intentionally
-/// a separate type from `FSSPModelEligibility`: the bootstrap gate is much
-/// smaller and must never be accepted by production discovery.
+/// Report written next to the lab-only bootstrap model. It stays separate from
+/// `FSSPModelEligibility`: a lab model can never be discovered by production.
 public struct FSSPBootstrapReport: Codable, Sendable, Equatable {
     public static let reportFileName =
         "\(CoreMLModelDiscovery.fsspBootstrapReportName).json"
@@ -125,112 +171,138 @@ public struct FSSPBootstrapReport: Codable, Sendable, Equatable {
     public let modelName: String
     public let split: String
     public let uniqueCorpusCount: Int
-    public let heldOutCount: Int
-    public let heldOutStringAccuracy: Double
-    public let acceptedAt098Count: Int
-    public let acceptedAt098Accuracy: Double
-    public let trainedAt: Date
+    public let trainCount: Int
+    public let trainStringAccuracy: Double
+    public let trainDigitAccuracy: Double
+    public let validationCount: Int
+    public let validationStringAccuracy: Double
+    public let validationDigitAccuracy: Double
+    public let examCount: Int
+    public let examStringAccuracy: Double
+    public let examDigitAccuracy: Double
+    public let acceptedAt050Count: Int
+    public let acceptedAt050Accuracy: Double
+    public let trainedAt: String
     public let preprocessorVersion: String
+    public let architectureVersion: String
+    public let coreMLParityPassed: Bool
+    public let coreMLMaxLogitDifference: Double
 
     public init(
-        version: Int = 1,
+        version: Int = 2,
         modelName: String = CoreMLModelDiscovery.fsspBootstrapModelName,
-        split: String = "sha256-mod5-v1",
+        split: String = CoreMLModelDiscovery.fsspSplit,
         uniqueCorpusCount: Int,
-        heldOutCount: Int,
-        heldOutStringAccuracy: Double,
-        acceptedAt098Count: Int,
-        acceptedAt098Accuracy: Double,
-        trainedAt: Date = Date(),
-        preprocessorVersion: String = FSSPPreprocessor.version
+        trainCount: Int,
+        trainStringAccuracy: Double,
+        trainDigitAccuracy: Double,
+        validationCount: Int,
+        validationStringAccuracy: Double,
+        validationDigitAccuracy: Double,
+        examCount: Int,
+        examStringAccuracy: Double,
+        examDigitAccuracy: Double,
+        acceptedAt050Count: Int,
+        acceptedAt050Accuracy: Double,
+        trainedAt: String,
+        preprocessorVersion: String = FSSPPreprocessor.version,
+        architectureVersion: String = CoreMLModelDiscovery.fsspArchitectureVersion,
+        coreMLParityPassed: Bool,
+        coreMLMaxLogitDifference: Double
     ) {
         self.version = version
         self.modelName = modelName
         self.split = split
         self.uniqueCorpusCount = uniqueCorpusCount
-        self.heldOutCount = heldOutCount
-        self.heldOutStringAccuracy = heldOutStringAccuracy
-        self.acceptedAt098Count = acceptedAt098Count
-        self.acceptedAt098Accuracy = acceptedAt098Accuracy
+        self.trainCount = trainCount
+        self.trainStringAccuracy = trainStringAccuracy
+        self.trainDigitAccuracy = trainDigitAccuracy
+        self.validationCount = validationCount
+        self.validationStringAccuracy = validationStringAccuracy
+        self.validationDigitAccuracy = validationDigitAccuracy
+        self.examCount = examCount
+        self.examStringAccuracy = examStringAccuracy
+        self.examDigitAccuracy = examDigitAccuracy
+        self.acceptedAt050Count = acceptedAt050Count
+        self.acceptedAt050Accuracy = acceptedAt050Accuracy
         self.trainedAt = trainedAt
         self.preprocessorVersion = preprocessorVersion
+        self.architectureVersion = architectureVersion
+        self.coreMLParityPassed = coreMLParityPassed
+        self.coreMLMaxLogitDifference = coreMLMaxLogitDifference
+    }
+
+    public var isCurrentContract: Bool {
+        hasCurrentFSSPContract(
+            version: version,
+            split: split,
+            preprocessorVersion: preprocessorVersion,
+            architectureVersion: architectureVersion,
+            coreMLParityPassed: coreMLParityPassed,
+            coreMLMaxLogitDifference: coreMLMaxLogitDifference,
+            trainedAt: trainedAt
+        )
+            && modelName == CoreMLModelDiscovery.fsspBootstrapModelName
+            && uniqueCorpusCount >= 200
+            && hasValidEvaluation(
+                count: trainCount, stringAccuracy: trainStringAccuracy, digitAccuracy: trainDigitAccuracy)
+            && hasValidEvaluation(
+                count: validationCount, stringAccuracy: validationStringAccuracy,
+                digitAccuracy: validationDigitAccuracy)
+            && hasValidEvaluation(
+                count: examCount, stringAccuracy: examStringAccuracy, digitAccuracy: examDigitAccuracy)
+    }
+
+    /// Suggest only after the model proves itself on images not used while
+    /// learning. This is deliberately lower than production's final gate.
+    public var isRecognitionEligible: Bool {
+        isCurrentContract
+            && examCount >= 30
+            && examStringAccuracy >= 0.50
     }
 
     public var isAutoCollectionEligible: Bool {
         isRecognitionEligible
-            && acceptedAt098Count >= 10
-            && acceptedAt098Accuracy.isFinite
-            && acceptedAt098Accuracy >= 1.0
-            && acceptedAt098Accuracy <= 1
+            && acceptedAt050Count >= 10
+            && acceptedAt050Count <= examCount
+            && isProbability(acceptedAt050Accuracy)
+            && acceptedAt050Accuracy >= 0.50
     }
+}
 
-    /// A model that has not reached the held-out exact-accuracy floor is not
-    /// useful even as a manual suggestion: its low-confidence output is just
-    /// the per-position class frequency learned from the corpus.
-    public var isRecognitionEligible: Bool {
-        version == 1
-            && modelName == CoreMLModelDiscovery.fsspBootstrapModelName
-            && split == "sha256-mod5-v1"
-            && uniqueCorpusCount >= 200
-            && heldOutCount >= 30
-            && heldOutStringAccuracy.isFinite
-            && heldOutStringAccuracy >= 0.80
-            && heldOutStringAccuracy <= 1
-            && preprocessorVersion == FSSPPreprocessor.version
-    }
+private func hasCurrentFSSPContract(
+    version: Int,
+    split: String,
+    preprocessorVersion: String,
+    architectureVersion: String,
+    coreMLParityPassed: Bool,
+    coreMLMaxLogitDifference: Double,
+    trainedAt: String
+) -> Bool {
+    version == 2
+        && split == CoreMLModelDiscovery.fsspSplit
+        && preprocessorVersion == FSSPPreprocessor.version
+        && architectureVersion == CoreMLModelDiscovery.fsspArchitectureVersion
+        && coreMLParityPassed
+        && coreMLMaxLogitDifference.isFinite
+        && coreMLMaxLogitDifference >= 0
+        && coreMLMaxLogitDifference <= 0.001
+        && isISO8601Timestamp(trainedAt)
+}
 
-    // Python writes an ISO-8601 string so the report remains readable outside
-    // Swift. Keep decoding strict enough to reject malformed timestamps while
-    // still allowing the normal `JSONDecoder()` used by callers.
-    private enum CodingKeys: String, CodingKey {
-        case version, modelName, split, uniqueCorpusCount, heldOutCount
-        case heldOutStringAccuracy, acceptedAt098Count, acceptedAt098Accuracy
-        case trainedAt, preprocessorVersion
-    }
+private func hasValidEvaluation(count: Int,
+                                stringAccuracy: Double,
+                                digitAccuracy: Double) -> Bool {
+    count > 0 && isProbability(stringAccuracy) && isProbability(digitAccuracy)
+}
 
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        version = try c.decode(Int.self, forKey: .version)
-        modelName = try c.decode(String.self, forKey: .modelName)
-        split = try c.decode(String.self, forKey: .split)
-        uniqueCorpusCount = try c.decode(Int.self, forKey: .uniqueCorpusCount)
-        heldOutCount = try c.decode(Int.self, forKey: .heldOutCount)
-        heldOutStringAccuracy = try c.decode(Double.self, forKey: .heldOutStringAccuracy)
-        acceptedAt098Count = try c.decode(Int.self, forKey: .acceptedAt098Count)
-        acceptedAt098Accuracy = try c.decode(Double.self, forKey: .acceptedAt098Accuracy)
-        preprocessorVersion = try c.decode(String.self, forKey: .preprocessorVersion)
+private func isProbability(_ value: Double) -> Bool {
+    value.isFinite && value >= 0 && value <= 1
+}
 
-        if let value = try? c.decode(Date.self, forKey: .trainedAt) {
-            trainedAt = value
-            return
-        }
-        let value = try c.decode(String.self, forKey: .trainedAt)
-        let formatter = ISO8601DateFormatter()
-        let date = formatter.date(from: value) ?? {
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return formatter.date(from: value)
-        }()
-        guard let date else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .trainedAt,
-                in: c,
-                debugDescription: "trainedAt is not ISO-8601"
-            )
-        }
-        trainedAt = date
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(version, forKey: .version)
-        try c.encode(modelName, forKey: .modelName)
-        try c.encode(split, forKey: .split)
-        try c.encode(uniqueCorpusCount, forKey: .uniqueCorpusCount)
-        try c.encode(heldOutCount, forKey: .heldOutCount)
-        try c.encode(heldOutStringAccuracy, forKey: .heldOutStringAccuracy)
-        try c.encode(acceptedAt098Count, forKey: .acceptedAt098Count)
-        try c.encode(acceptedAt098Accuracy, forKey: .acceptedAt098Accuracy)
-        try c.encode(ISO8601DateFormatter().string(from: trainedAt), forKey: .trainedAt)
-        try c.encode(preprocessorVersion, forKey: .preprocessorVersion)
-    }
+private func isISO8601Timestamp(_ value: String) -> Bool {
+    let formatter = ISO8601DateFormatter()
+    if formatter.date(from: value) != nil { return true }
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: value) != nil
 }

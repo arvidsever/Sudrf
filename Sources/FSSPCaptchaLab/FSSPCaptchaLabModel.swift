@@ -39,7 +39,7 @@ struct FSSPCaptchaLabDependencies {
 @MainActor
 final class FSSPCaptchaLabModel: ObservableObject {
     static let defaultDocumentID = "11RS0001#2-9143/2025#1"
-    static let automaticConfidence = 0.98
+    static let automaticConfidence = 0.50
     static let firstTrainingCount = 200
     static let retrainingIncrement = 100
 

@@ -10,53 +10,74 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "Scripts" / "prepare-fssp-corpus.py"
 
 
+def rows(path: Path):
+    return path.read_text(encoding="utf-8").splitlines()[1:]
+
+
 class PrepareFSSPCorpusTests(unittest.TestCase):
-    def test_sha_split_is_stable_and_deduplicated(self):
+    def run_prepare(self, root: Path, corpus: Path, minimum: int, **extra):
+        arguments = [
+            sys.executable, str(SCRIPT),
+            "--corpus", str(corpus),
+            "--train-tsv", str(root / "train.tsv"),
+            "--validation-tsv", str(root / "validation.tsv"),
+            "--exam-tsv", str(root / "exam.tsv"),
+            "--minimum", str(minimum),
+        ]
+        for key, value in extra.items():
+            arguments.extend([f"--{key}", str(value)])
+        return subprocess.run(arguments, capture_output=True, text=True)
+
+    def test_sha_mod10_split_is_stable_and_deduplicated(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             corpus = root / "corpus"
             corpus.mkdir()
-            for index in range(10):
+            for index in range(100):
                 payload = f"png-{index}".encode()
                 digest = sha256(payload).hexdigest()
                 (corpus / f"{index:05d}_{digest}.png").write_bytes(payload)
 
-            train = root / "train.tsv"
-            test = root / "test.tsv"
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--corpus", str(corpus),
-                 "--train-tsv", str(train), "--test-tsv", str(test),
-                 "--minimum", "10"], capture_output=True, text=True)
-
+            result = self.run_prepare(root, corpus, 100)
             self.assertEqual(result.returncode, 0, result.stderr)
-            train_rows = train.read_text().splitlines()[1:]
-            test_rows = test.read_text().splitlines()[1:]
-            expected_held_out = sum(
-                int(sha256(f"png-{index}".encode()).hexdigest(), 16) % 5 == 0
-                for index in range(10)
+            train_rows, validation_rows, exam_rows = (
+                rows(root / "train.tsv"), rows(root / "validation.tsv"), rows(root / "exam.tsv")
             )
-            self.assertEqual(len(test_rows), expected_held_out)
-            self.assertEqual(len(train_rows), 10 - expected_held_out)
-            self.assertTrue(set(train_rows).isdisjoint(test_rows))
+            expected = {
+                "train": 0,
+                "validation": 0,
+                "exam": 0,
+            }
+            for index in range(100):
+                bucket = int(sha256(f"png-{index}".encode()).hexdigest(), 16) % 10
+                expected["exam" if bucket == 0 else "validation" if bucket == 5 else "train"] += 1
+            self.assertEqual(len(train_rows), expected["train"])
+            self.assertEqual(len(validation_rows), expected["validation"])
+            self.assertEqual(len(exam_rows), expected["exam"])
+            all_rows = train_rows + validation_rows + exam_rows
+            self.assertEqual(len({row.split("\t", 1)[0] for row in all_rows}), 100)
+            self.assertTrue(set(train_rows).isdisjoint(validation_rows))
+            self.assertTrue(set(train_rows).isdisjoint(exam_rows))
+            self.assertTrue(set(validation_rows).isdisjoint(exam_rows))
 
-            # Adding a new image must not move an existing digest across the
-            # split. This is the property a sorted 80/20 split did not have.
-            before = {row.split("\t", 1)[0]: "train" for row in train_rows}
-            before.update({row.split("\t", 1)[0]: "held-out" for row in test_rows})
+            before = {
+                row.split("\t", 1)[0]: "train" for row in train_rows
+            }
+            before.update({row.split("\t", 1)[0]: "validation" for row in validation_rows})
+            before.update({row.split("\t", 1)[0]: "exam" for row in exam_rows})
             payload = b"png-new"
             digest = sha256(payload).hexdigest()
             (corpus / f"99999_{digest}.png").write_bytes(payload)
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--corpus", str(corpus),
-                 "--train-tsv", str(train), "--test-tsv", str(test),
-                 "--minimum", "11"], capture_output=True, text=True)
+            result = self.run_prepare(root, corpus, 101)
             self.assertEqual(result.returncode, 0, result.stderr)
-            after_rows = train.read_text().splitlines()[1:] + test.read_text().splitlines()[1:]
-            after = {row.split("\t", 1)[0]: "train" for row in train.read_text().splitlines()[1:]}
-            after.update({row.split("\t", 1)[0]: "held-out" for row in test.read_text().splitlines()[1:]})
+            after = {
+                row.split("\t", 1)[0]: "train" for row in rows(root / "train.tsv")
+            }
+            after.update({row.split("\t", 1)[0]: "validation" for row in rows(root / "validation.tsv")})
+            after.update({row.split("\t", 1)[0]: "exam" for row in rows(root / "exam.tsv")})
             for path, bucket in before.items():
                 self.assertEqual(after[path], bucket)
-            self.assertEqual(len(after_rows), 11)
+            self.assertEqual(len(after), 101)
 
     def test_conflicting_labels_for_same_image_fail(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -67,42 +88,33 @@ class PrepareFSSPCorpusTests(unittest.TestCase):
             digest = sha256(payload).hexdigest()
             (corpus / f"12345_{digest}.png").write_bytes(payload)
             (corpus / f"54321_{digest}.png").write_bytes(payload)
-
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--corpus", str(corpus),
-                 "--train-tsv", str(root / "train.tsv"),
-                 "--test-tsv", str(root / "test.tsv"),
-                 "--minimum", "1"], capture_output=True, text=True)
-
+            result = self.run_prepare(root, corpus, 1)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("conflicting labels", result.stderr)
 
-    def test_regression_fixture_is_forced_held_out(self):
+    def test_regression_fixture_is_forced_into_exam(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             corpus = root / "corpus"
             corpus.mkdir()
-            rows = []
-            for index in range(5):
+            payloads = []
+            for index in range(20):
                 payload = f"png-{index}".encode()
                 digest = sha256(payload).hexdigest()
                 path = corpus / f"{index:05d}_{digest}.png"
                 path.write_bytes(payload)
-                rows.append(path)
+                payloads.append(path)
             regression = root / "regression.tsv"
             regression.write_text(
-                "file\tlabel\n" + f"{rows[1]}\t00001\n", encoding="utf-8"
+                "file\tlabel\n" + f"{payloads[1]}\t00001\n", encoding="utf-8"
             )
-            train = root / "train.tsv"
-            held_out = root / "held-out.tsv"
-            result = subprocess.run(
-                [sys.executable, str(SCRIPT), "--corpus", str(corpus),
-                 "--train-tsv", str(train), "--test-tsv", str(held_out),
-                 "--regression-tsv", str(regression), "--minimum", "5"],
-                capture_output=True, text=True)
+            result = self.run_prepare(
+                root, corpus, 20, **{"regression-tsv": regression}
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn(str(rows[1]), train.read_text())
-            self.assertIn(str(rows[1]), held_out.read_text())
+            self.assertNotIn(str(payloads[1]), (root / "train.tsv").read_text())
+            self.assertNotIn(str(payloads[1]), (root / "validation.tsv").read_text())
+            self.assertIn(str(payloads[1]), (root / "exam.tsv").read_text())
 
 
 if __name__ == "__main__":

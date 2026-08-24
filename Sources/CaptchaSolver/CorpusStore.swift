@@ -167,7 +167,7 @@ public actor CorpusStore {
             // The split key is the image hash, so one PNG may exist only
             // once even if a later manual entry supplies a conflicting code.
             // Keep the first confirmed label and let neither a typo nor a
-            // duplicate leak across train and held-out sets.
+            // duplicate leak across training and independent-exam sets.
             if let names = try? fm.contentsOfDirectory(atPath: dir.path),
                names.contains(where: { $0.hasSuffix("_\(digest).png") }) {
                 return nil

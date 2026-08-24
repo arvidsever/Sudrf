@@ -77,18 +77,24 @@ private enum FSSPCaptchaLabBootstrapModel {
         let modelURL = trainingRoot.appendingPathComponent(
             "\(CoreMLModelDiscovery.fsspBootstrapModelName).mlmodelc", isDirectory: true)
         let reportURL = trainingRoot.appendingPathComponent(FSSPBootstrapReport.reportFileName)
-        guard fm.fileExists(atPath: reportURL.path),
-              let data = try? Data(contentsOf: reportURL),
-              let report = try? JSONDecoder().decode(FSSPBootstrapReport.self, from: data) else {
+        guard fm.fileExists(atPath: reportURL.path) else {
             return .init(
                 status: "Черновая модель не установлена (нет bootstrap-отчёта)",
                 trainedCorpusCount: nil,
                 automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
-        guard isValidBootstrapReport(report) else {
+        guard let data = try? Data(contentsOf: reportURL),
+              let report = try? JSONDecoder().decode(FSSPBootstrapReport.self, from: data) else {
             return .init(
-                status: "Bootstrap-отчёт недействителен; требуется новое обучение",
+                status: "Черновый отчёт устарел или повреждён; требуется новое обучение",
+                trainedCorpusCount: nil,
+                automaticSubmissionAllowed: false,
+                recognize: { _ in nil })
+        }
+        guard report.isCurrentContract else {
+            return .init(
+                status: "Черновый отчёт устарел или не прошёл проверку; требуется новое обучение",
                 trainedCorpusCount: nil,
                 automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
@@ -101,10 +107,10 @@ private enum FSSPCaptchaLabBootstrapModel {
                 recognize: { _ in nil })
         }
         guard report.isRecognitionEligible else {
-            let accuracy = report.heldOutStringAccuracy.formatted(
+            let accuracy = report.examStringAccuracy.formatted(
                 .percent.precision(.fractionLength(0)))
             return .init(
-                status: "Черновая модель отклонена: точность held-out \(accuracy); нужен минимум 80%",
+                status: "Черновая модель пока не предлагает ответы: точность на незнакомых изображениях \(accuracy); нужен минимум 50%",
                 trainedCorpusCount: report.uniqueCorpusCount,
                 automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
@@ -120,7 +126,7 @@ private enum FSSPCaptchaLabBootstrapModel {
         let automatic = report.isAutoCollectionEligible
         let status = automatic
             ? "Черновая модель готова: автосбор разрешён (\(report.uniqueCorpusCount) PNG)"
-            : "Черновая модель готова, автосбор ждёт gate (\(report.uniqueCorpusCount) PNG)"
+            : "Черновая модель готова; автосбор ждёт проверки уверенных ответов (\(report.uniqueCorpusCount) PNG)"
         return .init(
             status: status,
             trainedCorpusCount: report.uniqueCorpusCount,
@@ -133,13 +139,6 @@ private enum FSSPCaptchaLabBootstrapModel {
             })
     }
 
-    private static func isValidBootstrapReport(_ report: FSSPBootstrapReport) -> Bool {
-        report.version == 1
-            && report.modelName == CoreMLModelDiscovery.fsspBootstrapModelName
-            && report.split == "sha256-mod5-v1"
-            && report.uniqueCorpusCount >= FSSPCaptchaLabModel.firstTrainingCount
-            && report.preprocessorVersion == FSSPPreprocessor.version
-    }
 }
 
 private enum FSSPCaptchaLabProcessRunner {

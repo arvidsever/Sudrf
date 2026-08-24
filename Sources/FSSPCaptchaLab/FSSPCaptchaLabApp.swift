@@ -110,10 +110,9 @@ private struct FSSPCaptchaLabView: View {
                let confidence = model.suggestionConfidence {
                 Text("Модель предлагает \(suggested) (\(confidence.formatted(.percent.precision(.fractionLength(0)))))")
                     .font(.caption)
-                    .foregroundStyle(confidence >= FSSPCaptchaLabModel.automaticConfidence
-                                     ? Color.secondary : Color.orange)
+                    .foregroundStyle(.secondary)
             } else {
-                Text("Введите код вручную; модель не отправит неуверенный ответ.")
+                Text("Автономный режим: отправляется любой пятизначный прогноз модели.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -141,11 +140,6 @@ private struct FSSPCaptchaLabView: View {
             Button("Остановить") { model.stop() }
                 .disabled(model.state == .idle)
             Spacer()
-            if !model.automaticCollectionEnabled {
-                Button("Возобновить автосбор") {
-                    Task { await model.resumeAutomaticCollection() }
-                }
-            }
         }
     }
 
@@ -168,7 +162,7 @@ private struct FSSPCaptchaLabView: View {
                 }
                 GridRow {
                     Text("Отказы")
-                    Text("\(model.rejectedCount), подряд авто: \(model.consecutiveAutomaticRejections)")
+                    Text("\(model.rejectedCount); после каждого берётся новая CAPTCHA")
                 }
                 GridRow {
                     Text("Модель")

@@ -81,7 +81,6 @@ private enum FSSPCaptchaLabBootstrapModel {
             return .init(
                 status: "Черновая модель не установлена (нет bootstrap-отчёта)",
                 trainedCorpusCount: nil,
-                automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
         guard let data = try? Data(contentsOf: reportURL),
@@ -89,48 +88,33 @@ private enum FSSPCaptchaLabBootstrapModel {
             return .init(
                 status: "Черновый отчёт устарел или повреждён; требуется новое обучение",
                 trainedCorpusCount: nil,
-                automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
         guard report.isCurrentContract else {
             return .init(
                 status: "Черновый отчёт устарел или не прошёл проверку; требуется новое обучение",
                 trainedCorpusCount: nil,
-                automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
         guard fm.fileExists(atPath: modelURL.path) else {
             return .init(
                 status: "Bootstrap-отчёт есть, но скомпилированной модели нет",
                 trainedCorpusCount: nil,
-                automaticSubmissionAllowed: false,
-                recognize: { _ in nil })
-        }
-        guard report.isRecognitionEligible else {
-            let accuracy = report.examStringAccuracy.formatted(
-                .percent.precision(.fractionLength(0)))
-            return .init(
-                status: "Черновая модель пока не предлагает ответы: точность на незнакомых изображениях \(accuracy); нужен минимум 50%",
-                trainedCorpusCount: report.uniqueCorpusCount,
-                automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
         guard let strategy = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .fsspDigits) else {
             return .init(
                 status: "Черновая CoreML-модель не загружается",
                 trainedCorpusCount: nil,
-                automaticSubmissionAllowed: false,
                 recognize: { _ in nil })
         }
 
-        let automatic = report.isAutoCollectionEligible
-        let status = automatic
-            ? "Черновая модель готова: автосбор разрешён (\(report.uniqueCorpusCount) PNG)"
-            : "Черновая модель готова; автосбор ждёт проверки уверенных ответов (\(report.uniqueCorpusCount) PNG)"
+        let accuracy = report.examStringAccuracy.formatted(
+            .percent.precision(.fractionLength(0)))
+        let status = "Автономная модель готова: \(accuracy) на независимом экзамене, \(report.uniqueCorpusCount) PNG"
         return .init(
             status: status,
             trainedCorpusCount: report.uniqueCorpusCount,
-            automaticSubmissionAllowed: automatic,
             recognize: { challenge in
                 try? await strategy.solve(
                     pngData: challenge.imagePNG,

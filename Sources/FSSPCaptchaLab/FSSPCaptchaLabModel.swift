@@ -12,7 +12,6 @@ struct FSSPCaptchaLabModelProvider {
     /// Corpus size recorded by the model report. `nil` means there is no
     /// usable model/report pair and the initial 200-image training is due.
     var trainedCorpusCount: Int?
-    var automaticSubmissionAllowed: Bool
     var recognize: @MainActor (FSSPCaptchaChallenge) async -> CaptchaAttempt?
 }
 
@@ -38,10 +37,10 @@ struct FSSPCaptchaLabDependencies {
 
 @MainActor
 final class FSSPCaptchaLabModel: ObservableObject {
-    static let defaultDocumentID = "11RS0001#2-9143/2025#1"
-    static let automaticConfidence = 0.50
+    static let defaultDocumentID = "ФС 038169867"
     static let firstTrainingCount = 200
     static let retrainingIncrement = 100
+    private static let trainingRetryDelay: Duration = .seconds(30)
 
     enum State: Equatable {
         case idle
@@ -67,8 +66,6 @@ final class FSSPCaptchaLabModel: ObservableObject {
     @Published private(set) var manualAcceptedCount = 0
     @Published private(set) var automaticAcceptedCount = 0
     @Published private(set) var rejectedCount = 0
-    @Published private(set) var consecutiveAutomaticRejections = 0
-    @Published private(set) var automaticCollectionEnabled = true
     @Published private(set) var modelStatus: String
     @Published private(set) var message = ""
     @Published private(set) var trainingLog = "Обучение ещё не запускалось."
@@ -124,14 +121,6 @@ final class FSSPCaptchaLabModel: ObservableObject {
         await submit(code: code, source: .manual)
     }
 
-    func resumeAutomaticCollection() async {
-        automaticCollectionEnabled = true
-        consecutiveAutomaticRejections = 0
-        message = "Автосбор снова включён."
-        guard state == .awaitingManualInput, let challenge else { return }
-        await offerModelSuggestion(for: challenge, generation: generation)
-    }
-
     func retryTraining() async {
         guard state == .trainingFailed else { return }
         failedTrainingAtCorpusCount = nil
@@ -175,37 +164,36 @@ final class FSSPCaptchaLabModel: ObservableObject {
             activeDocumentID = number
             await present(freshChallenge, generation: currentGeneration)
         case .found, .notFound, .ambiguous:
-            state = .idle
-            message = "ФССП вернула ответ без CAPTCHA; новая пара в корпус не добавлена."
+            state = .loading
+            message = "ФССП вернула ответ без CAPTCHA; автоматически запрашиваем следующую."
+            scheduleFreshChallenge(generation: currentGeneration)
         case .error(let error):
-            fail(error)
+            scheduleRetry(after: error, generation: currentGeneration)
         }
     }
 
     private func present(_ freshChallenge: FSSPCaptchaChallenge,
                          generation currentGeneration: Int) async {
         guard isCurrent(currentGeneration) else { return }
-        challenge = freshChallenge
-        suggestedCode = nil
-        suggestionConfidence = nil
-        state = .awaitingManualInput
-        message = "Введите пять цифр с изображения."
+        show(freshChallenge)
         await offerModelSuggestion(for: freshChallenge, generation: currentGeneration)
     }
 
     private func offerModelSuggestion(for freshChallenge: FSSPCaptchaChallenge,
                                       generation currentGeneration: Int) async {
         let provider = modelProvider
-        guard let attempt = await provider.recognize(freshChallenge),
-              isCurrent(currentGeneration),
-              challenge?.codeID == freshChallenge.codeID,
-              CoreMLCaptchaStrategy.isCompatibleOutput(attempt.value) else { return }
+        let attempt = await provider.recognize(freshChallenge)
+        guard isCurrent(currentGeneration),
+              challenge?.codeID == freshChallenge.codeID else { return }
+        guard let attempt,
+              CoreMLCaptchaStrategy.isCompatibleOutput(attempt.value) else {
+            message = "Модель не распознала эту CAPTCHA; автоматически запрашиваем следующую."
+            scheduleFreshChallenge(generation: currentGeneration)
+            return
+        }
 
         suggestedCode = attempt.value
         suggestionConfidence = attempt.confidence
-        guard automaticCollectionEnabled,
-              provider.automaticSubmissionAllowed,
-              attempt.confidence >= Self.automaticConfidence else { return }
         await submit(code: attempt.value, source: .automatic)
     }
 
@@ -228,20 +216,14 @@ final class FSSPCaptchaLabModel: ObservableObject {
                            step: step, generation: currentGeneration)
         case .captchaRequired(let replacement):
             rejectedCount += 1
-            var disabledAutomaticCollection = false
             if source == .automatic {
-                consecutiveAutomaticRejections += 1
-                if consecutiveAutomaticRejections >= 3 {
-                    automaticCollectionEnabled = false
-                    disabledAutomaticCollection = true
-                }
-            }
-            await present(replacement, generation: currentGeneration)
-            if disabledAutomaticCollection {
-                message = "Три автоматических ответа подряд отклонены; автосбор выключен."
+                show(replacement)
+                scheduleModelAttempt(for: replacement, generation: currentGeneration)
+            } else {
+                await present(replacement, generation: currentGeneration)
             }
         case .error(let error):
-            fail(error)
+            scheduleRetry(after: error, generation: currentGeneration)
         }
     }
 
@@ -257,7 +239,6 @@ final class FSSPCaptchaLabModel: ObservableObject {
             manualAcceptedCount += 1
         case .automatic:
             automaticAcceptedCount += 1
-            consecutiveAutomaticRejections = 0
         }
         await refreshCorpusAndModel()
         guard isCurrent(currentGeneration) else { return }
@@ -305,6 +286,7 @@ final class FSSPCaptchaLabModel: ObservableObject {
                   trainedCount >= count else {
                 trainingLog = log
                 trainingFailed(at: count, detail: "Тренер завершился, но не создал актуальную проверяемую модель и отчёт.")
+                scheduleTrainingRetry(generation: currentGeneration)
                 return
             }
             await dependencies.markTrained(trainedCount)
@@ -320,13 +302,14 @@ final class FSSPCaptchaLabModel: ObservableObject {
             modelStatus = modelProvider.status
             trainingLog = log
             trainingFailed(at: count, detail: "Обучение не выполнено.")
+            scheduleTrainingRetry(generation: currentGeneration)
         }
     }
 
     private func trainingFailed(at count: Int, detail: String) {
         failedTrainingAtCorpusCount = count
         state = .trainingFailed
-        message = "\(detail) Повторите обучение или продолжите ручной сбор."
+        message = "\(detail) Новая попытка обучения начнётся автоматически."
     }
 
     private func trainingIsDue(for count: Int) -> Bool {
@@ -342,6 +325,44 @@ final class FSSPCaptchaLabModel: ObservableObject {
         Task { [weak self] in
             await self?.requestFreshChallenge(generation: currentGeneration)
         }
+    }
+
+    private func scheduleModelAttempt(for challenge: FSSPCaptchaChallenge,
+                                      generation currentGeneration: Int) {
+        Task { [weak self] in
+            await self?.offerModelSuggestion(for: challenge, generation: currentGeneration)
+        }
+    }
+
+    private func scheduleRetry(after error: String, generation currentGeneration: Int) {
+        state = .loading
+        challenge = nil
+        suggestedCode = nil
+        suggestionConfidence = nil
+        activeDocumentID = nil
+        message = "\(error) Повторяем запрос автоматически."
+        // FSSPClient keeps the three-second interval, Retry-After and its own
+        // one network retry; the lab only starts the next logical attempt.
+        scheduleFreshChallenge(generation: currentGeneration)
+    }
+
+    private func scheduleTrainingRetry(generation currentGeneration: Int) {
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.trainingRetryDelay)
+            guard !Task.isCancelled,
+                  let self,
+                  self.isCurrent(currentGeneration),
+                  self.state == .trainingFailed else { return }
+            await self.retryTraining()
+        }
+    }
+
+    private func show(_ freshChallenge: FSSPCaptchaChallenge) {
+        challenge = freshChallenge
+        suggestedCode = nil
+        suggestionConfidence = nil
+        state = .awaitingManualInput
+        message = "CAPTCHA распознаётся и отправляется автоматически."
     }
 
     private var normalizedDocumentID: String {

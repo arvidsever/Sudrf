@@ -1,11 +1,9 @@
+import base64
 import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-from PIL import Image
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "Scripts" / "sudrf-captcha-curator.py"
@@ -16,8 +14,11 @@ sys.modules[SPEC.name] = CURATOR
 SPEC.loader.exec_module(CURATOR)
 
 
-def write_png(path: Path, colour: tuple[int, int, int]) -> None:
-    Image.new("RGB", (100, 30), colour).save(path)
+def write_png(path: Path, _colour: tuple[int, int, int]) -> None:
+    path.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
+        "AScY42YAAAAASUVORK5CYII="
+    ))
 
 
 class SudrfCaptchaCuratorTests(unittest.TestCase):

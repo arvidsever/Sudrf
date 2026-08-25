@@ -1,9 +1,9 @@
 # FSSP regression fixtures
 
-This directory intentionally contains no generated or weakly labelled data.
-Before the FSSP model can become eligible it must contain at least 30 unique,
-manually verified PNG files named `<five-digits>_<sha256>.png`, plus a
-`regression.tsv` with `file<TAB>label` rows.
+This directory contains 30 unique CAPTCHA images manually verified against
+their server-confirmed labels on 25 August 2026. The PNG files are named
+`<five-digits>_<sha256>.png`; `regression.tsv` records the corresponding
+`file<TAB>label` rows used by the independent production gate.
 
 `parity/` contains three server-confirmed CAPTCHA at left, central and right
 horizontal positions. They verify that the Swift and Python preprocessors use

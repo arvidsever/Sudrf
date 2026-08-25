@@ -116,6 +116,23 @@ class PrepareFSSPCorpusTests(unittest.TestCase):
             self.assertNotIn(str(payloads[1]), (root / "validation.tsv").read_text())
             self.assertIn(str(payloads[1]), (root / "exam.tsv").read_text())
 
+    def test_repository_manual_regression_fixtures_are_complete_and_intact(self):
+        manifest = (
+            ROOT / "Tests" / "CaptchaSolverTests" / "Fixtures" / "fssp"
+            / "regression.tsv"
+        )
+        fixture_rows = rows(manifest)
+        self.assertEqual(len(fixture_rows), 30)
+        digests = set()
+        for row in fixture_rows:
+            filename, label = row.split("\t")
+            image = manifest.parent / filename
+            digest = sha256(image.read_bytes()).hexdigest()
+            self.assertEqual(image.stem.split("_", 1)[0], label)
+            self.assertEqual(image.stem.rsplit("_", 1)[1], digest)
+            digests.add(digest)
+        self.assertEqual(len(digests), 30)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -256,8 +256,8 @@ class CaptchaNet(nn.Module):
         return torch.stack([h(x) for h in self.heads], dim=1)
 
 
-class FSSPSharedCaptchaNet(nn.Module):
-    """Compact FSSP CNN with one classifier shared by all five positions."""
+class SharedCaptchaNet(nn.Module):
+    """Compact CNN with one digit classifier shared by all five positions."""
 
     def __init__(self):
         super().__init__()
@@ -271,12 +271,19 @@ class FSSPSharedCaptchaNet(nn.Module):
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.LeakyReLU(negative_slope=0.01),
         )
-        self.pool = nn.AdaptiveAvgPool2d((1, 5))
+        # The feature map is always 5x16. A 5x4 window with horizontal
+        # stride 3 is exactly the same five-bin average as
+        # AdaptiveAvgPool2d((1, 5)), but is supported by PyTorch MPS.
+        self.pool = nn.AvgPool2d(kernel_size=(5, 4), stride=(5, 3))
         self.classifier = nn.Linear(64, 10)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pool(self.features(x)).squeeze(2).transpose(1, 2)
         return self.classifier(x)
+
+
+# Compatibility name for the existing FSSP trainer and its tests.
+FSSPSharedCaptchaNet = SharedCaptchaNet
 
 
 def train_epoch(model: CaptchaNet,

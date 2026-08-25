@@ -212,6 +212,49 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
         XCTAssertEqual(result.value, "12345")
     }
 
+    func testHighestConfidenceStrategyKeepsTheMoreConfidentAnswer() async throws {
+        let strategy = HighestConfidenceStrategy(
+            first: StubAttemptProvider(value: "12345", confidence: 0.71),
+            second: StubAttemptProvider(value: "54321", confidence: 0.92))
+
+        let result = try await strategy.solve(
+            pngData: Data(), kind: .sudrfToken, host: nil)
+
+        XCTAssertEqual(result.value, "54321")
+        XCTAssertEqual(result.confidence, 0.92)
+    }
+
+    func testHighestConfidenceStrategyUsesSurvivingModelAfterFailure() async throws {
+        let strategy = HighestConfidenceStrategy(
+            first: ThrowingProvider(error: TestError.failed),
+            second: StubAttemptProvider(value: "54321", confidence: 0.92))
+
+        let result = try await strategy.solve(
+            pngData: Data(), kind: .sudrfToken, host: nil)
+
+        XCTAssertEqual(result.value, "54321")
+    }
+
+    func testNumericSpecialistMustBeBesidePrimaryModel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let primary = root.appendingPathComponent(
+            "model-captcha-numeric.mlmodelc", isDirectory: true)
+
+        XCTAssertNil(CoreMLModelDiscovery.discoverNumericSpecialistURL(
+            beside: primary))
+
+        let specialist = root.appendingPathComponent(
+            "model-captcha-numeric-specialist.mlmodelc", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: specialist, withIntermediateDirectories: true)
+
+        XCTAssertEqual(
+            CoreMLModelDiscovery.discoverNumericSpecialistURL(beside: primary),
+            specialist)
+    }
+
     func testStrictFSSPDispatchNeverFallsBackToOtherModel() async throws {
         let dispatch = KindDispatchingStrategy(
             primary: ThrowingProvider(error: TestError.failed),
@@ -400,8 +443,12 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
     func testLocalSudrfFixturesAccuracy() async throws {
         guard let url = Bundle.module.url(forResource: "model-captcha-numeric",
                                           withExtension: "mlmodelc",
-                                          subdirectory: "Fixtures") else {
-            throw XCTSkip("model not in bundle")
+                                          subdirectory: "Fixtures"),
+              let specialistURL = Bundle.module.url(
+                forResource: "model-captcha-numeric-specialist",
+                withExtension: "mlmodelc",
+                subdirectory: "Fixtures") else {
+            throw XCTSkip("numeric model ensemble not in bundle")
         }
         // Грузим labels.csv (filename,expected,kind,notes) — наши 10 captcha
         // (3 уникальных rotated-стиля: 90299/56667 spb, 60984 nsk; dups
@@ -411,7 +458,10 @@ final class CoreMLCaptchaStrategyTests: XCTestCase {
             throw XCTSkip("labels.csv not in bundle")
         }
         let lines = csv.split(separator: "\n").dropFirst()
-        let strategy = try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken)
+        let strategy = HighestConfidenceStrategy(
+            first: try CoreMLCaptchaStrategy(modelURL: url, kind: .sudrfToken),
+            second: try CoreMLCaptchaStrategy(
+                modelURL: specialistURL, kind: .sudrfToken))
         var total = 0
         var allReturnedValid5 = true
         var captured: [(filename: String, attempt: CaptchaAttempt, expected: String)] = []

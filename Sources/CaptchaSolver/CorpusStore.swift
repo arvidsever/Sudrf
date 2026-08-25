@@ -158,9 +158,12 @@ public actor CorpusStore {
     @discardableResult
     public func add(png: Data, code: String, host: String, kind: CaptchaKind) -> URL? {
         let dir = self.dir(for: kind)
-        if kind == .fsspDigits {
-            guard !png.isEmpty, code.utf8.count == 5,
-                  code.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+        if kind == .fsspDigits || kind == .sudrfToken {
+            guard !png.isEmpty else { return nil }
+            if kind == .fsspDigits {
+                guard code.utf8.count == 5,
+                      code.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+            }
             let digest = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
             let url = dir.appendingPathComponent("\(code)_\(digest).png")
             if fm.fileExists(atPath: url.path) { return url }
@@ -173,8 +176,15 @@ public actor CorpusStore {
                 return nil
             }
             do { try png.write(to: url, options: .atomic) } catch { return nil }
-            manifest.version = max(manifest.version, 2)
-            manifest.fsspPendingSinceLastTrain += 1
+            switch kind {
+            case .sudrfToken:
+                manifest.numericPendingSinceLastTrain += 1
+            case .fsspDigits:
+                manifest.version = max(manifest.version, 2)
+                manifest.fsspPendingSinceLastTrain += 1
+            case .kcaptcha:
+                break
+            }
             evictIfNeeded(kind: kind)
             scheduleManifestWrite()
             return url

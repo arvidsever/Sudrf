@@ -8,6 +8,7 @@ import Foundation
 public enum CoreMLModelDiscovery {
 
     public static let numericModelName = "model-captcha-numeric"
+    public static let numericSpecialistModelName = "model-captcha-numeric-specialist"
     public static let fsspModelName = "model-captcha-fssp"
     public static let fsspEligibilityName = "model-captcha-fssp-eligibility"
     /// Bootstrap artifacts are deliberately not part of production model
@@ -20,6 +21,14 @@ public enum CoreMLModelDiscovery {
 
     public static func discoverURL() -> URL? {
         discoverURL(named: numericModelName)
+    }
+
+    public static func discoverNumericSpecialistURL(beside primaryURL: URL) -> URL? {
+        let specialistURL = primaryURL.deletingLastPathComponent()
+            .appendingPathComponent("\(numericSpecialistModelName).mlmodelc", isDirectory: true)
+        return FileManager.default.fileExists(atPath: specialistURL.path)
+            ? specialistURL
+            : nil
     }
 
     /// FSSP is intentionally fail-closed: merely placing a model on disk is

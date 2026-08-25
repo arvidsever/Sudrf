@@ -13,7 +13,7 @@ regression fixtures.
 The lab bootstrap model is written outside the app bundle as
 `model-captcha-fssp-bootstrap.mlmodelc/` with the adjacent
 `model-captcha-fssp-bootstrap-report.json`. It is not a production model and
-is never discovered by the ordinary solver. The final production model still
-stays disabled until the training pipeline records the fixture count together
-with the corpus and independent-exam metrics in
-`model-captcha-fssp-eligibility.json`.
+is never discovered by the ordinary solver. The production model is published
+separately as the immutable `model-fssp-v1` release asset and is discovered
+only beside the tracked `model-captcha-fssp-eligibility.json`, which records
+the fixture count, independent-exam metrics and CoreML parity result.

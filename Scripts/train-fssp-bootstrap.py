@@ -36,6 +36,7 @@ MASK_WIDTH, MASK_HEIGHT = 64, 20
 MAX_EPOCHS = 200
 DEFAULT_PATIENCE = 30
 AUTO_CONFIDENCE = 0.50
+PRODUCTION_CONFIDENCE = 0.90
 PARITY_TOLERANCE = 0.001
 _HELPER_MODULE = None
 
@@ -603,11 +604,17 @@ def main(argv: list[str] | None = None) -> int:
         exam_metrics = evaluate_compiled(
             staged_model, exam, np_module, threshold=AUTO_CONFIDENCE, compiled=compiled
         )
+        production_metrics = evaluate_compiled(
+            staged_model, exam, np_module, threshold=PRODUCTION_CONFIDENCE,
+            compiled=compiled,
+        )
         print(
             f"compiled exam-exact={exam_metrics['string']:.3f} "
             f"exam-digit={exam_metrics['digit']:.3f} "
             f"accepted@.50={exam_metrics['accepted']} "
-            f"accepted-accuracy={exam_metrics['accepted_accuracy']:.3f}"
+            f"accepted-accuracy={exam_metrics['accepted_accuracy']:.3f} "
+            f"accepted@.90={production_metrics['accepted']} "
+            f"production-accuracy={production_metrics['accepted_accuracy']:.3f}"
         )
 
         report = {
@@ -626,6 +633,8 @@ def main(argv: list[str] | None = None) -> int:
             "examDigitAccuracy": exam_metrics["digit"],
             "acceptedAt050Count": exam_metrics["accepted"],
             "acceptedAt050Accuracy": exam_metrics["accepted_accuracy"],
+            "acceptedAt090Count": production_metrics["accepted"],
+            "acceptedAt090Accuracy": production_metrics["accepted_accuracy"],
             "trainedAt": datetime.now(timezone.utc)
                 .replace(microsecond=0)
                 .isoformat()

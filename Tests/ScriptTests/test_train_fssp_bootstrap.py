@@ -61,6 +61,7 @@ class TrainFSSPBootstrapTests(unittest.TestCase):
         self.assertEqual(TRAINER.SPLIT_NAME, "sha256-mod10-v2")
         self.assertEqual(TRAINER.PREPROCESSOR_VERSION, "fssp-dominant-span-box-v3")
         self.assertEqual(TRAINER.ARCHITECTURE_VERSION, "fssp-shared-cnn-v2")
+        self.assertEqual(TRAINER.PRODUCTION_CONFIDENCE, 0.90)
         try:
             import torch
         except ModuleNotFoundError:

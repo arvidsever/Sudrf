@@ -111,4 +111,24 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertTrue(files[0].lastPathComponent.hasPrefix("sent-token_"))
         XCTAssertNil(model.lastSubmittedCaptcha)
     }
+
+    @MainActor
+    func testCaptchaCorpusBootstrapDoesNotSaveWithoutServerResults() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("SearchModelCorpusTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let corpus = CorpusStore(baseDir: dir)
+        let model = SearchModel(corpusStore: corpus)
+        model.lastSubmittedCaptcha = (
+            png: Data([0x01]),
+            token: CaptchaToken(value: "12345", id: "sent-id")
+        )
+
+        await model.bootstrapCaptchaToCorpus(host: "court.sudrf.ru", results: [])
+
+        let count = await corpus.currentCount(kind: .sudrfToken)
+        XCTAssertEqual(count, 0)
+        XCTAssertNotNil(model.lastSubmittedCaptcha)
+    }
 }

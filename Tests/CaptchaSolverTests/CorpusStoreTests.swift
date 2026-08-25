@@ -167,6 +167,25 @@ final class CorpusStoreTests: XCTestCase {
         XCTAssertEqual(pending, 1)
     }
 
+    func testNumericCorpusDeduplicatesServerConfirmedImageBySHA256() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([4, 5, 6])
+
+        let firstAdded = await store.add(
+            png: png, code: "12345", host: "court.sudrf.ru", kind: .sudrfToken)
+        let duplicateAdded = await store.add(
+            png: png, code: "12345", host: "court.sudrf.ru", kind: .sudrfToken)
+        let conflictingAdded = await store.add(
+            png: png, code: "54321", host: "court.sudrf.ru", kind: .sudrfToken)
+
+        XCTAssertEqual(try XCTUnwrap(firstAdded), try XCTUnwrap(duplicateAdded))
+        XCTAssertNil(conflictingAdded)
+        let count = await store.currentCount(kind: .sudrfToken)
+        let pending = await store.pendingSinceLastTrain(kind: .sudrfToken)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(pending, 1)
+    }
+
     func testOldManifestDecodesWithEmptyFSSPMetadata() throws {
         let old = Data(#"{"version":1,"numericCeiling":5000,"textCeiling":5000,"numericLastTrainedCount":1,"numericPendingSinceLastTrain":0,"textLastTrainedCount":2,"textPendingSinceLastTrain":0,"fifoPolicy":"oldestFirst","textLengthDistribution":{}}"#.utf8)
         let decoder = JSONDecoder()

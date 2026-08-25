@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -56,6 +57,105 @@ INK_THRESH_SQ = 80 * 80  # squared RGB distance
 INPUT_W, INPUT_H = 100, 30
 MASK_W, MASK_H = 64, 20
 FSSP_INPUT_W, FSSP_INPUT_H = 240, 80
+FSSP_PREPROCESSOR_VERSION = "fssp-dominant-span-box-v3"
+
+
+def _fssp_dominant_rgb_span(rgba: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """Return the dominant opaque colour mask and its horizontal crop.
+
+    FSSP images are palette PNGs: transparent pixels may contain arbitrary
+    RGB bytes, so they are excluded before selecting the colour. The exact
+    dominant opaque colour is the centre of the digit/stroke palette. Small
+    isolated marks are filtered by the five-pixels-per-column rule; gaps up to
+    ten columns are joined so the five digits remain one span.
+    """
+    alpha = rgba[:, :, 3]
+    if not np.all((alpha == 0) | (alpha == 255)):
+        raise ValueError("FSSP CAPTCHA uses unsupported partial transparency")
+    if not np.any(alpha == 0):
+        raise ValueError("FSSP CAPTCHA has no transparent background")
+    opaque = alpha == 255
+    if not np.any(opaque):
+        raise ValueError("FSSP CAPTCHA has no opaque pixels")
+
+    opaque_rgb = rgba[:, :, :3][opaque].astype(np.uint8, copy=False)
+    colours, first_indices, counts = np.unique(
+        opaque_rgb, axis=0, return_index=True, return_counts=True
+    )
+    most_common = np.flatnonzero(counts == counts.max())
+    # np.unique sorts colours lexicographically; the Swift path resolves a
+    # frequency tie by first row-major occurrence, so do that explicitly.
+    dominant = colours[most_common[np.argmin(first_indices[most_common])]]
+    ink = opaque & np.all(rgba[:, :, :3] == dominant, axis=2)
+    column_counts = ink.sum(axis=0)
+    active = column_counts >= 5
+    runs: list[list[int]] = []
+    cursor = 0
+    while cursor < FSSP_INPUT_W:
+        if not active[cursor]:
+            cursor += 1
+            continue
+        end = cursor
+        while end < FSSP_INPUT_W and active[end]:
+            end += 1
+        runs.append([cursor, end - 1])
+        cursor = end
+
+    if not runs:
+        raise ValueError("FSSP CAPTCHA has no digit span")
+
+    merged: list[list[int]] = []
+    for start, end in runs:
+        if merged and start - merged[-1][1] - 1 <= 10:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    # If there is more than one candidate, the longest one is the digit row.
+    # Ties resolve to the leftmost span for deterministic output.
+    start, end = max(merged, key=lambda pair: (pair[1] - pair[0] + 1, -pair[0]))
+    start = max(0, start - 4)
+    end = min(FSSP_INPUT_W - 1, end + 4)
+    if end - start + 1 < 16:
+        raise ValueError("FSSP digit span is too narrow")
+    return ink, start, end
+
+
+def fssp_dominant_span_box_v3(png_bytes: bytes) -> np.ndarray:
+    """Return the 64x20 FSSP mask shared by the Python trainer and Swift.
+
+    The source is kept at 240x80. Only the horizontal digit span is cropped;
+    the cropped Boolean mask is stretched back to 240 columns with nearest
+    sampling and then reduced by the fixed 240x80 -> 64x20 box average. RGB
+    and alpha are intentionally handled before any resizing so
+    transparent-background palette noise cannot become ink.
+    """
+    img = Image.open(BytesIO(png_bytes)).convert("RGBA")
+    if img.size != (FSSP_INPUT_W, FSSP_INPUT_H):
+        raise ValueError(
+            f"FSSP CAPTCHA must be 240x80, got {img.width}x{img.height}"
+        )
+    rgba = np.asarray(img, dtype=np.uint8)
+    ink, start, end = _fssp_dominant_rgb_span(rgba)
+    crop_width = end - start + 1
+    # Keep the source geometry fixed for the final box average. This is
+    # nearest-neighbour stretching, expressed explicitly so Swift can mirror
+    # it without relying on platform-specific image interpolation.
+    stretched = np.zeros((FSSP_INPUT_H, FSSP_INPUT_W), dtype=np.float32)
+    for output_x in range(FSSP_INPUT_W):
+        source_x = start + min(
+            crop_width - 1,
+            int(output_x * crop_width / FSSP_INPUT_W),
+        )
+        stretched[:, output_x] = ink[:, source_x]
+    output = np.zeros((MASK_H, MASK_W), dtype=np.float32)
+    for output_y in range(MASK_H):
+        y0 = output_y * FSSP_INPUT_H // MASK_H
+        y1 = (output_y + 1) * FSSP_INPUT_H // MASK_H
+        for output_x in range(MASK_W):
+            x0 = output_x * FSSP_INPUT_W // MASK_W
+            x1 = (output_x + 1) * FSSP_INPUT_W // MASK_W
+            output[output_y, output_x] = stretched[y0:y1, x0:x1].mean()
+    return output
 
 
 def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
@@ -79,21 +179,8 @@ def binarize_and_downsample(png_bytes: bytes) -> np.ndarray:
 
 
 def fssp_full_frame_box_average(png_bytes: bytes) -> np.ndarray:
-    """240x80 RGB -> 64x20 max(R,G,B)/255 box average."""
-    img = Image.open(BytesIO(png_bytes)).convert("RGB")
-    if img.size != (FSSP_INPUT_W, FSSP_INPUT_H):
-        raise ValueError(
-            f"FSSP CAPTCHA must be 240x80, got {img.width}x{img.height}"
-        )
-    arr = np.asarray(img, dtype=np.float32)
-    strength = arr.max(axis=2) / 255.0
-    out = np.zeros((MASK_H, MASK_W), dtype=np.float32)
-    for oy in range(MASK_H):
-        y0, y1 = oy * FSSP_INPUT_H // MASK_H, (oy + 1) * FSSP_INPUT_H // MASK_H
-        for ox in range(MASK_W):
-            x0, x1 = ox * FSSP_INPUT_W // MASK_W, (ox + 1) * FSSP_INPUT_W // MASK_W
-            out[oy, ox] = strength[y0:y1, x0:x1].mean()
-    return out
+    """Compatibility name for the FSSP v3 preprocessor."""
+    return fssp_dominant_span_box_v3(png_bytes)
 
 
 class CaptchaSample:
@@ -167,6 +254,36 @@ class CaptchaNet(nn.Module):
         x = F.leaky_relu(self.fc(x), negative_slope=0.01)
         # Stack 5 heads: output shape (B, 5, 10).
         return torch.stack([h(x) for h in self.heads], dim=1)
+
+
+class SharedCaptchaNet(nn.Module):
+    """Compact CNN with one digit classifier shared by all five positions."""
+
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, padding=1),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.LeakyReLU(negative_slope=0.01),
+        )
+        # The feature map is always 5x16. A 5x4 window with horizontal
+        # stride 3 is exactly the same five-bin average as
+        # AdaptiveAvgPool2d((1, 5)), but is supported by PyTorch MPS.
+        self.pool = nn.AvgPool2d(kernel_size=(5, 4), stride=(5, 3))
+        self.classifier = nn.Linear(64, 10)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(self.features(x)).squeeze(2).transpose(1, 2)
+        return self.classifier(x)
+
+
+# Compatibility name for the existing FSSP trainer and its tests.
+FSSPSharedCaptchaNet = SharedCaptchaNet
 
 
 def train_epoch(model: CaptchaNet,
@@ -246,6 +363,7 @@ def evaluate_compiled(model_path: Path,
     if compiled_type is None:
         raise RuntimeError("coremltools.models.CompiledMLModel is unavailable")
     compiled = compiled_type(str(model_path))
+    correct_per_digit = np.zeros(5, dtype=np.int64)
     correct_string = 0
     accepted = 0
     accepted_correct = 0
@@ -265,13 +383,15 @@ def evaluate_compiled(model_path: Path,
         prediction = logits.argmax(axis=1)
         confidence = min(float(probabilities[index, prediction[index]]) for index in range(5))
         correct = bool(np.array_equal(prediction, np.asarray(sample.label)))
+        for index in range(5):
+            correct_per_digit[index] += int(prediction[index] == sample.label[index])
         correct_string += int(correct)
         if confidence >= threshold:
             accepted += 1
             accepted_correct += int(correct)
     total = len(samples)
     return {
-        "per_digit": [],
+        "per_digit": (correct_per_digit / max(1, total)).tolist(),
         "string": correct_string / max(1, total),
         "total": total,
         "accepted_at_090": accepted,
@@ -484,20 +604,38 @@ def main():
         accepted_count = final_eval["accepted_at_090"]
         accepted_accuracy = final_eval["accepted_accuracy_at_090"]
         if final_eval["string"] < 0.97:
-            print("error: held-out exact-string accuracy is below 0.97", file=sys.stderr)
+            print("error: exam exact-string accuracy is below 0.97", file=sys.stderr)
             sys.exit(1)
         if accepted_count < 100 or accepted_accuracy < 0.99:
             print("error: accepted-answer gate requires at least 100 answers at 0.90 with accuracy >= 0.99", file=sys.stderr)
             sys.exit(1)
+        train_report_metrics = evaluate(model, train, device)
         report = {
-            "version": 1,
+            # Keep the legacy GAS trainer's output path from producing a v1
+            # report that the current Swift decoder could mistake for a
+            # production FSSP artifact. This path is intentionally ineligible
+            # until the v2 trainer supplies its independent exam and parity.
+            "version": 2,
             "modelName": args.model_name,
-            "split": "sha256-mod5-v1",
+            "split": "sha256-mod10-v2",
             "uniqueCorpusCount": unique_count,
             "regressionFixtureCount": len({sample.digest for sample in regression}),
-            "heldOutStringAccuracy": final_eval["string"],
+            "trainCount": len(train),
+            "trainStringAccuracy": train_report_metrics["string"],
+            "trainDigitAccuracy": float(np.mean(train_report_metrics["per_digit"])),
+            "validationCount": 0,
+            "validationStringAccuracy": 0.0,
+            "validationDigitAccuracy": 0.0,
+            "examCount": final_eval["total"],
+            "examStringAccuracy": final_eval["string"],
+            "examDigitAccuracy": float(np.mean(final_eval["per_digit"])),
             "acceptedAt090Count": accepted_count,
             "acceptedAt090Accuracy": accepted_accuracy,
+            "trainedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "preprocessorVersion": FSSP_PREPROCESSOR_VERSION,
+            "architectureVersion": "fssp-legacy-cnn-v1",
+            "coreMLParityPassed": False,
+            "coreMLMaxLogitDifference": 1.0,
         }
         args.eligibility_output.parent.mkdir(parents=True, exist_ok=True)
         args.eligibility_output.write_text(

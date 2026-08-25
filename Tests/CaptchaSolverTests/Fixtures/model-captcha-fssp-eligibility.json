@@ -1,0 +1,23 @@
+{
+  "acceptedAt090Accuracy": 0.9973190348525469,
+  "acceptedAt090Count": 373,
+  "architectureVersion": "fssp-shared-cnn-v2",
+  "coreMLMaxLogitDifference": 0.000011444091796875,
+  "coreMLParityPassed": true,
+  "examCount": 427,
+  "examDigitAccuracy": 0.9882903981264637,
+  "examStringAccuracy": 0.9718969555035128,
+  "modelName": "model-captcha-fssp",
+  "preprocessorVersion": "fssp-dominant-span-box-v3",
+  "regressionFixtureCount": 30,
+  "split": "sha256-mod10-v2",
+  "trainCount": 3185,
+  "trainDigitAccuracy": 0.990392464678179,
+  "trainStringAccuracy": 0.9767660910518053,
+  "trainedAt": "2026-08-25T12:11:52Z",
+  "uniqueCorpusCount": 4000,
+  "validationCount": 388,
+  "validationDigitAccuracy": 0.9829896907216494,
+  "validationStringAccuracy": 0.9664948453608248,
+  "version": 2
+}

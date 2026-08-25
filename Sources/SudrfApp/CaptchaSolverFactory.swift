@@ -29,8 +29,16 @@ enum CaptchaSolverFactory {
         var enabledKinds: Set<CaptchaKind> = [.sudrfToken, .kcaptcha]
         if let modelURL = CoreMLModelDiscovery.discoverURL(),
            let coreML = try? CoreMLCaptchaStrategy(modelURL: modelURL, kind: .sudrfToken) {
+            var numericProvider: any CaptchaSolvingProvider = coreML
+            if let specialistURL = CoreMLModelDiscovery.discoverNumericSpecialistURL(
+                beside: modelURL),
+               let specialist = try? CoreMLCaptchaStrategy(
+                    modelURL: specialistURL, kind: .sudrfToken) {
+                numericProvider = HighestConfidenceStrategy(
+                    first: coreML, second: specialist)
+            }
             provider = KindDispatchingStrategy(
-                primary: coreML,
+                primary: numericProvider,
                 fallback: vision,
                 minPrimaryConfidence: settings.minConfidence,
                 primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) }

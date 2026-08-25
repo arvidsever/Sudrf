@@ -27,8 +27,8 @@ done
 
 APP_NAME="Sudrf"
 RELEASE_CHANNEL="Alpha"
-MARKETING_VERSION="0.42.37"
-CURRENT_PROJECT_VERSION="119"
+MARKETING_VERSION="0.42.38"
+CURRENT_PROJECT_VERSION="120"
 ARCHIVE="build/${APP_NAME}-${RELEASE_CHANNEL}-${MARKETING_VERSION}-build${CURRENT_PROJECT_VERSION}.zip"
 
 ARCHES=(--arch arm64 --arch x86_64)
@@ -81,6 +81,21 @@ MODEL_DIR="$MODEL_FIXTURES_DIR/model-captcha-numeric.mlmodelc"
 }
 bash Scripts/verify-model.sh --model-dir "$MODEL_DIR" --manifest "$MODEL_MANIFEST"
 cp -R "$MODEL_DIR" "$APP/Contents/Resources/"
+
+# The numeric specialist makes different errors from the primary model. The
+# runtime evaluates both and keeps the answer with the higher confidence.
+NUMERIC_SPECIALIST_NAME="model-captcha-numeric-specialist"
+NUMERIC_SPECIALIST_DIR="$MODEL_FIXTURES_DIR/$NUMERIC_SPECIALIST_NAME.mlmodelc"
+NUMERIC_SPECIALIST_MANIFEST="$MODEL_FIXTURES_DIR/MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256"
+[[ -d "$NUMERIC_SPECIALIST_DIR" && -f "$NUMERIC_SPECIALIST_MANIFEST" ]] || {
+    echo "numeric specialist model release inputs are incomplete" >&2
+    exit 1
+}
+bash Scripts/verify-model.sh \
+    --model-dir "$NUMERIC_SPECIALIST_DIR" \
+    --manifest "$NUMERIC_SPECIALIST_MANIFEST" \
+    --model-name "$NUMERIC_SPECIALIST_NAME"
+cp -R "$NUMERIC_SPECIALIST_DIR" "$APP/Contents/Resources/"
 
 # FSSP model remains optional until its objective training gate has produced
 # both the SHA manifest and eligibility report. Once either marker is tracked,

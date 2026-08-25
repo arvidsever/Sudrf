@@ -112,6 +112,21 @@ final class FSSPClientTests: XCTestCase {
         XCTAssertEqual(details.bailiffPhone, "+7(920)084-63-47")
     }
 
+    func testPaperWritNumberFindsExpectedExactRow() async throws {
+        FSSPURLProtocol.enqueue(body: fixture("paper-found"))
+
+        let step = try await client().discover(document: CourtEnforcementDocument(
+            blankNumber: "ФС 038169867"))
+
+        guard case .found(let lookup) = step,
+              let details = lookup.record?.bailiffDetails else {
+            return XCTFail("Ожидалась точная строка бумажного исполнительного листа")
+        }
+        XCTAssertEqual(details.proceedingNumber, "11331/23/98077-ИП")
+        XCTAssertEqual(details.previousProceedingNumbers, ["133791/22/77053-ИП"])
+        XCTAssertEqual(details.bailiff, "ЧЕРНЫШЕВА Е. А.")
+    }
+
     func testEmptyAndNonExactRowsBecomeNotFoundRatherThanFirstMatch() async throws {
         FSSPURLProtocol.enqueue(body: fixture("empty"))
         let empty = try await client().discover(document: searchedDocument())
@@ -155,6 +170,17 @@ final class FSSPClientTests: XCTestCase {
             return XCTFail("Повреждённый ответ не должен стать notFound")
         }
         XCTAssertTrue(message.contains("JSONP"))
+    }
+
+    func testCaptchaAttemptLimitIsReportedExplicitly() async throws {
+        FSSPURLProtocol.enqueue(body: fixture("blocked"))
+
+        let step = try await client().discover(document: searchedDocument())
+
+        guard case .error(let message) = step else {
+            return XCTFail("Временная блокировка CAPTCHA должна быть явной ошибкой")
+        }
+        XCTAssertTrue(message.contains("временно ограничила ввод CAPTCHA"))
     }
 
     func testTemporaryResponseRetriesOnceAndHonorsRetryAfterHeader() async throws {

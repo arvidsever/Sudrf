@@ -11,6 +11,7 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         harness.discoverSteps = [.captchaRequired(challenge("first")), .captchaRequired(challenge("next"))]
         harness.submitSteps = [.found(EnforcementLookup(state: .found))]
         let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
+        XCTAssertEqual(model.documentID, "ФС 038169867")
 
         await model.start()
         await model.submitManual(code: "12345")
@@ -45,7 +46,9 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         await failedModel.submitManual(code: "12345")
 
         XCTAssertTrue(failed.savedCodes.isEmpty)
-        XCTAssertEqual(failedModel.state, .error)
+        XCTAssertEqual(failedModel.state, .retryWaiting)
+        XCTAssertTrue(failedModel.message.contains("Пауза 60 секунд"))
+        failedModel.stop()
     }
 
     func testNotFoundAndAmbiguousResponsesAreConfirmedCorpusPairs() async {
@@ -66,10 +69,9 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         }
     }
 
-    func testOnlyEligibleModelAt098AutomaticallySubmits() async {
+    func testModelAutomaticallySubmitsEvenWithZeroConfidence() async {
         let automatic = Harness()
-        automatic.modelAutoEligible = true
-        automatic.recognition = CaptchaAttempt(value: "70120", confidence: 0.98, duration: 0)
+        automatic.recognition = CaptchaAttempt(value: "70120", confidence: 0, duration: 0)
         automatic.discoverSteps = [.captchaRequired(challenge("auto")), .error("done")]
         automatic.submitSteps = [.found(EnforcementLookup(state: .found))]
         let automaticModel = FSSPCaptchaLabModel(dependencies: automatic.dependencies())
@@ -77,41 +79,55 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         await automaticModel.start()
 
         XCTAssertEqual(automatic.submittedCodes, ["70120"])
+        XCTAssertEqual(automaticModel.submittedCount, 1)
         XCTAssertEqual(automaticModel.automaticAcceptedCount, 1)
         XCTAssertEqual(automaticModel.manualAcceptedCount, 0)
-
-        let lowConfidence = Harness()
-        lowConfidence.modelAutoEligible = true
-        lowConfidence.recognition = CaptchaAttempt(value: "70120", confidence: 0.979, duration: 0)
-        lowConfidence.discoverSteps = [.captchaRequired(challenge("manual"))]
-        let lowConfidenceModel = FSSPCaptchaLabModel(dependencies: lowConfidence.dependencies())
-
-        await lowConfidenceModel.start()
-
-        XCTAssertTrue(lowConfidence.submittedCodes.isEmpty)
-        XCTAssertEqual(lowConfidenceModel.suggestedCode, "70120")
-        XCTAssertEqual(lowConfidenceModel.state, .awaitingManualInput)
+        automaticModel.stop()
     }
 
-    func testThreeAutomaticRejectionsDisableAutomaticCollection() async {
+    func testAutomaticRejectionsKeepTryingFreshChallengesUntilAccepted() async {
         let harness = Harness()
-        harness.modelAutoEligible = true
-        harness.recognition = CaptchaAttempt(value: "12345", confidence: 0.99, duration: 0)
+        harness.recognition = CaptchaAttempt(value: "12345", confidence: 0, duration: 0)
         harness.discoverSteps = [.captchaRequired(challenge("c0"))]
         harness.submitSteps = [
             .captchaRequired(challenge("c1")),
             .captchaRequired(challenge("c2")),
-            .captchaRequired(challenge("c3"))
+            .captchaRequired(challenge("c3")),
+            .captchaRequired(challenge("c4")),
+            .found(EnforcementLookup(state: .found))
         ]
         let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
 
         await model.start()
+        await waitUntil { model.automaticAcceptedCount == 1 }
 
-        XCTAssertEqual(harness.submittedCodes, ["12345", "12345", "12345"])
-        XCTAssertEqual(model.rejectedCount, 3)
-        XCTAssertEqual(model.consecutiveAutomaticRejections, 3)
-        XCTAssertFalse(model.automaticCollectionEnabled)
-        XCTAssertEqual(model.challenge?.codeID, "c3")
+        XCTAssertEqual(harness.submittedCodes, Array(repeating: "12345", count: 5))
+        XCTAssertEqual(model.submittedCount, 5)
+        XCTAssertEqual(model.rejectedCount, 4)
+        XCTAssertEqual(model.automaticAcceptedCount, 1)
+        XCTAssertEqual(harness.savedCodes, ["12345"])
+        model.stop()
+    }
+
+    func testNetworkErrorAutomaticallyStartsFreshAttempt() async {
+        let harness = Harness()
+        harness.recognition = CaptchaAttempt(value: "54321", confidence: 0, duration: 0)
+        harness.discoverSteps = [
+            .error("network"),
+            .captchaRequired(challenge("recovered"))
+        ]
+        harness.submitSteps = [.error("stop")]
+        harness.retryWaitResponses = [true, false]
+        let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
+
+        await model.start()
+        await waitUntil { model.errorCount == 2 && harness.retryWaitCalls == 2 }
+
+        XCTAssertEqual(harness.submittedCodes, ["54321"])
+        XCTAssertEqual(model.errorCount, 2)
+        XCTAssertGreaterThanOrEqual(harness.retryWaitCalls, 2)
+        XCTAssertTrue(harness.savedCodes.isEmpty)
+        model.stop()
     }
 
     func testTrainingStartsAt200AndThenAtEachHundredNewUniquePairs() async {
@@ -143,6 +159,22 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
         XCTAssertEqual(retrain.trainingCalls, 1)
         XCTAssertEqual(retrain.markedTrainedCounts, [300])
         XCTAssertEqual(retrainModel.challenge?.codeID, "after")
+    }
+
+    func testRetrainingRealignsToHundredsAfterLateTraining() async {
+        let harness = Harness()
+        harness.corpus = 400
+        harness.reportedCorpusCount = 308
+        harness.trainingResults = [.succeeded("realigned training")]
+        harness.afterTraining = { harness.reportedCorpusCount = 400 }
+        harness.discoverSteps = [.captchaRequired(challenge("after-training"))]
+        let model = FSSPCaptchaLabModel(dependencies: harness.dependencies())
+
+        await model.start()
+
+        XCTAssertEqual(harness.trainingCalls, 1)
+        XCTAssertEqual(harness.markedTrainedCounts, [400])
+        XCTAssertEqual(model.challenge?.codeID, "after-training")
     }
 
     func testFailedTrainingDoesNotLoopAtTheSameCorpusCount() async {
@@ -188,13 +220,19 @@ final class FSSPCaptchaLabModelTests: XCTestCase {
             imagePNG: Data([1, 2, 3]),
             requestURL: URL(string: "https://is-go.fssp.gov.ru/ajax_search?code_id=\(codeID)")!)
     }
+
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<100 {
+            if condition() { return }
+            await Task.yield()
+        }
+    }
 }
 
 @MainActor
 private final class Harness {
     var corpus = 0
     var reportedCorpusCount: Int?
-    var modelAutoEligible = false
     var recognition: CaptchaAttempt?
     var discoverSteps: [FSSPSearchStep] = []
     var submitSteps: [FSSPSearchStep] = []
@@ -203,6 +241,8 @@ private final class Harness {
     var submittedCodes: [String] = []
     var markedTrainedCounts: [Int] = []
     var trainingCalls = 0
+    var retryWaitCalls = 0
+    var retryWaitResponses: [Bool] = []
     var saveAdvancesCorpus = true
     var afterTraining: (() -> Void)?
 
@@ -225,13 +265,16 @@ private final class Harness {
                 .init(
                     status: self.reportedCorpusCount == nil ? "no model" : "bootstrap model",
                     trainedCorpusCount: self.reportedCorpusCount,
-                    automaticSubmissionAllowed: self.modelAutoEligible,
                     recognize: { _ in self.recognition })
             },
             train: { _ in
                 self.trainingCalls += 1
                 self.afterTraining?()
                 return self.next(&self.trainingResults, fallback: .failed("unexpected training"))
+            },
+            waitBeforeRetry: {
+                self.retryWaitCalls += 1
+                return self.next(&self.retryWaitResponses, fallback: false)
             }
         )
     }

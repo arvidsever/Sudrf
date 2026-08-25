@@ -22,7 +22,12 @@ jobs:
       - name: Fetch CoreML model
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+
+      - name: Fetch numeric specialist CoreML model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-numeric-specialist --manifest MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256
 
       - name: Fetch eligible FSSP CoreML model
         if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
@@ -106,7 +111,13 @@ jobs:
         if: steps.xcode27.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+
+      - name: Fetch numeric specialist CoreML model
+        if: steps.xcode27.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-numeric-specialist --manifest MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256
 
       - name: Fetch eligible FSSP CoreML model
         if: steps.xcode27.outputs.available == 'true' && hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
@@ -134,7 +145,12 @@ jobs:
       - name: Fetch CoreML model
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash Scripts/fetch-model.sh --asset-tag model-v1 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures
+
+      - name: Fetch numeric specialist CoreML model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash Scripts/fetch-model.sh --asset-tag model-v2 --fixtures-dir Tests/CaptchaSolverTests/Fixtures --model-name model-captcha-numeric-specialist --manifest MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256
 
       - name: Fetch eligible FSSP CoreML model
         if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''
@@ -150,6 +166,13 @@ jobs:
           bash Scripts/verify-model.sh \
             --model-dir build/SudrfApp.app/Contents/Resources/model-captcha-numeric.mlmodelc \
             --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_MANIFEST.sha256
+
+      - name: Verify .app contains numeric specialist model (full)
+        run: |
+          bash Scripts/verify-model.sh \
+            --model-dir build/SudrfApp.app/Contents/Resources/model-captcha-numeric-specialist.mlmodelc \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256 \
+            --model-name model-captcha-numeric-specialist
 
       - name: Verify .app contains eligible FSSP model (full)
         if: hashFiles('Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256') != ''

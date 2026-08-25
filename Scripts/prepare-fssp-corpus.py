@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Validate and split the confirmed FSSP corpus.
+"""Validate a confirmed FSSP corpus and create stable train/validation/exam TSVs.
 
-The split is content-addressed, not order-dependent: SHA-256 values whose
-integer digest is divisible by five are held out. Manual regression fixtures
-are always held out and are never allowed into the training TSV.
+The bucket is derived from the image bytes, so adding a new image never moves
+an existing image between sets:
+
+* SHA-256 remainder 1--4 and 6--9: training;
+* remainder 5: validation (used to choose the checkpoint);
+* remainder 0: exam (read only after CoreML conversion).
+
+Manual regression fixtures are always placed in the exam set and are never
+allowed into training or validation.
 """
 
 from __future__ import annotations
@@ -14,12 +20,19 @@ import sys
 from pathlib import Path
 
 
-SPLIT_NAME = "sha256-mod5-v1"
+SPLIT_NAME = "sha256-mod10-v2"
+TRAIN_BUCKETS = frozenset({1, 2, 3, 4, 6, 7, 8, 9})
+VALIDATION_BUCKET = 5
+EXAM_BUCKET = 0
+
+
+def _valid_label(label: str) -> bool:
+    return len(label) == 5 and label.isascii() and label.isdigit()
 
 
 def _label_from_name(path: Path) -> str:
     label = path.name.split("_", 1)[0]
-    if len(label) != 5 or not label.isascii() or not label.isdigit():
+    if not _valid_label(label):
         raise ValueError(f"invalid FSSP label: {path.name}")
     return label
 
@@ -41,7 +54,7 @@ def _read_fixture_tsv(path: Path) -> list[tuple[Path, str, str]]:
             label = fields[1]
             if not image.is_file():
                 raise ValueError(f"regression image does not exist: {image}")
-            if len(label) != 5 or not label.isascii() or not label.isdigit():
+            if not _valid_label(label):
                 raise ValueError(f"invalid regression label at row {line_number}")
             digest = hashlib.sha256(image.read_bytes()).hexdigest()
             rows.append((image, label, digest))
@@ -51,23 +64,27 @@ def _read_fixture_tsv(path: Path) -> list[tuple[Path, str, str]]:
 def prepare_corpus(
     corpus: Path,
     train_tsv: Path,
-    held_out_tsv: Path,
+    validation_tsv: Path,
+    exam_tsv: Path,
     minimum: int = 2_000,
     regression_tsv: Path | None = None,
-) -> tuple[int, int]:
-    """Validate a corpus and write deterministic train/held-out TSV files."""
+) -> tuple[int, int, int, int]:
+    """Validate *corpus* and write stable train/validation/exam TSV files.
+
+    The return value is ``(unique_corpus, train, validation, exam)``. Fixture
+    images not present in ``corpus`` are included in ``exam`` but not in the
+    unique corpus count; that keeps the corpus gate and the fixture gate
+    independent.
+    """
 
     unique: dict[str, tuple[Path, str]] = {}
     for path in sorted(corpus.glob("*.png")):
-        try:
-            label = _label_from_name(path)
-        except ValueError as error:
-            raise ValueError(str(error)) from error
+        label = _label_from_name(path)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         previous = unique.get(digest)
         if previous and previous[1] != label:
             raise ValueError(f"conflicting labels for SHA-256 {digest}")
-        # `sorted` order makes duplicate same-label files deterministic.
+        # Sorted paths make duplicate, same-label files deterministic.
         unique.setdefault(digest, (path.resolve(), label))
 
     if len(unique) < minimum:
@@ -83,23 +100,34 @@ def prepare_corpus(
                 raise ValueError(f"conflicting labels for SHA-256 {digest}")
             fixtures.setdefault(digest, (image, label))
 
-    # Manual fixtures override the corpus path for the same image. This keeps
-    # the regression TSV useful on its own while preserving one SHA bucket.
     combined = dict(unique)
     combined.update(fixtures)
-    held_out: dict[str, tuple[Path, str]] = dict(fixtures)
     train: dict[str, tuple[Path, str]] = {}
+    validation: dict[str, tuple[Path, str]] = {}
+    exam: dict[str, tuple[Path, str]] = dict(fixtures)
     for digest, row in sorted(combined.items()):
-        if digest in fixtures or int(digest, 16) % 5 == 0:
-            held_out.setdefault(digest, row)
-        else:
+        bucket = int(digest, 16) % 10
+        if digest in fixtures or bucket == EXAM_BUCKET:
+            exam.setdefault(digest, row)
+        elif bucket == VALIDATION_BUCKET:
+            validation[digest] = row
+        elif bucket in TRAIN_BUCKETS:
             train[digest] = row
+        else:
+            raise AssertionError(f"unassigned SHA bucket: {bucket}")
 
-    if set(train) & set(held_out):
-        raise AssertionError("SHA-256 overlap between train and held-out sets")
+    if (set(train) & set(validation)) or (set(train) & set(exam)) or (
+        set(validation) & set(exam)
+    ):
+        raise AssertionError("SHA-256 overlap between corpus splits")
+
     write_tsv(train_tsv, sorted(train.values(), key=lambda row: row[0].name))
-    write_tsv(held_out_tsv, sorted(held_out.values(), key=lambda row: row[0].name))
-    return len(unique), len(held_out)
+    write_tsv(
+        validation_tsv,
+        sorted(validation.values(), key=lambda row: row[0].name),
+    )
+    write_tsv(exam_tsv, sorted(exam.values(), key=lambda row: row[0].name))
+    return len(unique), len(train), len(validation), len(exam)
 
 
 def write_tsv(path: Path, rows: list[tuple[Path, str]]) -> None:
@@ -114,18 +142,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument("--train-tsv", required=True, type=Path)
+    parser.add_argument("--validation-tsv", required=True, type=Path)
     parser.add_argument(
-        "--test-tsv", "--held-out-tsv", dest="test_tsv", required=True, type=Path
+        "--exam-tsv", "--test-tsv", "--held-out-tsv",
+        dest="exam_tsv", required=True, type=Path,
     )
     parser.add_argument("--regression-tsv", type=Path)
     parser.add_argument("--minimum", type=int, default=2_000)
     args = parser.parse_args(argv)
 
     try:
-        unique_count, held_out_count = prepare_corpus(
+        unique_count, train_count, validation_count, exam_count = prepare_corpus(
             corpus=args.corpus,
             train_tsv=args.train_tsv,
-            held_out_tsv=args.test_tsv,
+            validation_tsv=args.validation_tsv,
+            exam_tsv=args.exam_tsv,
             minimum=args.minimum,
             regression_tsv=args.regression_tsv,
         )
@@ -133,10 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         print(str(error), file=sys.stderr)
         return 1
 
-    train_count = len(args.train_tsv.read_text(encoding="utf-8").splitlines()) - 1
     print(
-        f"split={SPLIT_NAME} unique={unique_count} "
-        f"train={train_count} held_out={held_out_count}"
+        f"split={SPLIT_NAME} unique={unique_count} train={train_count} "
+        f"validation={validation_count} exam={exam_count}"
     )
     return 0
 

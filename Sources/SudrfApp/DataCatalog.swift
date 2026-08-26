@@ -336,19 +336,55 @@ enum SudrfModelContainerFactory {
 
 }
 
+enum SudrfPersistentStoreLocation {
+    static func productionURL(fileManager: FileManager = .default) throws -> URL {
+        let support = try fileManager.url(for: .applicationSupportDirectory,
+                                          in: .userDomainMask,
+                                          appropriateFor: nil,
+                                          create: true)
+        let directory = support.appendingPathComponent("Sudrf", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("default.store")
+        try moveLegacyStoreIfNeeded(from: ModelConfiguration().url,
+                                    to: destination,
+                                    fileManager: fileManager)
+        return destination
+    }
+
+    static func moveLegacyStoreIfNeeded(from source: URL,
+                                        to destination: URL,
+                                        fileManager: FileManager = .default) throws {
+        guard source.standardizedFileURL != destination.standardizedFileURL else { return }
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
+                                        withIntermediateDirectories: true)
+
+        // SQLite sidecars move first; the main store is the completion marker.
+        for suffix in ["-wal", "-shm", ""] {
+            let old = URL(fileURLWithPath: source.path + suffix)
+            let new = URL(fileURLWithPath: destination.path + suffix)
+            guard fileManager.fileExists(atPath: old.path) else { continue }
+            guard !fileManager.fileExists(atPath: new.path) else {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: new.path])
+            }
+            try fileManager.moveItem(at: old, to: new)
+        }
+    }
+}
+
 /// Production bootstrap использует отдельный ModelContext внутри actor. До
 /// возврата контейнера выполнены backup, schema migration, legacy-поля и полная
 /// проекция актов; UI получает только полностью подготовленное хранилище.
 actor PersistentStoreBootstrapper {
-    /// `storeURL` и `defaultsSuiteName` инжектируются только тестами: боевой
-    /// путь берёт то же, что и раньше. Без этого сценарий первого запуска —
+    /// `storeURL` и `defaultsSuiteName` инжектируются только тестами. Боевой путь
+    /// живёт в `Application Support/Sudrf`; старый `default.store` переносится
+    /// туда до открытия. Без инжекции сценарий первого запуска —
     /// база, которой ещё нет, — нечем было проверить, кроме как на живой
     /// машине. Имя suite, а не сам `UserDefaults`: он не `Sendable` и через
     /// границу актора не проходит.
     func prepareProduction(storeURL: URL? = nil,
                            defaultsSuiteName: String? = nil) throws -> ModelContainer {
         let defaults = defaultsSuiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
-        let storeURL = storeURL ?? ModelConfiguration().url
+        let storeURL = try storeURL ?? SudrfPersistentStoreLocation.productionURL()
         // Замеряем ДО всего: от этого зависит, есть ли что терять.
         let hadExistingStore = FileManager.default.fileExists(atPath: storeURL.path)
         var backup: URL?

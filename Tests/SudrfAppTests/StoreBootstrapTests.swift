@@ -27,6 +27,24 @@ final class StoreBootstrapTests: XCTestCase {
 
     private var freshStoreURL: URL! { root.appendingPathComponent("default.store") }
 
+    func testLegacyStoreMovesIntoSudrfDirectory() throws {
+        let source = freshStoreURL!
+        let destination = root.appendingPathComponent("Sudrf/default.store")
+        try Data("store".utf8).write(to: source)
+        try Data("wal".utf8).write(to: URL(fileURLWithPath: source.path + "-wal"))
+        try Data("shm".utf8).write(to: URL(fileURLWithPath: source.path + "-shm"))
+
+        try SudrfPersistentStoreLocation.moveLegacyStoreIfNeeded(from: source,
+                                                                 to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("store".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination.path + "-wal")),
+                       Data("wal".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination.path + "-shm")),
+                       Data("shm".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+    }
+
     func testFirstLaunchWithoutExistingStoreSucceeds() async throws {
         XCTAssertFalse(FileManager.default.fileExists(atPath: freshStoreURL.path),
                        "предусловие: базы ещё нет")

@@ -6,8 +6,11 @@ public release history.
 The public release changelog remains `changelog/changelog-vX.YY.ZZ.md` (second
 and third segments zero-padded to two digits so the directory sorts in version
 order; the version itself stays plain semver). Move a branch draft there only
-when the branch is merged/released and the final version number is known — every
-merged branch gets its own number, even when no separate build was cut.
+when the branch is merged/released and the final version number is known. A new
+user-facing feature or data source increments the minor segment and resets the
+patch segment; fixes, cosmetics, retraining without a new product capability,
+and developer-only tools increment the patch segment. Every merged branch gets
+its own number under that classification, even when no separate build was cut.
 
 ## For opencode
 

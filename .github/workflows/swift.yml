@@ -51,6 +51,23 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
+      - name: Verify Xcode app contains production models
+        run: |
+          RESOURCES="$RUNNER_TEMP/SudrfDerivedData/Build/Products/Debug/Sudrf.app/Contents/Resources"
+          bash Scripts/verify-model.sh \
+            --model-dir "$RESOURCES/model-captcha-numeric.mlmodelc" \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_MANIFEST.sha256
+          bash Scripts/verify-model.sh \
+            --model-dir "$RESOURCES/model-captcha-numeric-specialist.mlmodelc" \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256 \
+            --model-name model-captcha-numeric-specialist
+          bash Scripts/verify-model.sh \
+            --model-dir "$RESOURCES/model-captcha-fssp.mlmodelc" \
+            --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_FSSP_MANIFEST.sha256 \
+            --model-name model-captcha-fssp
+          cmp Tests/CaptchaSolverTests/Fixtures/model-captcha-fssp-eligibility.json \
+            "$RESOURCES/model-captcha-fssp-eligibility.json"
+
       - name: Build app product
         run: swift build --product SudrfApp -Xswiftc -strict-concurrency=complete
 

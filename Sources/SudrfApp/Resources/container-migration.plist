@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Move</key>
+    <array>
+        <string>${ApplicationSupport}/default.store</string>
+        <string>${ApplicationSupport}/default.store-wal</string>
+        <string>${ApplicationSupport}/default.store-shm</string>
+        <string>${ApplicationSupport}/Sudrf</string>
+        <string>${Library}/Preferences/${BundleId}.plist</string>
+    </array>
+</dict>
+</plist>

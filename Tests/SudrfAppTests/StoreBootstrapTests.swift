@@ -77,6 +77,25 @@ final class StoreBootstrapTests: XCTestCase {
                        Data("fresh-wal".utf8))
     }
 
+    func testSidecarsMovedByInterruptedLegacyMigrationArePreserved() throws {
+        let source = freshStoreURL!
+        let destination = root.appendingPathComponent("Sudrf/default.store")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("store".utf8).write(to: source)
+        try Data("only-wal".utf8).write(to: URL(fileURLWithPath: destination.path + "-wal"))
+        try Data("only-shm".utf8).write(to: URL(fileURLWithPath: destination.path + "-shm"))
+
+        try SudrfPersistentStoreLocation.moveLegacyStoreIfNeeded(from: source,
+                                                                 to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("store".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination.path + "-wal")),
+                       Data("only-wal".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination.path + "-shm")),
+                       Data("only-shm".utf8))
+    }
+
     func testMigratedSQLiteStoreReopensAtDestination() throws {
         let source = freshStoreURL!
         let destination = root.appendingPathComponent("Sudrf/default.store")

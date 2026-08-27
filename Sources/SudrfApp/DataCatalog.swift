@@ -364,23 +364,22 @@ enum SudrfPersistentStoreLocation {
         guard fileManager.fileExists(atPath: source.path) else { return }
 
         let sidecarSuffixes = ["-wal", "-shm"]
-        // No main store means sidecars at the destination are remnants of an
-        // interrupted attempt and can be rebuilt from the intact source set.
-        for suffix in sidecarSuffixes {
-            let orphan = URL(fileURLWithPath: destination.path + suffix)
-            if fileManager.fileExists(atPath: orphan.path) {
-                try fileManager.removeItem(at: orphan)
-            }
-        }
-
         var copied: [URL] = []
         let stagedMain = destination.deletingLastPathComponent().appendingPathComponent(
             ".default.store-migration-\(UUID().uuidString)")
         do {
             for suffix in sidecarSuffixes {
                 let old = URL(fileURLWithPath: source.path + suffix)
-                guard fileManager.fileExists(atPath: old.path) else { continue }
                 let new = URL(fileURLWithPath: destination.path + suffix)
+                // The previous move-based migration could already have moved
+                // this sidecar before crashing. With no source counterpart the
+                // destination is the only copy and must be preserved.
+                guard fileManager.fileExists(atPath: old.path) else { continue }
+                // When both exist, the sidecar adjacent to the source main
+                // belongs to the intact source set and is authoritative.
+                if fileManager.fileExists(atPath: new.path) {
+                    try fileManager.removeItem(at: new)
+                }
                 try fileManager.copyItem(at: old, to: new)
                 copied.append(new)
             }

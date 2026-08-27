@@ -557,7 +557,7 @@ struct CalendarScreen: View {
                                 conflict: Bool,
                                 height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
+            Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -600,7 +600,7 @@ struct CalendarScreen: View {
             ForEach(block.hearings) { item in
                 Button { router.openCase(item.caseNumber) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(timePrefix(item, in: block))№ \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
+                        Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
                             .font(.system(size: 10.2, weight: .semibold))
                             .foregroundStyle(conflict ? Palette.confirmed : .primary)
                             .lineLimit(2)
@@ -676,11 +676,6 @@ struct CalendarScreen: View {
         RoundedRectangle(cornerRadius: 10)
             .strokeBorder((conflict ? Palette.confirmed : Color.accentColor).opacity(conflict ? 0.30 : 0.22),
                           lineWidth: 1)
-    }
-
-    private func timePrefix(_ item: CalendarWeekHearingLayoutInput, in block: CalendarWeekBlock) -> String {
-        let allSame = block.hearings.allSatisfy { $0.time == block.hearings[0].time }
-        return allSame ? "" : "\(item.time) · "
     }
 
     private func weekDeadlineChip(_ ev: CalEvent) -> some View {

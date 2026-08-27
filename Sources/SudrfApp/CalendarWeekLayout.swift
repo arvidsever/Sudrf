@@ -86,7 +86,13 @@ enum CalendarWeekLayout {
         }
         if !current.isEmpty { clusters.append(current) }
 
-        return clusters.map(block)
+        var visualBottom = 0.0
+        return clusters.map { cluster in
+            var result = block(cluster)
+            result.top = max(result.top, visualBottom)
+            visualBottom = result.top + result.height
+            return result
+        }
     }
 
     private static func block(_ cluster: [TimedHearing]) -> CalendarWeekBlock {
@@ -94,10 +100,11 @@ enum CalendarWeekLayout {
         let end = cluster.map(\.end).max() ?? start + defaultDurationMinutes
         let durationHeight = Double(end - start) / 60.0 * hourHeight
         let hearings = cluster.map(\.item)
+        let common = hearings.first
         let sameStart = cluster.allSatisfy { $0.start == cluster[0].start }
         let sameCourt = cluster.allSatisfy { $0.item.court == cluster[0].item.court }
-        let samePlaceAndJudge = sameCourt && cluster.allSatisfy {
-            $0.item.room == cluster[0].item.room && $0.item.judge == cluster[0].item.judge
+        let hasItemDetails = hearings.contains {
+            !itemDetails($0, conflict: false, common: common).isEmpty
         }
         let top = Double(start - startHour * 60) / 60.0 * hourHeight
         let id = hearings.map(\.id).joined(separator: "|")
@@ -122,7 +129,7 @@ enum CalendarWeekLayout {
                                  startMinutes: start, endMinutes: end,
                                  top: top,
                                  height: max(durationHeight,
-                                             Double(cluster.count * (samePlaceAndJudge ? 34 : 52) + 96)),
+                                             Double(cluster.count * (hasItemDetails ? 52 : 34) + 96)),
                                  badge: count + (sameStart ? " · ПО ОЧЕРЕДИ" : " · НАКЛАДКА"),
                                  hearings: hearings)
     }

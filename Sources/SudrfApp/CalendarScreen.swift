@@ -560,6 +560,7 @@ struct CalendarScreen: View {
             Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Text(item.parties)
                 .font(.system(size: 10.5, weight: .semibold))
@@ -570,11 +571,12 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
-        // суда карточку не обрезают. `fixedSize` обязателен — без него `Spacer`
-        // принимает высоту, которую предлагает ZStack дня, и карточка
-        // растягивается до конца временной сетки (#83).
-        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        // Все текстовые поля ограничены по строкам, а layout-модель резервирует
+        // их максимальную высоту. Точный frame синхронизирует визуальный край с
+        // размещением следующего события; `fixedSize` не даёт `Spacer`
+        // растянуть карточку до конца временной сетки (#83).
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: height, alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
@@ -633,7 +635,8 @@ struct CalendarScreen: View {
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: CGFloat(block.height), alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))

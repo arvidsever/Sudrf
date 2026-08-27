@@ -22,7 +22,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].kind, .single)
         XCTAssertEqual(blocks[0].startMinutes, 9 * 60 + 30)
         XCTAssertEqual(blocks[0].top, 180)
-        XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertEqual(blocks[0].height, 168)
     }
 
     func testNonOverlappingHearingsRemainSeparate() {
@@ -56,7 +56,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
         XCTAssertEqual(block.kind, .stack)
-        XCTAssertEqual(block.height, 200) // 2 × 52 + 96; every row has a judge line
+        XCTAssertEqual(block.height, 224) // 2 × 56 + 112; bounded two-line details fit
         XCTAssertEqual(block.hearings.map {
             CalendarWeekLayout.itemDetails($0, conflict: false, common: block.hearings.first)
         }, ["судья Колосова Н. Е.", "судья Колосова Н. Е."])
@@ -70,9 +70,9 @@ final class CalendarWeekLayoutTests: XCTestCase {
         ])
 
         XCTAssertEqual(blocks.count, 2)
-        XCTAssertEqual(blocks[0].height, 200)
+        XCTAssertEqual(blocks[0].height, 224)
         XCTAssertEqual(blocks[1].top, blocks[0].top + blocks[0].height)
-        XCTAssertEqual(blocks[1].top, 320)
+        XCTAssertEqual(blocks[1].top, 344)
     }
 
     func testGroupedRowsWithoutDetailsKeepCompactHeight() {
@@ -82,7 +82,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         ])
 
         guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
-        XCTAssertEqual(block.height, 164) // 2 × 34 + 96; no empty detail line
+        XCTAssertEqual(block.height, 176) // 2 × 32 + 112; no empty detail line
         XCTAssertTrue(block.hearings.allSatisfy {
             CalendarWeekLayout.itemDetails($0, conflict: false, common: block.hearings.first).isEmpty
         })
@@ -150,7 +150,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         ])
 
         XCTAssertEqual(CalendarWeekLayout.baseGridHeight, 1320)
-        XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
+        XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1428)
     }
 
     /// Контракт, на который опирается вид (#83): блок 10:00 заканчивается ровно
@@ -168,7 +168,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         XCTAssertEqual(blocks.count, 2)
         XCTAssertEqual(blocks[0].kind, .single)
-        XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertEqual(blocks[0].height, 168)
         XCTAssertEqual(blocks[0].top + blocks[0].height, blocks[1].top)
         XCTAssertLessThan(blocks[0].top + blocks[0].height, gridHeight)
         // Конфликтная группа получает высоту по числу заседаний, а не по остатку дня.

@@ -112,7 +112,7 @@ enum CalendarWeekLayout {
         if cluster.count == 1 {
             return CalendarWeekBlock(id: id, kind: .single,
                                      startMinutes: start, endMinutes: end,
-                                     top: top, height: max(durationHeight, 96),
+                                     top: top, height: max(durationHeight, 168),
                                      badge: nil, hearings: hearings)
         }
 
@@ -125,11 +125,12 @@ enum CalendarWeekLayout {
         }
 
         let count = "\(cluster.count) \(DateUtil.plural(cluster.count, "ДЕЛО", "ДЕЛА", "ДЕЛ"))"
+        let rowHeight = hasItemDetails ? 56 : 32
         return CalendarWeekBlock(id: id, kind: .stack,
                                  startMinutes: start, endMinutes: end,
                                  top: top,
                                  height: max(durationHeight,
-                                             Double(cluster.count * (hasItemDetails ? 52 : 34) + 96)),
+                                             Double(cluster.count * rowHeight + 112)),
                                  badge: count + (sameStart ? " · ПО ОЧЕРЕДИ" : " · НАКЛАДКА"),
                                  hearings: hearings)
     }

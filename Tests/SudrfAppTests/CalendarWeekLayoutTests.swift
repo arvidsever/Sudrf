@@ -48,6 +48,45 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].badge, "3 ДЕЛА · ПО ОЧЕРЕДИ")
     }
 
+    func testGroupedRowsKeepJudgeInsideEveryCaseRow() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("5-1/2026", time: "09:30"),
+            hearing("5-2/2026", time: "09:30")
+        ])
+
+        guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
+        XCTAssertEqual(block.kind, .stack)
+        XCTAssertEqual(block.height, 164) // unchanged compact geometry
+        XCTAssertEqual(block.hearings.map {
+            CalendarWeekLayout.itemJudge($0, conflict: false)
+        }, ["судья Колосова Н. Е.", "судья Колосова Н. Е."])
+    }
+
+    func testGroupedJudgeLabelsPreserveFollowingHourPosition() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("5-1/2026", time: "09:00"),
+            hearing("5-2/2026", time: "09:00"),
+            hearing("5-3/2026", time: "10:00")
+        ])
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].height, 164)
+        XCTAssertEqual(blocks[1].top, 240)
+    }
+
+    func testGroupedRowsWithoutDetailsKeepCompactHeight() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("5-1/2026", time: "09:30", judge: ""),
+            hearing("5-2/2026", time: "09:30", judge: "")
+        ])
+
+        guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
+        XCTAssertEqual(block.height, 164) // 2 × 34 + 96; no empty detail line
+        XCTAssertTrue(block.hearings.allSatisfy {
+            CalendarWeekLayout.itemDetails($0, conflict: false, common: block.hearings.first).isEmpty
+        })
+    }
+
     func testOverlappingSameCourtDifferentStartBecomesOverlapStack() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("5-1/2026", time: "12:00"),
@@ -70,6 +109,23 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(blocks[0].kind, .conflict)
         XCTAssertEqual(blocks[0].badge, "⚠ РАЗНЫЕ СУДЫ")
+    }
+
+    func testConflictRowsKeepCourtRoomAndJudgeDetails() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("5-1/2026", time: "12:00",
+                    court: "Сыктывкарский городской суд", room: "каб. 605", judge: "Иванов И. И."),
+            hearing("А29-1/2026", time: "12:30",
+                    court: "Арбитражный суд Республики Коми", room: "зал 2", judge: "Петров П. П.")
+        ])
+
+        guard let block = blocks.first else { return XCTFail("Expected a conflict block") }
+        XCTAssertEqual(block.hearings.map {
+            CalendarWeekLayout.itemDetails($0, conflict: true, common: block.hearings.first)
+        }, [
+            "Сыктывкарский городской суд · каб. 605 · судья Иванов И. И.",
+            "Арбитражный суд Республики Коми · зал 2 · судья Петров П. П."
+        ])
     }
 
     func testInvalidTimeIsIgnoredByTimedLayout() {

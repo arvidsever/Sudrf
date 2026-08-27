@@ -127,6 +127,31 @@ enum CalendarWeekLayout {
                                  hearings: hearings)
     }
 
+    static func itemDetails(_ item: CalendarWeekHearingLayoutInput,
+                            conflict: Bool,
+                            common: CalendarWeekHearingLayoutInput?) -> String {
+        if conflict {
+            return [item.court,
+                    item.room,
+                    item.judge.isEmpty ? nil : "судья \(item.judge)"]
+                .compactMap { value in
+                    guard let value, !value.isEmpty else { return nil }
+                    return value
+                }
+                .joined(separator: " · ")
+        }
+
+        guard let common else { return "" }
+        let room = item.room != common.room && !item.room.isEmpty ? item.room : nil
+        return room ?? ""
+    }
+
+    static func itemJudge(_ item: CalendarWeekHearingLayoutInput,
+                          conflict: Bool) -> String {
+        guard !conflict, !item.judge.isEmpty else { return "" }
+        return "судья \(item.judge)"
+    }
+
     private struct TimedHearing {
         var item: CalendarWeekHearingLayoutInput
         var start: Int

@@ -9,7 +9,7 @@
 #  Запуск:  bash Scripts/make-app.sh
 #           bash Scripts/make-app.sh --ci   (noninteractive, no open, no codesign)
 #  Результат: build/SudrfApp.app (и сразу открывается, кроме --ci) +
-#  build/Sudrf-Alpha-0.45.1-build122.zip — универсальная сборка
+#  build/Sudrf-Alpha-0.45.2-build123.zip — универсальная сборка
 #  (Apple Silicon + Intel), можно пересылать.
 
 set -euo pipefail
@@ -27,8 +27,8 @@ done
 
 APP_NAME="Sudrf"
 RELEASE_CHANNEL="Alpha"
-MARKETING_VERSION="0.45.1"
-CURRENT_PROJECT_VERSION="122"
+MARKETING_VERSION="0.45.2"
+CURRENT_PROJECT_VERSION="123"
 ARCHIVE="build/${APP_NAME}-${RELEASE_CHANNEL}-${MARKETING_VERSION}-build${CURRENT_PROJECT_VERSION}.zip"
 
 ARCHES=(--arch arm64 --arch x86_64)

@@ -28,6 +28,19 @@ targets:
     sources:
       - path: Sources/SudrfApp
       - path: Assets.xcassets
+      # Release assets загружаются Scripts/fetch-model.sh до xcodegen.
+      # Folder references сохраняют готовые .mlmodelc без перекомпиляции.
+      - path: Tests/CaptchaSolverTests/Fixtures/model-captcha-numeric.mlmodelc
+        type: folder
+        buildPhase: resources
+      - path: Tests/CaptchaSolverTests/Fixtures/model-captcha-numeric-specialist.mlmodelc
+        type: folder
+        buildPhase: resources
+      - path: Tests/CaptchaSolverTests/Fixtures/model-captcha-fssp.mlmodelc
+        type: folder
+        buildPhase: resources
+      - path: Tests/CaptchaSolverTests/Fixtures/model-captcha-fssp-eligibility.json
+        buildPhase: resources
     dependencies:
       - package: SudrfKit
         product: SudrfKit

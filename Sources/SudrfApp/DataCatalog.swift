@@ -358,15 +358,48 @@ enum SudrfPersistentStoreLocation {
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
 
-        // SQLite sidecars move first; the main store is the completion marker.
-        for suffix in ["-wal", "-shm", ""] {
-            let old = URL(fileURLWithPath: source.path + suffix)
-            let new = URL(fileURLWithPath: destination.path + suffix)
-            guard fileManager.fileExists(atPath: old.path) else { continue }
-            guard !fileManager.fileExists(atPath: new.path) else {
-                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: new.path])
+        // Main store — completion marker. If it exists, a previous copy
+        // finished; remaining legacy files are harmless stale duplicates.
+        guard !fileManager.fileExists(atPath: destination.path) else { return }
+        guard fileManager.fileExists(atPath: source.path) else { return }
+
+        let sidecarSuffixes = ["-wal", "-shm"]
+        // No main store means sidecars at the destination are remnants of an
+        // interrupted attempt and can be rebuilt from the intact source set.
+        for suffix in sidecarSuffixes {
+            let orphan = URL(fileURLWithPath: destination.path + suffix)
+            if fileManager.fileExists(atPath: orphan.path) {
+                try fileManager.removeItem(at: orphan)
             }
-            try fileManager.moveItem(at: old, to: new)
+        }
+
+        var copied: [URL] = []
+        let stagedMain = destination.deletingLastPathComponent().appendingPathComponent(
+            ".default.store-migration-\(UUID().uuidString)")
+        do {
+            for suffix in sidecarSuffixes {
+                let old = URL(fileURLWithPath: source.path + suffix)
+                guard fileManager.fileExists(atPath: old.path) else { continue }
+                let new = URL(fileURLWithPath: destination.path + suffix)
+                try fileManager.copyItem(at: old, to: new)
+                copied.append(new)
+            }
+            try fileManager.copyItem(at: source, to: stagedMain)
+            try fileManager.moveItem(at: stagedMain, to: destination)
+            copied.append(destination)
+        } catch {
+            try? fileManager.removeItem(at: stagedMain)
+            for url in copied { try? fileManager.removeItem(at: url) }
+            throw error
+        }
+
+        // Destination is now complete. Cleanup failure leaves a safe duplicate
+        // and does not prevent the application from opening the copied store.
+        for suffix in sidecarSuffixes + [""] {
+            let old = URL(fileURLWithPath: source.path + suffix)
+            if fileManager.fileExists(atPath: old.path) {
+                try? fileManager.removeItem(at: old)
+            }
         }
     }
 }

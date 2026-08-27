@@ -37,6 +37,20 @@ class TestFlightConfigurationTests(unittest.TestCase):
         self.assertNotIn("${ApplicationSupport}", values["Move"])
         self.assertNotIn("${Home}", values["Move"])
 
+    def test_xcode_target_embeds_all_production_models(self):
+        project = (ROOT / "project.yml").read_text(encoding="utf-8")
+        resources = [
+            "model-captcha-numeric.mlmodelc",
+            "model-captcha-numeric-specialist.mlmodelc",
+            "model-captcha-fssp.mlmodelc",
+            "model-captcha-fssp-eligibility.json",
+        ]
+        for resource in resources:
+            self.assertIn(
+                f"path: Tests/CaptchaSolverTests/Fixtures/{resource}", project
+            )
+        self.assertGreaterEqual(project.count("buildPhase: resources"), len(resources))
+
 
 if __name__ == "__main__":
     unittest.main()

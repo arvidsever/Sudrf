@@ -45,6 +45,55 @@ final class StoreBootstrapTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
     }
 
+    func testCompletedDestinationKeepsLegacySourceUntouched() throws {
+        let source = freshStoreURL!
+        let destination = root.appendingPathComponent("Sudrf/default.store")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("legacy".utf8).write(to: source)
+        try Data("current".utf8).write(to: destination)
+
+        try SudrfPersistentStoreLocation.moveLegacyStoreIfNeeded(from: source,
+                                                                 to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("current".utf8))
+        XCTAssertEqual(try Data(contentsOf: source), Data("legacy".utf8))
+    }
+
+    func testOrphanedDestinationSidecarsAreRebuilt() throws {
+        let source = freshStoreURL!
+        let destination = root.appendingPathComponent("Sudrf/default.store")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("store".utf8).write(to: source)
+        try Data("fresh-wal".utf8).write(to: URL(fileURLWithPath: source.path + "-wal"))
+        try Data("orphan".utf8).write(to: URL(fileURLWithPath: destination.path + "-wal"))
+
+        try SudrfPersistentStoreLocation.moveLegacyStoreIfNeeded(from: source,
+                                                                 to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), Data("store".utf8))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: destination.path + "-wal")),
+                       Data("fresh-wal".utf8))
+    }
+
+    func testMigratedSQLiteStoreReopensAtDestination() throws {
+        let source = freshStoreURL!
+        let destination = root.appendingPathComponent("Sudrf/default.store")
+        var legacy: ModelContainer? = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: source)
+        XCTAssertNotNil(legacy)
+        legacy = nil
+
+        try SudrfPersistentStoreLocation.moveLegacyStoreIfNeeded(from: source,
+                                                                 to: destination)
+
+        let reopened = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: destination)
+        XCTAssertEqual(try ModelContext(reopened).fetch(
+            FetchDescriptor<TrackedCaseRecord>()).count, 0)
+    }
+
     func testFirstLaunchWithoutExistingStoreSucceeds() async throws {
         XCTAssertFalse(FileManager.default.fileExists(atPath: freshStoreURL.path),
                        "предусловие: базы ещё нет")

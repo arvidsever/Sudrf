@@ -557,10 +557,9 @@ struct CalendarScreen: View {
                                 conflict: Bool,
                                 height: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber))")
+            Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
-                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Text(item.parties)
                 .font(.system(size: 10.5, weight: .semibold))
@@ -571,12 +570,11 @@ struct CalendarScreen: View {
             weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        // Все текстовые поля ограничены по строкам, а layout-модель резервирует
-        // их максимальную высоту. Точный frame синхронизирует визуальный край с
-        // размещением следующего события; `fixedSize` не даёт `Spacer`
-        // растянуть карточку до конца временной сетки (#83).
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: height, alignment: .topLeading)
+        // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
+        // суда карточку не обрезают. `fixedSize` обязателен — без него `Spacer`
+        // принимает высоту, которую предлагает ZStack дня, и карточка
+        // растягивается до конца временной сетки (#83).
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
@@ -602,11 +600,22 @@ struct CalendarScreen: View {
             ForEach(block.hearings) { item in
                 Button { router.openCase(item.caseNumber) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
-                            .font(.system(size: 10.2, weight: .semibold))
-                            .foregroundStyle(conflict ? Palette.confirmed : .primary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
+                                .font(.system(size: 10.2, weight: .semibold))
+                                .foregroundStyle(conflict ? Palette.confirmed : .primary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            let judge = CalendarWeekLayout.itemJudge(item, conflict: conflict)
+                            if !judge.isEmpty {
+                                Text(judge)
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(Color.primary.opacity(0.50))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.trailing)
+                                    .layoutPriority(1)
+                            }
+                        }
                         let details = CalendarWeekLayout.itemDetails(item, conflict: conflict, common: first)
                         if !details.isEmpty {
                             Text(details)
@@ -635,8 +644,7 @@ struct CalendarScreen: View {
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: CGFloat(block.height), alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))

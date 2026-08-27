@@ -86,13 +86,7 @@ enum CalendarWeekLayout {
         }
         if !current.isEmpty { clusters.append(current) }
 
-        var visualBottom = 0.0
-        return clusters.map { cluster in
-            var result = block(cluster)
-            result.top = max(result.top, visualBottom)
-            visualBottom = result.top + result.height
-            return result
-        }
+        return clusters.map(block)
     }
 
     private static func block(_ cluster: [TimedHearing]) -> CalendarWeekBlock {
@@ -100,11 +94,10 @@ enum CalendarWeekLayout {
         let end = cluster.map(\.end).max() ?? start + defaultDurationMinutes
         let durationHeight = Double(end - start) / 60.0 * hourHeight
         let hearings = cluster.map(\.item)
-        let common = hearings.first
         let sameStart = cluster.allSatisfy { $0.start == cluster[0].start }
         let sameCourt = cluster.allSatisfy { $0.item.court == cluster[0].item.court }
-        let hasItemDetails = hearings.contains {
-            !itemDetails($0, conflict: false, common: common).isEmpty
+        let samePlaceAndJudge = sameCourt && cluster.allSatisfy {
+            $0.item.room == cluster[0].item.room && $0.item.judge == cluster[0].item.judge
         }
         let top = Double(start - startHour * 60) / 60.0 * hourHeight
         let id = hearings.map(\.id).joined(separator: "|")
@@ -112,7 +105,7 @@ enum CalendarWeekLayout {
         if cluster.count == 1 {
             return CalendarWeekBlock(id: id, kind: .single,
                                      startMinutes: start, endMinutes: end,
-                                     top: top, height: max(durationHeight, 168),
+                                     top: top, height: max(durationHeight, 96),
                                      badge: nil, hearings: hearings)
         }
 
@@ -125,12 +118,11 @@ enum CalendarWeekLayout {
         }
 
         let count = "\(cluster.count) \(DateUtil.plural(cluster.count, "ДЕЛО", "ДЕЛА", "ДЕЛ"))"
-        let rowHeight = hasItemDetails ? 56 : 32
         return CalendarWeekBlock(id: id, kind: .stack,
                                  startMinutes: start, endMinutes: end,
                                  top: top,
                                  height: max(durationHeight,
-                                             Double(cluster.count * rowHeight + 112)),
+                                             Double(cluster.count * (samePlaceAndJudge ? 34 : 52) + 96)),
                                  badge: count + (sameStart ? " · ПО ОЧЕРЕДИ" : " · НАКЛАДКА"),
                                  hearings: hearings)
     }
@@ -151,8 +143,13 @@ enum CalendarWeekLayout {
 
         guard let common else { return "" }
         let room = item.room != common.room && !item.room.isEmpty ? item.room : nil
-        let judge = item.judge.isEmpty ? nil : "судья \(item.judge)"
-        return [room, judge].compactMap { $0 }.joined(separator: " · ")
+        return room ?? ""
+    }
+
+    static func itemJudge(_ item: CalendarWeekHearingLayoutInput,
+                          conflict: Bool) -> String {
+        guard !conflict, !item.judge.isEmpty else { return "" }
+        return "судья \(item.judge)"
     }
 
     private struct TimedHearing {

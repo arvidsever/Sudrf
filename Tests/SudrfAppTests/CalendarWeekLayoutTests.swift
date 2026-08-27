@@ -48,7 +48,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].badge, "3 ДЕЛА · ПО ОЧЕРЕДИ")
     }
 
-    func testGroupedRowsKeepJudgeAndReserveDetailLineForEveryCase() {
+    func testGroupedRowsKeepJudgeWithoutExpandingCommonStack() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("5-1/2026", time: "09:30"),
             hearing("5-2/2026", time: "09:30")
@@ -56,10 +56,22 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
         XCTAssertEqual(block.kind, .stack)
-        XCTAssertEqual(block.height, 200) // 2 × 52 + 96; every row has a judge line
+        XCTAssertEqual(block.height, 164) // 2 × 34 + 96; preserve the compact baseline
         XCTAssertEqual(block.hearings.map {
             CalendarWeekLayout.itemDetails($0, conflict: false, common: block.hearings.first)
         }, ["судья Колосова Н. Е.", "судья Колосова Н. Е."])
+    }
+
+    func testGroupedJudgeDetailsDoNotGrowIntoFollowingHour() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("5-1/2026", time: "09:00"),
+            hearing("5-2/2026", time: "09:00"),
+            hearing("5-3/2026", time: "10:00")
+        ])
+
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].height, 164)
+        XCTAssertEqual(blocks[1].top, 240)
     }
 
     func testGroupedRowsWithoutDetailsKeepCompactHeight() {

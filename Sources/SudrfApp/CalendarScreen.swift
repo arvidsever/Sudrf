@@ -600,22 +600,13 @@ struct CalendarScreen: View {
             ForEach(block.hearings) { item in
                 Button { router.openCase(item.caseNumber) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber)) · \(item.parties)")
-                                .font(.system(size: 10.2, weight: .semibold))
-                                .foregroundStyle(conflict ? Palette.confirmed : .primary)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                            let judge = CalendarWeekLayout.itemJudge(item, conflict: conflict)
-                            if !judge.isEmpty {
-                                Text(judge)
-                                    .font(.system(size: 9, weight: .medium))
-                                    .foregroundStyle(Color.primary.opacity(0.50))
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.trailing)
-                                    .layoutPriority(1)
-                            }
-                        }
+                        let judge = CalendarWeekLayout.itemJudge(item, conflict: conflict)
+                        let judgePart = judge.isEmpty ? "" : " · \(judge)"
+                        Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber))\(judgePart) · \(item.parties)")
+                            .font(.system(size: 10.2, weight: .semibold))
+                            .foregroundStyle(conflict ? Palette.confirmed : .primary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         let details = CalendarWeekLayout.itemDetails(item, conflict: conflict, common: first)
                         if !details.isEmpty {
                             Text(details)

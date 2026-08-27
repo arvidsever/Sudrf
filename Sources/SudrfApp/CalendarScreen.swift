@@ -605,7 +605,7 @@ struct CalendarScreen: View {
                             .foregroundStyle(conflict ? Palette.confirmed : .primary)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
-                        let details = itemDetails(item, conflict: conflict, common: first)
+                        let details = CalendarWeekLayout.itemDetails(item, conflict: conflict, common: first)
                         if !details.isEmpty {
                             Text(details)
                                 .font(.system(size: 9))
@@ -629,7 +629,7 @@ struct CalendarScreen: View {
                         .foregroundStyle(Color.primary.opacity(0.45))
                 }
             } else if let first {
-                weekCardFooter(court: first.court, room: first.room, judge: first.judge, conflict: false)
+                weekCardFooter(court: first.court, room: first.room, conflict: false)
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
@@ -643,7 +643,7 @@ struct CalendarScreen: View {
         .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
     }
 
-    private func weekCardFooter(court: String, room: String, judge: String, conflict: Bool) -> some View {
+    private func weekCardFooter(court: String, room: String, judge: String = "", conflict: Bool) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Divider().opacity(0.6)
             Text(court)
@@ -681,21 +681,6 @@ struct CalendarScreen: View {
     private func timePrefix(_ item: CalendarWeekHearingLayoutInput, in block: CalendarWeekBlock) -> String {
         let allSame = block.hearings.allSatisfy { $0.time == block.hearings[0].time }
         return allSame ? "" : "\(item.time) · "
-    }
-
-    private func itemDetails(_ item: CalendarWeekHearingLayoutInput,
-                             conflict: Bool,
-                             common: CalendarWeekHearingLayoutInput?) -> String {
-        if conflict {
-            return [item.court.nilIfEmpty, item.room.nilIfEmpty,
-                    item.judge.nilIfEmpty.map { "судья \($0)" }]
-                .compactMap { $0 }.joined(separator: " · ")
-        }
-        guard let common else { return "" }
-        var parts: [String] = []
-        if item.room != common.room { parts.append(item.room) }
-        if item.judge != common.judge, !item.judge.isEmpty { parts.append("судья \(item.judge)") }
-        return parts.joined(separator: " · ")
     }
 
     private func weekDeadlineChip(_ ev: CalEvent) -> some View {

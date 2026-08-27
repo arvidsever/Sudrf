@@ -1511,8 +1511,7 @@ final class AppRouter: ObservableObject {
     /// прошедшее заседание с уже наступившей законной силой должно остаться
     /// заседанием, а не превратиться в «движение».
     private func feedKind(for session: StoredSession) -> FeedEntryKind {
-        CaseLifecycleResolver.isHearingEvent(
-            event: session.event, result: session.result, time: session.time)
+        CaseLifecycleResolver.isHearingEvent(event: session.event)
             ? .hearing : .movement
     }
 

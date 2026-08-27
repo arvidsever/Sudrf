@@ -420,15 +420,14 @@ enum MovementDerivation {
     // MARK: Заседания
 
     /// Сессии-заседания в будущем (включая сегодня), отсортированные по дате/времени.
-    /// Заседанием считаем событие со словами «заседани»/«рассмотрени»/«слушани»,
-    /// либо событие, у которого указано время (на портале время проставляют именно
-    /// у заседаний).
+    /// Время само по себе не доказывает, что строка движения является
+    /// заседанием: портал ставит его и у процессуальных событий (#124).
     static func futureHearings(_ sessions: [StoredSession], today: Date) -> [StoredSession] {
         sessions.enumerated().filter { _, session in
             guard let date = DateUtil.parse(session.dateRaw),
                   DateUtil.daysBetween(today, date) >= 0 else { return false }
             return CaseLifecycleResolver.isHearing(
-                event: session.event, result: session.result, time: session.time)
+                event: session.event, result: session.result)
         }
         .sorted {
             let d0 = DateUtil.parse($0.element.dateRaw) ?? .distantFuture

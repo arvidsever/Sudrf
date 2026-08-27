@@ -3,6 +3,30 @@ import XCTest
 
 final class MagistrateTests: XCTestCase {
 
+    func testNumberExtractsFixedWidthMSCode() {
+        let expected: [(String, Int)] = [
+            ("11MS0001", 1), ("11MS0002", 2),
+            ("11MS0010", 10), ("11MS0100", 100)
+        ]
+
+        for (code, number) in expected {
+            XCTAssertEqual(
+                MagistrateCourt(title: "Участок", domain: "example.msudrf.ru", code: code).number,
+                number,
+                code
+            )
+        }
+    }
+
+    func testNumberIsNilForMalformedCode() {
+        for code in ["11MS001", "11MS00001", "11RS0001", "11MS00A1", "ⅪⅪMS0001"] {
+            XCTAssertNil(
+                MagistrateCourt(title: "Участок", domain: "example.msudrf.ru", code: code).number,
+                code
+            )
+        }
+    }
+
     func testDirectoryParserKeepsSupportedAndUnsupportedSites() {
         let html = """
         <html><body>

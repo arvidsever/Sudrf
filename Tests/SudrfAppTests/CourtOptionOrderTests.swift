@@ -37,6 +37,22 @@ final class CourtOptionOrderTests: XCTestCase {
         ])
     }
 
+    func testMagistrateCourtsFollowNumericCodeOrder() {
+        let courts = [
+            MagistrateCourt(title: "Судебный участок № 100", domain: "100.msudrf.ru", code: "11MS0100"),
+            MagistrateCourt(title: "Судебный участок № 10", domain: "10.msudrf.ru", code: "11MS0010"),
+            MagistrateCourt(title: "Судебный участок № 2", domain: "2.msudrf.ru", code: "11MS0002"),
+            MagistrateCourt(title: "Судебный участок № 1", domain: "1.msudrf.ru", code: "11MS0001")
+        ]
+
+        let ordered = SearchModel.ordered(courts.map {
+            SearchModel.CourtOption(domain: $0.domain, title: $0.title,
+                                    level: .magistrate, code: $0.code, number: $0.number)
+        })
+
+        XCTAssertEqual(ordered.map(\.number), [1, 2, 10, 100])
+    }
+
     /// Звенья без номеров (суды субъектов, районные) сортируются по названию —
     /// поведение до #97 не меняется.
     func testUnnumberedCourtsStayAlphabetical() {

@@ -8,6 +8,14 @@ public struct MagistrateCourt: Sendable, Equatable, Codable {
     public var code: String
     public var portalSubject: String?
 
+    /// Номер участка из фиксированного классификационного кода, например
+    /// `11MS0062` → `62`.
+    public var number: Int? {
+        guard code.range(of: #"^[0-9]{2}MS[0-9]{4}$"#,
+                         options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
+        return Int(code.suffix(4))
+    }
+
     public var isSupported: Bool {
         let host = domain.lowercased()
         return SudrfHost.isMSudrfHost(host)

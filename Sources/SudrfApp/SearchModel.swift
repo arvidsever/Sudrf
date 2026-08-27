@@ -250,7 +250,8 @@ final class SearchModel: ObservableObject {
                                 level: .magistrate,
                                 code: m.code,
                                 supportsSearch: m.isSupported,
-                                unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.")
+                                unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.",
+                                number: m.number)
                 }
             case (.general, .district):
                 magistrateDistrictCourts = []

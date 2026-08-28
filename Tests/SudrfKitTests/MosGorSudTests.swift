@@ -124,6 +124,24 @@ final class MosGorSudTests: XCTestCase {
             "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/df043061-4638-11ed-8d08-f17fce8d2817")
     }
 
+    func testSearchParserAcceptsOnlyExplicitEmptyShape() throws {
+        let empty = "<table><thead><tr><th>№ дела</th><th>Стороны</th></tr></thead><tbody></tbody></table>"
+        XCTAssertEqual(try MosGorSudResultsParser.parse(html: empty), [])
+        XCTAssertThrowsError(try MosGorSudResultsParser.parse(
+            html: "<html><script>location='/protection'</script></html>"))
+    }
+
+    func testSearchAndCardParsersRejectMaintenanceStub() {
+        let html = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        XCTAssertThrowsError(try MosGorSudResultsParser.parse(html: html))
+        XCTAssertThrowsError(try MosGorSudCardParser.parse(html: html))
+    }
+
+    func testCardParserRejectsUnknownHTML() {
+        XCTAssertThrowsError(try MosGorSudCardParser.parse(
+            html: "<html><script>location='/protection'</script></html>"))
+    }
+
     /// Карточка (гражданское дело, райсуд): пары div.left/div.right, латинская C
     /// в «Cудья», заседания из таблицы «Зал», акт по ссылке cases/docs/content.
     func testCardParserOnLiveCivilCard() throws {
@@ -240,6 +258,38 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(mv.actBodies[kas.actID ?? ""], "Определение…")
     }
 
+    func testPortalFailureMarksPartialAndPreservesCachedAppeal() async throws {
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let cached = try await MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                               mosgorsud: mock())
+            .moscowMovement(for: firstRow(), cartoteka: cart)
+        var failing = mock()
+        failing.searchFailures = [MosGorSudInstance.appeal]
+        let fresh = try await MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                              mosgorsud: failing)
+            .moscowMovement(for: firstRow(), cartoteka: cart)
+
+        XCTAssertEqual(fresh.incompleteHigherCourtDomains, [MosGorSudEndpoint.host])
+        XCTAssertEqual(SourceOutcomeClassifier.attempt(for: fresh, sourceFamily: "mosgorsud",
+                                                       host: MosGorSudEndpoint.host).kind,
+                       .partial)
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        XCTAssertTrue(merged.instances.contains { $0.caseNumber == "33-4567/2024" })
+    }
+
+    func testEmptyKSOYuListingIsAnAffectedSource() async throws {
+        let service = MovementService(client: MockEmptyCase(),
+                                      higherCourtDomains: ["2kas.sudrf.ru"],
+                                      mosgorsud: mock())
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let movement = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+
+        XCTAssertTrue(movement.honestZeroDomains?.contains("2kas.sudrf.ru") == true)
+        XCTAssertEqual(SourceOutcomeClassifier.attempt(for: movement, sourceFamily: "mosgorsud",
+                                                       host: MosGorSudEndpoint.host).kind,
+                       .partial)
+    }
+
     func testMovementForBranchesToMoscow() async throws {
         // Общая точка входа movement(for:) распознаёт домен портала — этим
         // путём идёт перезапрос отслеживаемого дела (RefreshCenter).
@@ -271,11 +321,13 @@ final class MosGorSudTests: XCTestCase {
 private struct MockMosGorSud: MosGorSudProviding {
     let searchByInstance: [Int: [MosGorSudResult]]
     let cards: [String: MosGorSudCard]   // ключ — последний сегмент cardURL
+    var searchFailures: Set<Int> = []
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
                 participant: String?, instance: Int,
                 processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
-        searchByInstance[instance] ?? []
+        if searchFailures.contains(instance) { throw SudrfError.http(status: 503) }
+        return searchByInstance[instance] ?? []
     }
     func fetchCard(url: URL) async throws -> MosGorSudCard {
         guard let card = cards[url.lastPathComponent] else {

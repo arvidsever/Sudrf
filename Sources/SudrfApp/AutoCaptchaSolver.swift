@@ -37,6 +37,13 @@ enum AutoCaptchaSolver {
     struct SolveResult: Sendable {
         let token: CaptchaToken?
         let png: Data?
+        let cancelled: Bool
+
+        init(token: CaptchaToken?, png: Data?, cancelled: Bool = false) {
+            self.token = token
+            self.png = png
+            self.cancelled = cancelled
+        }
     }
 
     /// Попытаться решить капчу на форме `formURL`. Возвращает токен
@@ -101,6 +108,10 @@ enum AutoCaptchaSolver {
                     log.logSkip(host: host ?? "?", kind: kind,
                                 reason: "low confidence \(String(format: "%.2f", result.confidence)) on attempt \(attempt + 1)")
                 }
+                } catch is CancellationError {
+                    return SolveResult(token: nil, png: lastPNG, cancelled: true)
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    return SolveResult(token: nil, png: lastPNG, cancelled: true)
                 } catch {
                     log.logError(host: formURL.host ?? "?", kind: kind, error: error)
                     continue

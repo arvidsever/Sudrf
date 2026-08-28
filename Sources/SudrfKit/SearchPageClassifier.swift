@@ -22,6 +22,7 @@ public enum SearchPageKind: Sendable {
     /// `AutoCaptchaSolver` как сигнал «не добавлять этот
     /// captcha PNG в bootstrap-корпус» (v0.38.9).
     case captchaRejected
+    case maintenance    // штатная HTTP 200-заглушка источника
     case unrecognized   // модуль не понял запрос / другой интерфейс / заглушка
 }
 
@@ -65,6 +66,12 @@ public enum SearchPageClassifier {
         // «Время жизни сессии закончилось» — сессионная страница, требующая
         // повторного захода через форму; для вызывающего равносильна капче.
         if html.contains("Время жизни сессии закончилось") { return .captcha }
+
+        let lower = html.lowercased()
+        if lower.contains("информация временно недоступна"),
+           lower.contains("попробуйте обратиться позже") {
+            return .maintenance
+        }
 
         // 2) Явные формулировки пустой выдачи sud_delo.
         let emptyMarkers = [

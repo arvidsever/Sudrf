@@ -105,6 +105,11 @@ public enum MovementCachePolicy {
         for canonical in Set((fresh.incompleteHigherCourtDomains ?? []).map(SudrfHost.moduleHost)) {
             if restoreCachedRealInstances(for: canonical) { changed = true }
         }
+        // A recognized empty listing is not proof that a previously tracked
+        // court round was deleted. Only an explicit tombstone may remove it.
+        for canonical in Set((fresh.honestZeroDomains ?? []).map(SudrfHost.moduleHost)) {
+            if restoreCachedRealInstances(for: canonical) { changed = true }
+        }
         guard changed else { return fresh }
 
         instances.sort { MovementService.instanceOrderKey($0) < MovementService.instanceOrderKey($1) }
@@ -115,6 +120,7 @@ public enum MovementCachePolicy {
         out.actBodies = actBodies
         out.executionDocuments = executionDocuments
         out.incompleteHigherCourtDomains = nil
+        out.honestZeroDomains = nil
         return out
     }
 
@@ -128,6 +134,7 @@ public enum MovementCachePolicy {
         var out = mv
         out.instances = mv.instances.filter { $0.captchaFormURL == nil }
         out.incompleteHigherCourtDomains = nil
+        out.honestZeroDomains = nil
         return out
     }
 }

@@ -231,6 +231,10 @@ final class TrackedCaseRecord {
     var movementData: Data? = nil
     /// Когда движение в последний раз получено с портала (TTL кэша).
     var movementFetchedAt: Date? = nil
+    /// Последний нормализованный исход попытки обновления источника. Это не
+    /// timestamp успешного движения: ошибки и частичные ответы тоже сохраняют
+    /// attempt, но не продлевают TTL `movementFetchedAt`.
+    var sourceRefreshAttemptData: Data? = nil
     /// Записи об исполнении — JSON. Optional + default позволяют легко
     /// добавить поле к уже существующим SwiftData-записям.
     var enforcementData: Data? = nil
@@ -278,6 +282,23 @@ final class TrackedCaseRecord {
             do { movementData = try JSONEncoder().encode(newValue) }
             catch {
                 storeLog.error("Не удалось закодировать movement; прежние данные сохранены: \(error, privacy: .public)")
+            }
+        }
+    }
+    var sourceRefreshAttempt: SourceAttempt? {
+        get {
+            sourceRefreshAttemptData.flatMap {
+                Self.decode(SourceAttempt.self, from: $0, what: "source refresh attempt")
+            }
+        }
+        set {
+            guard let newValue else {
+                sourceRefreshAttemptData = nil
+                return
+            }
+            do { sourceRefreshAttemptData = try JSONEncoder().encode(newValue) }
+            catch {
+                storeLog.error("Не удалось закодировать source refresh attempt; прежние данные сохранены: \(error, privacy: .public)")
             }
         }
     }

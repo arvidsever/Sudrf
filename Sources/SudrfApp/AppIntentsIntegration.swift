@@ -98,6 +98,11 @@ struct RefreshCaseIntent: AppIntent {
         switch outcome {
         case .refreshed:
             return .result(dialog: "Дело обновлено.")
+        case .partial(let message):
+            return .result(dialog: IntentDialog(
+                full: "Дело обновлено частично.", supporting: "\(message)"))
+        case .cancelled:
+            return .result(dialog: "Обновление дела отменено.")
         case .captchaRequired:
             return .result(dialog: "Показан сохранённый кэш. Для ручного ввода CAPTCHA откройте Sudrf.")
         case .failed(let message):

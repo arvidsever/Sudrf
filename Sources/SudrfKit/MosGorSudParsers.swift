@@ -53,6 +53,12 @@ public enum MosGorSudResultsParser {
         // Заголовки таблицы результатов → индексы колонок (по вхождению).
         let headers = ((try? doc.select("thead th").array()) ?? [])
             .map { (try? $0.text())?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+        if SearchPageClassifier.classify(html: html) == .maintenance {
+            throw SudrfError.sourceMaintenance(domain: MosGorSudEndpoint.host)
+        }
+        guard headers.contains(where: { $0.localizedCaseInsensitiveContains("№") }) else {
+            throw SudrfError.searchModuleUnavailable(domain: MosGorSudEndpoint.host)
+        }
         func idx(_ needle: String) -> Int {
             headers.firstIndex { $0.localizedCaseInsensitiveContains(needle) } ?? -1
         }
@@ -120,6 +126,9 @@ public enum MosGorSudCardParser {
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать карточку mos-gorsud") }
 
         let rawText = (try? doc.text()) ?? ""
+        if SearchPageClassifier.classify(html: html) == .maintenance {
+            throw SudrfError.caseCardTemporarilyUnavailable
+        }
 
         // Поля карточки: пары `<div class="left">КЛЮЧ</div><div class="right">ЗНАЧ</div>`.
         var fields: [(key: String, value: String)] = []
@@ -176,6 +185,10 @@ public enum MosGorSudCardParser {
         }
 
         let numberRaw = field("номер дела", "номер заявления", "номер материала") ?? ""
+        guard !fields.isEmpty,
+              !numberRaw.isEmpty || field("уникальный идентификатор") != nil || !sessions.isEmpty else {
+            throw SudrfError.parsing("страница не содержит признаков карточки mos-gorsud")
+        }
 
         return MosGorSudCard(
             uid: field("уникальный идентификатор").flatMap(MGSParse.firstUID(in:))

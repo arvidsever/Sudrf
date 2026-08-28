@@ -710,7 +710,9 @@ final class MovementServiceTransientStubTests: XCTestCase {
         let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
 
         let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
-        XCTAssertEqual(fresh.incompleteHigherCourtDomains, ["vs--komi.sudrf.ru"])
+        XCTAssertEqual(Set(fresh.incompleteHigherCourtDomains ?? []),
+                       Set(["syktsud--komi.sudrf.ru", "vs--komi.sudrf.ru"]),
+                       "сбой добора кругов домашнего суда тоже делает снимок частичным")
 
         let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
         let restored = try XCTUnwrap(merged.instances.first { $0.domain == "vs--komi.sudrf.ru" })
@@ -832,10 +834,9 @@ final class MovementServiceTransientStubTests: XCTestCase {
 
     /// `URLError(.cancelled)` НЕ входит в `isTransient` (SudrfClient не
     /// преобразует в `SudrfError.transientNetworkError`). Стало быть, в
-    /// `Movement.movement(...)` catch `SudrfError.transientNetworkError` НЕ
-    /// срабатывает, `transient-stub` НЕ ставится — `URLError(.cancelled)`
-    /// летит в общий `catch { continue }` и весь вышестоящий суд
-    /// пропускается без инстанции. SudrfClient-сторона для `.cancelled`
+    /// `Movement.movement(...)` не превращает отмену в partial snapshot:
+    /// `URLError(.cancelled)` пробрасывается вызывающей Task, поэтому ни stub,
+    /// ни пригодное для persistence движение не создаются. SudrfClient-сторона
     /// покрыта в `SudrfClientTransientErrorTests.testFatalURLErrorNotMarkedTransient_Cancelled`.
     func testCancelledDoesNotCreateTransientStub() async throws {
         let firstCard = try firstCardFixture()
@@ -849,12 +850,11 @@ final class MovementServiceTransientStubTests: XCTestCase {
         let service = MovementService(client: mock, higherCourtDomains: ["vs--komi.sudrf.ru"])
         let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
 
-        let fresh = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
-        XCTAssertFalse(fresh.instances.contains { $0.transientError == true },
-                       "URLError(.cancelled) НЕ ставит transient-stub")
-        XCTAssertFalse(fresh.instances.contains { $0.captchaFormURL != nil },
-                       "URLError(.cancelled) НЕ ставит captcha-stub")
-        // 1-я инстанция (district) на месте, вышестоящего — нет.
-        XCTAssertEqual(fresh.instances.count, 1, "только 1-я инстанция, вышестоящий пропущен")
+        do {
+            _ = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+            XCTFail("отмена не должна превращаться в partial movement")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
     }
 }

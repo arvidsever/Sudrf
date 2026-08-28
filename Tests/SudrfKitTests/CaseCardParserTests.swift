@@ -43,9 +43,14 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertTrue(card.rawText.contains("Судебное заседание\n31.03.2025\n14:10"))
     }
 
-    func testCaseNumberDoesNotFallBackToPageChrome() throws {
-        let card = try CaseCardParser.parse(html: "<html><body>Дело № ХРОМ-999/2026</body></html>")
-        XCTAssertNil(card.caseNumber)
+    func testPageChromeWithoutCardShapeIsRejected() throws {
+        XCTAssertThrowsError(try CaseCardParser.parse(
+            html: "<html><body>Дело № ХРОМ-999/2026</body></html>"))
+    }
+
+    func testUnknownVintageLikeHTMLIsRejected() {
+        XCTAssertThrowsError(try CaseCardParser.parse(
+            html: "<html><div id='tab_content_Protection'>blocked</div></html>"))
     }
 
     func testProductionNumberComesFromCardHeader() throws {

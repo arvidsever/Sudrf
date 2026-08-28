@@ -189,6 +189,56 @@ final class MagistrateTests: XCTestCase {
         XCTAssertEqual(MagistrateSearchStub.requestCount, 2)
     }
 
+    func testRejectedCaptchaContinuesManualCaptchaFlow() async throws {
+        MagistrateSearchStub.reset(responses: [
+            "first": "<main>Неверный проверочный код</main>"
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateSearchStub.self]
+        let client = MagistrateClient(
+            sudrfClient: SudrfClient(session: URLSession(configuration: configuration),
+                                     minInterval: 0))
+        let court = Court(domain: "petrozavodskoj.komi.msudrf.ru",
+                          title: "Петрозаводский судебный участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "5-10/2026")
+            XCTFail("отвергнутая captcha должна открыть ручной captcha-flow")
+        } catch SudrfError.captchaRequired(let formURL) {
+            XCTAssertEqual(formURL.host, court.domain)
+        }
+    }
+
+    func testUnknownLaterPageFailsWholeListing() async throws {
+        MagistrateSearchStub.reset(responses: [
+            "first": """
+            <div id="search_results">
+              <a href="/modules.php?name=sud_delo&amp;op=sf&amp;pageNum_Recordset1=1">2</a>
+              <table><tr><td><a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=one">5-10/2026</a></td></tr></table>
+            </div>
+            """,
+            "1": "<html><script>window.location='/protection'</script></html>"
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateSearchStub.self]
+        let client = MagistrateClient(
+            sudrfClient: SudrfClient(session: URLSession(configuration: configuration),
+                                     minInterval: 0))
+        let court = Court(domain: "petrozavodskoj.komi.msudrf.ru",
+                          title: "Петрозаводский судебный участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "5-10/2026")
+            XCTFail("неизвестная следующая страница не должна давать partial rows как полный результат")
+        } catch SudrfError.searchModuleUnavailable(let domain) {
+            XCTAssertEqual(domain, court.domain)
+        }
+    }
+
     func testCardParserReadsMagistrateTabs() throws {
         let html = """
         <div class="content lawcase-content">
@@ -252,6 +302,20 @@ final class MagistrateTests: XCTestCase {
         XCTAssertTrue(MovementDateRule.from2026.matches(legalForceDate: "01.01.2026"))
         XCTAssertTrue(MovementDateRule.before2026.matches(legalForceDate: nil))
         XCTAssertTrue(MovementDateRule.from2026.matches(legalForceDate: nil))
+    }
+
+    func testUnknownHTMLIsNotParsedAsEmptyMagistrateCard() {
+        XCTAssertThrowsError(try MagistrateCardParser.parse(
+            html: "<html><script>location='/protection'</script></html>"))
+    }
+
+    func testMaintenanceHTMLIsNotParsedAsEmptyMagistrateCard() {
+        XCTAssertThrowsError(try MagistrateCardParser.parse(
+            html: "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>")) {
+            guard case SudrfError.caseCardTemporarilyUnavailable = $0 else {
+                return XCTFail("ожидалась maintenance-классификация, получено \($0)")
+            }
+        }
     }
 }
 

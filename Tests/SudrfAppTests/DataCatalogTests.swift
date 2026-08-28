@@ -61,7 +61,7 @@ final class DataCatalogTests: XCTestCase {
     }
 
     @MainActor
-    func testV3TrackedCaseStoreMigratesToV4WithEmptyEnforcementState() throws {
+    func testV3TrackedCaseStoreMigratesToV5WithEmptyEnforcementState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SudrfMigration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -91,7 +91,7 @@ final class DataCatalogTests: XCTestCase {
             try context.save()
         }
 
-        let currentSchema = Schema(versionedSchema: SudrfSchemaV4.self)
+        let currentSchema = Schema(versionedSchema: SudrfSchemaV5.self)
         let configuration = ModelConfiguration(
             "SudrfMigrationTest", schema: currentSchema, url: storeURL,
             cloudKitDatabase: .none)
@@ -103,6 +103,93 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertEqual(migratedStore.all().map(\.key), [legacyContext.key])
         XCTAssertEqual(migratedStore.all().first?.collectionNames, ["Legacy"])
         XCTAssertEqual(migratedStore.all().first?.enforcementRecords, [])
+    }
+
+    @MainActor
+    func testV4TrackedCaseStoreMigratesToV5PreservingLastSuccess() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SudrfMigration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("default.store")
+
+        let legacyContext = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-9/2025")
+        let lastSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshotData = Data("legacy-snapshot".utf8)
+        let movementData = Data("legacy-movement".utf8)
+        let enforcementData = Data("legacy-enforcement".utf8)
+
+        do {
+            let legacySchema = Schema(versionedSchema: SudrfSchemaV4.self)
+            let configuration = ModelConfiguration(
+                "SudrfMigrationTest", schema: legacySchema, url: storeURL,
+                cloudKitDatabase: .none)
+            let container = try ModelContainer(for: legacySchema, configurations: configuration)
+            let context = ModelContext(container)
+            let record = SudrfSchemaV4.TrackedCaseRecord(
+                key: legacyContext.key, collections: ["Legacy"],
+                caseNumber: legacyContext.caseNumber, courtTitle: legacyContext.courtTitle,
+                displayDomain: legacyContext.displayDomain,
+                contextData: try JSONEncoder().encode(legacyContext), snapshotData: snapshotData)
+            record.folderName = "Доверитель"
+            record.collectionNames = ["Legacy", "Избранное"]
+            record.judicialUID = "77RS0001-01-2025-000001-11"
+            record.movementData = movementData
+            record.movementFetchedAt = lastSuccess
+            record.enforcementData = enforcementData
+            context.insert(record)
+            try context.save()
+        }
+
+        let currentSchema = Schema(versionedSchema: SudrfSchemaV5.self)
+        let configuration = ModelConfiguration(
+            "SudrfMigrationTest", schema: currentSchema, url: storeURL,
+            cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
+            configurations: configuration)
+        let migrated = TrackedStore(container: container).all().first
+
+        XCTAssertEqual(migrated?.movementFetchedAt, lastSuccess)
+        XCTAssertEqual(migrated?.folderName, "",
+                       "legacy folder is intentionally cleared after collection migration")
+        XCTAssertEqual(migrated?.collectionNames, ["Legacy", "Избранное"])
+        XCTAssertEqual(migrated?.judicialUID, "77RS0001-01-2025-000001-11")
+        XCTAssertEqual(migrated?.snapshotData, snapshotData)
+        XCTAssertEqual(migrated?.movementData, movementData)
+        XCTAssertEqual(migrated?.enforcementData, enforcementData)
+        XCTAssertNil(migrated?.sourceRefreshAttempt)
+    }
+
+    @MainActor
+    func testSourceRefreshAttemptRoundTripsWithoutChangingLastSuccess() {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-9/2025")
+        let record = store.upsert(context: context, snapshot: nil, collections: [])
+        let lastSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        let attempt = SourceAttempt(
+            kind: .captcha,
+            provenance: SourceProvenance(
+                operation: .movement, sourceFamily: "sudrf",
+                host: context.displayDomain, observedAt: .now,
+                httpStatus: 403, errorCode: "captcha", attemptCount: 2))
+
+        record.movementFetchedAt = lastSuccess
+        record.sourceRefreshAttempt = attempt
+
+        XCTAssertTrue(store.save())
+        XCTAssertEqual(record.sourceRefreshAttempt, attempt)
+        XCTAssertEqual(record.movementFetchedAt, lastSuccess)
     }
 
     @MainActor
@@ -211,7 +298,7 @@ final class DataCatalogTests: XCTestCase {
                        Data("shm".utf8))
         XCTAssertEqual(try SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults), backup)
-        XCTAssertEqual(backup.lastPathComponent, "pre-schema-4.0.0")
+        XCTAssertEqual(backup.lastPathComponent, "pre-schema-5.0.0")
 
         SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
         XCTAssertNil(try SudrfPersistentStoreBackup.prepare(
@@ -220,8 +307,8 @@ final class DataCatalogTests: XCTestCase {
         // Следующая schema-version получает независимые marker и каталог.
         let next = try XCTUnwrap(SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults,
-            schemaVersion: "5.0.0"))
-        XCTAssertEqual(next.lastPathComponent, "pre-schema-5.0.0")
+            schemaVersion: "6.0.0"))
+        XCTAssertEqual(next.lastPathComponent, "pre-schema-6.0.0")
     }
 
     @MainActor
@@ -231,7 +318,7 @@ final class DataCatalogTests: XCTestCase {
         let source = root.appendingPathComponent("source", isDirectory: true)
         let backups = root.appendingPathComponent("backups", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        let corrupt = backups.appendingPathComponent("pre-schema-4.0.0", isDirectory: true)
+        let corrupt = backups.appendingPathComponent("pre-schema-5.0.0", isDirectory: true)
         try FileManager.default.createDirectory(at: corrupt, withIntermediateDirectories: true)
         try Data("incomplete".utf8).write(to: corrupt.appendingPathComponent("orphan-wal"))
         defer { try? FileManager.default.removeItem(at: root) }
@@ -248,7 +335,7 @@ final class DataCatalogTests: XCTestCase {
                        Data("valid-store".utf8))
         let quarantined = try FileManager.default.contentsOfDirectory(
             at: backups, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("pre-schema-4.0.0-invalid-") }
+            .filter { $0.lastPathComponent.hasPrefix("pre-schema-5.0.0-invalid-") }
         XCTAssertEqual(quarantined.count, 1)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: quarantined[0].appendingPathComponent("orphan-wal").path))

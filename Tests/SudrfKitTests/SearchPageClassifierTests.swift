@@ -118,6 +118,12 @@ final class SearchPageClassifierTests: XCTestCase {
         XCTAssertEqual(SearchPageClassifier.classify(html: html), .unrecognized)
     }
 
+    func testMaintenanceStubIsMaintenance() {
+        let html = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        XCTAssertEqual(SearchPageClassifier.classify(html: html), .maintenance)
+        XCTAssertEqual(SearchPageClassifier.classify(html: html).sourceOutcomeKind, .maintenance)
+    }
+
     /// v0.38.9: маркеры captcha-rejection (сервер отверг наш код)
     /// дают `.captchaRejected`. Это отдельный кейс от `.captcha`
     /// (форма с картинкой) — здесь страница результатов с сообщением

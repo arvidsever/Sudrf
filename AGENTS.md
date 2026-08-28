@@ -38,12 +38,15 @@
   imports it. The solver is opt-in at the call site: each consumer
   calls `AutoCaptchaSolver.solve(...)` and falls through to manual
   flow on nil.
-- Three call sites:
+- Two automatic entry points:
   - `SearchModel.executeSearch` — interactive search (v0.38.1).
   - `RefreshCenter.performRefresh` — background tracked-case refresh
-    (v0.38.0).
-  - `AppRouter.beginCaptcha(for:)` — per-instance captcha stub in
-    `CaseMovementView` (v0.38.2). Sync signature, async work in Task.
+    (v0.38.0), including higher-court CAPTCHA stubs before they are
+    published. `AppRouter.beginCaptcha(for:)` is the explicit manual
+    fallback behind the «Ввести код» button.
+- `RefreshCenter` coalesces concurrent automatic solves by canonical court
+  module host: a batch of cases reaching the same KSOYU CAPTCHA shares one
+  solve and token instead of launching duplicate OCR tasks.
 - Two captcha kinds: `.sudrfToken` (digits, *.sudrf.ru) and
   `.kcaptcha` (mixed letters+digits, *.msudrf.ru). Selection is
   host-based via `AutoCaptchaSolver.kindFromURL(_:)`.

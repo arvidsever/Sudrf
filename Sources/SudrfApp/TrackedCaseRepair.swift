@@ -177,6 +177,7 @@ final class TrackedCaseRepairCoordinator {
             return rec.key
         }
         for key in keys {
+            guard !Task.isCancelled else { break }
             guard shouldAttempt(key: key) else { continue }
             await repairHigherAnchor(key: key, summary: &summary)
         }
@@ -331,6 +332,10 @@ final class TrackedCaseRepairCoordinator {
                    settings.isEffectivelyEnabled {
                     let solved = await autoSolve(
                         formURL, client, solver, settings.autoSolverSettings)
+                    if solved.cancelled || Task.isCancelled {
+                        withUnsafeCurrentTask { $0?.cancel() }
+                        return
+                    }
                     if let token = solved.token {
                         await CaptchaTokenStore.shared.store(
                             token, domain: formURL.host ?? anchorContext.searchDomain)

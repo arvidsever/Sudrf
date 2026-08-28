@@ -135,6 +135,10 @@ public struct CaseMovement: Sendable, Equatable, Codable {
     /// она не даёт частичному ответу затереть сохранённые инстанции этого суда.
     /// Optional сохраняет декодирование старых записей кэша без миграции.
     public var incompleteHigherCourtDomains: [String]?
+    /// Listing sources that returned a recognized, deterministic empty result.
+    /// Empty listings are useful freshness evidence, but are not tombstones:
+    /// merge keeps previously known instances for these domains.
+    public var honestZeroDomains: [String]?
     /// Исполнительные документы базовой карточки. Optional сохраняет
     /// backward-compatible декодирование старых кэшей.
     public var executionDocuments: [CourtEnforcementDocument]?
@@ -144,12 +148,14 @@ public struct CaseMovement: Sendable, Equatable, Codable {
                 acts: [CaseAct], actBodies: [String: String] = [:],
                 category: String? = nil, parties: CaseParties = CaseParties(),
                 incompleteHigherCourtDomains: [String]? = nil,
+                honestZeroDomains: [String]? = nil,
                 executionDocuments: [CourtEnforcementDocument]? = nil) {
         self.uid = uid; self.caseNumber = caseNumber; self.inForce = inForce
         self.instances = instances; self.complaints = complaints
         self.acts = acts; self.actBodies = actBodies
         self.category = category; self.parties = parties
         self.incompleteHigherCourtDomains = incompleteHigherCourtDomains
+        self.honestZeroDomains = honestZeroDomains
         self.executionDocuments = executionDocuments
     }
 }
@@ -305,6 +311,37 @@ public actor MovementService: MovementProviding {
         self.mosgorsud = mosgorsud
     }
 
+    /// Supplementary listing requests cross the typed source boundary before
+    /// movement aggregation. The legacy throwing shape remains inside this
+    /// adapter so existing captcha/transient recovery paths stay unchanged.
+    func discoveryRows(court: Court, cartoteka: Cartoteka,
+                       field: SearchField, value: String) async throws
+        -> [CaseSearchResult] {
+        switch try await client.searchOutcome(court: court, cartoteka: cartoteka,
+                                              field: field, value: value,
+                                              operation: .discovery) {
+        case .usableSnapshot(let rows, _):
+            return rows
+        case .honestZero:
+            return []
+        case .partial(let rows, _):
+            return rows ?? []
+        case .captcha(let formURL, _):
+            throw SudrfError.captchaRequired(formURL: formURL)
+        case .maintenance:
+            throw SudrfError.sourceMaintenance(domain: court.domain)
+        case .transportFailure(_, let attempt):
+            if let raw = attempt.provenance.errorCode.flatMap(Int.init),
+               let count = attempt.provenance.attemptCount {
+                throw SudrfError.transientNetworkError(
+                    domain: court.domain, code: URLError.Code(rawValue: raw), attempt: count)
+            }
+            throw SudrfError.searchModuleUnavailable(domain: court.domain)
+        case .parserFailure:
+            throw SudrfError.searchModuleUnavailable(domain: court.domain)
+        }
+    }
+
     public func movement(for base: CaseSearchResult,
                          court: Court,
                          cartoteka: Cartoteka) async throws -> CaseMovement {
@@ -385,12 +422,20 @@ public actor MovementService: MovementProviding {
             sessions: baseCard.sessions,
             actID: baseActID)]
         var incompleteHigherCourtDomains: [String] = []
+        var honestZeroDomains: [String] = []
         func markHigherCourtIncomplete(_ domain: String) {
             let canonical = SudrfHost.moduleHost(domain)
             guard !incompleteHigherCourtDomains.contains(where: {
                 SudrfHost.moduleHost($0) == canonical
             }) else { return }
             incompleteHigherCourtDomains.append(domain)
+        }
+        func markHonestZero(_ domain: String) {
+            let canonical = SudrfHost.moduleHost(domain)
+            guard !honestZeroDomains.contains(where: {
+                SudrfHost.moduleHost($0) == canonical
+            }) else { return }
+            honestZeroDomains.append(domain)
         }
 
         // 1b. Тот же суд: другие круги под этим же УИД. После отмены вышестоящим
@@ -399,8 +444,19 @@ public actor MovementService: MovementProviding {
         //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
         //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
         if let uid, court.level != .magistrate, effectiveBaseLevel != .material {
-            let sameCourtRows = (try? await client.search(court: court, cartoteka: cartoteka,
-                                                          field: .uid, value: uid)) ?? []
+            let sameCourtRows: [CaseSearchResult]
+            do {
+                sameCourtRows = try await discoveryRows(court: court, cartoteka: cartoteka,
+                                                        field: .uid, value: uid)
+                if sameCourtRows.isEmpty { markHonestZero(court.domain) }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                markHigherCourtIncomplete(court.domain)
+                sameCourtRows = []
+            }
             for r in sameCourtRows {
                 guard Self.hasCardAccess(r) else { continue }
                 if baseIsMainCase,
@@ -413,8 +469,17 @@ public actor MovementService: MovementProviding {
                 if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
                 if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
                                          usingCanonicalHost: false) { continue }
-                guard let card = try? await fetchCard(row: r, court: court,
-                                                      cartoteka: cartoteka) else { continue }
+                let card: CaseCard
+                do {
+                    card = try await fetchCard(row: r, court: court, cartoteka: cartoteka)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    throw error
+                } catch {
+                    markHigherCourtIncomplete(court.domain)
+                    continue
+                }
                 var roundActID: String? = nil
                 if let actText = card.actText {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
@@ -446,8 +511,19 @@ public actor MovementService: MovementProviding {
         //     молча: материалы — дополнение, заглушку из-за них не ставим.
         if let uid, court.level == .district, cartoteka.id != "m",
            let mCart = CartotekaRegistry.find(level: .district, id: "m") {
-            let rows = (try? await client.search(court: court, cartoteka: mCart,
-                                                 field: .uid, value: uid)) ?? []
+            let rows: [CaseSearchResult]
+            do {
+                rows = try await discoveryRows(court: court, cartoteka: mCart,
+                                               field: .uid, value: uid)
+                if rows.isEmpty { markHonestZero(court.domain) }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                markHigherCourtIncomplete(court.domain)
+                rows = []
+            }
             for r in rows {
                 guard Self.hasCardAccess(r) else { continue }
                 if baseIsMainCase,
@@ -457,8 +533,17 @@ public actor MovementService: MovementProviding {
                 }
                 if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
                                          usingCanonicalHost: false) { continue }
-                guard let card = try? await fetchCard(row: r, court: court,
-                                                      cartoteka: mCart) else { continue }
+                let card: CaseCard
+                do {
+                    card = try await fetchCard(row: r, court: court, cartoteka: mCart)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    throw error
+                } catch {
+                    markHigherCourtIncomplete(court.domain)
+                    continue
+                }
                 var matActID: String? = nil
                 if let actText = card.actText {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
@@ -495,9 +580,11 @@ public actor MovementService: MovementProviding {
             let toTry = CartotekaRegistry.sets(for: level).filter { cartotekaIDs.contains($0.id) }
             guard !toTry.isEmpty else { continue }
 
+            let instanceCountBeforeTarget = instances.count
+            var targetIncomplete = false
             for higherCart in toTry {
                 do {
-                    let results = try await client.search(court: higherCourt,
+                    let results = try await discoveryRows(court: higherCourt,
                                                           cartoteka: higherCart,
                                                           field: .uid, value: uid)
                     // Строки, по которым не открыть карточку (ни ID, ни ссылки), бесполезны.
@@ -562,7 +649,12 @@ public actor MovementService: MovementProviding {
                                              to: &instances, acts: &acts, actBodies: &actBodies)
                     }
                     break   // записи апелляции найдены в этой картотеке — к следующему суду
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    throw error
                 } catch SudrfError.captchaRequired(let formURL) {
+                    targetIncomplete = true
                     markHigherCourtIncomplete(domain)
                     // Форма этого суда под капчей — автопоиск невозможен. Если из
                     // импорта известны прямые ссылки на карточки этого суда — берём
@@ -583,7 +675,17 @@ public actor MovementService: MovementProviding {
                             rescued = true
                             continue
                         }
-                        guard let entry = await instanceFromKnownCard(kc) else { continue }
+                        let entry: (inst: CaseInstance, act: CaseAct?, body: String?)
+                        do {
+                            entry = try await instanceFromKnownCard(kc)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                            throw error
+                        } catch {
+                            markHigherCourtIncomplete(kc.domain)
+                            continue
+                        }
                         // A14: после fetch — финальная проверка против параллельных
                         // rescue (на случай, если fetched-круг совпадает с уже
                         // добавленным от предыдущего `kc`/`target`).
@@ -606,6 +708,7 @@ public actor MovementService: MovementProviding {
                     break
                 }
                 catch SudrfError.transientNetworkError {
+                    targetIncomplete = true
                     markHigherCourtIncomplete(domain)
                     // Сетевой сбой вышестоящего суда (timeout / DNS / нет сети
                     // после 3 попыток). Ставим transientError-стаб, чтобы
@@ -622,12 +725,16 @@ public actor MovementService: MovementProviding {
                     break
                 }
                 catch {
+                    targetIncomplete = true
                     // Любая иная ошибка означает, что ответ неполон. Отдельную
                     // UI-заглушку не показываем, но merge сохранит кэшированные
                     // круги этого суда вместо тихого удаления из движения.
                     markHigherCourtIncomplete(domain)
                     continue
                 }
+            }
+            if instances.count == instanceCountBeforeTarget, !targetIncomplete {
+                markHonestZero(domain)
             }
         }
 
@@ -644,7 +751,17 @@ public actor MovementService: MovementProviding {
             if let n = kc.caseNumber,
                Self.containsInstance(instances, domain: kc.domain, caseNumber: n,
                                      usingCanonicalHost: true) { continue }
-            guard let entry = await instanceFromKnownCard(kc) else { continue }
+            let entry: (inst: CaseInstance, act: CaseAct?, body: String?)
+            do {
+                entry = try await instanceFromKnownCard(kc)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                markHigherCourtIncomplete(kc.domain)
+                continue
+            }
             guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
                                    to: &instances, acts: &acts, actBodies: &actBodies)
             else { continue }
@@ -660,11 +777,13 @@ public actor MovementService: MovementProviding {
                                 + baseCard.parties.thirdParties)
                                .compactMap { VSRFLinkKey.surname($0) })
             if uid != nil || !surnames.isEmpty {
-                let vs = await Self.vsrfInstances(vsrf: vsrf, uid: uid,
-                                                  firstInstanceCourt: court.title,
-                                                  firstInstanceCaseNumber: base.caseNumber,
-                                                  partySurnames: surnames)
-                instances.append(contentsOf: vs)
+                let vs = try await Self.vsrfInstancesOutcome(vsrf: vsrf, uid: uid,
+                                                             firstInstanceCourt: court.title,
+                                                             firstInstanceCaseNumber: base.caseNumber,
+                                                             partySurnames: surnames)
+                instances.append(contentsOf: vs.instances)
+                if vs.incomplete { markHigherCourtIncomplete("vsrf.ru") }
+                if vs.instances.isEmpty, !vs.incomplete { markHonestZero("vsrf.ru") }
             }
         }
 
@@ -686,20 +805,21 @@ public actor MovementService: MovementProviding {
                             category: baseCard.category, parties: parties,
                             incompleteHigherCourtDomains: incompleteHigherCourtDomains.isEmpty
                                 ? nil : incompleteHigherCourtDomains,
+                            honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains,
                             executionDocuments: baseCard.executionDocuments.isEmpty
                                 ? nil : baseCard.executionDocuments)
     }
 
     /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).
-    /// nil — карточка недоступна (ошибки не пробрасываются: known card — добор,
-    /// его отсутствие не должно ронять сборку движения).
+    /// Ошибка пробрасывается локальному caller'у, который помечает домен как
+    /// неполный, но продолжает сборку пригодной части движения.
     private func instanceFromKnownCard(_ kc: KnownCard)
-        async -> (inst: CaseInstance, act: CaseAct?, body: String?)? {
+        async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
         let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle, level: .district)
-        guard let card = try? await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
-                                                     caseUID: kc.caseUID, deloID: kc.deloID,
-                                                     new: kc.new) else { return nil }
+        let card = try await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
+                                              caseUID: kc.caseUID, deloID: kc.deloID,
+                                              new: kc.new)
         let number = card.caseNumber ?? kc.caseNumber ?? "—"
         var act: CaseAct? = nil
         var body: String? = nil
@@ -1068,20 +1188,41 @@ extension MovementService {
     static func vsrfInstances(vsrf: any VSRFProviding, uid: String?,
                               firstInstanceCourt: String, firstInstanceCaseNumber: String,
                               partySurnames: Set<String>) async -> [CaseInstance] {
+        (try? await vsrfInstancesOutcome(vsrf: vsrf, uid: uid,
+                                         firstInstanceCourt: firstInstanceCourt,
+                                         firstInstanceCaseNumber: firstInstanceCaseNumber,
+                                         partySurnames: partySurnames))?.instances ?? []
+    }
+
+    static func vsrfInstancesOutcome(vsrf: any VSRFProviding, uid: String?,
+                                     firstInstanceCourt: String,
+                                     firstInstanceCaseNumber: String,
+                                     partySurnames: Set<String>) async
+        throws -> (instances: [CaseInstance], incomplete: Bool) {
         var prods: [VSRFProduction] = []
+        var incomplete = false
 
         // 1) По УИД — истребованное дело (точный матч).
-        if let uid, !uid.isEmpty,
-           let r = try? await vsrf.search(uniqueNumber: uid, oldCaseNumber: nil, keywords: nil) {
-            prods += r.results.filter {
-                VSRFLinkKey.normUID($0.uid) != nil
-                    && VSRFLinkKey.normUID($0.uid) == VSRFLinkKey.normUID(uid)
+        if let uid, !uid.isEmpty {
+            do {
+                let r = try await vsrf.search(uniqueNumber: uid, oldCaseNumber: nil, keywords: nil)
+                prods += r.results.filter {
+                    VSRFLinkKey.normUID($0.uid) != nil
+                        && VSRFLinkKey.normUID($0.uid) == VSRFLinkKey.normUID(uid)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                incomplete = true
             }
         }
         // 2) По № дела 1-й инстанции — жалобы (в т. ч. отказные) любой из сторон.
         //    Выдача мешает регионы, поэтому строго отбираем по тройке.
-        if let r = try? await vsrf.search(uniqueNumber: nil,
-                                          oldCaseNumber: firstInstanceCaseNumber, keywords: nil) {
+        do {
+            let r = try await vsrf.search(uniqueNumber: nil,
+                                          oldCaseNumber: firstInstanceCaseNumber, keywords: nil)
             let court = VSRFLinkKey.normCourt(firstInstanceCourt)
             let caseNo = VSRFLinkKey.normCaseNo(firstInstanceCaseNumber)
             for p in r.results {
@@ -1094,6 +1235,12 @@ extension MovementService {
                 }
                 prods.append(p)
             }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            throw error
+        } catch {
+            incomplete = true
         }
 
         // Дедупликация по cardID (или номеру).
@@ -1138,7 +1285,7 @@ extension MovementService {
         } else {
             for c in complaints { out.append(mapProduction(c)) }
         }
-        return out
+        return (out, incomplete)
     }
 
     /// Отображает производство ВС РФ в инстанцию второй кассации.

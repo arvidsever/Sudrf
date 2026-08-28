@@ -1754,6 +1754,30 @@ final class AppRouter: ObservableObject {
         return true
     }
 
+    /// Удаляет подборку, не затрагивая сами отслеживаемые дела.
+    @discardableResult
+    func deleteCollection(named raw: String) -> Bool {
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        guard name != "Все дела", knownCollections.contains(name) else { return false }
+
+        let records = store.all().filter { $0.collectionNames.contains(name) }
+        for record in records {
+            record.collectionNames.removeAll { $0 == name }
+        }
+        if !records.isEmpty, !store.save() {
+            reload()
+            return false
+        }
+
+        knownCollections.removeAll { $0 == name }
+        if folder == name {
+            folder = "Все дела"
+            stageFilter = nil
+        }
+        reload(spotlightScope: records.isEmpty ? nil : .cases(Set(records.map(\.key))))
+        return true
+    }
+
     /// Членство дела в подборке — по ключу записи (номер дела без суда
     /// неоднозначен: одно «2-115/2026» может отслеживаться в двух судах).
     func add(caseKey key: String, to name: String) {

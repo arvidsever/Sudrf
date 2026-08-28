@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import SudrfKit
+import SwiftData
 @testable import SudrfApp
 
 /// Модель редизайна «Моих дел» (v20): вид производства по номеру дела,
@@ -255,5 +256,63 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertTrue(AppRouter.matches(c, query: "верховный"))
         XCTAssertTrue(AppRouter.matches(c, query: "сыктывкарский"))
         XCTAssertFalse(AppRouter.matches(c, query: "выборгский"))
+    }
+
+    @MainActor
+    func testDeleteCollectionKeepsCasesAndRefreshesCounters() throws {
+        let defaults = UserDefaults.standard
+        let collectionsKey = "myCollections"
+        let oldCollections = defaults.object(forKey: collectionsKey)
+        let oldSpotlightOnboarding = defaults.object(forKey: SpotlightPreferenceStore.onboardingKey)
+        let deleted = "Удалить-\(UUID().uuidString)"
+        let kept = "Оставить-\(UUID().uuidString)"
+        let empty = "Пустая-\(UUID().uuidString)"
+        defaults.set([deleted, kept, empty], forKey: collectionsKey)
+        defaults.set(false, forKey: SpotlightPreferenceStore.onboardingKey)
+        defer {
+            if let oldCollections { defaults.set(oldCollections, forKey: collectionsKey) }
+            else { defaults.removeObject(forKey: collectionsKey) }
+            if let oldSpotlightOnboarding {
+                defaults.set(oldSpotlightOnboarding, forKey: SpotlightPreferenceStore.onboardingKey)
+            } else {
+                defaults.removeObject(forKey: SpotlightPreferenceStore.onboardingKey)
+            }
+        }
+
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let context = container.mainContext
+        let first = TrackedCaseRecord(
+            key: "court/1-1/2026", collections: [deleted, kept],
+            caseNumber: "1-1/2026", courtTitle: "Суд", displayDomain: "court",
+            contextData: Data(), snapshotData: nil)
+        let second = TrackedCaseRecord(
+            key: "court/1-2/2026", collections: [deleted],
+            caseNumber: "1-2/2026", courtTitle: "Суд", displayDomain: "court",
+            contextData: Data(), snapshotData: nil)
+        context.insert(first)
+        context.insert(second)
+        try context.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        XCTAssertEqual(router.collections.map(\.0), ["Все дела", deleted, kept, empty])
+        XCTAssertEqual(router.collections.map(\.1), [2, 2, 1, 0])
+
+        router.folder = deleted
+        XCTAssertTrue(router.deleteCollection(named: deleted))
+        XCTAssertEqual(router.folder, "Все дела")
+        XCTAssertEqual(router.cases.count, 2)
+        XCTAssertEqual(router.collections.map(\.0), ["Все дела", kept, empty])
+        XCTAssertEqual(router.collections.map(\.1), [2, 1, 0])
+        XCTAssertEqual(Set(first.collectionNames), [kept])
+        XCTAssertTrue(second.collectionNames.isEmpty)
+        XCTAssertEqual(defaults.stringArray(forKey: collectionsKey), [kept, empty])
+
+        XCTAssertTrue(router.deleteCollection(named: empty))
+        XCTAssertFalse(router.deleteCollection(named: "Все дела"))
+        XCTAssertFalse(router.deleteCollection(named: "Неизвестная подборка"))
+        XCTAssertEqual(router.collections.map(\.0), ["Все дела", kept])
+
+        // Не оставляем уникальное тестовое имя для позднего reload из init Task.
+        XCTAssertTrue(router.deleteCollection(named: kept))
     }
 }

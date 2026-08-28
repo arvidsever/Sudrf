@@ -1,5 +1,16 @@
 # Sudrf project instructions
 
+## License
+
+- Except for third-party components and materials, original repository content
+  is © 2026 Воробьёв Виктор Викторович and licensed under CC BY-NC-ND 4.0;
+  see `LICENSE.md` and `THIRD_PARTY_NOTICES.md`.
+- Preserve copyright, attribution, SPDX, license, and third-party notices.
+- An automated agent acting on an in-repository task authorized by the
+  rightsholder may modify the repository within that task. Do not infer
+  permission to relicense or distribute modified material outside the
+  authorized repository workflow.
+
 ## Roadmap
 
 - Живой план работ — `Docs/roadmap.md`: очередь задач, принятые решения и находки, которых нет в issues. Читайте его перед тем, как брать задачу, и обновляйте в той же ветке сразу после мёрджа.

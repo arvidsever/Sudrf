@@ -381,7 +381,7 @@ final class AppRouter: ObservableObject {
     /// Открытие по ключу записи — предпочтительный путь (номер дела без суда
     /// неоднозначен: «2-115/2026» может отслеживаться в двух судах сразу).
     func openCase(key: String) {
-        guard let rec = store.record(forKey: key) else { return }
+        guard let rec = store.record(forLocator: key) else { return }
         open(rec)
     }
 
@@ -403,8 +403,8 @@ final class AppRouter: ObservableObject {
     }
 
     func handleSpotlightItem(identifier: String) {
-        if store.record(forKey: identifier) != nil {
-            _ = intentOpenCase(key: identifier)
+        if let record = store.record(forLocator: identifier) {
+            _ = intentOpenCase(key: record.key)
             return
         }
         Task { [weak self] in
@@ -559,35 +559,35 @@ final class AppRouter: ObservableObject {
     // MARK: App Intents bridge
 
     func intentOpenCase(key: String) -> Bool {
-        guard store.record(forKey: key) != nil else { return false }
+        guard let record = store.record(forLocator: key) else { return false }
         section = .cases
-        openCase(key: key)
+        openCase(key: record.key)
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
     func intentOpenAct(caseKey: String, sourceActID: String) -> Bool {
-        guard store.record(forKey: caseKey) != nil,
-              store.courtActID(caseKey: caseKey, sourceActID: sourceActID) != nil else {
+        guard let record = store.record(forLocator: caseKey),
+              store.courtActID(caseKey: record.key, sourceActID: sourceActID) != nil else {
             return false
         }
         section = .cases
-        openCase(key: caseKey)
+        openCase(key: record.key)
         selectedActID = sourceActID
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
     func intentRefreshCase(key: String) async -> CaseRefreshOutcome {
-        await refreshCenter.refreshForIntent(key: key)
+        await refreshCenter.refreshForIntent(key: store.record(forLocator: key)?.key ?? key)
     }
 
     func intentAddCase(key: String, collection: String) -> Bool {
         let normalized = collection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty, normalized != "Все дела",
-              store.record(forKey: key) != nil else { return false }
+              let record = store.record(forLocator: key) else { return false }
         if !knownCollections.contains(normalized) { knownCollections.append(normalized) }
-        add(caseKey: key, to: normalized)
+        add(caseKey: record.key, to: normalized)
         return true
     }
 
@@ -603,7 +603,7 @@ final class AppRouter: ObservableObject {
     }
 
     func intentActText(caseKey: String, sourceActID: String) -> (caseNumber: String, text: String)? {
-        guard let rec = store.record(forKey: caseKey),
+        guard let rec = store.record(forLocator: caseKey),
               let text = rec.movement?.actBodies[sourceActID], !text.isEmpty else { return nil }
         return (rec.caseNumber, text)
     }
@@ -676,18 +676,19 @@ final class AppRouter: ObservableObject {
     func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) {
         let snap = movement.map { MovementDerivation.snapshot(from: $0, context: ctx) }
         // Движение с экрана поиска сеет кэш — первое открытие из «Моих дел» мгновенно.
-        store.upsert(context: ctx, snapshot: snap,
-                     movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
-                     collections: collections)
-        reload(spotlightScope: .cases([ctx.key]))
+        let record = store.reconcileAndUpsert(
+            context: ctx, snapshot: snap,
+            movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
+            collections: collections)
+        reload(spotlightScope: .cases([record.key]))
     }
     func untrack(recordKey: String) {
-        guard store.record(forKey: recordKey) != nil else { return }
-        store.remove(key: recordKey)
-        if openedKey == recordKey { closeCase() }
-        reload(spotlightScope: .cases([recordKey]))
+        guard let record = store.record(forLocator: recordKey) else { return }
+        store.remove(key: record.key)
+        if openedKey == record.key { closeCase() }
+        reload(spotlightScope: .cases([record.key]))
     }
-    func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(key: ctx.key) }
+    func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(context: ctx) }
     func isTracked(number: String, displayDomain: String, courtCode: String? = nil) -> Bool {
         store.isTracked(key: MovementContext.identityKey(displayDomain: displayDomain,
                                                          courtCode: courtCode,
@@ -854,8 +855,8 @@ final class AppRouter: ObservableObject {
         df.dateFormat = "dd.MM.yyyy"
         let collection = "Импорт " + df.string(from: Date())
         for rec in plan.records {
-            store.upsert(context: rec.context, snapshot: nil, movement: nil,
-                         collections: [collection])
+            _ = store.reconcileAndUpsert(context: rec.context, snapshot: nil, movement: nil,
+                                         collections: [collection])
         }
         let repaired = await repairCoordinator.runAll()
         let importedKeys = Set(plan.records.map { $0.context.key })
@@ -1735,18 +1736,18 @@ final class AppRouter: ObservableObject {
     /// Членство дела в подборке — по ключу записи (номер дела без суда
     /// неоднозначен: одно «2-115/2026» может отслеживаться в двух судах).
     func add(caseKey key: String, to name: String) {
-        guard name != "Все дела", let rec = store.record(forKey: key),
+        guard name != "Все дела", let rec = store.record(forLocator: key),
               !rec.collectionNames.contains(name) else { return }
         rec.collectionNames.append(name)
         store.save()
-        reload(spotlightScope: .cases([key]))
+        reload(spotlightScope: .cases([rec.key]))
     }
     func remove(caseKey key: String, from name: String) {
-        guard let rec = store.record(forKey: key),
+        guard let rec = store.record(forLocator: key),
               rec.collectionNames.contains(name) else { return }
         rec.collectionNames.removeAll { $0 == name }
         store.save()
-        reload(spotlightScope: .cases([key]))
+        reload(spotlightScope: .cases([rec.key]))
     }
 
     private func recordFor(number: String) -> TrackedCaseRecord? {

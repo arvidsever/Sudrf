@@ -168,7 +168,7 @@ final class TrackedCaseRepairCoordinator {
         let normalized = normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
-        mergeKnownUIDDuplicates(into: &summary)
+        applyIdentityReconciliation(to: &summary)
 
         // Снимок ключей после локального слияния: сеть не должна работать с уже
         // удалёнными managed objects.
@@ -186,8 +186,8 @@ final class TrackedCaseRepairCoordinator {
         return summary
     }
 
-    /// Точечный preflight для RefreshCenter. Локальное UID-слияние дешёвое и
-    /// гарантирует, что refresh продолжится уже по каноническому ключу.
+    /// Точечный preflight для RefreshCenter. Общий reconciler гарантирует,
+    /// что refresh продолжится уже по каноническому persistent locator.
     func repairIfNeeded(key: String) async -> Outcome {
         if let runningTask {
             let summary = await runningTask.value
@@ -197,9 +197,9 @@ final class TrackedCaseRepairCoordinator {
         let normalized = normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
-        mergeKnownUIDDuplicates(into: &summary)
+        applyIdentityReconciliation(to: &summary)
         let localKey = summary.effectiveKey(for: key)
-        guard let rec = store.record(forKey: localKey),
+        guard let rec = store.record(forLocator: localKey),
               let ctx = rec.context,
               shouldRepair(ctx),
               shouldAttempt(key: localKey) else {
@@ -211,12 +211,12 @@ final class TrackedCaseRepairCoordinator {
 
     private func repairHigherAnchor(key: String, summary: inout CaseRepairSummary,
                                     allowAutoSolve: Bool = true) async {
-        guard let rec = store.record(forKey: key), let anchorContext = rec.context else { return }
+        guard let rec = store.record(forLocator: key), let anchorContext = rec.context else { return }
         // Самостоятельный материал уже является корректным базовым якорем:
         // он участвует в локальном UID-слиянии, но не требует даже загрузки
         // карточки. Сетевой поиск нужен только 13/13а с проверяемым родителем.
         if anchorContext.baseInstanceLevel == .material,
-           !mayBecomeMainCase(anchorContext),
+           !Self.mayBecomeMainCase(anchorContext),
            !CaseIndexClassifier.requiresVerifiedParent(caseNumber: anchorContext.caseNumber,
                                                        courtLevel: anchorContext.courtLevel) {
             clearRetry(key: key)
@@ -237,14 +237,14 @@ final class TrackedCaseRepairCoordinator {
                 summary.rerouted += 1
                 summary.affectedCaseKeys.insert(rec.key)
             }
-            if mayBecomeMainCase(effectiveContext) {
+            if Self.mayBecomeMainCase(effectiveContext) {
                 let origin = try await originResolver.resolveMainCase(
                     anchorContext: effectiveContext, anchorCard: anchorCard)
                 var canonical = makeContext(origin: origin, anchor: effectiveContext,
                                             anchorCard: anchorCard)
                 let primaryNumber = CaseNumberPresentation.primary(canonical.caseNumber)
                 if !primaryNumber.isEmpty { canonical.caseNumber = primaryNumber }
-                let survivor = store.record(forKey: canonical.key) ?? rec
+                let survivor = store.record(forLocator: canonical.key) ?? rec
                 let duplicates = survivor === rec ? [] : [rec]
                 guard let remaps = merge(survivor: survivor, duplicates: duplicates,
                                          canonicalContext: canonical,
@@ -277,7 +277,7 @@ final class TrackedCaseRepairCoordinator {
                                                           anchorCard: anchorCard)
             let canonical = makeContext(origin: origin, anchor: effectiveContext,
                                         anchorCard: anchorCard)
-            let survivor = store.record(forKey: canonical.key) ?? rec
+            let survivor = store.record(forLocator: canonical.key) ?? rec
             let duplicates = survivor === rec ? [] : [rec]
             guard let remaps = merge(survivor: survivor, duplicates: duplicates,
                                      canonicalContext: canonical,
@@ -302,14 +302,14 @@ final class TrackedCaseRepairCoordinator {
                 // Корректная карточка пересмотра может не публиковать номер
                 // нижестоящего дела (типичный случай — КоАП 12-*). Такой
                 // результат не является ошибкой и не должен шуметь в отчёте.
-                if mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
+                if Self.mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
                 else {
                     clearRetry(key: key)
                     recordCompleted(key: key)
                 }
             case .ambiguous:
                 summary.ambiguous.append(anchorContext.caseNumber)
-                if mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
+                if Self.mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
             case .notFound:
                 // Официальная ссылка может вести на карточку, которую сам
                 // нижестоящий суд не опубликовал в открытой картотеке. После
@@ -371,61 +371,19 @@ final class TrackedCaseRepairCoordinator {
         }
     }
 
-    private func mergeKnownUIDDuplicates(into summary: inout CaseRepairSummary) {
-        let groups = Dictionary(grouping: store.all().filter { !($0.judicialUID ?? "").isEmpty },
-                                by: { $0.judicialUID! })
-        for records in groups.values where records.count > 1 {
-            let preliminary = records.filter { $0.context.map(mayBecomeMainCase) ?? false }
-            let ordinary = records.filter { !($0.context.map(mayBecomeMainCase) ?? false) }
-            let localMain = preliminary.isEmpty ? [] : ordinary.filter { candidate in
-                guard let candidateContext = candidate.context,
-                      CaseIndexClassifier.classify(
-                        caseNumber: candidateContext.caseNumber,
-                        courtLevel: candidateContext.courtLevel,
-                        branch: candidateContext.branch)?.cardRole == .firstInstanceCase
-                else { return false }
-                return preliminary.allSatisfy { record in
-                    guard let context = record.context else { return false }
-                    return SudrfHost.moduleHost(context.searchDomain)
-                            == SudrfHost.moduleHost(candidateContext.searchDomain)
-                        && context.cartotekaId == candidateContext.cartotekaId
-                }
-            }
-            // Предварительную карточку можно слить локально только с единственной
-            // основной карточкой того же суда и той же картотеки. Одна лишь
-            // общность УИД с апелляцией/кассацией не обходит сетевую проверку.
-            let mergeable = preliminary.isEmpty || localMain.count == 1 ? records : ordinary
-            guard mergeable.count > 1 else { continue }
-            let sorted = mergeable.sorted {
-                if localMain.count == 1 {
-                    if $0 === localMain[0] { return true }
-                    if $1 === localMain[0] { return false }
-                }
-                return rank($0.context?.baseInstanceLevel) < rank($1.context?.baseInstanceLevel)
-            }
-            guard let survivor = sorted.first, let canonical = survivor.context else { continue }
-            let duplicates = Array(sorted.dropFirst())
-            guard let remaps = merge(survivor: survivor, duplicates: duplicates,
-                                     canonicalContext: canonical, canonicalCard: nil) else { continue }
-            summary.keyRemaps.merge(remaps) { _, new in new }
-            summary.affectedCaseKeys.formUnion(remaps.keys)
-            summary.affectedCaseKeys.formUnion(remaps.values)
-            summary.merged += duplicates.count
-        }
-    }
-
-    private func rank(_ level: CaseInstance.Level?) -> Int {
-        switch level {
-        case .first: return 0
-        case .material: return 1
-        case .appeal: return 2
-        case .cassation: return 3
-        default: return 4
-        }
+    /// Applies the single domain reconciliation rule to existing records.
+    /// This deliberately replaces the legacy UID-only grouping heuristic:
+    /// full valid judicial UIDs, exact source cards and official relations are
+    /// all resolved by `LogicalCaseReconciler` in `TrackedStore`.
+    private func applyIdentityReconciliation(to summary: inout CaseRepairSummary) {
+        let identity = store.reconcileStoredIdentity()
+        summary.merged += identity.merged
+        summary.keyRemaps.merge(identity.keyRemaps) { _, latest in latest }
+        summary.affectedCaseKeys.formUnion(identity.affectedKeys)
     }
 
     private func shouldRepair(_ context: MovementContext) -> Bool {
-        if mayBecomeMainCase(context) { return true }
+        if Self.mayBecomeMainCase(context) { return true }
         if context.baseInstanceLevel == .appeal || context.baseInstanceLevel == .cassation
             || context.baseInstanceLevel == .material {
             return true
@@ -436,7 +394,7 @@ final class TrackedCaseRepairCoordinator {
                 judicialUID: context.judicialUID) == .unknown
     }
 
-    private func mayBecomeMainCase(_ context: MovementContext) -> Bool {
+    private static func mayBecomeMainCase(_ context: MovementContext) -> Bool {
         CaseIndexClassifier.classify(caseNumber: context.caseNumber,
                                     courtLevel: context.courtLevel,
                                     branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
@@ -547,8 +505,22 @@ final class TrackedCaseRepairCoordinator {
     private func merge(survivor: TrackedCaseRecord, duplicates: [TrackedCaseRecord],
                        canonicalContext: MovementContext,
                        canonicalCard: CaseCard?) -> [String: String]? {
+        Self.atomicMerge(store: store, survivor: survivor, duplicates: duplicates,
+                         canonicalContext: canonicalContext, canonicalCard: canonicalCard)
+    }
+
+    /// Единственное атомарное слияние persistent records. Его используют и
+    /// legacy repair, и общий identity reconciler: движения, акты, подборки,
+    /// aliases и весь graph identity переезжают в одном `ModelContext.save()`.
+    @discardableResult
+    static func atomicMerge(store: TrackedStore, survivor: TrackedCaseRecord,
+                            duplicates: [TrackedCaseRecord],
+                            canonicalContext: MovementContext,
+                            canonicalCard: CaseCard?,
+                            identityState: LogicalCaseState? = nil) -> [String: String]? {
         let all = [survivor] + duplicates
         let oldKeys = all.map(\.key)
+        let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
         var context = canonicalContext
         var known = context.knownCards ?? []
         for rec in all {
@@ -567,10 +539,10 @@ final class TrackedCaseRepairCoordinator {
             movements.append(Self.movement(from: card, context: context))
         }
         movements.append(contentsOf: all.compactMap {
-            normalizedMovement($0.movement, context: $0.context)
+            Self.normalizedMovement($0.movement, context: $0.context)
         })
         var movement = Self.mergeMovements(movements)
-        if !mayBecomeMainCase(context) {
+        if !Self.mayBecomeMainCase(context) {
             movement = Self.pruningPreliminaryAliases(movement, from: all)
         }
 
@@ -581,12 +553,21 @@ final class TrackedCaseRepairCoordinator {
         survivor.addedAt = all.map(\.addedAt).min() ?? survivor.addedAt
         survivor.seenAt = all.contains(where: { $0.seenAt == nil })
             ? nil : all.compactMap(\.seenAt).max()
-        survivor.key = context.key
+        // `key` is a permanent technical locator since V6. The current
+        // display-derived formula remains discoverable as an alias instead of
+        // rotating deep links, Spotlight IDs and projected court acts.
+        survivor.addLegacyKeyAlias(context.key)
+        for locator in oldLocators { survivor.addLegacyKeyAlias(locator) }
         survivor.caseNumber = context.caseNumber
         survivor.courtTitle = context.courtTitle
         survivor.displayDomain = context.displayDomain
         survivor.context = context
         survivor.judicialUID = context.judicialUID.map(TrackedStore.normalizedUID)
+        var mergedIdentity = identityState ?? TrackedCaseIdentity.state(for: survivor)
+        for duplicate in duplicates {
+            mergedIdentity.merge(TrackedCaseIdentity.state(for: duplicate))
+        }
+        TrackedCaseIdentity.persist(mergedIdentity, to: survivor)
         survivor.movement = movement.map(MovementCachePolicy.stripped(forPersist:))
         let courtDocuments = movement?.executionDocuments
             ?? all.flatMap { $0.movement?.executionDocuments ?? [] }
@@ -675,7 +656,7 @@ final class TrackedCaseRepairCoordinator {
         return false
     }
 
-    private func normalizedMovement(_ movement: CaseMovement?, context: MovementContext?) -> CaseMovement? {
+    private static func normalizedMovement(_ movement: CaseMovement?, context: MovementContext?) -> CaseMovement? {
         guard var movement, let context else { return movement }
         for i in movement.instances.indices where
             SudrfHost.moduleHost(movement.instances[i].domain) == SudrfHost.moduleHost(context.searchDomain)

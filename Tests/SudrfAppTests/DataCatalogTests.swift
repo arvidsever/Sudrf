@@ -61,7 +61,7 @@ final class DataCatalogTests: XCTestCase {
     }
 
     @MainActor
-    func testV3TrackedCaseStoreMigratesToV5WithEmptyEnforcementState() throws {
+    func testV3TrackedCaseStoreMigratesToV6WithPersistentIdentityState() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SudrfMigration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -91,7 +91,7 @@ final class DataCatalogTests: XCTestCase {
             try context.save()
         }
 
-        let currentSchema = Schema(versionedSchema: SudrfSchemaV5.self)
+        let currentSchema = Schema(versionedSchema: SudrfSchemaV6.self)
         let configuration = ModelConfiguration(
             "SudrfMigrationTest", schema: currentSchema, url: storeURL,
             cloudKitDatabase: .none)
@@ -103,10 +103,15 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertEqual(migratedStore.all().map(\.key), [legacyContext.key])
         XCTAssertEqual(migratedStore.all().first?.collectionNames, ["Legacy"])
         XCTAssertEqual(migratedStore.all().first?.enforcementRecords, [])
+        XCTAssertNotNil(migratedStore.all().first?.logicalCaseID)
+        let identityData = try XCTUnwrap(migratedStore.all().first?.identityStateData)
+        let identity = try JSONDecoder().decode(LogicalCaseState.self, from: identityData)
+        XCTAssertEqual(identity.cards.count, 1)
+        XCTAssertEqual(identity.cards.first?.identity.sourceFamily, "legacy")
     }
 
     @MainActor
-    func testV4TrackedCaseStoreMigratesToV5PreservingLastSuccess() throws {
+    func testV4TrackedCaseStoreMigratesToV6PreservingLastSuccess() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SudrfMigration-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -146,7 +151,7 @@ final class DataCatalogTests: XCTestCase {
             try context.save()
         }
 
-        let currentSchema = Schema(versionedSchema: SudrfSchemaV5.self)
+        let currentSchema = Schema(versionedSchema: SudrfSchemaV6.self)
         let configuration = ModelConfiguration(
             "SudrfMigrationTest", schema: currentSchema, url: storeURL,
             cloudKitDatabase: .none)
@@ -164,6 +169,76 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertEqual(migrated?.movementData, movementData)
         XCTAssertEqual(migrated?.enforcementData, enforcementData)
         XCTAssertNil(migrated?.sourceRefreshAttempt)
+    }
+
+    @MainActor
+    func testV5TrackedCaseStoreMigratesToV6AndKeepsIdentityOnReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SudrfMigration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("default.store")
+
+        var legacyContext = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru", displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: CourtLevel.district.rawValue, courtCode: "11RS0001",
+            cartotekaId: "g1", cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: "2-100/2026", caseID: "native-card", caseUID: "portal-link")
+        legacyContext.judicialUID = "11RS0001-01-2026-000100-01"
+
+        do {
+            let legacySchema = Schema(versionedSchema: SudrfSchemaV5.self)
+            let configuration = ModelConfiguration(
+                "SudrfMigrationTest", schema: legacySchema, url: storeURL,
+                cloudKitDatabase: .none)
+            let container = try ModelContainer(for: legacySchema, configurations: configuration)
+            let context = ModelContext(container)
+            let record = SudrfSchemaV5.TrackedCaseRecord(
+                key: legacyContext.key, collections: ["Доверитель"],
+                caseNumber: legacyContext.caseNumber, courtTitle: legacyContext.courtTitle,
+                displayDomain: legacyContext.displayDomain,
+                contextData: try JSONEncoder().encode(legacyContext), snapshotData: nil)
+            record.judicialUID = legacyContext.judicialUID
+            context.insert(record)
+            try context.save()
+        }
+
+        let firstIdentity: UUID
+        let firstState: LogicalCaseState
+        do {
+            let currentSchema = Schema(versionedSchema: SudrfSchemaV6.self)
+            let configuration = ModelConfiguration(
+                "SudrfMigrationTest", schema: currentSchema, url: storeURL,
+                cloudKitDatabase: .none)
+            let container = try ModelContainer(
+                for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
+                configurations: configuration)
+            let record = try XCTUnwrap(TrackedStore(container: container).all().first)
+            firstIdentity = try XCTUnwrap(record.logicalCaseID)
+            firstState = try JSONDecoder().decode(
+                LogicalCaseState.self, from: XCTUnwrap(record.identityStateData))
+            XCTAssertEqual(firstState.logicalCaseID, firstIdentity)
+            XCTAssertEqual(firstState.judicialUIDs,
+                           [TrackedStore.normalizedUID(legacyContext.judicialUID!)])
+            XCTAssertEqual(record.collectionNames, ["Доверитель"])
+        }
+
+        do {
+            let currentSchema = Schema(versionedSchema: SudrfSchemaV6.self)
+            let configuration = ModelConfiguration(
+                "SudrfMigrationTest", schema: currentSchema, url: storeURL,
+                cloudKitDatabase: .none)
+            let container = try ModelContainer(
+                for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
+                configurations: configuration)
+            let record = try XCTUnwrap(TrackedStore(container: container).all().first)
+            XCTAssertEqual(record.logicalCaseID, firstIdentity)
+            XCTAssertEqual(try JSONDecoder().decode(
+                LogicalCaseState.self, from: XCTUnwrap(record.identityStateData)), firstState)
+            XCTAssertEqual(record.key, legacyContext.key)
+        }
     }
 
     @MainActor
@@ -298,7 +373,7 @@ final class DataCatalogTests: XCTestCase {
                        Data("shm".utf8))
         XCTAssertEqual(try SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults), backup)
-        XCTAssertEqual(backup.lastPathComponent, "pre-schema-5.0.0")
+        XCTAssertEqual(backup.lastPathComponent, "pre-schema-6.0.0")
 
         SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
         XCTAssertNil(try SudrfPersistentStoreBackup.prepare(
@@ -307,8 +382,8 @@ final class DataCatalogTests: XCTestCase {
         // Следующая schema-version получает независимые marker и каталог.
         let next = try XCTUnwrap(SudrfPersistentStoreBackup.prepare(
             storeURL: storeURL, backupRoot: backups, defaults: defaults,
-            schemaVersion: "6.0.0"))
-        XCTAssertEqual(next.lastPathComponent, "pre-schema-6.0.0")
+            schemaVersion: "7.0.0"))
+        XCTAssertEqual(next.lastPathComponent, "pre-schema-7.0.0")
     }
 
     @MainActor
@@ -318,7 +393,7 @@ final class DataCatalogTests: XCTestCase {
         let source = root.appendingPathComponent("source", isDirectory: true)
         let backups = root.appendingPathComponent("backups", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
-        let corrupt = backups.appendingPathComponent("pre-schema-5.0.0", isDirectory: true)
+        let corrupt = backups.appendingPathComponent("pre-schema-6.0.0", isDirectory: true)
         try FileManager.default.createDirectory(at: corrupt, withIntermediateDirectories: true)
         try Data("incomplete".utf8).write(to: corrupt.appendingPathComponent("orphan-wal"))
         defer { try? FileManager.default.removeItem(at: root) }
@@ -335,7 +410,7 @@ final class DataCatalogTests: XCTestCase {
                        Data("valid-store".utf8))
         let quarantined = try FileManager.default.contentsOfDirectory(
             at: backups, includingPropertiesForKeys: nil)
-            .filter { $0.lastPathComponent.hasPrefix("pre-schema-5.0.0-invalid-") }
+            .filter { $0.lastPathComponent.hasPrefix("pre-schema-6.0.0-invalid-") }
         XCTAssertEqual(quarantined.count, 1)
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: quarantined[0].appendingPathComponent("orphan-wal").path))

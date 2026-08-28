@@ -84,6 +84,30 @@ final class TrackedCaseRepairTests: XCTestCase {
                             actBodies: [actID: "Текст \(actID)"])
     }
 
+    /// Inserts the shape an existing V5 database can contain before V6 runs
+    /// its common reconciler. Normal `store.upsert` deliberately cannot create
+    /// these duplicates anymore.
+    private func insertLegacy(
+        into store: TrackedStore,
+        context: MovementContext,
+        snapshot: CaseSnapshot?,
+        movement: CaseMovement? = nil,
+        collections: [String]
+    ) throws -> TrackedCaseRecord {
+        let record = TrackedCaseRecord(
+            key: context.key, collections: collections,
+            caseNumber: context.caseNumber, courtTitle: context.courtTitle,
+            displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: snapshot.flatMap { try? JSONEncoder().encode($0) })
+        record.judicialUID = context.judicialUID.map(TrackedStore.normalizedUID)
+        record.movement = movement
+        if movement != nil { record.movementFetchedAt = .now }
+        store.container.mainContext.insert(record)
+        XCTAssertTrue(store.save(projection: movement == nil ? .none : .cases([record.key])))
+        return record
+    }
+
     private func defaults() -> UserDefaults {
         let suite = "TrackedCaseRepairTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -115,12 +139,12 @@ final class TrackedCaseRepairTests: XCTestCase {
         firstSnapshot.deadlines[0].dateRef = 111
         appealSnapshot.deadlines[0].statusRaw = "confirmed"
         appealSnapshot.deadlines[0].dateRef = 222
-        let survivor = store.upsert(context: first,
-                                    snapshot: firstSnapshot,
-                                    movement: firstMovement, collections: ["A"])
-        let duplicate = store.upsert(context: appeal,
-                                     snapshot: appealSnapshot,
-                                     movement: appealMovement, collections: ["B", "A"])
+        let survivor = try insertLegacy(
+            into: store, context: first, snapshot: firstSnapshot,
+            movement: firstMovement, collections: ["A"])
+        let duplicate = try insertLegacy(
+            into: store, context: appeal, snapshot: appealSnapshot,
+            movement: appealMovement, collections: ["B", "A"])
         survivor.addedAt = Date(timeIntervalSince1970: 200)
         survivor.seenAt = Date(timeIntervalSince1970: 300)
         duplicate.addedAt = Date(timeIntervalSince1970: 100)
@@ -169,10 +193,12 @@ final class TrackedCaseRepairTests: XCTestCase {
                                       domain: appeal.searchDomain, actID: "appeal-act")
         firstMovement.executionDocuments = [sharedWrit]
         appealMovement.executionDocuments = [sharedWrit, appealWrit]
-        let survivor = store.upsert(context: first, snapshot: nil, movement: firstMovement,
-                                    collections: [])
-        let duplicate = store.upsert(context: appeal, snapshot: nil, movement: appealMovement,
-                                    collections: [])
+        let survivor = try insertLegacy(
+            into: store, context: first, snapshot: nil,
+            movement: firstMovement, collections: [])
+        let duplicate = try insertLegacy(
+            into: store, context: appeal, snapshot: nil,
+            movement: appealMovement, collections: [])
         let oldEvent = EnforcementEvent(guid: "rss-old", date: .now, text: "Принят", sourceOrder: 0)
         let freshEvent = EnforcementEvent(guid: "rss-fresh", date: .now, text: "Исполнен", sourceOrder: 1)
         survivor.enforcementRecords = [EnforcementRecord(
@@ -245,8 +271,9 @@ final class TrackedCaseRepairTests: XCTestCase {
         let summary = await coordinator.runAll()
 
         XCTAssertEqual(summary.reanchored, 1)
-        XCTAssertNil(store.record(forKey: preliminary.key))
-        let saved = try XCTUnwrap(store.record(forKey: main.key))
+        let saved = try XCTUnwrap(store.record(forKey: preliminary.key))
+        XCTAssertTrue(store.record(forLocator: main.key) === saved)
+        XCTAssertTrue(saved.legacyKeyAliases.contains(main.key))
         XCTAssertEqual(saved.collectionNames, ["Импорт"])
         XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
         XCTAssertEqual(saved.movement?.instances.first?.sessions,
@@ -256,7 +283,7 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertTrue(saved.movement?.acts.isEmpty == true)
     }
 
-    func testPreliminaryIsNotLocallyMergedIntoHigherCourtCardByUIDAlone() async throws {
+    func testCompleteUIDMergesPreliminaryAndHigherCourtCardsUnderIdentityPolicy() async throws {
         let store = TrackedStore(inMemory: true)
         let preliminary = context(level: .first, number: "М-2417/2026",
                                   domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
@@ -264,8 +291,10 @@ final class TrackedCaseRepairTests: XCTestCase {
         let appeal = context(level: .appeal, number: "33а-4818/2026",
                              domain: "lo.sudrf.ru", cartoteka: "ga",
                              courtLevel: .subject)
-        store.upsert(context: preliminary, snapshot: nil, movement: nil, collections: ["M"])
-        store.upsert(context: appeal, snapshot: nil, movement: nil, collections: ["A"])
+        _ = try insertLegacy(into: store, context: preliminary, snapshot: nil,
+                             collections: ["M"])
+        _ = try insertLegacy(into: store, context: appeal, snapshot: nil,
+                             collections: ["A"])
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(),
             originResolver: StubOriginResolver(.noReference), defaults: defaults(),
@@ -276,10 +305,12 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         let summary = await coordinator.runAll()
 
-        XCTAssertEqual(summary.merged, 0)
-        XCTAssertNotNil(store.record(forKey: preliminary.key))
-        XCTAssertNotNil(store.record(forKey: appeal.key))
-        XCTAssertEqual(store.all().count, 2)
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(store.all().count, 1,
+                       "a shared complete judicial UID is sufficient under #178")
+        let saved = try XCTUnwrap(store.record(forLocator: preliminary.key))
+        XCTAssertTrue(store.record(forLocator: appeal.key) === saved)
+        XCTAssertEqual(Set(saved.collectionNames), ["M", "A"])
     }
 
     func testExistingMainRecordWinsUIDMergeAndPreservesPreliminaryUserState() async throws {
@@ -290,13 +321,13 @@ final class TrackedCaseRepairTests: XCTestCase {
         let main = context(level: .first, number: "2а-5090/2026",
                            domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
                            courtLevel: .district)
-        let preliminaryRecord = store.upsert(
-            context: preliminary, snapshot: nil,
+        let preliminaryRecord = try insertLegacy(
+            into: store, context: preliminary, snapshot: nil,
             movement: movement(level: .first, number: preliminary.caseNumber,
                                domain: preliminary.searchDomain, actID: "preliminary-act"),
             collections: ["Предварительная"])
-        let mainRecord = store.upsert(
-            context: main, snapshot: nil,
+        let mainRecord = try insertLegacy(
+            into: store, context: main, snapshot: nil,
             movement: movement(level: .first, number: main.caseNumber,
                                domain: main.searchDomain, actID: "main-act"),
             collections: ["Основная"])
@@ -330,13 +361,13 @@ final class TrackedCaseRepairTests: XCTestCase {
                            domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
                            courtLevel: .district)
         let sharedActID = "act_\(main.searchDomain)"
-        store.upsert(
-            context: preliminary, snapshot: nil,
+        _ = try insertLegacy(
+            into: store, context: preliminary, snapshot: nil,
             movement: movement(level: .first, number: preliminary.caseNumber,
                                domain: preliminary.searchDomain, actID: sharedActID),
             collections: [])
-        store.upsert(
-            context: main, snapshot: nil,
+        _ = try insertLegacy(
+            into: store, context: main, snapshot: nil,
             movement: movement(level: .first, number: main.caseNumber,
                                domain: main.searchDomain, actID: sharedActID),
             collections: [])
@@ -388,9 +419,10 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         XCTAssertEqual(summary.reanchored, 1)
         let canonicalKey = "syktsud.komi.sudrf.ru/2-7212/2025"
-        XCTAssertEqual(summary.keyRemaps[appeal.key], canonicalKey)
-        XCTAssertNil(store.record(forKey: appeal.key))
-        let canonical = try XCTUnwrap(store.record(forKey: canonicalKey))
+        XCTAssertNil(summary.keyRemaps[appeal.key])
+        let canonical = try XCTUnwrap(store.record(forKey: appeal.key))
+        XCTAssertTrue(store.record(forLocator: canonicalKey) === canonical)
+        XCTAssertTrue(canonical.legacyKeyAliases.contains(canonicalKey))
         XCTAssertEqual(canonical.context?.baseInstanceLevel, .first)
         XCTAssertEqual(canonical.context?.knownCards?.first?.caseNumber, "33-4818/2025")
         XCTAssertEqual(canonical.movement?.caseNumber, "2-7212/2025")
@@ -429,7 +461,7 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         XCTAssertEqual(summary.reanchored, 0)
         XCTAssertEqual(summary.restoredMaterials, 1)
-        let saved = try XCTUnwrap(store.record(forKey: "syktsud.komi.sudrf.ru/13-2/2025"))
+        let saved = try XCTUnwrap(store.record(forLocator: "syktsud.komi.sudrf.ru/13-2/2025"))
         XCTAssertEqual(saved.context?.baseInstanceLevel, .material)
         XCTAssertEqual(saved.context?.knownCards?.first?.caseNumber, appeal.caseNumber)
     }
@@ -678,8 +710,8 @@ final class TrackedCaseRepairTests: XCTestCase {
         let summary = await coordinator.runAll()
 
         XCTAssertEqual(summary.restoredMaterials, 1)
-        XCTAssertNil(store.record(forKey: cassation.key))
-        let saved = try XCTUnwrap(store.record(forKey: "syktsud.komi.sudrf.ru/3/12-25/2026"))
+        let saved = try XCTUnwrap(store.record(forKey: cassation.key))
+        XCTAssertTrue(store.record(forLocator: "syktsud.komi.sudrf.ru/3/12-25/2026") === saved)
         XCTAssertEqual(saved.context?.knownCards?.map(\.caseNumber), [cassation.caseNumber])
     }
 
@@ -717,12 +749,12 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         XCTAssertEqual(summary.reanchored, 1)
         XCTAssertGreaterThanOrEqual(summary.rerouted, 1)
-        let canonical = try XCTUnwrap(store.record(forKey: "62.komi.msudrf.ru/5-11/2026"))
+        let canonical = try XCTUnwrap(store.record(forLocator: "62.komi.msudrf.ru/5-11/2026"))
         XCTAssertEqual(canonical.context?.baseInstanceLevel, .first)
         XCTAssertTrue(canonical.context?.higherCourtTargets?.contains {
             $0.courtLevel == .district && $0.cartotekaIDs == ["admj"]
         } == true)
-        XCTAssertNil(store.record(forKey: anchor.key))
+        XCTAssertTrue(store.record(forKey: anchor.key) === canonical)
 
         let second = await coordinator.runAll()
         XCTAssertFalse(second.hasReport)

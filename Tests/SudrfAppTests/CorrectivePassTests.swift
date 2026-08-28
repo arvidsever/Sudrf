@@ -324,7 +324,7 @@ final class CorrectivePassTests: XCTestCase {
     }
 
     @MainActor
-    func testReroutePreservesUniqueActDocumentID() async throws {
+    func testReroutePreservesUniqueActDocumentIDWithoutRotatingRecordKey() async throws {
         let store = TrackedStore(inMemory: true)
         let old = makeContext(number: "2-1/2026", domain: "old.msk.sudrf.ru")
         var new = old
@@ -345,19 +345,18 @@ final class CorrectivePassTests: XCTestCase {
             document: document, summary: summary, provider: "test", model: "test-v1",
             promptVersion: "v1", pipelineVersion: "v1")
 
-        record.key = new.key
         record.context = new
         record.displayDomain = new.displayDomain
-        store.prepareCourtActsForReroute(from: [old.key], to: new.key)
-        XCTAssertTrue(store.save(projection: .cases([old.key, new.key])))
+        record.addLegacyKeyAlias(new.key)
+        XCTAssertTrue(store.save(projection: .cases([record.key])))
 
-        let remainingOldActs = try await catalog.acts(caseKey: old.key)
-        XCTAssertTrue(remainingOldActs.isEmpty)
-        let movedActs = try await catalog.acts(caseKey: new.key)
-        let movedID = try XCTUnwrap(movedActs.first?.document.id)
-        XCTAssertEqual(movedID, oldID)
-        let movedSummary = try await catalog.summary(documentID: movedID)
-        XCTAssertNotNil(movedSummary)
+        XCTAssertEqual(record.key, old.key)
+        XCTAssertTrue(store.record(forLocator: new.key) === record)
+        let preservedActs = try await catalog.acts(caseKey: old.key)
+        let preservedID = try XCTUnwrap(preservedActs.first?.document.id)
+        XCTAssertEqual(preservedID, oldID)
+        let preservedSummary = try await catalog.summary(documentID: preservedID)
+        XCTAssertNotNil(preservedSummary)
     }
 
     func testRendererKeepsParagraphIdentitySeparateFromBlockIdentity() {

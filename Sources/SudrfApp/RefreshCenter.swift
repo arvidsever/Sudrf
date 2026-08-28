@@ -847,26 +847,49 @@ final class RefreshCenter: ObservableObject {
             !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
         } ?? true
         let changed = movementSourceChanged || snapshotSourceChanged
-        rec.snapshot = newSnap
-        rec.movement = persistedMovement
-        rec.sourceRefreshAttempt = attempt
-        if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
+
+        let persisted: TrackedCaseRecord
+        if isComplete,
+           let identityObservation = TrackedCaseIdentity.observation(
+               context: ctx, movement: persistedMovement, attempt: attempt,
+               outcome: .usableSnapshot) {
+            // A usable background snapshot enters through the same identity
+            // boundary as manual tracking.  Partial/error responses never
+            // establish a card/UID relation and are deliberately kept on the
+            // existing record below.
+            persisted = store.reconcileAndUpsert(
+                context: ctx, snapshot: newSnap, movement: persistedMovement,
+                collections: rec.collectionNames,
+                identityObservation: identityObservation,
+                movementFetchedAt: attempt.provenance.observedAt)
+        } else {
+            rec.snapshot = newSnap
+            rec.movement = persistedMovement
+            // Some legacy/source contexts do not expose a complete
+            // source-native card identity. A successful refresh must still
+            // advance the last-success TTL; only identity reconciliation is
+            // skipped in that case.
+            if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
+            persisted = rec
+        }
+        persisted.sourceRefreshAttempt = attempt
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
-        if changed && openedKey?() != key { rec.seenAt = nil }
-        store.save(projection: .cases([key]))
+        if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
+        store.save(projection: .cases([persisted.key]))
         captchaPending.remove(key: key)
-        onRefreshed?(key, merged)
+        if persisted.key != key { captchaPending.remove(key: persisted.key) }
+        onRefreshed?(persisted.key, merged)
         if let partialMessage {
             if reportsPartialFailure {
-                fail(key, partialMessage)
+                fail(persisted.key, partialMessage)
             } else {
-                lastErrors[key] = nil
+                lastErrors[persisted.key] = nil
             }
-            return RefreshExecution(effectiveKey: key, outcome: .partial(partialMessage))
+            return RefreshExecution(effectiveKey: persisted.key, outcome: .partial(partialMessage))
         }
-        lastErrors[key] = nil
-        return RefreshExecution(effectiveKey: key, outcome: .refreshed)
+        lastErrors[persisted.key] = nil
+        return RefreshExecution(effectiveKey: persisted.key, outcome: .refreshed)
     }
 
     private func persistAttempt(_ key: String, _ attempt: SourceAttempt) {

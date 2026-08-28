@@ -234,6 +234,51 @@ enum SudrfSchemaV4: VersionedSchema {
 
 enum SudrfSchemaV5: VersionedSchema {
     static let versionIdentifier = Schema.Version(5, 0, 0)
+
+    /// Неизменяемый снимок выпущенной V5. V6 добавляет persistent identity,
+    /// поэтому ссылаться здесь на текущую модель нельзя: SwiftData должен
+    /// увидеть реальное различие схем при открытии уже существующей базы.
+    @Model
+    final class TrackedCaseRecord {
+        @Attribute(.unique) var key: String
+        var addedAt: Date
+        var seenAt: Date?
+        var folderName: String
+        var collectionNames: [String] = []
+        var caseNumber: String
+        var courtTitle: String
+        var displayDomain: String
+        var judicialUID: String? = nil
+        var contextData: Data
+        var snapshotData: Data?
+        var movementData: Data? = nil
+        var movementFetchedAt: Date? = nil
+        var sourceRefreshAttemptData: Data? = nil
+        var enforcementData: Data? = nil
+
+        init(key: String, collections: [String], caseNumber: String,
+             courtTitle: String, displayDomain: String, contextData: Data,
+             snapshotData: Data?) {
+            self.key = key
+            self.addedAt = Date()
+            self.seenAt = nil
+            self.folderName = ""
+            self.collectionNames = collections
+            self.caseNumber = caseNumber
+            self.courtTitle = courtTitle
+            self.displayDomain = displayDomain
+            self.contextData = contextData
+            self.snapshotData = snapshotData
+        }
+    }
+
+    static var models: [any PersistentModel.Type] {
+        [TrackedCaseRecord.self, CourtActRecord.self, ActSummaryRecord.self]
+    }
+}
+
+enum SudrfSchemaV6: VersionedSchema {
+    static let versionIdentifier = Schema.Version(6, 0, 0)
     static var models: [any PersistentModel.Type] {
         [TrackedCaseRecord.self, CourtActRecord.self, ActSummaryRecord.self]
     }
@@ -242,7 +287,7 @@ enum SudrfSchemaV5: VersionedSchema {
 enum SudrfSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
         [SudrfSchemaV1.self, SudrfSchemaV2.self, SudrfSchemaV3.self,
-         SudrfSchemaV4.self, SudrfSchemaV5.self]
+         SudrfSchemaV4.self, SudrfSchemaV5.self, SudrfSchemaV6.self]
     }
     static var stages: [MigrationStage] {
         [
@@ -250,6 +295,7 @@ enum SudrfSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: SudrfSchemaV2.self, toVersion: SudrfSchemaV3.self),
             .lightweight(fromVersion: SudrfSchemaV3.self, toVersion: SudrfSchemaV4.self),
             .lightweight(fromVersion: SudrfSchemaV4.self, toVersion: SudrfSchemaV5.self),
+            .lightweight(fromVersion: SudrfSchemaV5.self, toVersion: SudrfSchemaV6.self),
         ]
     }
 }
@@ -278,7 +324,7 @@ struct SudrfStoreBootstrapError: LocalizedError {
 
 enum SudrfPersistentStoreBackup {
     private static var currentSchemaVersion: String {
-        String(describing: SudrfSchemaV5.versionIdentifier)
+        String(describing: SudrfSchemaV6.versionIdentifier)
     }
 
     private static func markerKey(schemaVersion: String) -> String {
@@ -366,7 +412,7 @@ enum SudrfPersistentStoreBackup {
 
 enum SudrfModelContainerFactory {
     static func make(inMemory: Bool, storeURL: URL? = nil) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: SudrfSchemaV5.self)
+        let schema = Schema(versionedSchema: SudrfSchemaV6.self)
         let configuration: ModelConfiguration
         if let storeURL {
             configuration = ModelConfiguration(

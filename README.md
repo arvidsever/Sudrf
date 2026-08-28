@@ -282,3 +282,12 @@ swift run sudrf-cli harvest --type OV  # окружные (флотские) —
   Поиск / Календарь, отслеживание дел, движение по инстанциям и CAPTCHA Assist.
 
   [![repowise](https://api.repowise.dev/badge/wiki/arvidsever/sudrf.svg)](https://repowise.dev/repo/arvidsever/sudrf)
+
+## Лицензия
+
+Оригинальные материалы репозитория — © 2026 Воробьёв Виктор Викторович —
+предоставляются по лицензии
+[CC BY-NC-ND 4.0](LICENSE.md): неизменённые материалы разрешено распространять
+только некоммерчески, с указанием авторства; распространять изменённые версии
+нельзя. Сторонние компоненты и материалы сохраняют собственные условия — см.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -217,7 +217,9 @@ public actor SudrfClient {
     /// Перебор вариантов поискового URL. Рабочий вариант прошлых запросов —
     /// первым. «Пустой» ответ не прерывает перебор: у винтажных судов запрос
     /// не в ту таблицу (напр., КАС в гражданской) даёт валидную пустую выдачу,
-    /// хотя дело есть в соседней. Результаты выигрывают у пустоты; пустота — у ошибки.
+    /// хотя дело есть в соседней. Результаты выигрывают у пустоты. Пустота
+    /// считается достоверной только когда остальные варианты не дали сбоя:
+    /// смешанный empty + failure — частичный, а не «честный ноль».
     private func runVariants(builder: SudrfURLBuilder,
                              court: Court,
                              cartoteka: Cartoteka,
@@ -233,7 +235,8 @@ public actor SudrfClient {
 
         var sawEmpty = false
         var lastData: Data? = nil
-        var lastWasCaptchaRejected = false
+        var sawCaptchaRejected = false
+        var sawMaintenance = false
         var lastTransportError: Error?
         for v in variants {
             let data: Data
@@ -270,20 +273,22 @@ public actor SudrfClient {
                 // формат». Дальше ведём себя как unrecognized: пробрасываем
                 // `searchModuleUnavailable` наверх.
                 lastData = data
-                lastWasCaptchaRejected = true
+                sawCaptchaRejected = true
                 continue
             case .results:
                 await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
                 return try ResultsParser.parse(html: html, court: court)
             case .empty:
                 sawEmpty = true
+            case .maintenance:
+                lastData = data
+                sawMaintenance = true
             case .unrecognized:
                 lastData = data
-                lastWasCaptchaRejected = false
                 continue
             }
         }
-        if sawEmpty { return [] }
+        if sawEmpty, !sawMaintenance, lastTransportError == nil, lastData == nil { return [] }
         // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
         // в неизвестном формате (другой интерфейс, JS-защита, заглушка).
         // Сбрасываем последний ответ (сырые байты + декодированную строку),
@@ -292,7 +297,7 @@ public actor SudrfClient {
         // путь к `searchModuleUnavailable`. Байты нужны без перекодирования,
         // иначе файл в браузере показывает mojibake (как в v0.38.5).
         if let lastData {
-            if lastWasCaptchaRejected {
+            if sawCaptchaRejected {
                 SearchDiagnostics.dumpCaptchaRejected(data: lastData, host: court.domain)
             } else {
                 SearchDiagnostics.dumpVariant(data: lastData, host: court.domain)
@@ -309,9 +314,10 @@ public actor SudrfClient {
         // `searchModuleUnavailable` этот throw не проходит `withHostFallback`:
         // rejection детерминирован для обеих форм одного сервера
         // (один и тот же back-end), дополнительный GET бесполезен.
-        if lastWasCaptchaRejected, let formURL = try? builder.formURL(cartoteka) {
+        if sawCaptchaRejected, let formURL = try? builder.formURL(cartoteka) {
             throw SudrfError.captchaRequired(formURL: formURL)
         }
+        if sawMaintenance { throw SudrfError.sourceMaintenance(domain: court.domain) }
         if let lastTransportError { throw lastTransportError }
         throw SudrfError.searchModuleUnavailable(domain: court.domain)
     }
@@ -347,6 +353,10 @@ public actor SudrfClient {
         let primary = court.withDomain(SudrfHost.moduleHost(court.domain))
         do {
             return try await body(primary)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            throw error
         } catch let e as SudrfError {
             if case .captchaRequired = e { throw e }
             guard let alt = SudrfHost.alternate(primary.domain) else { throw e }

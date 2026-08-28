@@ -34,7 +34,7 @@
 | Мировые судьи, ВС РФ или Мосгорсуд | `Sources/SudrfKit/MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud.swift`, `MosGorSudMovement.swift`, `MosGorSudParsers.swift`, `MosGorSudCourtDirectory.swift`; общий транспорт ВС РФ и Мосгорсуда — `HTMLCourtTransport.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests`, `HTMLCourtTransportTests` |
 | Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
-| Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests` |
+| Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift`, `Sources/SudrfKit/SourceOutcome.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests`, `SourceOutcomeTests` |
 | Исполнительные листы и Казначейство | `Sources/SudrfKit/Enforcement.swift`, `CaseCardParser.swift` | `Movement.swift`, `Sources/SudrfApp/RefreshCenter.swift`, `TrackedStore.swift`, `CaseMovementView.swift`, `AppModel.swift` | `TreasuryClientTests`, `CaseCardParserTests`, `RefreshCenterTests`, `DataCatalogTests`, `OverviewModelTests` |
 | Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
 | Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebViewCoordinator.swift`, `RefreshCenter.swift` | `CaptchaWebView.swift`, `CaptchaAssistSheet.swift`, `CaptchaFlowDecisions.swift`, `CaptchaSolverFactory.swift`, `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/HighestConfidenceStrategy.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
@@ -70,6 +70,12 @@
 Ошибка домашнего суда, после которой нельзя собрать пригодный `CaseMovement`,
 идёт в failure/pending-путь и не вызывает `applyMovement`. Последний успешный
 `movement`, `snapshot` и `movementFetchedAt` при этом остаются доступными.
+
+Перед persistence `SourceOutcome` типизированно различает полный и частичный
+snapshot, CAPTCHA, maintenance, transport/parser failure и подтверждённую
+пустоту. `sourceRefreshAttempt` обновляется при каждой попытке, а
+`movementFetchedAt` — только после полного пригодного движения; partial может
+аддитивно обновить данные через `MovementCachePolicy`, но не продлевает TTL.
 
 Ошибки при загрузке вышестоящего суда обрабатываются иначе: `MovementService`
 может вернуть частичный `CaseMovement` с CAPTCHA/сетевой заглушкой или с
@@ -113,6 +119,9 @@ Developer-лаборатория использует этот клиент и `
   `MovementCachePolicy.merge`, который сохраняет ранее загруженные инстанции для
   незавершённых доменов. Изменение этих веток требует тестов
   `RefreshCenterTests` и `MovementCachePolicyTests`.
+- HTTP 200 не является доказательством пригодности ответа. CAPTCHA, maintenance,
+  partial и unknown-format сохраняются как разные `SourceOutcomeKind`; provenance
+  не содержит URL query, cookies, токены или CAPTCHA-коды.
 - `SudrfClient`, `MovementService`, `VSRFClient` и резолверы используют actor
   isolation. Не обходите их троттлинг отдельными `URLSession` в UI-слое.
 - Троттлинг и повторы ВС РФ и Мосгорсуда вынесены в `HTMLCourtTransport`, но

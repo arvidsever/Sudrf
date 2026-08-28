@@ -129,6 +129,124 @@ final class SudrfClientTransientErrorTests: XCTestCase {
         XCTAssertEqual(VariantFallbackStub.requestCount, 2)
         XCTAssertEqual(results.map(\.caseNumber), ["2-1/2026"])
     }
+
+    func testMaintenanceHTMLNeverBecomesHonestZero() async throws {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MaintenanceStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд",
+                          level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "2-1/2026")
+            XCTFail("maintenance нельзя возвращать как пустую выдачу")
+        } catch SudrfError.sourceMaintenance(let domain) {
+            XCTAssertEqual(SudrfHost.moduleHost(domain),
+                           SudrfHost.moduleHost(court.domain))
+        }
+    }
+
+    func testEmptyVariantMixedWithFailureIsNotHonestZero() async throws {
+        EmptyThenFailureStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [EmptyThenFailureStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд",
+                          level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        do {
+            let rows = try await client.search(court: court, cartoteka: cartoteka,
+                                               field: .caseNumber, value: "2-1/2026")
+            XCTFail("mixed empty + failure нельзя считать honest-zero: \(rows)")
+        } catch {
+            XCTAssertGreaterThan(EmptyThenFailureStub.requestCount, 1)
+        }
+    }
+
+    func testCaptchaRejectedRemainsMonotonicAcrossUnknownVariant() async throws {
+        RejectedThenUnknownStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [RejectedThenUnknownStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд",
+                          level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "2-1/2026")
+            XCTFail("captcha rejection хотя бы одного варианта должен продолжить captcha-flow")
+        } catch SudrfError.captchaRequired(let formURL) {
+            XCTAssertEqual(SudrfHost.moduleHost(formURL.host ?? ""),
+                           SudrfHost.moduleHost(court.domain))
+            XCTAssertGreaterThan(RejectedThenUnknownStub.requestCount, 1)
+        }
+    }
+
+    func testCaptchaRejectedTakesPrecedenceOverMaintenanceVariant() async throws {
+        RejectedThenMaintenanceStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [RejectedThenMaintenanceStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд",
+                          level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "2-1/2026")
+            XCTFail("rejected CAPTCHA должен сохранять continuation при maintenance другого варианта")
+        } catch SudrfError.captchaRequired {
+            XCTAssertGreaterThan(RejectedThenMaintenanceStub.requestCount, 1)
+        }
+    }
+
+    func testCancelledPrimaryHostDoesNotFallBack() async throws {
+        CancelThenSuccessStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [CancelThenSuccessStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        await client.setMaxAttemptsForTesting(1)
+        let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд",
+                          level: .district)
+        let cartoteka = Cartoteka(id: "g1", title: "Гражданское", prefixes: ["2"],
+                                  deloID: "1540005", deloTable: "g1_case",
+                                  caseNumberField: "g1_case__CASE_NUMBERSS",
+                                  uidField: "g1_case__JUDICIAL_UIDSS",
+                                  nameField: "G1_PARTS__NAMESS")
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .caseNumber, value: "2-1/2026")
+            XCTFail("cancelled primary host не должен запускать alternate-host fallback")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+            XCTAssertEqual(CancelThenSuccessStub.requestCount, 1)
+        }
+    }
 }
 
 /// URLProtocol-stub, отдающий `didFailWithError(URLError(code))` на каждый
@@ -172,6 +290,125 @@ private final class VariantFallbackStub: URLProtocol {
         let html = "<table><tr><td><a href='?name_op=case&case_id=1&case_uid=u'>2-1/2026</a></td></tr></table>"
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
                                        headerFields: ["Content-Type": "text/html; charset=windows-1251"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class MaintenanceStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let html = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class EmptyThenFailureStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestCount = 0
+
+    static func reset() { requestCount = 0 }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        guard Self.requestCount == 1 else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        let html = "<main>Данных по запросу не обнаружено</main>"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class RejectedThenUnknownStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestCount = 0
+
+    static func reset() { requestCount = 0 }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        let html: String
+        switch Self.requestCount {
+        case 1: html = "<html><form id='search-form'></form></html>" // form precheck
+        case 2: html = "<main>Неверный проверочный код</main>"
+        default: html = "<html><script>window.location='/protection'</script></html>"
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class RejectedThenMaintenanceStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestCount = 0
+    static func reset() { requestCount = 0 }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requestCount += 1
+        let html: String
+        switch Self.requestCount {
+        case 1: html = "<html><form id='search-form'></form></html>"
+        case 2: html = "<main>Неверный проверочный код</main>"
+        default: html = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private final class CancelThenSuccessStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestCount = 0
+
+    static func reset() { requestCount = 0 }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        if Self.requestCount == 1 {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            return
+        }
+        let html = "<main>Данных по запросу не обнаружено</main>"
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(html.utf8))
         client?.urlProtocolDidFinishLoading(self)

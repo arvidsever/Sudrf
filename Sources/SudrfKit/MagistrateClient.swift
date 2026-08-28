@@ -128,6 +128,9 @@ public enum MagistrateCardParser {
 
         let root = (try? doc.select("div.lawcase-content").first()) ?? doc
         let rawText = HTMLTextExtractor.normalizedBlockText(root, style: .magistrate)
+        if SearchPageClassifier.classify(html: html) == .maintenance {
+            throw SudrfError.caseCardTemporarilyUnavailable
+        }
         let tabs = (try? root.select(".tab-content").array()) ?? []
 
         let metaTab = tabs.first { (($0.ownTextSafe + " " + text($0)).lowercased()).contains("уникальный идентификатор дела") }
@@ -139,14 +142,19 @@ public enum MagistrateCardParser {
 
         let meta = metaTab.map(parseMeta) ?? [:]
         let acts = parseActs(from: actTab)
+        let sessions = movementTab.map(parseMovement) ?? []
+        let caseNumber = parseCaseNumber(doc: doc, html: html)
+        guard caseNumber != nil || !meta.isEmpty || !sessions.isEmpty || !acts.isEmpty else {
+            throw SudrfError.parsing("страница не содержит признаков карточки мирового участка")
+        }
         return CaseCard(
             rawText: rawText,
             actText: acts.first?.body,
-            sessions: movementTab.map(parseMovement) ?? [],
+            sessions: sessions,
             judge: meta["председательствующий судья"] ?? meta["судья"],
             result: meta["результат рассмотрения"] ?? meta["результат"],
             uid: meta["уникальный идентификатор дела"],
-            caseNumber: parseCaseNumber(doc: doc, html: html),
+            caseNumber: caseNumber,
             category: meta["категория"] ?? meta["категория дела"],
             receiptDate: meta["дата поступления"],
             decisionDate: meta["дело рассмотрено (выдан приказ)"] ?? meta["дата рассмотрения"],
@@ -299,10 +307,14 @@ public actor MagistrateClient: CaseProviding {
         // v0.38.10: проверяем на .captchaRejected (через общий
         // SearchPageClassifier) ДО MagistratePageClassifier —
         // если суд отверг наш токен, это другой диагноз, чем
-        // «неизвестный формат». Дамп отдельно + searchModuleUnavailable.
+        // «неизвестный формат». Дамп отдельно и продолжаем общий ручной
+        // captcha-flow, как для федеральных судов.
         if SearchPageClassifier.classify(html: firstHTML) == .captchaRejected {
             SearchDiagnostics.dumpCaptchaRejected(data: Data(firstHTML.utf8), host: court.domain)
-            throw SudrfError.searchModuleUnavailable(domain: court.domain)
+            throw SudrfError.captchaRequired(formURL: try builder.formURL())
+        }
+        if SearchPageClassifier.classify(html: firstHTML) == .maintenance {
+            throw SudrfError.sourceMaintenance(domain: court.domain)
         }
         guard MagistratePageClassifier.classify(html: firstHTML) != .unrecognized else {
             throw SudrfError.searchModuleUnavailable(domain: court.domain)
@@ -319,6 +331,12 @@ public actor MagistrateClient: CaseProviding {
             }
             if SearchPageClassifier.classify(html: html) == .captchaRejected {
                 SearchDiagnostics.dumpCaptchaRejected(data: Data(html.utf8), host: court.domain)
+                throw SudrfError.captchaRequired(formURL: try builder.formURL())
+            }
+            if SearchPageClassifier.classify(html: html) == .maintenance {
+                throw SudrfError.sourceMaintenance(domain: court.domain)
+            }
+            if SearchPageClassifier.classify(html: html) == .unrecognized {
                 throw SudrfError.searchModuleUnavailable(domain: court.domain)
             }
             rows += try MagistrateResultsParser.parse(html: html, court: court)
@@ -363,6 +381,7 @@ public actor MagistrateClient: CaseProviding {
 public enum MagistratePageClassifier {
     public static func classify(html: String) -> SearchPageKind {
         if CaptchaDetector.hasCaptcha(in: html) { return .captcha }
+        if SearchPageClassifier.classify(html: html) == .maintenance { return .maintenance }
         if let doc = try? SwiftSoup.parse(html),
            let anchors = try? doc.select("a[href*=op=cs][href*=case_id]"),
            anchors.size() > 0 {

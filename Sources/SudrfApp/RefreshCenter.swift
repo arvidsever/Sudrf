@@ -94,6 +94,8 @@ struct CaptchaPendingQueue: Equatable {
 /// сетевой ошибки и не выдаёт сохранённый кэш за свежие данные.
 enum CaseRefreshOutcome: Sendable, Equatable {
     case refreshed
+    case partial(String)
+    case cancelled
     case captchaRequired
     case failed(String)
     case notFound
@@ -365,8 +367,10 @@ final class RefreshCenter: ObservableObject {
                 return RefreshExecution(effectiveKey: key, outcome: .notFound)
             }
             let execution = await self.performRefresh(key: key)
-            _ = await self.startEnforcementRefresh(
-                key: execution.effectiveKey, force: forceEnforcement)?.value
+            if execution.outcome != .cancelled {
+                _ = await self.startEnforcementRefresh(
+                    key: execution.effectiveKey, force: forceEnforcement)?.value
+            }
             self.refreshing.remove(key)
             self.tasks[key] = nil
             return execution
@@ -622,79 +626,128 @@ final class RefreshCenter: ObservableObject {
 
     private func performRefresh(key: String) async -> RefreshExecution {
         let effectiveKey = await repairBeforeRefresh?(key) ?? key
+        if Task.isCancelled {
+            return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
+        }
         guard let rec = store.record(forKey: effectiveKey),
               let ctx = rec.context, let cart = ctx.cartoteka else {
             return failure(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
         }
         let service = serviceBuilder(ctx)
         do {
-            return try await fetchAndApply(service: service, key: effectiveKey,
-                                           ctx: ctx, cart: cart)
-        } catch SudrfError.captchaRequired(let url) {
-            // Сначала пробуем авто-солвер. Если он вернёт уверенный
-            // ответ и токен попадёт в CaptchaTokenStore, повторный
-            // `service.movement` пройдёт без капчи и без ручного ввода.
-            // Если солвер выключен / не уверен / исчерпал попытки — ставим
-            // в `CaptchaPendingQueue` и ждём пользователя.
-            //
-            // A1: повтор `service.movement` идёт INLINE в этой же Task.
-            // Прежний путь звал `refresh(key:)` → `refresh` дедуплицирует
-            // по `tasks[key]`, который чистится только ПОСЛЕ возврата
-            // `performRefresh`. Получалось, что `refresh` возвращал
-            // текущий task, и токен оставался в сторе не потреблённым.
-            guard let solver = captchaSolver,
-                  let settings = captchaSettings,
-                  settings.isEffectivelyEnabled else {
-                queueCaptcha(key: effectiveKey, formURL: url)
-                let message = "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)"
-                fail(effectiveKey, message)
-                return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
-            }
-            let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
-            if let token = result.token {
-                await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
-                // v0.38.9: bootstrap в CorpusStore НЕ делаем здесь
-                // (нет гарантии, что retry с токеном прошёл; это
-                // шумный сигнал, лучше перебдеть). Bootstrap живёт
-                // в `SearchModel.executeSearch`.
-                do {
-                    return try await fetchAndApply(service: service, key: effectiveKey,
-                                                   ctx: ctx, cart: cart)
-                } catch SudrfError.captchaRequired(let url2) {
-                    queueCaptcha(key: effectiveKey, formURL: url2)
-                    let message = "Форма домашнего суда ждёт код с картинки: \(url2.absoluteString)"
-                    fail(effectiveKey, message)
-                    return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
-                } catch let e as SudrfError {
-                    return failure(effectiveKey, e.description)
-                } catch {
-                    return failure(effectiveKey,
-                                   "Не удалось собрать движение дела: \(error.localizedDescription)")
-                }
-            } else {
-                queueCaptcha(key: effectiveKey, formURL: url)
-                let message = "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)"
-                fail(effectiveKey, message)
-                return RefreshExecution(effectiveKey: effectiveKey, outcome: .captchaRequired)
-            }
-        } catch let e as SudrfError {
-            return failure(effectiveKey, e.description)
+            let outcome = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
+            return try await handle(outcome, service: service, key: effectiveKey,
+                                    ctx: ctx, cart: cart, mayAutoSolve: true)
+        } catch is CancellationError {
+            return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         } catch {
             return failure(effectiveKey,
                            "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
     }
 
-    /// Выполняет один сетевой запрос движения и атомарно применяет его к
-    /// кэшу. Общий happy-path нужен и для первой попытки, и для inline-retry
-    /// после CAPTCHA: повтор не должен звать `refresh(key:)`, пока текущая
-    /// task остаётся в таблице дедупликации.
-    private func fetchAndApply(service: any MovementProviding, key: String,
-                               ctx: MovementContext, cart: Cartoteka) async throws -> RefreshExecution {
-        let movement = try await service.movement(for: ctx.baseResult,
-                                                  court: ctx.searchCourt,
-                                                  cartoteka: cart)
-        return applyMovement(key: key, ctx: ctx, mv: movement)
+    private func fetchOutcome(service: any MovementProviding, ctx: MovementContext,
+                              cart: Cartoteka) async throws -> SourceOutcome<CaseMovement> {
+        let family = MosGorSudRouting.isMosGorSud(domain: ctx.searchDomain)
+            ? "mosgorsud"
+            : (ctx.courtLevel == .magistrate ? "msudrf" : "sudrf")
+        do {
+            let movement = try await service.movement(for: ctx.baseResult,
+                                                      court: ctx.searchCourt,
+                                                      cartoteka: cart)
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: movement, sourceFamily: family, host: ctx.searchDomain)
+            return attempt.kind == .partial
+                ? .partial(movement, attempt)
+                : .usableSnapshot(movement, attempt)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            throw error
+        } catch SudrfError.captchaRequired(let url) {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: SudrfError.captchaRequired(formURL: url), operation: .movement,
+                sourceFamily: family, host: ctx.searchDomain)
+            return .captcha(formURL: url, attempt)
+        } catch {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: error, operation: .movement, sourceFamily: family,
+                host: ctx.searchDomain)
+            let message = (error as? SudrfError)?.description
+                ?? "Не удалось собрать движение дела: \(error.localizedDescription)"
+            switch attempt.kind {
+            case .maintenance: return .maintenance(message: message, attempt)
+            case .transportFailure: return .transportFailure(message: message, attempt)
+            default: return .parserFailure(message: message, attempt)
+            }
+        }
+    }
+
+    /// CAPTCHA может дать одну inline-попытку с новым токеном. Повтор снова
+    /// проходит через тот же типизированный контракт, но уже без рекурсии
+    /// авто-солвера и без обхода таблицы дедупликации `tasks`.
+    private func handle(_ outcome: SourceOutcome<CaseMovement>,
+                        service: any MovementProviding, key: String,
+                        ctx: MovementContext, cart: Cartoteka,
+                        mayAutoSolve: Bool) async throws -> RefreshExecution {
+        switch outcome {
+        case .usableSnapshot(let movement, let attempt):
+            return applyMovement(key: key, ctx: ctx, mv: movement,
+                                 attempt: attempt, isComplete: true)
+        case .partial(let movement, let attempt):
+            guard let movement else {
+                persistAttempt(key, attempt)
+                return failure(key, "Суд вернул неполный ответ без пригодного движения дела.")
+            }
+            let failedCount = movement.incompleteHigherCourtDomains?.count ?? 0
+            let zeroCount = movement.honestZeroDomains?.count ?? 0
+            let count = failedCount + zeroCount
+            let message: String
+            if failedCount == 0 {
+                message = count == 1
+                    ? "Один источник подтвердил пустую выдачу; сохранены ранее известные данные."
+                    : "Несколько источников подтвердили пустую выдачу (\(count)); сохранены ранее известные данные."
+            } else {
+                message = count == 1
+                    ? "Один источник временно не обновился; сохранены последние успешные данные."
+                    : "Часть источников не дала полного снимка (\(count)); сохранены последние успешные данные."
+            }
+            return applyMovement(key: key, ctx: ctx, mv: movement,
+                                 attempt: attempt, isComplete: false,
+                                 partialMessage: message)
+        case .honestZero(let attempt):
+            persistAttempt(key, attempt)
+            return failure(key, "Источник подтвердил пустую выдачу; сохранённое дело не удалено.")
+        case .captcha(let url, let attempt):
+            guard mayAutoSolve,
+                  let solver = captchaSolver,
+                  let settings = captchaSettings,
+                  settings.isEffectivelyEnabled else {
+                persistAttempt(key, attempt)
+                queueCaptcha(key: key, formURL: url)
+                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
+            }
+            let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
+            if result.cancelled || Task.isCancelled { throw CancellationError() }
+            guard let token = result.token else {
+                persistAttempt(key, attempt)
+                queueCaptcha(key: key, formURL: url)
+                fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
+                return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
+            }
+            await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
+            let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
+            return try await handle(retry, service: service, key: key, ctx: ctx,
+                                    cart: cart, mayAutoSolve: false)
+        case .maintenance(let message, let attempt),
+             .transportFailure(let message, let attempt),
+             .parserFailure(let message, let attempt):
+            persistAttempt(key, attempt)
+            return failure(key, message)
+        }
     }
 
     /// Success-путь `performRefresh`: merge / snapshot / persist / сброс
@@ -703,7 +756,8 @@ final class RefreshCenter: ObservableObject {
     /// авто-солва капчи (A1). Guard на удалённую запись сохранён: пока
     /// шёл сетевой вызов, пользователь мог удалить дело.
     private func applyMovement(key: String, ctx: MovementContext,
-                               mv: CaseMovement) -> RefreshExecution {
+                               mv: CaseMovement, attempt: SourceAttempt,
+                               isComplete: Bool, partialMessage: String? = nil) -> RefreshExecution {
         guard let rec = store.record(forKey: key) else {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
         }
@@ -722,15 +776,26 @@ final class RefreshCenter: ObservableObject {
         let changed = movementSourceChanged || snapshotSourceChanged
         rec.snapshot = newSnap
         rec.movement = persistedMovement
-        rec.movementFetchedAt = Date()
+        rec.sourceRefreshAttempt = attempt
+        if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != key { rec.seenAt = nil }
         store.save(projection: .cases([key]))
         captchaPending.remove(key: key)
-        lastErrors[key] = nil
         onRefreshed?(key, merged)
+        if let partialMessage {
+            fail(key, partialMessage)
+            return RefreshExecution(effectiveKey: key, outcome: .partial(partialMessage))
+        }
+        lastErrors[key] = nil
         return RefreshExecution(effectiveKey: key, outcome: .refreshed)
+    }
+
+    private func persistAttempt(_ key: String, _ attempt: SourceAttempt) {
+        guard let rec = store.record(forKey: key) else { return }
+        rec.sourceRefreshAttempt = attempt
+        store.save()
     }
 
     private func queueCaptcha(key: String, formURL: URL) {

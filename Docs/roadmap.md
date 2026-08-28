@@ -459,6 +459,13 @@ Gate: один и тот же response детерминированно даёт
 operation-specific honest-zero outcome либо явный partial/error outcome; не существует
 пути «плохой HTML → пустой valid snapshot».
 
+Реализация #177 использует общий `SourceOutcome` до persistence: полный snapshot,
+honest zero, partial, CAPTCHA, maintenance, transport и parser failure имеют разные
+типизированные исходы. Последний безопасный `SourceAttempt` хранится отдельно от
+`movementFetchedAt`; partial применяет только пригодную часть через существующий
+`MovementCachePolicy`, но не продлевает TTL полного успеха. Runtime CAPTCHA URL остаётся
+в памяти и не попадает в сохраняемый provenance.
+
 **B. #178 — identity/reconciliation и discovery evidence.**
 
 Использовать official court code + УИД/source-native IDs и хранить смену display number как
@@ -602,7 +609,7 @@ fixtures: ложное юридически значимое событие оп
 swift build && swift test
 ```
 
-766 тестов, 5 пропущены, ошибок нет; обязательный набор проходит. Визуальные правки тестами не ловятся:
+798 тестов, 5 пропущены, ошибок нет; обязательный набор проходит. Визуальные правки тестами не ловятся:
 
 ```bash
 xcodegen generate && bash Scripts/make-app.sh

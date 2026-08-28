@@ -509,6 +509,7 @@ final class SearchModel: ObservableObject {
                 solver: solver,
                 settings: settings.autoSolverSettings
             )
+            if result.cancelled || Task.isCancelled { throw CancellationError() }
             guard let token = result.token else {
                 throw SudrfError.captchaRequired(formURL: formURL)
             }

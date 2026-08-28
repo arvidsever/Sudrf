@@ -53,6 +53,20 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor NetworkFailureMovement: MovementProviding {
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor CancelledMovement: MovementProviding {
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw URLError(.cancelled)
+        }
+    }
+
     private actor CaptchaMovement: MovementProviding {
         let url: URL
         init(url: URL) { self.url = url }
@@ -364,6 +378,9 @@ final class RefreshCenterTests: XCTestCase {
         let rec = store.record(forKey: key)
         XCTAssertNotNil(rec?.movementFetchedAt,
                         "movementFetchedAt должен быть выставлен после retry")
+        XCTAssertEqual(rec?.sourceRefreshAttempt?.kind, .usableSnapshot)
+        XCTAssertEqual(rec?.movementFetchedAt,
+                       rec?.sourceRefreshAttempt?.provenance.observedAt)
         XCTAssertEqual(center.lastErrors[key], nil,
                        "успешный retry должен сбросить lastErrors")
         XCTAssertEqual(center.captchaPendingGroups.count, 0,
@@ -426,6 +443,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(center.captchaPendingGroups.first?.keys, [key])
         XCTAssertNotNil(center.lastErrors[key],
                         "ошибка должна быть записана в lastErrors")
+        XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .captcha)
         let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertNil(stored, "без токена стор должен остаться пустым")
     }
@@ -446,14 +464,17 @@ final class RefreshCenterTests: XCTestCase {
         let missingOutcome = await missingCenter.refreshForIntent(key: "missing")
         XCTAssertEqual(missingOutcome, .notFound)
 
-        let unavailable = UnavailableMovement()
+        let unavailable = NetworkFailureMovement()
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in unavailable })
-        let outcome = await center.refreshForIntent(key: store.all()[0].key)
+        let key = store.all()[0].key
+        let outcome = await center.refreshForIntent(key: key)
         guard case .failed(let message) = outcome else {
             return XCTFail("ожидалась отдельная сетевая ошибка, получено \(outcome)")
         }
         XCTAssertFalse(message.isEmpty)
+        XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind,
+                       .transportFailure)
     }
 
     func testStaleWalkGenerationCannotUpdateNewProgress() {
@@ -653,7 +674,130 @@ final class RefreshCenterTests: XCTestCase {
                        "недоступная карточка суда не должна затирать снимок")
         XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt,
                        "неудачная попытка не должна выглядеть успешным обновлением")
+        XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .maintenance)
         XCTAssertNotNil(center.lastErrors[key])
+    }
+
+    func testCancellationDoesNotPersistAttemptOrPublishFailure() async throws {
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in CancelledMovement() })
+        var refreshed = false
+        var failed = false
+        center.onRefreshed = { _, _ in refreshed = true }
+        center.onRefreshFailed = { _, _ in failed = true }
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .cancelled)
+        XCTAssertNil(rec.sourceRefreshAttempt)
+        XCTAssertNil(center.lastErrors[key])
+        XCTAssertFalse(refreshed)
+        XCTAssertFalse(failed)
+    }
+
+    func testCancellationDuringAutoSolveDoesNotPersistCaptchaFailure() async throws {
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let center = makeCenter { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil, cancelled: true)
+        }
+        var failed = false
+        center.onRefreshFailed = { _, _ in failed = true }
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .cancelled)
+        XCTAssertNil(rec.sourceRefreshAttempt)
+        XCTAssertNil(center.lastErrors[key])
+        XCTAssertFalse(failed)
+    }
+
+    func testCancellationDuringRepairPreflightStopsBeforeMovementFetch() async throws {
+        let key = store.all()[0].key
+        let movement = FixedMovement(successMV)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in movement })
+        center.repairBeforeRefresh = { key in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return key
+        }
+
+        let execution = await center.refresh(key: key)?.value
+        let calls = await movement.calls
+
+        XCTAssertEqual(execution?.outcome, .cancelled)
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testMoscowRefreshPersistsMosgorsudProvenance() async throws {
+        var context = makeContext()
+        context.searchDomain = MosGorSudEndpoint.host
+        context.displayDomain = MosGorSudEndpoint.host
+        context.caseNumber = "02-1234/2024"
+        store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+        let movement = makeSuccessMovement(court: context.searchCourt)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(movement) })
+
+        _ = await center.refresh(key: context.key)?.value
+
+        let record = try XCTUnwrap(store.record(forKey: context.key))
+        XCTAssertEqual(record.sourceRefreshAttempt?.provenance.sourceFamily, "mosgorsud")
+        XCTAssertEqual(record.sourceRefreshAttempt?.provenance.host, MosGorSudEndpoint.host)
+    }
+
+    func testPartialRefreshAppliesUsablePayloadWithoutAdvancingLastSuccess() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.movement = successMV
+        rec.snapshot = MovementDerivation.snapshot(from: successMV, context: ctx)
+        rec.movementFetchedAt = savedFetchedAt
+
+        var partial = successMV!
+        partial.instances[0].judge = "Новый судья"
+        partial.incompleteHigherCourtDomains = ["vs--komi.sudrf.ru"]
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(partial) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("неполное движение нельзя выдавать за полный refresh")
+        }
+        XCTAssertEqual(rec.movement?.instances.first?.judge, "Новый судья")
+        XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt,
+                       "partial не должен продлевать TTL полного успеха")
+        XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertNotNil(center.lastErrors[key])
+    }
+
+    func testHonestZeroSubsourceDoesNotAdvanceLastSuccess() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.movement = successMV
+        rec.snapshot = MovementDerivation.snapshot(from: successMV, context: ctx)
+        rec.movementFetchedAt = savedFetchedAt
+
+        var movement = successMV!
+        movement.honestZeroDomains = ["vs--komi.sudrf.ru"]
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(movement) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("honest-zero подисточника не является полным снимком движения")
+        }
+        XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt)
+        XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertEqual(rec.sourceRefreshAttempt?.provenance.affectedSources,
+                       ["vs--komi.sudrf.ru"])
     }
 
     func testTreasuryRefreshRunsAfterCourtFailureAndSavesResult() async throws {

@@ -905,7 +905,7 @@ final class AppRouter: ObservableObject {
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv
-        movementFetchedAt = Date()
+        movementFetchedAt = store.record(forKey: key)?.movementFetchedAt
         loadingMovement = false
         refreshNote = nil
         selectedActID = keepAct.flatMap { id in mv.acts.contains { $0.id == id } ? id : nil }
@@ -1096,6 +1096,7 @@ final class AppRouter: ObservableObject {
                     solver: self.captchaSolver,
                     settings: self.captchaSettings.autoSolverSettings
                 )
+                if result.cancelled || Task.isCancelled { return }
                 if let token = result.token {
                     await CaptchaTokenStore.shared.store(token, domain: host)
                     // NOTE: bootstrap в CorpusStore не делаем здесь —

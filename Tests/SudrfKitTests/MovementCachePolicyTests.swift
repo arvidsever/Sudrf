@@ -54,6 +54,25 @@ final class MovementCachePolicyTests: XCTestCase {
                        "живая инстанция не должна подменяться кэшем")
     }
 
+    func testHonestZeroDoesNotDeleteKnownCourtRound() {
+        let actID = "act_vs"
+        let cached = movement(
+            [instance(domain: "vs.komi.sudrf.ru", act: actID)],
+            acts: [CaseAct(id: actID, title: "Апелляционное определение",
+                           date: "30.06.2026", courtShort: "ВС Коми",
+                           instanceLevel: .appeal)],
+            bodies: [actID: "Текст определения"])
+        var fresh = movement([])
+        fresh.honestZeroDomains = ["vs--komi.sudrf.ru"]
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertEqual(merged.instances.map(\.caseNumber), ["33-1/2026"])
+        XCTAssertEqual(merged.acts.map(\.id), [actID])
+        XCTAssertEqual(merged.actBodies[actID], "Текст определения")
+        XCTAssertNil(merged.honestZeroDomains)
+    }
+
     func testMergeWithoutCacheReturnsFresh() {
         let fresh = movement([instance(domain: "vs.komi.sudrf.ru", captcha: true)])
         let merged = MovementCachePolicy.merge(fresh: fresh, cached: nil)

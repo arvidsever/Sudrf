@@ -54,7 +54,7 @@ public enum CaseCardParser {
         // «Винтажная» версия модуля (VNKOD-суды: Воронеж, Ульяновск, Амур и др.)
         // рисует карточку совсем иначе: вкладки tab_content_* вместо cont{N}.
         if isVintage(doc) {
-            return parseVintage(doc, html: html, rawText: rawText)
+            return try parseVintage(doc, html: html, rawText: rawText)
         }
 
         let meta = parseMeta(doc)
@@ -76,6 +76,14 @@ public enum CaseCardParser {
         let parties = parseParties(doc)
         let lowerCourt = parseLowerCourt(doc)
         let executionDocuments = parseExecutionDocuments(doc)
+
+        // HTTP 200 is not evidence of a card: WAF/protection pages are valid
+        // HTML too. Accept only a shape that contributed card data.
+        guard caseNumber != nil || !meta.isEmpty || !sessions.isEmpty || !acts.isEmpty
+                || !appeals.isEmpty || !parties.isEmpty || lowerCourt != nil
+                || !executionDocuments.isEmpty else {
+            throw SudrfError.parsing("страница не содержит признаков карточки дела")
+        }
 
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
@@ -114,7 +122,7 @@ public enum CaseCardParser {
         return !(((try? doc.select("div[id^=tab_content_]").array()) ?? []).isEmpty)
     }
 
-    private static func parseVintage(_ doc: Document, html _: String, rawText: String) -> CaseCard {
+    private static func parseVintage(_ doc: Document, html _: String, rawText: String) throws -> CaseCard {
         // Метаданные: вкладка «Дело». УИД может лежать внутри <a class="dashed">.
         var meta: [String: String] = [:]
         if let cont = vintageTab(doc, "Case") {
@@ -131,10 +139,18 @@ public enum CaseCardParser {
 
         let acts = vintageActs(doc)
         let executionDocuments = parseExecutionDocuments(doc)
+        let sessions = vintageSessions(doc)
+        let caseNumber = parseCaseNumber(doc: doc)
+        let parties = vintageParties(doc)
+        let lowerCourt = parseLowerCourt(doc)
+        guard caseNumber != nil || !meta.isEmpty || !sessions.isEmpty || !acts.isEmpty
+                || !parties.isEmpty || lowerCourt != nil || !executionDocuments.isEmpty else {
+            throw SudrfError.parsing("страница не содержит признаков винтажной карточки дела")
+        }
 
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
-                        sessions: vintageSessions(doc),
+                        sessions: sessions,
                         judge: meta["председательствующий судья"]
                             ?? meta["судья"]
                             ?? meta["докладчик"],
@@ -142,15 +158,15 @@ public enum CaseCardParser {
                             ?? meta["решение"]
                             ?? vintageResult(doc),
                         uid: meta["уникальный идентификатор дела"],
-                        caseNumber: parseCaseNumber(doc: doc),
+                        caseNumber: caseNumber,
                         category: meta["категория"] ?? meta["категория дела"],
                         receiptDate: meta["дата поступления"],
                         decisionDate: meta["дата рассмотрения"],
                         legalForceDate: meta["дата вступления в законную силу"],
                         acts: acts,
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
-                        parties: vintageParties(doc),
-                        lowerCourt: parseLowerCourt(doc),
+                        parties: parties,
+                        lowerCourt: lowerCourt,
                         executionDocuments: executionDocuments)
     }
 

@@ -150,6 +150,8 @@ final class TrackedCaseRepairTests: XCTestCase {
         duplicate.addedAt = Date(timeIntervalSince1970: 100)
         duplicate.seenAt = nil
         store.save()
+        let identitySummary = store.reconcileStoredIdentity()
+        XCTAssertEqual(identitySummary.merged, 1)
 
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(), originResolver: unusedResolver(),
@@ -159,7 +161,7 @@ final class TrackedCaseRepairTests: XCTestCase {
             })
         let summary = await coordinator.runAll()
 
-        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(summary.merged, 0)
         XCTAssertEqual(store.all().count, 1)
         let merged = try XCTUnwrap(store.record(forKey: first.key))
         XCTAssertEqual(merged.collectionNames, ["A", "B"])
@@ -217,6 +219,7 @@ final class TrackedCaseRepairTests: XCTestCase {
                               lastSuccessAt: Date(timeIntervalSince1970: 100))
         ]
         store.save()
+        XCTAssertEqual(store.reconcileStoredIdentity().merged, 1)
 
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(), originResolver: unusedResolver(), defaults: defaults())
@@ -295,6 +298,7 @@ final class TrackedCaseRepairTests: XCTestCase {
                              collections: ["M"])
         _ = try insertLegacy(into: store, context: appeal, snapshot: nil,
                              collections: ["A"])
+        XCTAssertEqual(store.reconcileStoredIdentity().merged, 1)
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(),
             originResolver: StubOriginResolver(.noReference), defaults: defaults(),
@@ -305,7 +309,7 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         let summary = await coordinator.runAll()
 
-        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(summary.merged, 0)
         XCTAssertEqual(store.all().count, 1,
                        "a shared complete judicial UID is sufficient under #178")
         let saved = try XCTUnwrap(store.record(forLocator: preliminary.key))
@@ -336,13 +340,14 @@ final class TrackedCaseRepairTests: XCTestCase {
         mainRecord.addedAt = Date(timeIntervalSince1970: 200)
         mainRecord.seenAt = Date(timeIntervalSince1970: 300)
         store.save()
+        XCTAssertEqual(store.reconcileStoredIdentity().merged, 1)
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(), originResolver: unusedResolver(),
             defaults: defaults())
 
         let summary = await coordinator.runAll()
 
-        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(summary.merged, 0)
         XCTAssertNil(store.record(forKey: preliminary.key))
         let saved = try XCTUnwrap(store.record(forKey: main.key))
         XCTAssertEqual(Set(saved.collectionNames), ["Предварительная", "Основная"])
@@ -371,13 +376,14 @@ final class TrackedCaseRepairTests: XCTestCase {
             movement: movement(level: .first, number: main.caseNumber,
                                domain: main.searchDomain, actID: sharedActID),
             collections: [])
+        XCTAssertEqual(store.reconcileStoredIdentity().merged, 1)
         let coordinator = TrackedCaseRepairCoordinator(
             store: store, client: SudrfClient(), originResolver: unusedResolver(),
             defaults: defaults())
 
         let summary = await coordinator.runAll()
 
-        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(summary.merged, 0)
         let saved = try XCTUnwrap(store.record(forKey: main.key))
         XCTAssertEqual(saved.movement?.instances.map(\.caseNumber), [main.caseNumber])
         XCTAssertEqual(saved.movement?.instances.first?.actID, sharedActID)

@@ -168,7 +168,6 @@ final class TrackedCaseRepairCoordinator {
         let normalized = normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
-        applyIdentityReconciliation(to: &summary)
 
         // Снимок ключей после локального слияния: сеть не должна работать с уже
         // удалёнными managed objects.
@@ -197,7 +196,6 @@ final class TrackedCaseRepairCoordinator {
         let normalized = normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
-        applyIdentityReconciliation(to: &summary)
         let localKey = summary.effectiveKey(for: key)
         guard let rec = store.record(forLocator: localKey),
               let ctx = rec.context,
@@ -367,17 +365,6 @@ final class TrackedCaseRepairCoordinator {
             summary.transient += 1
             recordTransient(key: key)
         }
-    }
-
-    /// Applies the single domain reconciliation rule to existing records.
-    /// This deliberately replaces the legacy UID-only grouping heuristic:
-    /// full valid judicial UIDs, exact source cards and official relations are
-    /// all resolved by `LogicalCaseReconciler` in `TrackedStore`.
-    private func applyIdentityReconciliation(to summary: inout CaseRepairSummary) {
-        let identity = store.reconcileStoredIdentity()
-        summary.merged += identity.merged
-        summary.keyRemaps.merge(identity.keyRemaps) { _, latest in latest }
-        summary.affectedCaseKeys.formUnion(identity.affectedKeys)
     }
 
     private func shouldRepair(_ context: MovementContext) -> Bool {

@@ -187,6 +187,14 @@ final class DataCatalogTests: XCTestCase {
             cartotekaId: "g1", cartotekaLevelRaw: CourtLevel.district.rawValue,
             caseNumber: "2-100/2026", caseID: "native-card", caseUID: "portal-link")
         legacyContext.judicialUID = "11RS0001-01-2026-000100-01"
+        var duplicateContext = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "vs--komi.sudrf.ru", displayDomain: "vs.komi.sudrf.ru",
+            courtTitle: "Верховный суд Республики Коми",
+            courtLevelRaw: CourtLevel.subject.rawValue, courtCode: "11VS0001",
+            cartotekaId: "g2", cartotekaLevelRaw: CourtLevel.subject.rawValue,
+            caseNumber: "33-200/2026", caseID: "appeal-card", caseUID: "appeal-link")
+        duplicateContext.judicialUID = legacyContext.judicialUID
 
         do {
             let legacySchema = Schema(versionedSchema: SudrfSchemaV5.self)
@@ -202,6 +210,14 @@ final class DataCatalogTests: XCTestCase {
                 contextData: try JSONEncoder().encode(legacyContext), snapshotData: nil)
             record.judicialUID = legacyContext.judicialUID
             context.insert(record)
+            let duplicate = SudrfSchemaV5.TrackedCaseRecord(
+                key: duplicateContext.key, collections: ["Апелляция"],
+                caseNumber: duplicateContext.caseNumber,
+                courtTitle: duplicateContext.courtTitle,
+                displayDomain: duplicateContext.displayDomain,
+                contextData: try JSONEncoder().encode(duplicateContext), snapshotData: nil)
+            duplicate.judicialUID = duplicateContext.judicialUID
+            context.insert(duplicate)
             try context.save()
         }
 
@@ -215,14 +231,19 @@ final class DataCatalogTests: XCTestCase {
             let container = try ModelContainer(
                 for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
                 configurations: configuration)
-            let record = try XCTUnwrap(TrackedStore(container: container).all().first)
+            let store = TrackedStore(container: container)
+            XCTAssertEqual(store.all().count, 1)
+            let record = try XCTUnwrap(store.all().first)
             firstIdentity = try XCTUnwrap(record.logicalCaseID)
             firstState = try JSONDecoder().decode(
                 LogicalCaseState.self, from: XCTUnwrap(record.identityStateData))
             XCTAssertEqual(firstState.logicalCaseID, firstIdentity)
             XCTAssertEqual(firstState.judicialUIDs,
                            [TrackedStore.normalizedUID(legacyContext.judicialUID!)])
-            XCTAssertEqual(record.collectionNames, ["Доверитель"])
+            XCTAssertEqual(Set(record.collectionNames), ["Доверитель", "Апелляция"])
+            XCTAssertEqual(firstState.cards.count, 2)
+            XCTAssertNotNil(store.record(forLocator: legacyContext.key))
+            XCTAssertNotNil(store.record(forLocator: duplicateContext.key))
         }
 
         do {
@@ -233,11 +254,14 @@ final class DataCatalogTests: XCTestCase {
             let container = try ModelContainer(
                 for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
                 configurations: configuration)
-            let record = try XCTUnwrap(TrackedStore(container: container).all().first)
+            let store = TrackedStore(container: container)
+            XCTAssertEqual(store.all().count, 1)
+            let record = try XCTUnwrap(store.all().first)
             XCTAssertEqual(record.logicalCaseID, firstIdentity)
             XCTAssertEqual(try JSONDecoder().decode(
                 LogicalCaseState.self, from: XCTUnwrap(record.identityStateData)), firstState)
             XCTAssertEqual(record.key, legacyContext.key)
+            XCTAssertNotNil(store.record(forLocator: duplicateContext.key))
         }
     }
 

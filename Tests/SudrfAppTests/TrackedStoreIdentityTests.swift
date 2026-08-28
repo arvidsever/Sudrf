@@ -149,14 +149,54 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let initialState = try JSONDecoder().decode(
             LogicalCaseState.self, from: XCTUnwrap(first.identityStateData))
         let initialRefresh = first.movementFetchedAt
-        _ = store.reconcileStoredIdentity()
-        _ = store.reconcileStoredIdentity()
+        store.failNextSaveForTesting = true
+        XCTAssertEqual(store.reconcileStoredIdentity(), IdentityReconciliationSummary())
+        XCTAssertTrue(store.failNextSaveForTesting,
+                      "an already canonical graph must not invoke saveContext")
+        XCTAssertEqual(store.reconcileStoredIdentity(), IdentityReconciliationSummary())
+        XCTAssertTrue(store.failNextSaveForTesting,
+                      "reconciliation must remain idempotent on the next launch")
 
         let persisted = try XCTUnwrap(store.record(forKey: first.key))
         XCTAssertEqual(store.all().count, 1)
         XCTAssertEqual(persisted.movementFetchedAt, initialRefresh)
         XCTAssertEqual(try JSONDecoder().decode(
             LogicalCaseState.self, from: XCTUnwrap(persisted.identityStateData)), initialState)
+    }
+
+    func testCanonicalReconciliationSkipsAllRecordsWithoutSaving() throws {
+        let store = TrackedStore(inMemory: true)
+        for index in 0..<215 {
+            let uid = "11RS0001-01-2026-\(String(format: "%06d", index + 1))-10"
+            let value = context(number: "2-\(index + 1)/2026", cardID: "card-\(index)",
+                                judicialUID: uid)
+            _ = store.reconcileAndUpsert(context: value, snapshot: nil, collections: [])
+        }
+
+        store.failNextSaveForTesting = true
+        let summary = store.reconcileStoredIdentity()
+
+        XCTAssertEqual(summary, IdentityReconciliationSummary())
+        XCTAssertTrue(store.failNextSaveForTesting,
+                      "a canonical 215-record store must not start a save transaction")
+        XCTAssertEqual(store.all().count, 215)
+    }
+
+    func testRepeatedPreparationAndProjectionAreNoOps() throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-100/2026", cardID: "same-card", judicialUID: oldUID)
+        let record = store.reconcileAndUpsert(
+            context: value, snapshot: nil, movement: movement(for: value), collections: [])
+
+        XCTAssertFalse(store.container.mainContext.hasChanges)
+        XCTAssertFalse(try TrackedStorePreparation.prepare(
+            context: store.container.mainContext))
+        XCTAssertFalse(store.container.mainContext.hasChanges)
+
+        store.failNextSaveForTesting = true
+        XCTAssertTrue(store.save(projection: .cases([record.key])))
+        XCTAssertTrue(store.failNextSaveForTesting,
+                      "an unchanged court-act projection must not invoke saveContext")
     }
 
     func testAtomicMergeSaveFailureRollsBackWithoutSecondUpsertSave() throws {

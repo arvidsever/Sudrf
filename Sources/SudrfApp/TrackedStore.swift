@@ -29,13 +29,16 @@ struct IdentityReconciliationSummary: Equatable {
 /// Общая реализация подготовки store. Она не привязана к mainContext и может
 /// выполняться как production bootstrap в actor с собственным ModelContext.
 enum TrackedStorePreparation {
-    static func prepare(context: ModelContext) throws {
+    @discardableResult
+    static func prepare(context: ModelContext) throws -> Bool {
         try migrateFolders(context: context)
         try migrateJudicialUIDs(context: context)
         try migrateMoscowKeyAliases(context: context)
         try bootstrapPersistentIdentity(context: context)
         try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
+        guard context.hasChanges else { return false }
         try context.save()
+        return true
     }
 
     private static func migrateFolders(context: ModelContext) throws {
@@ -92,7 +95,7 @@ enum TrackedStorePreparation {
                 aliases.append(alias)
                 claimed.insert(alias)
             }
-            rec.legacyKeyAliases = aliases
+            if rec.legacyKeyAliases != aliases { rec.legacyKeyAliases = aliases }
             TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: rec), to: rec)
         }
     }
@@ -622,9 +625,39 @@ final class TrackedStore {
     @discardableResult
     func reconcileStoredIdentity() -> IdentityReconciliationSummary {
         var summary = IdentityReconciliationSummary()
-        let keys = all().map(\.key)
+        let records = all()
+        let keys = records.map(\.key)
+        var statesByKey = [String: LogicalCaseState]()
+        var persistedKeys = Set<String>()
+        var cardOwners = [SourceNativeCardIdentity: Set<String>]()
+        var uidOwners = [String: Set<String>]()
+        for record in records {
+            let persistedState = TrackedCaseIdentity.persistedState(for: record)
+            let state = persistedState ?? TrackedCaseIdentity.state(for: record)
+            statesByKey[record.key] = state
+            if persistedState != nil { persistedKeys.insert(record.key) }
+            for card in state.cards {
+                cardOwners[card.identity, default: []].insert(record.key)
+            }
+            for binding in state.uidBindings
+                where JudicialUIDObservation.validity(of: binding.normalizedValue) == .valid {
+                uidOwners[binding.normalizedValue, default: []].insert(record.key)
+            }
+        }
+
         for key in keys {
-            guard let record = record(forKey: key), let movementContext = record.context else {
+            guard let state = statesByKey[key] else { continue }
+            let hasCrossRecordCard = state.cards.contains {
+                cardOwners[$0.identity]?.contains(where: { $0 != key }) == true
+            }
+            let hasCrossRecordUID = state.uidBindings.contains {
+                JudicialUIDObservation.validity(of: $0.normalizedValue) == .valid
+                    && uidOwners[$0.normalizedValue]?.contains(where: { $0 != key }) == true
+            }
+            let needsPersistence = !persistedKeys.contains(key)
+            guard needsPersistence || hasCrossRecordCard || hasCrossRecordUID,
+                  let record = record(forKey: key),
+                  let movementContext = record.context else {
                 continue
             }
             let observation = TrackedCaseIdentity.bootstrapObservation(for: record)
@@ -638,8 +671,17 @@ final class TrackedStore {
             let removed = before.subtracting(Set(all().map(\.key)))
             summary.merged += removed.count
             summary.affectedKeys.formUnion(removed)
-            summary.affectedKeys.insert(survivor.key)
+            if needsPersistence || !removed.isEmpty {
+                summary.affectedKeys.insert(survivor.key)
+            }
             for oldKey in removed { summary.keyRemaps[oldKey] = survivor.key }
+            if !removed.isEmpty {
+                let remainder = reconcileStoredIdentity()
+                summary.merged += remainder.merged
+                summary.keyRemaps.merge(remainder.keyRemaps) { _, latest in latest }
+                summary.affectedKeys.formUnion(remainder.affectedKeys)
+                return summary
+            }
         }
         return summary
     }
@@ -930,6 +972,7 @@ final class TrackedStore {
             storeLog.error("Не удалось обновить проекцию актов: \(error, privacy: .public)")
             return false
         }
+        guard context.hasChanges else { return true }
         return saveContext()
     }
 
@@ -940,8 +983,8 @@ final class TrackedStore {
         let descriptor = FetchDescriptor<CourtActRecord>(
             predicate: #Predicate { $0.caseKey == caseKey })
         for act in (try? context.fetch(descriptor)) ?? [] {
-            act.caseNumber = tracked.caseNumber
-            act.judicialUID = tracked.judicialUID
+            if act.caseNumber != tracked.caseNumber { act.caseNumber = tracked.caseNumber }
+            if act.judicialUID != tracked.judicialUID { act.judicialUID = tracked.judicialUID }
         }
     }
 

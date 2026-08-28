@@ -48,25 +48,31 @@ final class CourtActRecord {
     }
 
     func update(from document: ActDocument, semanticKey: String, fetchedAt: Date) {
-        caseKey = document.caseKey
-        sourceActID = document.sourceActID
-        caseNumber = document.caseNumber
-        judicialUID = document.judicialUID
-        court = document.court
-        instanceLevel = document.instanceLevel.rawValue
-        kind = document.kind
-        actDate = document.date
+        if caseKey != document.caseKey { caseKey = document.caseKey }
+        if sourceActID != document.sourceActID { sourceActID = document.sourceActID }
+        if caseNumber != document.caseNumber { caseNumber = document.caseNumber }
+        if judicialUID != document.judicialUID { judicialUID = document.judicialUID }
+        if court != document.court { court = document.court }
+        if instanceLevel != document.instanceLevel.rawValue {
+            instanceLevel = document.instanceLevel.rawValue
+        }
+        if kind != document.kind { kind = document.kind }
+        if actDate != document.date { actDate = document.date }
         if sourceHash != document.sourceHash {
-            sourceText = document.sourceText
+            if sourceText != document.sourceText { sourceText = document.sourceText }
             sourceHash = document.sourceHash
-            paragraphData = (try? JSONEncoder().encode(document.paragraphs)) ?? Data()
-            paragraphizerVersion = document.paragraphizerVersion
-        } else {
+            if let data = try? JSONEncoder().encode(document.paragraphs), paragraphData != data {
+                paragraphData = data
+            }
+            if paragraphizerVersion != document.paragraphizerVersion {
+                paragraphizerVersion = document.paragraphizerVersion
+            }
+        } else if sourceText != document.sourceText {
             sourceText = document.sourceText
         }
-        identityVersion = 1
-        self.semanticKey = semanticKey
-        self.fetchedAt = fetchedAt
+        if identityVersion != 1 { identityVersion = 1 }
+        if self.semanticKey != semanticKey { self.semanticKey = semanticKey }
+        if self.fetchedAt != fetchedAt { self.fetchedAt = fetchedAt }
     }
 
     var document: ActDocument? {

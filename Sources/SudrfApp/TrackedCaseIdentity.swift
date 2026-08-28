@@ -62,8 +62,30 @@ enum TrackedCaseIdentity {
     }
 
     static func persist(_ state: LogicalCaseState, to record: TrackedCaseRecord) {
-        record.logicalCaseID = state.logicalCaseID
-        record.identityStateData = try? JSONEncoder().encode(state)
+        if record.logicalCaseID != state.logicalCaseID {
+            record.logicalCaseID = state.logicalCaseID
+        }
+        if let data = record.identityStateData,
+           let persisted = try? JSONDecoder().decode(LogicalCaseState.self, from: data),
+           persisted == state { return }
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        record.identityStateData = data
+    }
+
+    /// Returns the graph only when the V6 identity payload is complete enough
+    /// to be trusted by the startup reconciliation pass. A missing,
+    /// undecodable, rebased, or incomplete payload takes the normal repair path.
+    static func persistedState(for record: TrackedCaseRecord) -> LogicalCaseState? {
+        guard let logicalCaseID = record.logicalCaseID,
+              let data = record.identityStateData,
+              let state = try? JSONDecoder().decode(LogicalCaseState.self, from: data),
+              state.logicalCaseID == logicalCaseID,
+              !state.cards.isEmpty,
+              state.cards.allSatisfy({ $0.identity.isComplete }),
+              state.uidBindings.allSatisfy({ $0.cardIdentity.isComplete }) else {
+            return nil
+        }
+        return state
     }
 
     static func bootstrapObservation(for record: TrackedCaseRecord) -> SourceCardObservation {

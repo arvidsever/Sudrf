@@ -455,8 +455,9 @@ continuation contract: challenge page → `/captcha.php` → POST `captcha-respo
 session unlocked → исходный listing, всё в одной cookie session. CAPTCHA failure не равна
 нулевой выдаче.
 
-Gate: один и тот же response детерминированно даёт либо usable normalized snapshot, либо
-явный partial/error outcome; не существует пути «плохой HTML → пустой valid snapshot».
+Gate: один и тот же response детерминированно даёт usable normalized snapshot,
+operation-specific honest-zero outcome либо явный partial/error outcome; не существует
+пути «плохой HTML → пустой valid snapshot».
 
 **B. #178 — identity/reconciliation и discovery evidence.**
 

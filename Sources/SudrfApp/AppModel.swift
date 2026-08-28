@@ -123,14 +123,6 @@ final class AppRouter: ObservableObject {
     /// Hosts, для которых captcha была открыта именно из отчёта ремонта.
     /// Это отличает успешный ввод от обычной заглушки движения дела.
     private var repairCaptchaHosts = Set<String>()
-    /// Авто-солвер капчи для интерактивного пути `beginCaptcha(for:)`
-    /// (per-instance заглушки в `CaseMovementView`). Создаётся здесь,
-    /// чтобы `SearchModel` и `AppRouter` могли иметь разные инстансы
-    /// солвера — у каждого свой rate-limit и лог. `CaptchaSettings`
-    /// общий (singleton), так что toggle в системном меню действует
-    /// на оба пути.
-    private let captchaSolver: CaptchaSolver
-    private let captchaSettings: CaptchaSettings
     private let fsspClient: FSSPClient
     private let fsspCaptchaCorpus = CorpusStore.shared
     private var fsspCaptchaRequestID: UUID?
@@ -326,8 +318,6 @@ final class AppRouter: ObservableObject {
         let fsspClient = FSSPClient()
         self.fsspClient = fsspClient
         let configuredSolver = CaptchaSolverFactory.make(settings: captchaSettings)
-        self.captchaSolver = configuredSolver
-        self.captchaSettings = captchaSettings
         let originResolver = CaseOriginResolver(client: client)
         self.repairCoordinator = TrackedCaseRepairCoordinator(
             store: store, client: client, originResolver: originResolver,

@@ -446,8 +446,8 @@ live-case session из `AppRouter`.
 
 **A. #177 — надёжный source state до semantic events.**
 
-Закрыть/стабилизировать source correctness, identity и partial-state кейсы, которые могут
-сделать новый snapshot ложным: #94/#132, #82/#88/#89/#164, #79/#78 и связанные фикстуры.
+Закрыть/стабилизировать source correctness и partial-state кейсы, которые могут сделать
+новый snapshot ложным: #82/#88/#89/#164, #79/#78 и связанные фикстуры.
 Не требуется ждать всех UI/reliability issues; нужен именно пригодный normalized input.
 
 Для `msudrf` gate включает не только распознавание `kcaptchaForm`, но и проверяемый
@@ -464,6 +464,8 @@ Gate: один и тот же response детерминированно даёт
 историю identity, а не как новое несвязанное дело. #156 добавляет `r_juid` как независимый
 registry/evidence source для передачи по подсудности; #87 использует те же reconciliation
 правила при фоновом discovery. Manual и periodic discovery обязаны сходиться к одной цепочке.
+#178 реализуется вместе с regression-stories #94/#132/#156, а не после их отдельных
+one-off identity paths.
 
 Gate: повторное обнаружение той же карточки другим маршрутом не создаёт дубль; новая
 карточка с новым номером может быть связана без опоры на строковое равенство номера.
@@ -511,8 +513,9 @@ higher instance, предыдущим ошибкам, TTL и недавнему 
 сбоев — exponential backoff + jitter и при необходимости host circuit breaker.
 
 #180 заведён заранее как evidence-first backlog, но реализация начинается только если
-измерения после #87/#68 подтвердят starvation или лишнюю нагрузку простого TTL. Если не
-подтвердят — issue закрывается отчётом без новой очереди.
+измерения после #87 и host-health instrumentation из #68 подтвердят starvation или лишнюю
+нагрузку простого TTL. Полный Diagnostics UI #68 scheduler не блокирует. Если проблема не
+подтвердится — issue закрывается отчётом без новой очереди.
 
 **H. Новые source families — поверх contract, а не рядом с ним.**
 

@@ -685,6 +685,34 @@ final class RefreshCenter: ObservableObject {
         }
     }
 
+    /// CAPTCHA вышестоящего суда находится внутри пригодного или частичного
+    /// движения. До публикации промежуточного стаба запускаем тот же автосолв
+    /// и полный retry, что для top-level `.captcha`. nil сохраняет прежний
+    /// ручной fallback, если автосолв выключен или не уверен в ответе.
+    private func retryEmbeddedCaptchaIfNeeded(
+        movement: CaseMovement,
+        service: any MovementProviding,
+        key: String,
+        ctx: MovementContext,
+        cart: Cartoteka,
+        mayAutoSolve: Bool
+    ) async throws -> RefreshExecution? {
+        guard mayAutoSolve,
+              let formURL = movement.instances.first(where: { $0.captchaFormURL != nil })?.captchaFormURL,
+              let solver = captchaSolver,
+              let settings = captchaSettings,
+              settings.isEffectivelyEnabled else { return nil }
+
+        let result = await autoSolve(formURL, client, solver, settings.autoSolverSettings)
+        if result.cancelled || Task.isCancelled { throw CancellationError() }
+        guard let token = result.token else { return nil }
+
+        await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+        let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
+        return try await handle(retry, service: service, key: key, ctx: ctx,
+                                cart: cart, mayAutoSolve: false)
+    }
+
     /// CAPTCHA может дать одну inline-попытку с новым токеном. Повтор снова
     /// проходит через тот же типизированный контракт, но уже без рекурсии
     /// авто-солвера и без обхода таблицы дедупликации `tasks`.
@@ -694,12 +722,22 @@ final class RefreshCenter: ObservableObject {
                         mayAutoSolve: Bool) async throws -> RefreshExecution {
         switch outcome {
         case .usableSnapshot(let movement, let attempt):
+            if let retry = try await retryEmbeddedCaptchaIfNeeded(
+                movement: movement, service: service, key: key, ctx: ctx, cart: cart,
+                mayAutoSolve: mayAutoSolve) {
+                return retry
+            }
             return applyMovement(key: key, ctx: ctx, mv: movement,
                                  attempt: attempt, isComplete: true)
         case .partial(let movement, let attempt):
             guard let movement else {
                 persistAttempt(key, attempt)
                 return failure(key, "Суд вернул неполный ответ без пригодного движения дела.")
+            }
+            if let retry = try await retryEmbeddedCaptchaIfNeeded(
+                movement: movement, service: service, key: key, ctx: ctx, cart: cart,
+                mayAutoSolve: mayAutoSolve) {
+                return retry
             }
             let failedCount = movement.incompleteHigherCourtDomains?.count ?? 0
             let zeroCount = movement.honestZeroDomains?.count ?? 0

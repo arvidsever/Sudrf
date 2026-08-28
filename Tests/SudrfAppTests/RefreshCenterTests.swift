@@ -35,6 +35,23 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor EmbeddedCaptchaMovement: MovementProviding {
+        let first: CaseMovement
+        let retry: CaseMovement
+        private(set) var calls = 0
+
+        init(first: CaseMovement, retry: CaseMovement) {
+            self.first = first
+            self.retry = retry
+        }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            return calls == 1 ? first : retry
+        }
+    }
+
     private actor FixedMovement: MovementProviding {
         let value: CaseMovement
         private(set) var calls = 0
@@ -242,6 +259,7 @@ final class RefreshCenterTests: XCTestCase {
         // Чистый стор на нужный домен — иначе возможный хвост от
         // предыдущего тестового прогона даст ложный «успех без solve».
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
+        await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
 
         let s = CaptchaSettings.shared
         savedAutoSolve = s.autoSolveEnabled
@@ -260,24 +278,27 @@ final class RefreshCenterTests: XCTestCase {
         s.minConfidence = savedMinConf
         s.maxAttempts = savedMaxAttempts
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
+        await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
         store = nil
         scripted = nil
         try await super.tearDown()
     }
 
     private func makeCenter(
+        service: (any MovementProviding)? = nil,
         autoSolve: @escaping (URL, SudrfClient, CaptchaSolver,
                               AutoCaptchaSolver.Settings)
             async -> AutoCaptchaSolver.SolveResult
     ) -> RefreshCenter {
         let solver = CaptchaSolver(provider: NeverUsedProvider())
+        let provider: any MovementProviding = service ?? scripted
         return RefreshCenter(
             store: store,
             client: SudrfClient(),
             captchaSolver: solver,
             captchaSettings: CaptchaSettings.shared,
             autoSolve: autoSolve,
-            serviceBuilder: { [scripted] _ in scripted }
+            serviceBuilder: { _ in provider }
         )
     }
 
@@ -394,6 +415,137 @@ final class RefreshCenterTests: XCTestCase {
         // (это часть потока, который A1 чинит).
         let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertEqual(stored?.value, "12345")
+    }
+
+    func testEmbeddedHigherCourtCaptchaAutoSolvesBeforePublishing() async throws {
+        let key = store.all()[0].key
+        let formURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        var first = successMV!
+        first.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "—",
+            judge: nil,
+            domain: "3kas.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: formURL))
+        first.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+
+        var retry = successMV!
+        retry.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-10837/2026",
+            judge: "Иванов И. И.",
+            domain: "3kas.sudrf.ru",
+            foundByUID: true,
+            result: "Жалоба оставлена без удовлетворения",
+            sessions: [CaseSession(date: "10.06.2026", event: "Судебное заседание")]))
+
+        let movement = EmbeddedCaptchaMovement(first: first, retry: retry)
+        let token = CaptchaToken(value: "12345", id: "higher-court")
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: token, png: Data([1]))
+        }
+        var published: [CaseMovement] = []
+        center.onRefreshed = { _, value in published.append(value) }
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+        let calls = await movement.calls
+        XCTAssertEqual(calls, 2, "embedded CAPTCHA должна дать ровно один retry")
+        XCTAssertEqual(published.count, 1, "промежуточный partial не должен публиковаться")
+        XCTAssertFalse(published[0].instances.contains { $0.captchaFormURL != nil })
+        XCTAssertEqual(published[0].instances.first { $0.domain == "3kas.sudrf.ru" }?.caseNumber,
+                       "8Г-10837/2026")
+        let saved = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertFalse(saved.movement?.instances.contains { $0.captchaFormURL != nil } ?? true)
+        XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .usableSnapshot)
+        XCTAssertNotNil(saved.movementFetchedAt)
+    }
+
+    func testEmbeddedHigherCourtCaptchaAutoSolveRemovesStubWhenCaseIsAbsent() async throws {
+        let key = store.all()[0].key
+        let formURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        var first = successMV!
+        first.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "—",
+            judge: nil,
+            domain: "3kas.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: formURL))
+        first.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+
+        var retry = successMV!
+        retry.honestZeroDomains = ["3kas.sudrf.ru"]
+        let movement = EmbeddedCaptchaMovement(first: first, retry: retry)
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(
+                token: CaptchaToken(value: "12345", id: "higher-court-empty"),
+                png: Data([1]))
+        }
+        var published: [CaseMovement] = []
+        center.onRefreshed = { _, value in published.append(value) }
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("honest zero остаётся типизированным partial результата")
+        }
+        let calls = await movement.calls
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(published.count, 1, "CAPTCHA-stub не должен публиковаться до retry")
+        XCTAssertFalse(published[0].instances.contains {
+            $0.domain == "3kas.sudrf.ru" || $0.captchaFormURL != nil
+        }, "подтверждённая пустая выдача должна убрать фиктивную инстанцию")
+        let saved = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertFalse(saved.movement?.instances.contains {
+            $0.domain == "3kas.sudrf.ru" || $0.captchaFormURL != nil
+        } ?? true)
+    }
+
+    func testEmbeddedHigherCourtCaptchaNilTokenKeepsManualStubOnlyInPublishedMovement() async throws {
+        let key = store.all()[0].key
+        let formURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        var first = successMV!
+        first.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "—",
+            judge: nil,
+            domain: "3kas.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: formURL))
+        first.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        let movement = EmbeddedCaptchaMovement(first: first, retry: successMV!)
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+        var published: [CaseMovement] = []
+        center.onRefreshed = { _, value in published.append(value) }
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .partial(
+            "Один источник временно не обновился; сохранены последние успешные данные."))
+        let calls = await movement.calls
+        XCTAssertEqual(calls, 1, "без токена полный retry не выполняется")
+        XCTAssertEqual(published.count, 1)
+        XCTAssertNotNil(published[0].instances.first { $0.captchaFormURL != nil },
+                        "manual fallback должен получить CAPTCHA-stub")
+        let saved = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertFalse(saved.movement?.instances.contains { $0.captchaFormURL != nil } ?? true,
+                       "URL CAPTCHA не должен попадать в persistence")
+        XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
     }
 
     func testIntentRefreshReportsSuccessAfterAutoSolve() async throws {

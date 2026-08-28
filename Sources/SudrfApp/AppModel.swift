@@ -1074,50 +1074,13 @@ final class AppRouter: ObservableObject {
         selectedSummaryIsStale = false
     }
 
-    /// Открыть окно ввода кода для инстанции-заглушки. Сначала пробует
-    /// авто-солвер (Vision, on-device). На успех токен сохраняется в
-    /// `CaptchaTokenStore`, и `refreshOpenCase` тихо пересобирает
-    /// движение — заглушка заменится на реальную инстанцию без
-    /// участия пользователя. На неуверенность / выключенный солвер —
-    /// открывается ручной `CaptchaAssistSheet` (как раньше).
-    ///
-    /// Сигнатура остаётся sync: async-работа внутри `Task`, чтобы
-    /// не менять места вызова в `CaseMovementView` (Button).
+    /// Явная кнопка «Ввести код» всегда открывает ручной fallback.
+    /// Автосолвер для такой заглушки уже запускается в `RefreshCenter`
+    /// до публикации движения и не зависит от пользовательского клика.
     func beginCaptcha(for inst: CaseInstance) {
         guard let url = inst.captchaFormURL else { return }
         let host = url.host ?? ""
-
-        if captchaSettings.isEffectivelyEnabled {
-            Task { [weak self] in
-                guard let self else { return }
-                let result = await AutoCaptchaSolver.solve(
-                    formURL: url,
-                    client: self.client,
-                    solver: self.captchaSolver,
-                    settings: self.captchaSettings.autoSolverSettings
-                )
-                if result.cancelled || Task.isCancelled { return }
-                if let token = result.token {
-                    await CaptchaTokenStore.shared.store(token, domain: host)
-                    // NOTE: bootstrap в CorpusStore не делаем здесь —
-                    // мы не имеем гарантии, что retry с этим токеном
-                    // прошёл (сервер мог отклонить). Bootstrap живёт
-                    // в `SearchModel.executeSearch`, где есть явный
-                    // сигнал «search вернул ≥ 1 результата».
-                    await MainActor.run {
-                        self.pendingCaptchaRefresh = true
-                        self.refreshCenter.retryPendingCaptcha(host: host)
-                        self.refreshOpenCase()
-                        self.pendingCaptchaRefresh = false
-                    }
-                    return
-                }
-                // Авто-солвер не справился — открываем ручной лист.
-                await MainActor.run { self.openManualCaptchaSheet(for: inst, url: url, host: host) }
-            }
-        } else {
-            openManualCaptchaSheet(for: inst, url: url, host: host)
-        }
+        openManualCaptchaSheet(for: inst, url: url, host: host)
     }
 
     /// Ручная CAPTCHA домашней карточки после фонового refresh. В отличие от

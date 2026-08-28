@@ -603,6 +603,7 @@ private struct CollectionRow: View {
     let name: String
     let count: Int
     @State private var targeted = false
+    @State private var confirmingDeletion = false
 
     private var acceptsDrop: Bool { name != "Все дела" }
 
@@ -632,6 +633,27 @@ private struct CollectionRow: View {
             return true
         } isTargeted: { over in
             targeted = over && acceptsDrop
+        }
+        .contextMenu {
+            if acceptsDrop {
+                Button("Удалить подборку", role: .destructive) {
+                    confirmingDeletion = true
+                }
+            }
+        }
+        .confirmationDialog(
+            "Удалить подборку «\(name)»?",
+            isPresented: $confirmingDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Удалить", role: .destructive) {
+                _ = router.deleteCollection(named: name)
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text(count == 0
+                ? "Подборка пуста."
+                : "В подборке \(count) \(DateUtil.plural(count, "дело", "дела", "дел")). Дела останутся в отслеживании и будут удалены только из этой подборки.")
         }
     }
 }

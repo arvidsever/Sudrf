@@ -20,13 +20,20 @@ enum ProjectionScope: Sendable, Equatable {
     case full
 }
 
+struct IdentityReconciliationSummary: Equatable {
+    var merged = 0
+    var keyRemaps: [String: String] = [:]
+    var affectedKeys = Set<String>()
+}
+
 /// Общая реализация подготовки store. Она не привязана к mainContext и может
 /// выполняться как production bootstrap в actor с собственным ModelContext.
 enum TrackedStorePreparation {
     static func prepare(context: ModelContext) throws {
         try migrateFolders(context: context)
         try migrateJudicialUIDs(context: context)
-        try migrateMoscowKeys(context: context)
+        try migrateMoscowKeyAliases(context: context)
+        try bootstrapPersistentIdentity(context: context)
         try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
         try context.save()
     }
@@ -52,24 +59,41 @@ enum TrackedStorePreparation {
 
     /// Дела судов Москвы до v0.42 хранились под ключом «mos-gorsud.ru/<№>»:
     /// домен у всех судов города общий, поэтому одинаковые номера из разных
-    /// райсудов схлопывались в одну запись. С v0.42 в ключ входит код суда
-    /// (`MovementContext.identityKey`) — пересаживаем старые записи.
-    /// Ключей других регионов миграция не касается (формула там прежняя).
-    private static func migrateMoscowKeys(context: ModelContext) throws {
+    /// райсудов схлопывались в одну запись. С v0.42 формула добавила код
+    /// суда. V6 больше не переписывает уже опубликованный technical locator:
+    /// новая формула становится alias, чтобы поиск и старые ссылки сходились
+    /// к одной записи без ротации key.
+    private static func migrateMoscowKeyAliases(context: ModelContext) throws {
         let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
-        var taken = Set(records.map(\.key))
         for rec in records where MosGorSudRouting.isMosGorSud(domain: rec.displayDomain) {
             guard let code = rec.context?.courtCode, !code.isEmpty else { continue }
             let updated = MovementContext.identityKey(displayDomain: rec.displayDomain,
                                                       courtCode: code,
                                                       caseNumber: rec.caseNumber)
-            guard updated != rec.key else { continue }
-            // Ключ уникален на уровне схемы: если целевой уже занят (дубль,
-            // слипшийся до миграции), запись не трогаем — иначе save() упадёт.
-            guard !taken.contains(updated) else { continue }
-            taken.remove(rec.key)
-            taken.insert(updated)
-            rec.key = updated
+            rec.addLegacyKeyAlias(updated)
+        }
+    }
+
+    /// V6 даёт уже существующим строкам permanent logical identity. Alias-ы
+    /// нормализуются детерминированно: locator никогда не может указывать на
+    /// две записи, а собственный key всегда имеет приоритет.
+    private static func bootstrapPersistentIdentity(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+            .sorted { lhs, rhs in
+                if lhs.addedAt != rhs.addedAt { return lhs.addedAt < rhs.addedAt }
+                return lhs.key < rhs.key
+            }
+        var claimed = Set(records.map(\.key))
+        for rec in records {
+            if rec.logicalCaseID == nil { rec.logicalCaseID = UUID() }
+            var aliases: [String] = []
+            for alias in rec.legacyKeyAliases where !alias.isEmpty && alias != rec.key {
+                guard !claimed.contains(alias), !aliases.contains(alias) else { continue }
+                aliases.append(alias)
+                claimed.insert(alias)
+            }
+            rec.legacyKeyAliases = aliases
+            TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: rec), to: rec)
         }
     }
 }
@@ -200,8 +224,22 @@ enum CourtActProjectionSynchronizer {
 
 @Model
 final class TrackedCaseRecord {
-    /// Ключ дедупликации: «<отображаемый домен>/<№ дела>».
+    /// Неизменяемый технический адрес записи. Старые версии строили его из
+    /// отображаемого суда и номера дела; теперь это лишь legacy locator для
+    /// deep links, Spotlight, актов и подборок, а не identity дела.
     @Attribute(.unique) var key: String
+
+    /// Постоянный идентификатор логического досье. Optional нужен только для
+    /// lightweight migration V5 -> V6; bootstrap назначает его каждой записи
+    /// до того, как store становится доступен приложению.
+    var logicalCaseID: UUID? = nil
+    /// Кодированное состояние domain identity/reconciliation. App-слой не
+    /// интерпретирует байты: тип и правила принадлежат SudrfKit.
+    var identityStateData: Data? = nil
+    /// Производные ключи прежних/новых карточек, ведущие к этому постоянному
+    /// адресу. Они не участвуют в identity и нужны только для обратной
+    /// совместимости ссылок и поиска уже отслеживаемой записи.
+    var legacyKeyAliases: [String] = []
 
     var addedAt: Date
     /// Когда пользователь в последний раз открывал карточку (для бейджа «обновлено»).
@@ -242,6 +280,9 @@ final class TrackedCaseRecord {
     init(key: String, collections: [String], caseNumber: String, courtTitle: String,
          displayDomain: String, contextData: Data, snapshotData: Data?) {
         self.key = key
+        self.logicalCaseID = UUID()
+        self.identityStateData = nil
+        self.legacyKeyAliases = []
         self.addedAt = Date()
         self.seenAt = nil
         self.folderName = ""
@@ -314,6 +355,14 @@ final class TrackedCaseRecord {
                 storeLog.error("Не удалось закодировать enforcement; прежние данные сохранены: \(error, privacy: .public)")
             }
         }
+    }
+
+    /// Не добавляет собственный `key`, пустые и повторяющиеся locators.
+    /// Согласование коллизий между разными записями выполняет TrackedStore.
+    func addLegacyKeyAlias(_ locator: String) {
+        guard !locator.isEmpty, locator != key,
+              !legacyKeyAliases.contains(locator) else { return }
+        legacyKeyAliases.append(locator)
     }
 
     private static func decode<T: Decodable>(_ type: T.Type, from data: Data, what: String) -> T? {
@@ -459,6 +508,8 @@ extension TrackedStore {
 final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
+    /// Test seam for the rollback path used by the atomic identity merge.
+    var failNextSaveForTesting = false
 
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
@@ -478,13 +529,15 @@ final class TrackedStore {
     /// созданный контейнер вместо скрытого экземпляра внутри `TrackedStore`.
     init(container: ModelContainer, prepared: Bool = false) {
         self.container = container
-        guard !prepared else { return }
-        do {
-            try TrackedStorePreparation.prepare(context: context)
-        } catch {
-            context.rollback()
-            storeLog.error("Не удалось подготовить хранилище: \(error, privacy: .public)")
+        if !prepared {
+            do {
+                try TrackedStorePreparation.prepare(context: context)
+            } catch {
+                context.rollback()
+                storeLog.error("Не удалось подготовить хранилище: \(error, privacy: .public)")
+            }
         }
+        _ = reconcileStoredIdentity()
     }
 
     nonisolated static func normalizedUID(_ raw: String) -> String {
@@ -502,7 +555,30 @@ final class TrackedStore {
         return (try? context.fetch(d))?.first
     }
 
-    func isTracked(key: String) -> Bool { record(forKey: key) != nil }
+    /// Разрешает исходный display-derived locator и его исторические aliases
+    /// к неизменяемому `TrackedCaseRecord.key`. Predicate по transformable
+    /// SwiftData-массиву здесь не переносим между store, поэтому небольшой
+    /// in-memory scan намеренно остаётся единым местом такого lookup.
+    func record(forLocator locator: String) -> TrackedCaseRecord? {
+        guard !locator.isEmpty else { return nil }
+        if let direct = record(forKey: locator) { return direct }
+        return all().first { $0.legacyKeyAliases.contains(locator) }
+    }
+
+    func isTracked(key: String) -> Bool { record(forLocator: key) != nil }
+
+    func isTracked(context: MovementContext) -> Bool {
+        guard let observation = TrackedCaseIdentity.observation(context: context) else {
+            return record(forLocator: context.key) != nil
+        }
+        let normalizedUID = observation.judicialUID?.isMatchable == true
+            ? observation.judicialUID?.normalizedValue : nil
+        return all().contains { record in
+            let state = TrackedCaseIdentity.state(for: record)
+            return state.contains(card: observation.cardIdentity)
+                || normalizedUID.map { state.contains(judicialUID: $0) } == true
+        }
+    }
 
     func courtActID(caseKey: String, sourceActID: String) -> String? {
         var descriptor = FetchDescriptor<CourtActRecord>(
@@ -522,68 +598,316 @@ final class TrackedStore {
     func route(for link: SudrfDeepLink) -> DeepLinkRoute {
         switch link {
         case .caseRecord(let key):
-            return record(forKey: key) == nil
-                ? .missing : .caseRecord(key: key, staleAct: false)
+            guard let record = record(forLocator: key) else { return .missing }
+            return .caseRecord(key: record.key, staleAct: false)
         case .courtAct(let caseKey, let sourceActID):
-            guard record(forKey: caseKey) != nil else { return .missing }
-            return courtActID(caseKey: caseKey, sourceActID: sourceActID) == nil
-                ? .caseRecord(key: caseKey, staleAct: true)
-                : .courtAct(caseKey: caseKey, sourceActID: sourceActID)
+            guard let record = record(forLocator: caseKey) else { return .missing }
+            return courtActID(caseKey: record.key, sourceActID: sourceActID) == nil
+                ? .caseRecord(key: record.key, staleAct: true)
+                : .courtAct(caseKey: record.key, sourceActID: sourceActID)
         }
     }
 
     func records(forJudicialUID uid: String) -> [TrackedCaseRecord] {
         let normalized = Self.normalizedUID(uid)
-        return all().filter { ($0.judicialUID ?? "") == normalized }
+        return all().filter {
+            TrackedCaseIdentity.state(for: $0).contains(judicialUID: normalized)
+        }
+    }
+
+    /// После lightweight V5 -> V6 migration собирает legacy graphs и одним
+    /// shared reconciler-ом устраняет только подтверждённые UID-дубли. Это
+    /// повторяемо: второй запуск видит уже один persistent graph и ничего не
+    /// меняет.
+    @discardableResult
+    func reconcileStoredIdentity() -> IdentityReconciliationSummary {
+        var summary = IdentityReconciliationSummary()
+        let keys = all().map(\.key)
+        for key in keys {
+            guard let record = record(forKey: key), let movementContext = record.context else {
+                continue
+            }
+            let observation = TrackedCaseIdentity.bootstrapObservation(for: record)
+            let before = Set(all().map(\.key))
+            let survivor = reconcileAndUpsert(
+                context: movementContext, snapshot: record.snapshot,
+                movement: record.movement, collections: record.collectionNames,
+                identityObservation: observation,
+                movementFetchedAt: record.movementFetchedAt,
+                updatesMovementFetchedAt: false)
+            let removed = before.subtracting(Set(all().map(\.key)))
+            summary.merged += removed.count
+            summary.affectedKeys.formUnion(removed)
+            summary.affectedKeys.insert(survivor.key)
+            for oldKey in removed { summary.keyRemaps[oldKey] = survivor.key }
+        }
+        return summary
     }
 
     @discardableResult
     func upsert(context ctx: MovementContext, snapshot snap: CaseSnapshot?,
                 movement mv: CaseMovement? = nil, collections: [String]) -> TrackedCaseRecord {
-        let key = ctx.key
-        let ctxData = (try? JSONEncoder().encode(ctx)) ?? Data()
-        let snapData = snap.flatMap { try? JSONEncoder().encode($0) }
-        let mvData = mv.flatMap { try? JSONEncoder().encode($0) }
-        if let existing = record(forKey: key) {
-            let oldCaseNumber = existing.caseNumber
-            let oldJudicialUID = existing.judicialUID
-            existing.contextData = ctxData
-            if snapData != nil { existing.snapshotData = snapData }
-            if mvData != nil {
-                existing.movementData = mvData
-                existing.movementFetchedAt = Date()
+        reconcileAndUpsert(context: ctx, snapshot: snap, movement: mv, collections: collections)
+    }
+
+    /// Единственная точка записи для ручного добавления и фонового discovery.
+    /// Только `LogicalCaseReconciler` связывает разные source cards; locator
+    /// номера применяется после его решения исключительно для compatibility.
+    @discardableResult
+    func reconcileAndUpsert(context ctx: MovementContext, snapshot snap: CaseSnapshot?,
+                            movement mv: CaseMovement? = nil,
+                            collections: [String],
+                            identityObservation: SourceCardObservation? = nil,
+                            adoptLinkedPresentation: Bool = false,
+                            canonicalCard: CaseCard? = nil,
+                            movementFetchedAt: Date? = nil,
+                            updatesMovementFetchedAt: Bool = true) -> TrackedCaseRecord {
+        let observation = identityObservation
+            ?? TrackedCaseIdentity.observation(context: ctx, movement: mv)
+        guard let observation, observation.isUsableSnapshot,
+              observation.cardIdentity.isComplete else {
+            return upsertCandidate(context: ctx, snapshot: snap, movement: mv,
+                                   collections: collections,
+                                   movementFetchedAt: movementFetchedAt,
+                                   updatesMovementFetchedAt: updatesMovementFetchedAt)
+        }
+
+        let records = all()
+        let originalStates = records.map { TrackedCaseIdentity.state(for: $0) }
+        var states = originalStates
+        let result = LogicalCaseReconciler.reconcileAndUpsert(observation, in: &states)
+        guard let state = result.state,
+              result.decision.kind != .candidate else {
+            return upsertCandidate(context: ctx, snapshot: snap, movement: mv,
+                                   collections: collections,
+                                   movementFetchedAt: movementFetchedAt,
+                                   updatesMovementFetchedAt: updatesMovementFetchedAt)
+        }
+
+        let remainingIDs = Set(states.map(\.logicalCaseID))
+        let mergedRecords = zip(records, originalStates).compactMap { record, oldState in
+            remainingIDs.contains(oldState.logicalCaseID) ? nil : record
+        }
+
+        if let domainSurvivor = records.first(where: {
+            TrackedCaseIdentity.ensuredLogicalCaseID(for: $0) == state.logicalCaseID
+        }) {
+            let mergedGroup = [domainSurvivor] + mergedRecords.filter { $0 !== domainSurvivor }
+            let survivor = preferredPersistentSurvivor(in: mergedGroup)
+            let persistedState = state.logicalCaseID == survivor.logicalCaseID
+                ? state
+                : LogicalCaseState(
+                    logicalCaseID: TrackedCaseIdentity.ensuredLogicalCaseID(for: survivor),
+                    cards: state.cards, uidBindings: state.uidBindings,
+                    numberHistory: state.numberHistory,
+                    officialRelations: state.officialRelations,
+                    provenance: state.provenance)
+            let duplicates = mergedGroup.filter { $0 !== survivor }
+            if adoptLinkedPresentation {
+                guard TrackedCaseRepairCoordinator.atomicMerge(
+                    store: self, survivor: survivor, duplicates: duplicates,
+                    canonicalContext: ctx, canonicalCard: canonicalCard,
+                    identityState: persistedState) != nil else {
+                    storeLog.error("Atomic official-relation merge failed; retained pre-merge records.")
+                    return survivor
+                }
+                return survivor
             }
-            existing.caseNumber = ctx.caseNumber
-            existing.courtTitle = ctx.courtTitle
-            existing.displayDomain = ctx.displayDomain
-            if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
-                existing.judicialUID = Self.normalizedUID(uid)
+            if !duplicates.isEmpty {
+                // Merge user-visible projections before writing the new graph.
+                let canonical = survivor.context ?? ctx
+                guard TrackedCaseRepairCoordinator.atomicMerge(
+                    store: self, survivor: survivor, duplicates: duplicates,
+                    canonicalContext: canonical, canonicalCard: nil,
+                    identityState: persistedState) != nil else {
+                    // `atomicMerge` already rolled back the ModelContext.
+                    // Do not write the partially reconciled graph separately.
+                    storeLog.error("Atomic identity merge failed; retained pre-merge records.")
+                    return survivor
+                }
             }
-            if mvData == nil,
-               oldCaseNumber != existing.caseNumber || oldJudicialUID != existing.judicialUID {
-                synchronizeCourtActMetadata(caseKey: existing.key)
+
+            let locatorOwner = record(forLocator: ctx.key)
+            let ownsOrCanClaimLocator = locatorOwner.map { $0 === survivor } ?? true
+            // An exact source-card match is a renumbering/refresh of that
+            // card, so its display projection must advance even if the
+            // display-derived locator changed.  A UID/relation link between
+            // distinct cards keeps the existing card projection intact.
+            let adoptsIncomingCard = result.decision.kind == .sameCard
+            var projectedMovement = mv
+            var projectedSnapshot = snap
+            if result.decision.kind == .linkedExistingCase {
+                let cachedSnapshot = survivor.snapshot
+                projectedMovement = TrackedCaseRepairCoordinator.mergeMovements(
+                    [survivor.movement, mv].compactMap { $0 })
+                let projectionContext = adoptsIncomingCard ? ctx : survivor.context
+                if let projectedMovement, let canonicalContext = projectionContext {
+                    var derived = MovementDerivation.snapshot(
+                        from: projectedMovement, context: canonicalContext)
+                    if let snap {
+                        derived = MovementDerivation.preservingConfirmedDeadlines(
+                            derived, old: snap)
+                    }
+                    if let cachedSnapshot {
+                        derived = MovementDerivation.preservingConfirmedDeadlines(
+                            derived, old: cachedSnapshot)
+                    }
+                    projectedSnapshot = derived
+                } else {
+                    projectedSnapshot = cachedSnapshot ?? snap
+                }
             }
-            save(projection: mvData == nil ? .none : .cases([key]))
+            update(record: survivor, context: ctx, snapshot: projectedSnapshot,
+                   movement: projectedMovement,
+                   collections: collections, identityState: persistedState,
+                   adoptPresentation: adoptsIncomingCard,
+                   addLocator: ownsOrCanClaimLocator,
+                   movementFetchedAt: movementFetchedAt,
+                   updatesMovementFetchedAt: updatesMovementFetchedAt)
+            return survivor
+        }
+
+        return insert(context: ctx, snapshot: snap, movement: mv, collections: collections,
+                      logicalCaseID: state.logicalCaseID, identityState: state,
+                      movementFetchedAt: movementFetchedAt,
+                      updatesMovementFetchedAt: updatesMovementFetchedAt)
+    }
+
+    /// Persistent projections have a user-visible canonical card even though
+    /// the domain graph itself is source-order independent. Prefer a real
+    /// first-instance case over preliminary/material/higher-court cards, then
+    /// the lowest procedural level. This preserves the established movement,
+    /// deadline and enforcement merge contract while the logical dossier keeps
+    /// every card node.
+    private func preferredPersistentSurvivor(
+        in records: [TrackedCaseRecord]
+    ) -> TrackedCaseRecord {
+        records.min { lhs, rhs in
+            let left = persistentSurvivorRank(lhs)
+            let right = persistentSurvivorRank(rhs)
+            if left != right { return left < right }
+            if lhs.addedAt != rhs.addedAt { return lhs.addedAt < rhs.addedAt }
+            return lhs.key < rhs.key
+        }!
+    }
+
+    private func persistentSurvivorRank(_ record: TrackedCaseRecord) -> Int {
+        guard let context = record.context else { return 50 }
+        let role = CaseIndexClassifier.classify(
+            caseNumber: context.caseNumber,
+            courtLevel: context.courtLevel,
+            branch: context.branch)?.cardRole
+        if role == .firstInstanceCase { return 0 }
+        switch context.baseInstanceLevel {
+        case .first: return 10
+        case .material: return 20
+        case .appeal: return 30
+        case .cassation: return 40
+        default: return 50
+        }
+    }
+
+    /// Incomplete source identity is a candidate, not evidence that another
+    /// display-equal record is the same case. Only an exact stored technical
+    /// key can therefore be updated on this fallback path.
+    private func upsertCandidate(context movementContext: MovementContext,
+                                 snapshot: CaseSnapshot?, movement: CaseMovement?,
+                                 collections: [String], movementFetchedAt: Date?,
+                                 updatesMovementFetchedAt: Bool)
+        -> TrackedCaseRecord {
+        if let existing = record(forKey: movementContext.key) {
+            update(record: existing, context: movementContext, snapshot: snapshot,
+                   movement: movement, collections: collections, identityState: nil,
+                   adoptPresentation: true, addLocator: true,
+                   movementFetchedAt: movementFetchedAt,
+                   updatesMovementFetchedAt: updatesMovementFetchedAt)
             return existing
         }
-        let rec = TrackedCaseRecord(key: key, collections: collections, caseNumber: ctx.caseNumber,
-                                    courtTitle: ctx.courtTitle, displayDomain: ctx.displayDomain,
-                                    contextData: ctxData, snapshotData: snapData)
-        if let uid = ctx.judicialUID ?? mv?.uid, !uid.isEmpty {
-            rec.judicialUID = Self.normalizedUID(uid)
+        return insert(context: movementContext, snapshot: snapshot, movement: movement,
+                      collections: collections, logicalCaseID: UUID(), identityState: nil,
+                      movementFetchedAt: movementFetchedAt,
+                      updatesMovementFetchedAt: updatesMovementFetchedAt)
+    }
+
+    private func update(record: TrackedCaseRecord, context movementContext: MovementContext,
+                        snapshot: CaseSnapshot?, movement: CaseMovement?,
+                        collections: [String], identityState: LogicalCaseState?,
+                        adoptPresentation: Bool, addLocator: Bool,
+                        movementFetchedAt: Date?,
+                        updatesMovementFetchedAt: Bool) {
+        let oldCaseNumber = record.caseNumber
+        let oldJudicialUID = record.judicialUID
+        if adoptPresentation {
+            record.context = movementContext
+            record.caseNumber = movementContext.caseNumber
+            record.courtTitle = movementContext.courtTitle
+            record.displayDomain = movementContext.displayDomain
+            if let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
+                record.judicialUID = Self.normalizedUID(uid)
+            }
+        } else if var canonical = record.context,
+                  let incoming = TrackedCaseRepairCoordinator.knownCard(from: movementContext) {
+            var known = canonical.knownCards ?? []
+            if !known.contains(incoming) {
+                known.append(incoming)
+                canonical.knownCards = known
+                record.context = canonical
+            }
         }
-        if mvData != nil {
-            rec.movementData = mvData
-            rec.movementFetchedAt = Date()
+        if let snapshot { record.snapshot = snapshot }
+        if let movement {
+            record.movement = movement
+            if updatesMovementFetchedAt { record.movementFetchedAt = movementFetchedAt ?? .now }
         }
-        context.insert(rec)
-        save(projection: mvData == nil ? .none : .cases([key]))
-        return rec
+        for collection in collections where !record.collectionNames.contains(collection) {
+            record.collectionNames.append(collection)
+        }
+        if addLocator { record.addLegacyKeyAlias(movementContext.key) }
+        if let identityState { TrackedCaseIdentity.persist(identityState, to: record) }
+        if movement == nil,
+           oldCaseNumber != record.caseNumber || oldJudicialUID != record.judicialUID {
+            synchronizeCourtActMetadata(caseKey: record.key)
+        }
+        _ = save(projection: movement == nil ? .none : .cases([record.key]))
+    }
+
+    private func insert(context movementContext: MovementContext, snapshot: CaseSnapshot?,
+                        movement: CaseMovement?, collections: [String],
+                        logicalCaseID: UUID, identityState: LogicalCaseState?,
+                        movementFetchedAt: Date?,
+                        updatesMovementFetchedAt: Bool) -> TrackedCaseRecord {
+        let sourceLocatorTaken = record(forLocator: movementContext.key) != nil
+        let key = sourceLocatorTaken
+            ? "case/\(logicalCaseID.uuidString.lowercased())" : movementContext.key
+        let contextData = (try? JSONEncoder().encode(movementContext)) ?? Data()
+        let snapshotData = snapshot.flatMap { try? JSONEncoder().encode($0) }
+        let record = TrackedCaseRecord(
+            key: key, collections: collections, caseNumber: movementContext.caseNumber,
+            courtTitle: movementContext.courtTitle,
+            displayDomain: movementContext.displayDomain,
+            contextData: contextData, snapshotData: snapshotData)
+        record.logicalCaseID = logicalCaseID
+        if let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
+            record.judicialUID = Self.normalizedUID(uid)
+        }
+        if let movement {
+            record.movement = movement
+            if updatesMovementFetchedAt { record.movementFetchedAt = movementFetchedAt ?? .now }
+        }
+        if !sourceLocatorTaken { record.addLegacyKeyAlias(movementContext.key) }
+        if let identityState {
+            TrackedCaseIdentity.persist(identityState, to: record)
+        } else {
+            TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: record), to: record)
+        }
+        context.insert(record)
+        _ = save(projection: movement == nil ? .none : .cases([record.key]))
+        return record
     }
 
     func remove(key: String) {
-        guard let rec = record(forKey: key) else { return }
-        deleteCourtActs(caseKey: key)
+        guard let rec = record(forLocator: key) else { return }
+        deleteCourtActs(caseKey: rec.key)
         context.delete(rec)
         save()
     }
@@ -646,6 +970,11 @@ final class TrackedStore {
     }
 
     private func saveContext() -> Bool {
+        if failNextSaveForTesting {
+            failNextSaveForTesting = false
+            context.rollback()
+            return false
+        }
         do {
             try context.save()
             return true

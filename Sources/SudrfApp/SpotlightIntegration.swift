@@ -167,6 +167,18 @@ actor CaseCatalogRegistry {
         return try await catalog.cases().map(CaseEntity.init(snapshot:))
     }
 
+    func caseEntities(for identifiers: [CaseEntity.ID]) async throws -> [CaseEntity] {
+        guard let catalog else { return [] }
+        var seen = Set<CaseEntity.ID>()
+        var entities: [CaseEntity] = []
+        for identifier in identifiers {
+            guard let snapshot = try await catalog.caseSnapshot(id: identifier) else { continue }
+            let entity = CaseEntity(snapshot: snapshot)
+            if seen.insert(entity.id).inserted { entities.append(entity) }
+        }
+        return entities
+    }
+
     func courtActEntities() async throws -> [CourtActEntity] {
         guard let catalog else { return [] }
         return try await catalog.acts().map { CourtActEntity(document: $0.document) }
@@ -177,8 +189,7 @@ struct CaseEntityQuery: EntityStringQuery {
     init() {}
 
     func entities(for identifiers: [CaseEntity.ID]) async throws -> [CaseEntity] {
-        let wanted = Set(identifiers)
-        return try await CaseCatalogRegistry.shared.caseEntities().filter { wanted.contains($0.id) }
+        try await CaseCatalogRegistry.shared.caseEntities(for: identifiers)
     }
 
     func entities(matching string: String) async throws -> [CaseEntity] {

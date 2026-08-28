@@ -103,15 +103,17 @@ struct MovementContext: Codable, Equatable, Sendable {
                          cardURL: cardURLString.flatMap(URL.init(string:)))
     }
 
-    /// Уникальный ключ дела для дедупликации/идентичности в хранилище:
-    /// домашний суд (отображаемый домен) + № дела.
+    /// Display-derived legacy locator: домашний суд + номер дела. Он остаётся
+    /// совместимым адресом поиска и deep links, но не является identity
+    /// логического дела (её задаёт `TrackedCaseRecord.logicalCaseID`).
     var key: String {
         Self.identityKey(displayDomain: displayDomain, courtCode: courtCode,
                          caseNumber: caseNumber)
     }
 
-    /// Единая формула идентичности дела — общая для персистенса
-    /// (`TrackedCaseRecord.key`, unique) и memory-кэша движения.
+    /// Формула historical locator, общая для legacy persistence и memory-кэша
+    /// движения. V6 хранит это значение как неизменяемый key/alias, а не как
+    /// правило сопоставления карточек.
     ///
     /// У ВСЕХ судов Москвы отображаемый домен один (`mos-gorsud.ru`), а номера
     /// дел в райсудах свои у каждого суда — «02-1234/2025» Савёловского и

@@ -218,6 +218,23 @@ final class SpotlightIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testCaseEntityQueryResolvesMergedRecordAlias() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        let record = store.upsert(context: context, snapshot: nil, collections: [])
+        let oldIdentifier = "legacy/source/card"
+        record.addLegacyKeyAlias(oldIdentifier)
+        XCTAssertTrue(store.save())
+
+        let catalog = CaseCatalog(container: store.container)
+        await CaseCatalogRegistry.shared.install(catalog)
+        let entities = try await CaseEntityQuery().entities(for: [oldIdentifier])
+
+        XCTAssertEqual(entities.map(\.id), [record.key])
+        XCTAssertEqual(entities.first?.caseNumber, record.caseNumber)
+    }
+
+    @MainActor
     func testSearchRequestsEveryAttributeUsedToBuildHits() {
         XCTAssertEqual(Set(SpotlightSearchSession.makeQueryContext().fetchAttributes), [
             "title",

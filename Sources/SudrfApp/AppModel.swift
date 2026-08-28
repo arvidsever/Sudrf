@@ -333,8 +333,8 @@ final class AppRouter: ObservableObject {
             return outcome.effectiveKey
         }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
-        refreshCenter.onRefreshed = { [weak self] key, mv in
-            self?.applyRefreshed(key: key, movement: mv)
+        refreshCenter.onRefreshed = { [weak self] key, mv, keyRemaps in
+            self?.applyRefreshed(key: key, movement: mv, keyRemaps: keyRemaps)
         }
         refreshCenter.onRefreshFailed = { [weak self] key, text in
             self?.applyRefreshFailed(key: key, error: text)
@@ -381,7 +381,7 @@ final class AppRouter: ObservableObject {
     /// Открытие по ключу записи — предпочтительный путь (номер дела без суда
     /// неоднозначен: «2-115/2026» может отслеживаться в двух судах сразу).
     func openCase(key: String) {
-        guard let rec = store.record(forKey: key) else { return }
+        guard let rec = store.record(forLocator: key) else { return }
         open(rec)
     }
 
@@ -403,8 +403,8 @@ final class AppRouter: ObservableObject {
     }
 
     func handleSpotlightItem(identifier: String) {
-        if store.record(forKey: identifier) != nil {
-            _ = intentOpenCase(key: identifier)
+        if let record = store.record(forLocator: identifier) {
+            _ = intentOpenCase(key: record.key)
             return
         }
         Task { [weak self] in
@@ -559,35 +559,35 @@ final class AppRouter: ObservableObject {
     // MARK: App Intents bridge
 
     func intentOpenCase(key: String) -> Bool {
-        guard store.record(forKey: key) != nil else { return false }
+        guard let record = store.record(forLocator: key) else { return false }
         section = .cases
-        openCase(key: key)
+        openCase(key: record.key)
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
     func intentOpenAct(caseKey: String, sourceActID: String) -> Bool {
-        guard store.record(forKey: caseKey) != nil,
-              store.courtActID(caseKey: caseKey, sourceActID: sourceActID) != nil else {
+        guard let record = store.record(forLocator: caseKey),
+              store.courtActID(caseKey: record.key, sourceActID: sourceActID) != nil else {
             return false
         }
         section = .cases
-        openCase(key: caseKey)
+        openCase(key: record.key)
         selectedActID = sourceActID
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
 
     func intentRefreshCase(key: String) async -> CaseRefreshOutcome {
-        await refreshCenter.refreshForIntent(key: key)
+        await refreshCenter.refreshForIntent(key: store.record(forLocator: key)?.key ?? key)
     }
 
     func intentAddCase(key: String, collection: String) -> Bool {
         let normalized = collection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty, normalized != "Все дела",
-              store.record(forKey: key) != nil else { return false }
+              let record = store.record(forLocator: key) else { return false }
         if !knownCollections.contains(normalized) { knownCollections.append(normalized) }
-        add(caseKey: key, to: normalized)
+        add(caseKey: record.key, to: normalized)
         return true
     }
 
@@ -603,7 +603,7 @@ final class AppRouter: ObservableObject {
     }
 
     func intentActText(caseKey: String, sourceActID: String) -> (caseNumber: String, text: String)? {
-        guard let rec = store.record(forKey: caseKey),
+        guard let rec = store.record(forLocator: caseKey),
               let text = rec.movement?.actBodies[sourceActID], !text.isEmpty else { return nil }
         return (rec.caseNumber, text)
     }
@@ -676,18 +676,19 @@ final class AppRouter: ObservableObject {
     func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) {
         let snap = movement.map { MovementDerivation.snapshot(from: $0, context: ctx) }
         // Движение с экрана поиска сеет кэш — первое открытие из «Моих дел» мгновенно.
-        store.upsert(context: ctx, snapshot: snap,
-                     movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
-                     collections: collections)
-        reload(spotlightScope: .cases([ctx.key]))
+        let record = store.reconcileAndUpsert(
+            context: ctx, snapshot: snap,
+            movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
+            collections: collections)
+        reload(spotlightScope: .cases([record.key]))
     }
     func untrack(recordKey: String) {
-        guard store.record(forKey: recordKey) != nil else { return }
-        store.remove(key: recordKey)
-        if openedKey == recordKey { closeCase() }
-        reload(spotlightScope: .cases([recordKey]))
+        guard let record = store.record(forLocator: recordKey) else { return }
+        store.remove(key: record.key)
+        if openedKey == record.key { closeCase() }
+        reload(spotlightScope: .cases([record.key]))
     }
-    func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(key: ctx.key) }
+    func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(context: ctx) }
     func isTracked(number: String, displayDomain: String, courtCode: String? = nil) -> Bool {
         store.isTracked(key: MovementContext.identityKey(displayDomain: displayDomain,
                                                          courtCode: courtCode,
@@ -787,12 +788,33 @@ final class AppRouter: ObservableObject {
 
     private func applyRepair(_ summary: CaseRepairSummary, presentReport: Bool = true) {
         guard summary.hasReport else { reload(); return }
+        applyKeyRemaps(summary.keyRemaps)
+        if presentReport { repairSummary = summary }
+        let affectedKeys = summary.affectedCaseKeys
+            .union(summary.keyRemaps.keys)
+            .union(summary.keyRemaps.values)
+        reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
+    }
+
+    /// Persistent keys are part of feed IDs, App Intents and Spotlight IDs.
+    /// Apply a merge mapping before rebuilding projections so an old event is
+    /// not announced again merely because its record moved to the survivor.
+    private func applyKeyRemaps(_ keyRemaps: [String: String]) {
+        guard !keyRemaps.isEmpty else { return }
+        func effectiveKey(for key: String) -> String {
+            var current = key
+            var visited = Set<String>()
+            while visited.insert(current).inserted, let next = keyRemaps[current] {
+                current = next
+            }
+            return current
+        }
         func remap(_ ids: Set<String>) -> Set<String> {
             Set(ids.map { id in
-                if let old = summary.keyRemaps.keys
+                if let old = keyRemaps.keys
                     .filter({ id.hasPrefix($0 + "#") })
                     .max(by: { $0.count < $1.count }) {
-                    return summary.effectiveKey(for: old) + id.dropFirst(old.count)
+                    return effectiveKey(for: old) + id.dropFirst(old.count)
                 }
                 return id
             })
@@ -801,14 +823,14 @@ final class AppRouter: ObservableObject {
         knownFeedIDs = remap(knownFeedIDs)
         UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
         if let openedKey {
-            let new = summary.effectiveKey(for: openedKey)
-            if new != openedKey { self.openedKey = new }
+            let new = effectiveKey(for: openedKey)
+            if new != openedKey {
+                self.openedKey = new
+                if let survivor = store.record(forKey: new) {
+                    openedCase = survivor.caseNumber
+                }
+            }
         }
-        if presentReport { repairSummary = summary }
-        let affectedKeys = summary.affectedCaseKeys
-            .union(summary.keyRemaps.keys)
-            .union(summary.keyRemaps.values)
-        reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
     }
 
     private func runImport(rows: [ImportedRow], generation: Int) async {
@@ -854,8 +876,8 @@ final class AppRouter: ObservableObject {
         df.dateFormat = "dd.MM.yyyy"
         let collection = "Импорт " + df.string(from: Date())
         for rec in plan.records {
-            store.upsert(context: rec.context, snapshot: nil, movement: nil,
-                         collections: [collection])
+            _ = store.reconcileAndUpsert(context: rec.context, snapshot: nil, movement: nil,
+                                         collections: [collection])
         }
         let repaired = await repairCoordinator.runAll()
         let importedKeys = Set(plan.records.map { $0.context.key })
@@ -890,8 +912,13 @@ final class AppRouter: ObservableObject {
     /// Результат фонового обновления: снимок/кэш уже сохранены RefreshCenter,
     /// здесь — перестройка списков и (если это открытое дело) подмена карточки.
     /// reload() навигацию не трогает — открытая карточка не сбрасывается.
-    private func applyRefreshed(key: String, movement mv: CaseMovement) {
-        reload(notifyNew: true, spotlightScope: .cases([key]))
+    private func applyRefreshed(key: String, movement mv: CaseMovement,
+                                keyRemaps: [String: String]) {
+        applyKeyRemaps(keyRemaps)
+        let spotlightKeys = Set([key])
+            .union(keyRemaps.keys)
+            .union(keyRemaps.values)
+        reload(notifyNew: true, spotlightScope: .cases(spotlightKeys))
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv
@@ -1735,18 +1762,18 @@ final class AppRouter: ObservableObject {
     /// Членство дела в подборке — по ключу записи (номер дела без суда
     /// неоднозначен: одно «2-115/2026» может отслеживаться в двух судах).
     func add(caseKey key: String, to name: String) {
-        guard name != "Все дела", let rec = store.record(forKey: key),
+        guard name != "Все дела", let rec = store.record(forLocator: key),
               !rec.collectionNames.contains(name) else { return }
         rec.collectionNames.append(name)
         store.save()
-        reload(spotlightScope: .cases([key]))
+        reload(spotlightScope: .cases([rec.key]))
     }
     func remove(caseKey key: String, from name: String) {
-        guard let rec = store.record(forKey: key),
+        guard let rec = store.record(forLocator: key),
               rec.collectionNames.contains(name) else { return }
         rec.collectionNames.removeAll { $0 == name }
         store.save()
-        reload(spotlightScope: .cases([key]))
+        reload(spotlightScope: .cases([rec.key]))
     }
 
     private func recordFor(number: String) -> TrackedCaseRecord? {

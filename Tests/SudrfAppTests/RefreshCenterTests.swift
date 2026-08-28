@@ -509,6 +509,8 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertFalse(saved.movement?.instances.contains {
             $0.domain == "3kas.sudrf.ru" || $0.captchaFormURL != nil
         } ?? true)
+        XCTAssertNil(center.lastErrors[key],
+                     "подтверждённое отсутствие дела не является ошибкой обновления")
     }
 
     func testEmbeddedHigherCourtCaptchaNilTokenKeepsManualStubOnlyInPublishedMovement() async throws {
@@ -950,6 +952,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
         XCTAssertEqual(rec.sourceRefreshAttempt?.provenance.affectedSources,
                        ["vs--komi.sudrf.ru"])
+        XCTAssertNil(center.lastErrors[key])
     }
 
     func testTreasuryRefreshRunsAfterCourtFailureAndSavesResult() async throws {

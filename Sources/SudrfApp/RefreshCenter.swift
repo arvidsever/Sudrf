@@ -754,7 +754,8 @@ final class RefreshCenter: ObservableObject {
             }
             return applyMovement(key: key, ctx: ctx, mv: movement,
                                  attempt: attempt, isComplete: false,
-                                 partialMessage: message)
+                                 partialMessage: message,
+                                 reportsPartialFailure: failedCount > 0)
         case .honestZero(let attempt):
             persistAttempt(key, attempt)
             return failure(key, "Источник подтвердил пустую выдачу; сохранённое дело не удалено.")
@@ -795,7 +796,8 @@ final class RefreshCenter: ObservableObject {
     /// шёл сетевой вызов, пользователь мог удалить дело.
     private func applyMovement(key: String, ctx: MovementContext,
                                mv: CaseMovement, attempt: SourceAttempt,
-                               isComplete: Bool, partialMessage: String? = nil) -> RefreshExecution {
+                               isComplete: Bool, partialMessage: String? = nil,
+                               reportsPartialFailure: Bool = true) -> RefreshExecution {
         guard let rec = store.record(forKey: key) else {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
         }
@@ -823,7 +825,11 @@ final class RefreshCenter: ObservableObject {
         captchaPending.remove(key: key)
         onRefreshed?(key, merged)
         if let partialMessage {
-            fail(key, partialMessage)
+            if reportsPartialFailure {
+                fail(key, partialMessage)
+            } else {
+                lastErrors[key] = nil
+            }
             return RefreshExecution(effectiveKey: key, outcome: .partial(partialMessage))
         }
         lastErrors[key] = nil

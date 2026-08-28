@@ -623,7 +623,17 @@ actor CaseCatalog {
         var descriptor = FetchDescriptor<TrackedCaseRecord>(
             predicate: #Predicate { $0.key == id })
         descriptor.fetchLimit = 1
-        return try context.fetch(descriptor).first.map(Self.snapshot(from:))
+        if let record = try context.fetch(descriptor).first {
+            return Self.snapshot(from: record)
+        }
+
+        // AppEntity identifiers are durable user-facing references. After an
+        // identity merge the old record is gone, but its key remains on the
+        // survivor as an alias. Resolve that alias before App Intents gives up
+        // on restoring a saved Shortcut.
+        let aliases = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        return aliases.first { $0.legacyKeyAliases.contains(id) }
+            .map(Self.snapshot(from:))
     }
 
     func acts(caseKey: String? = nil) throws -> [CourtActCatalogSnapshot] {

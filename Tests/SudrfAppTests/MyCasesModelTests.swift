@@ -315,4 +315,42 @@ final class MyCasesModelTests: XCTestCase {
         // Не оставляем уникальное тестовое имя для позднего reload из init Task.
         XCTAssertTrue(router.deleteCollection(named: kept))
     }
+
+    @MainActor
+    func testRefreshCallbackRemapsOpenedAliasToSurvivor() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let store = TrackedStore(container: container, prepared: true)
+        let context = container.mainContext
+        let old = TrackedCaseRecord(
+            key: "old/2-100/2026", collections: [], caseNumber: "2-100/2026",
+            courtTitle: "Старый суд", displayDomain: "old.sudrf.ru",
+            contextData: Data(), snapshotData: nil)
+        let survivor = TrackedCaseRecord(
+            key: "survivor/2-200/2026", collections: [], caseNumber: "2-200/2026",
+            courtTitle: "Канонический суд", displayDomain: "survivor.sudrf.ru",
+            contextData: Data(), snapshotData: nil)
+        let refreshedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        survivor.movementFetchedAt = refreshedAt
+        context.insert(old)
+        context.insert(survivor)
+        try context.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.openCase(old.caseNumber)
+
+        survivor.addLegacyKeyAlias(old.key)
+        context.delete(old)
+        try context.save()
+        XCTAssertEqual(store.record(forLocator: old.key)?.key, survivor.key)
+
+        let fresh = CaseMovement(uid: "uid", caseNumber: survivor.caseNumber,
+                                 inForce: false, instances: [], complaints: [:], acts: [])
+        router.refreshCenter.onRefreshed?(survivor.key, fresh)
+
+        XCTAssertEqual(router.openedCase, survivor.caseNumber)
+        XCTAssertEqual(router.liveMovement, fresh)
+        XCTAssertEqual(router.movementFetchedAt, refreshedAt)
+        XCTAssertEqual(router.refreshCenter.openedKey?(), survivor.key,
+                       "следующий refresh должен искать survivor, а не удалённый alias")
+    }
 }

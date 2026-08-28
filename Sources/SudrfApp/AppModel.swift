@@ -893,6 +893,11 @@ final class AppRouter: ObservableObject {
     /// reload() навигацию не трогает — открытая карточка не сбрасывается.
     private func applyRefreshed(key: String, movement mv: CaseMovement) {
         reload(notifyNew: true, spotlightScope: .cases([key]))
+        if let oldKey = openedKey, oldKey != key,
+           let survivor = store.record(forLocator: oldKey), survivor.key == key {
+            openedKey = key
+            openedCase = survivor.caseNumber
+        }
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv

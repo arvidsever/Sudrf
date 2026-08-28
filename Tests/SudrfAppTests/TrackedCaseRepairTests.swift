@@ -387,6 +387,7 @@ final class TrackedCaseRepairTests: XCTestCase {
 
     func testReanchorsHigherCardAndKeepsOriginalKnownCard() async throws {
         let store = TrackedStore(inMemory: true)
+        let replacementUID = "11RS0001-01-2026-009999-11"
         let appeal = context(level: .appeal, number: "33-4818/2025",
                              domain: "vs--komi.sudrf.ru", cartoteka: "g2",
                              courtLevel: .subject)
@@ -394,7 +395,7 @@ final class TrackedCaseRepairTests: XCTestCase {
                                     domain: appeal.searchDomain, actID: "appeal-act")
         store.upsert(context: appeal, snapshot: nil, movement: cachedAppeal,
                      collections: ["Import"])
-        let lowerCard = CaseCard(rawText: "", actText: nil, uid: uid,
+        let lowerCard = CaseCard(rawText: "", actText: nil, uid: replacementUID,
                                  caseNumber: "2-7212/2025")
         let origin = ResolvedCaseOrigin(
             court: Court(domain: "syktsud--komi.sudrf.ru",
@@ -428,9 +429,73 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(canonical.movement?.caseNumber, "2-7212/2025")
         XCTAssertEqual(Set(canonical.movement?.instances.map(\.caseNumber) ?? []),
                        ["2-7212/2025", "33-4818/2025"])
+        let identity = TrackedCaseIdentity.state(for: canonical)
+        XCTAssertEqual(Set(identity.judicialUIDs), [
+            JudicialUIDObservation.normalize(uid),
+            JudicialUIDObservation.normalize(replacementUID),
+        ])
+        XCTAssertTrue(identity.cards.contains { $0.identity.sourceNativeID == "lower-id" })
+        XCTAssertTrue(identity.officialRelations.contains { relation in
+            relation.kind == .sourceNative
+                && relation.relatedCard?.sourceNativeID == appeal.caseID
+        })
 
         let second = await coordinator.runAll()
         XCTAssertFalse(second.hasReport)
+    }
+
+    func testOfficialReanchorDoesNotMergeUnrelatedOwnerOfDisplayLocator() async throws {
+        let store = TrackedStore(inMemory: true)
+        var unrelated = context(
+            level: .first, number: "2-7212/2025",
+            domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+            courtLevel: .district)
+        unrelated.judicialUID = "11RS0001-01-2026-008888-10"
+        let unrelatedRecord = store.upsert(
+            context: unrelated, snapshot: nil, collections: ["Unrelated"])
+
+        let appeal = context(
+            level: .appeal, number: "33-4818/2025",
+            domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+            courtLevel: .subject)
+        let anchor = store.upsert(
+            context: appeal, snapshot: nil, collections: ["Anchor"])
+        let replacementUID = "11RS0001-01-2026-009999-11"
+        let lowerCard = CaseCard(
+            rawText: "", actText: nil, uid: replacementUID,
+            caseNumber: unrelated.caseNumber)
+        let origin = ResolvedCaseOrigin(
+            court: unrelated.searchCourt, branch: .general,
+            region: unrelated.region, courtCode: unrelated.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(
+                caseNumber: unrelated.caseNumber,
+                caseID: "official-lower-id", caseUID: "official-lower-guid"),
+            card: lowerCard)
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(),
+            originResolver: StubOriginResolver(.resolved(origin)),
+            defaults: defaults(), anchorCardFetcher: { _ in
+                CaseCard(
+                    rawText: "", actText: nil, uid: self.uid,
+                    caseNumber: appeal.caseNumber,
+                    lowerCourt: LowerCourtReference(
+                        courtTitle: unrelated.courtTitle,
+                        caseNumber: unrelated.caseNumber))
+            })
+
+        let summary = await coordinator.runAll()
+
+        XCTAssertEqual(summary.reanchored, 1)
+        XCTAssertEqual(store.all().count, 2)
+        XCTAssertTrue(store.record(forLocator: unrelated.key) === unrelatedRecord)
+        let repaired = try XCTUnwrap(store.record(forKey: anchor.key))
+        XCTAssertEqual(repaired.context?.caseNumber, unrelated.caseNumber)
+        XCTAssertFalse(repaired.legacyKeyAliases.contains(unrelated.key))
+        XCTAssertNotEqual(repaired.logicalCaseID, unrelatedRecord.logicalCaseID)
+        XCTAssertTrue(TrackedCaseIdentity.state(for: repaired).cards.contains {
+            $0.identity.sourceNativeID == "official-lower-id"
+        })
     }
 
     func testReanchoredMaterialKeepsItsRealBaseLevelAndChain() async throws {

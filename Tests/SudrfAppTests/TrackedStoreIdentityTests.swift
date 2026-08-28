@@ -158,4 +158,44 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(
             LogicalCaseState.self, from: XCTUnwrap(persisted.identityStateData)), initialState)
     }
+
+    func testAtomicMergeSaveFailureRollsBackWithoutSecondUpsertSave() throws {
+        let store = TrackedStore(inMemory: true)
+        let first = context(number: "2-100/2026", cardID: "first-card", judicialUID: oldUID)
+        let appeal = context(number: "33-200/2026", cardID: "appeal-card", judicialUID: oldUID,
+                             domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
+        let firstObservation = try XCTUnwrap(TrackedCaseIdentity.observation(context: first))
+        let appealObservation = try XCTUnwrap(TrackedCaseIdentity.observation(context: appeal))
+        let firstState = LogicalCaseState(observation: firstObservation)
+        let appealState = LogicalCaseState(observation: appealObservation)
+        let firstRecord = TrackedCaseRecord(
+            key: first.key, collections: ["Existing"], caseNumber: first.caseNumber,
+            courtTitle: first.courtTitle, displayDomain: first.displayDomain,
+            contextData: try JSONEncoder().encode(first), snapshotData: nil)
+        firstRecord.logicalCaseID = firstState.logicalCaseID
+        firstRecord.identityStateData = try JSONEncoder().encode(firstState)
+        firstRecord.judicialUID = TrackedStore.normalizedUID(oldUID)
+        let appealRecord = TrackedCaseRecord(
+            key: appeal.key, collections: ["Appeal"], caseNumber: appeal.caseNumber,
+            courtTitle: appeal.courtTitle, displayDomain: appeal.displayDomain,
+            contextData: try JSONEncoder().encode(appeal), snapshotData: nil)
+        appealRecord.logicalCaseID = appealState.logicalCaseID
+        appealRecord.identityStateData = try JSONEncoder().encode(appealState)
+        appealRecord.judicialUID = TrackedStore.normalizedUID(oldUID)
+        store.container.mainContext.insert(firstRecord)
+        store.container.mainContext.insert(appealRecord)
+        try store.container.mainContext.save()
+
+        store.failNextSaveForTesting = true
+        let returned = store.reconcileAndUpsert(
+            context: appeal, snapshot: nil, collections: ["Must not persist"],
+            identityObservation: appealObservation)
+
+        XCTAssertEqual(returned.key, first.key)
+        XCTAssertEqual(store.all().count, 2)
+        XCTAssertEqual(store.record(forKey: first.key)?.collectionNames, ["Existing"])
+        XCTAssertEqual(store.record(forKey: appeal.key)?.collectionNames, ["Appeal"])
+        XCTAssertEqual(TrackedCaseIdentity.state(for: try XCTUnwrap(store.record(forKey: first.key))).cards.count,
+                       1)
+    }
 }

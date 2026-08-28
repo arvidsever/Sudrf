@@ -508,6 +508,8 @@ extension TrackedStore {
 final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
+    /// Test seam for the rollback path used by the atomic identity merge.
+    var failNextSaveForTesting = false
 
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
@@ -656,6 +658,8 @@ final class TrackedStore {
                             movement mv: CaseMovement? = nil,
                             collections: [String],
                             identityObservation: SourceCardObservation? = nil,
+                            adoptLinkedPresentation: Bool = false,
+                            canonicalCard: CaseCard? = nil,
                             movementFetchedAt: Date? = nil,
                             updatesMovementFetchedAt: Bool = true) -> TrackedCaseRecord {
         let observation = identityObservation
@@ -699,13 +703,28 @@ final class TrackedStore {
                     officialRelations: state.officialRelations,
                     provenance: state.provenance)
             let duplicates = mergedGroup.filter { $0 !== survivor }
+            if adoptLinkedPresentation {
+                guard TrackedCaseRepairCoordinator.atomicMerge(
+                    store: self, survivor: survivor, duplicates: duplicates,
+                    canonicalContext: ctx, canonicalCard: canonicalCard,
+                    identityState: persistedState) != nil else {
+                    storeLog.error("Atomic official-relation merge failed; retained pre-merge records.")
+                    return survivor
+                }
+                return survivor
+            }
             if !duplicates.isEmpty {
                 // Merge user-visible projections before writing the new graph.
                 let canonical = survivor.context ?? ctx
-                _ = TrackedCaseRepairCoordinator.atomicMerge(
+                guard TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: canonical, canonicalCard: nil,
-                    identityState: persistedState)
+                    identityState: persistedState) != nil else {
+                    // `atomicMerge` already rolled back the ModelContext.
+                    // Do not write the partially reconciled graph separately.
+                    storeLog.error("Atomic identity merge failed; retained pre-merge records.")
+                    return survivor
+                }
             }
 
             let locatorOwner = record(forLocator: ctx.key)
@@ -721,7 +740,8 @@ final class TrackedStore {
                 let cachedSnapshot = survivor.snapshot
                 projectedMovement = TrackedCaseRepairCoordinator.mergeMovements(
                     [survivor.movement, mv].compactMap { $0 })
-                if let projectedMovement, let canonicalContext = survivor.context {
+                let projectionContext = adoptsIncomingCard ? ctx : survivor.context
+                if let projectedMovement, let canonicalContext = projectionContext {
                     var derived = MovementDerivation.snapshot(
                         from: projectedMovement, context: canonicalContext)
                     if let snap {
@@ -950,6 +970,11 @@ final class TrackedStore {
     }
 
     private func saveContext() -> Bool {
+        if failNextSaveForTesting {
+            failNextSaveForTesting = false
+            context.rollback()
+            return false
+        }
         do {
             try context.save()
             return true

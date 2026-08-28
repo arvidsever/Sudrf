@@ -244,21 +244,20 @@ final class TrackedCaseRepairCoordinator {
                                             anchorCard: anchorCard)
                 let primaryNumber = CaseNumberPresentation.primary(canonical.caseNumber)
                 if !primaryNumber.isEmpty { canonical.caseNumber = primaryNumber }
-                let survivor = store.record(forLocator: canonical.key) ?? rec
-                let duplicates = survivor === rec ? [] : [rec]
-                guard let remaps = merge(survivor: survivor, duplicates: duplicates,
-                                         canonicalContext: canonical,
-                                         canonicalCard: origin.card) else {
+                guard let result = reconcileResolvedOrigin(
+                    anchor: rec, canonicalContext: canonical,
+                    canonicalCard: origin.card) else {
                     summary.transient += 1
                     recordTransient(key: key)
                     return
                 }
                 clearRetry(key: key)
-                summary.keyRemaps.merge(remaps) { _, new in new }
-                summary.affectedCaseKeys.formUnion(remaps.keys)
-                summary.affectedCaseKeys.formUnion(remaps.values)
+                summary.keyRemaps.merge(result.remaps) { _, new in new }
+                summary.affectedCaseKeys.formUnion(result.remaps.keys)
+                summary.affectedCaseKeys.formUnion(result.remaps.values)
+                summary.affectedCaseKeys.insert(result.survivor.key)
                 summary.reanchored += 1
-                summary.merged += duplicates.count
+                summary.merged += result.remaps.count
                 return
             }
             if normalized.role == .authorityJudicialReview
@@ -277,25 +276,24 @@ final class TrackedCaseRepairCoordinator {
                                                           anchorCard: anchorCard)
             let canonical = makeContext(origin: origin, anchor: effectiveContext,
                                         anchorCard: anchorCard)
-            let survivor = store.record(forLocator: canonical.key) ?? rec
-            let duplicates = survivor === rec ? [] : [rec]
-            guard let remaps = merge(survivor: survivor, duplicates: duplicates,
-                                     canonicalContext: canonical,
-                                     canonicalCard: origin.card) else {
+            guard let result = reconcileResolvedOrigin(
+                anchor: rec, canonicalContext: canonical,
+                canonicalCard: origin.card) else {
                 summary.transient += 1
                 recordTransient(key: key)
                 return
             }
             clearRetry(key: key)
-            summary.keyRemaps.merge(remaps) { _, new in new }
-            summary.affectedCaseKeys.formUnion(remaps.keys)
-            summary.affectedCaseKeys.formUnion(remaps.values)
+            summary.keyRemaps.merge(result.remaps) { _, new in new }
+            summary.affectedCaseKeys.formUnion(result.remaps.keys)
+            summary.affectedCaseKeys.formUnion(result.remaps.values)
+            summary.affectedCaseKeys.insert(result.survivor.key)
             if canonical.baseInstanceLevel == .material {
                 summary.restoredMaterials += 1
             } else {
                 summary.reanchored += 1
             }
-            summary.merged += duplicates.count
+            summary.merged += result.remaps.count
         } catch let error as CaseOriginResolutionError {
             switch error {
             case .noReference:
@@ -509,6 +507,54 @@ final class TrackedCaseRepairCoordinator {
                          canonicalContext: canonicalContext, canonicalCard: canonicalCard)
     }
 
+    /// A resolved lower/predecessor card is official source evidence, not a
+    /// display-key heuristic. Feed it through the shared reconciler first;
+    /// only its confirmed decision may merge persistent records or move the
+    /// user-visible projection to the resolved card.
+    private func reconcileResolvedOrigin(
+        anchor: TrackedCaseRecord,
+        canonicalContext: MovementContext,
+        canonicalCard: CaseCard
+    ) -> (survivor: TrackedCaseRecord, remaps: [String: String])? {
+        let movement = Self.movement(from: canonicalCard, context: canonicalContext)
+        guard let base = TrackedCaseIdentity.observation(
+            context: canonicalContext, movement: movement, observedAt: now()) else {
+            return nil
+        }
+        let anchorObservation = TrackedCaseIdentity.bootstrapObservation(for: anchor)
+        let relation = OfficialCardRelation(
+            kind: .sourceNative,
+            relatedCard: anchorObservation.cardIdentity,
+            provenance: base.provenance)
+        let observation = SourceCardObservation(
+            cardIdentity: base.cardIdentity,
+            caseUID: base.caseUID,
+            caseNumber: base.caseNumber,
+            judicialUID: base.judicialUID,
+            officialRelations: [relation],
+            outcome: base.outcome,
+            provenance: base.provenance)
+
+        let before = Set(store.all().map(\.key))
+        let survivor = store.reconcileAndUpsert(
+            context: canonicalContext,
+            snapshot: MovementDerivation.snapshot(from: movement, context: canonicalContext),
+            movement: movement,
+            collections: anchor.collectionNames,
+            identityObservation: observation,
+            adoptLinkedPresentation: true,
+            canonicalCard: canonicalCard)
+
+        // A failed atomic save rolls the ModelContext back. Do not report the
+        // repair as successful unless the resolved source card is actually in
+        // the persisted graph.
+        guard TrackedCaseIdentity.state(for: survivor)
+            .contains(card: observation.cardIdentity) else { return nil }
+        let removed = before.subtracting(Set(store.all().map(\.key)))
+        let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, survivor.key) })
+        return (survivor, remaps)
+    }
+
     /// Единственное атомарное слияние persistent records. Его используют и
     /// legacy repair, и общий identity reconciler: движения, акты, подборки,
     /// aliases и весь graph identity переезжают в одном `ModelContext.save()`.
@@ -556,7 +602,11 @@ final class TrackedCaseRepairCoordinator {
         // `key` is a permanent technical locator since V6. The current
         // display-derived formula remains discoverable as an alias instead of
         // rotating deep links, Spotlight IDs and projected court acts.
-        survivor.addLegacyKeyAlias(context.key)
+        let locatorOwner = store.record(forLocator: context.key)
+        let locatorBelongsToMerge = locatorOwner.map { owner in
+            owner === survivor || duplicates.contains { $0 === owner }
+        } ?? true
+        if locatorBelongsToMerge { survivor.addLegacyKeyAlias(context.key) }
         for locator in oldLocators { survivor.addLegacyKeyAlias(locator) }
         survivor.caseNumber = context.caseNumber
         survivor.courtTitle = context.courtTitle

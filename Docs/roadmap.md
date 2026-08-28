@@ -458,7 +458,8 @@ live-case session из `AppRouter`.
 
 ### Фазы и gates
 
-**A. #177 — надёжный source state до semantic events — завершено в 0.46.2.**
+**A. Надёжный source state до semantic events: контракт #177 завершён в 0.46.2;
+source-specific gates продолжаются.**
 
 Закрыть/стабилизировать source correctness и partial-state кейсы, которые могут сделать
 новый snapshot ложным: #82/#88/#89/#164, #79/#78 и связанные фикстуры.

@@ -180,7 +180,7 @@ GitHub понимает только английские `closes`/`fixes`/`reso
 деле после выпуска 0.44.0.
 Не проверен только #80 — нужно уголовное дело с приговором.
 
-## Ждёт визуальной проверки
+## Ждёт визуальной проверки — #182
 
 **#85 — стеклянная шапка карточки дела.** Внутри шапки лежат стеклянные кнопки и
 стеклянный `ForceBadge`, то есть стекло на стекле. Если мутно — `GlassEffectContainer`
@@ -377,16 +377,18 @@ PNG, OCR `.kcaptcha`, POST ответа в той же cookie jar, затем п
 Не синтезировать фиктивный `captchaid`: в общей CAPTCHA-модели различать token challenge и
 session challenge/session-unlocked result.
 
-Для source reliability общий invariant: HTTP 200 ещё не означает usable snapshot.
+**#177 формализует общий source-state contract:** HTTP 200 ещё не означает usable snapshot.
 CAPTCHA, maintenance/stub, partial parse и временная пустая выдача должны сохранять
 последний успешный state и отдельно фиксироваться как refresh attempt; они не могут
 порождать ложное «удалено/отменено» и не должны делать карточку свежей на полный TTL.
 
 ### Инфраструктура
 **#155** единый `CaseSnapshot → semantic CaseEvent` contract: **высокий приоритет после
-ближайшего correctness/data-safety блока**; сначала shadow journal и snapshot→events
-fixtures, затем перевод ленты/локальных уведомлений на него. Это опора для #70/#148/#149,
-а не backend-задача сама по себе · **#69** Developer ID + notarization: сертификат создан,
+ближайшего correctness/data-safety блока**; его scope заканчивается shadow journal и
+стабильным event contract. Фактический перевод ленты, локальных уведомлений и badges —
+отдельная фаза **#179**. Двухуровневый fixture contract и pathology corpus отслеживает
+**#181**. Это опора для #70/#148/#149, а не backend-задача сама по себе · **#69**
+Developer ID + notarization: сертификат создан,
 Developer ID export и hardened runtime проверены в #95; остались notary credentials,
 отправка, stapling и release job · **#149** сервер + push — обязательный поздний этап после
 #155/source reliability · **#68** Source Health · **#65** canary · **#66** APPLE-6 · **#67**
@@ -442,7 +444,7 @@ live-case session из `AppRouter`.
 
 ### Фазы и gates
 
-**A. Надёжный source state — до semantic events.**
+**A. #177 — надёжный source state до semantic events.**
 
 Закрыть/стабилизировать source correctness, identity и partial-state кейсы, которые могут
 сделать новый snapshot ложным: #94/#132, #82/#88/#89/#164, #79/#78 и связанные фикстуры.
@@ -456,7 +458,7 @@ session unlocked → исходный listing, всё в одной cookie sessi
 Gate: один и тот же response детерминированно даёт либо usable normalized snapshot, либо
 явный partial/error outcome; не существует пути «плохой HTML → пустой valid snapshot».
 
-**B. Identity/reconciliation и discovery evidence.**
+**B. #178 — identity/reconciliation и discovery evidence.**
 
 Использовать official court code + УИД/source-native IDs и хранить смену display number как
 историю identity, а не как новое несвязанное дело. #156 добавляет `r_juid` как независимый
@@ -465,6 +467,7 @@ registry/evidence source для передачи по подсудности; #8
 
 Gate: повторное обнаружение той же карточки другим маршрутом не создаёт дубль; новая
 карточка с новым номером может быть связана без опоры на строковое равенство номера.
+#155 потребляет identity карточки из #178, но остаётся владельцем identity событий.
 
 **C. #155 — shadow `CaseSnapshot → CaseEvent`.**
 
@@ -479,7 +482,7 @@ correctness/data-safety, не дожидаясь закрытия всего UI/
 Gate: identical snapshot → 0 events; reordering/whitespace/publish timestamp → 0 events;
 новое заседание/акт/инстанция → ровно одно событие; partial fetch → 0 ложных cancel/delete.
 
-**D. Event journal становится источником пользовательских изменений.**
+**D. #179 — Event journal становится источником пользовательских изменений.**
 
 После shadow-сверки перевести на journal ленту и локальные notifications, затем badges и
 прочие производные. Старые presentation strings не участвуют в event identity. Историю
@@ -499,7 +502,7 @@ identity маппинг `CaseEvent/event state ↔ EKEvent` становится
 отмена обновляют существующий Calendar event. Обратное изменение `EKEvent` не меняет
 судебное состояние в Sudrf; двустороннюю синхронизацию в этот этап не включать.
 
-**G. Refresh health, scheduler и canary — после устойчивой семантики state/event.**
+**G. #180 — refresh health, scheduler и canary после устойчивой семантики state/event.**
 
 #87/#68/#65 должны различать `lastAttempt` и `lastSuccess`, не считать partial успешным
 refresh и давать evidence, почему источник не обновился. Только после этого имеет смысл
@@ -507,8 +510,9 @@ refresh и давать evidence, почему источник не обнов�
 higher instance, предыдущим ошибкам, TTL и недавнему открытию пользователем; для внешних
 сбоев — exponential backoff + jitter и при необходимости host circuit breaker.
 
-Отдельный scheduler issue заводить только если простой TTL после #87/#68 реально создаёт
-starvation/лишнюю нагрузку; не строить очередь ради архитектурной красоты.
+#180 заведён заранее как evidence-first backlog, но реализация начинается только если
+измерения после #87/#68 подтвердят starvation или лишнюю нагрузку простого TTL. Если не
+подтвердят — issue закрывается отчётом без новой очереди.
 
 **H. Новые source families — поверх contract, а не рядом с ним.**
 
@@ -525,7 +529,7 @@ backend должны выдавать совместимые event IDs/semantics
 пользователю дважды. PostgreSQL/Redis/queues/search index появляются только при серверной
 нагрузке, которая их обосновывает; в desktop их нет.
 
-### Fixture/test contract
+### #181 Fixture/test contract
 
 Для каждого важного portal family нужны **два независимых уровня regression fixtures**:
 

@@ -44,6 +44,9 @@
     (v0.38.0), including higher-court CAPTCHA stubs before they are
     published. `AppRouter.beginCaptcha(for:)` is the explicit manual
     fallback behind the «Ввести код» button.
+- `RefreshCenter` coalesces concurrent automatic solves by canonical court
+  module host: a batch of cases reaching the same KSOYU CAPTCHA shares one
+  solve and token instead of launching duplicate OCR tasks.
 - Two captcha kinds: `.sudrfToken` (digits, *.sudrf.ru) and
   `.kcaptcha` (mixed letters+digits, *.msudrf.ru). Selection is
   host-based via `AutoCaptchaSolver.kindFromURL(_:)`.

@@ -57,4 +57,12 @@ public actor CaptchaTokenStore {
     public func invalidate(domain: String) {
         tokens.removeValue(forKey: key(domain))
     }
+
+    /// Removes a token only when it is still the token that the caller used.
+    /// A delayed response must not invalidate a newer token stored meanwhile.
+    public func invalidate(domain: String, matching token: CaptchaToken) {
+        let k = key(domain)
+        guard tokens[k] == token else { return }
+        tokens.removeValue(forKey: k)
+    }
 }

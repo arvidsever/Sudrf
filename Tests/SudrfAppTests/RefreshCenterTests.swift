@@ -52,6 +52,67 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    /// Covers both CAPTCHA entry points with two cards reaching equivalent
+    /// dot/dash module hosts at the same time.
+    private actor MixedCaptchaMovement: MovementProviding {
+        let embeddedFirst: CaseMovement
+        let embeddedRetry: CaseMovement
+        let topLevelCaseNumber: String
+        let topLevelFormURL: URL
+        let topLevelRetry: CaseMovement
+        private(set) var callsByCase: [String: Int] = [:]
+
+        init(embeddedFirst: CaseMovement,
+             embeddedRetry: CaseMovement,
+             topLevelCaseNumber: String,
+             topLevelFormURL: URL,
+             topLevelRetry: CaseMovement) {
+            self.embeddedFirst = embeddedFirst
+            self.embeddedRetry = embeddedRetry
+            self.topLevelCaseNumber = topLevelCaseNumber
+            self.topLevelFormURL = topLevelFormURL
+            self.topLevelRetry = topLevelRetry
+        }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            let count = (callsByCase[base.caseNumber] ?? 0) + 1
+            callsByCase[base.caseNumber] = count
+            if base.caseNumber == topLevelCaseNumber {
+                if count == 1 {
+                    throw SudrfError.captchaRequired(formURL: topLevelFormURL)
+                }
+                return topLevelRetry
+            }
+            return count == 1 ? embeddedFirst : embeddedRetry
+        }
+    }
+
+    private actor BlockingCaptchaSolve {
+        let result: AutoCaptchaSolver.SolveResult
+        private(set) var calls = 0
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        init(result: AutoCaptchaSolver.SolveResult) {
+            self.result = result
+        }
+
+        func solve() async -> AutoCaptchaSolver.SolveResult {
+            calls += 1
+            await withCheckedContinuation { continuation = $0 }
+            return result
+        }
+
+        func waitUntilStarted() async {
+            while calls == 0 { await Task.yield() }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     private actor FixedMovement: MovementProviding {
         let value: CaseMovement
         private(set) var calls = 0
@@ -260,6 +321,7 @@ final class RefreshCenterTests: XCTestCase {
         // предыдущего тестового прогона даст ложный «успех без solve».
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
         await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
+        await CaptchaTokenStore.shared.invalidate(domain: "vs--komi.sudrf.ru")
 
         let s = CaptchaSettings.shared
         savedAutoSolve = s.autoSolveEnabled
@@ -279,6 +341,7 @@ final class RefreshCenterTests: XCTestCase {
         s.maxAttempts = savedMaxAttempts
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
         await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
+        await CaptchaTokenStore.shared.invalidate(domain: "vs--komi.sudrf.ru")
         store = nil
         scripted = nil
         try await super.tearDown()
@@ -465,6 +528,61 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertFalse(saved.movement?.instances.contains { $0.captchaFormURL != nil } ?? true)
         XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .usableSnapshot)
         XCTAssertNotNil(saved.movementFetchedAt)
+    }
+
+    func testEquivalentEmbeddedAndTopLevelCaptchasShareOneSolve() async throws {
+        var secondContext = makeContext()
+        secondContext.caseNumber = "2-101/2026"
+        store.upsert(context: secondContext, snapshot: nil, movement: nil, collections: [])
+
+        let embeddedFormURL = URL(string: "https://vs.komi.sudrf.ru/modules.php?name=sud_delo")!
+        let topLevelFormURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?name=sud_delo")!
+        var embeddedFirst = successMV!
+        embeddedFirst.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Верховный суд Республики Коми",
+            caseNumber: "—",
+            judge: nil,
+            domain: "vs.komi.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: embeddedFormURL))
+        embeddedFirst.incompleteHigherCourtDomains = ["vs.komi.sudrf.ru"]
+
+        let movement = MixedCaptchaMovement(
+            embeddedFirst: embeddedFirst,
+            embeddedRetry: successMV!,
+            topLevelCaseNumber: secondContext.caseNumber,
+            topLevelFormURL: topLevelFormURL,
+            topLevelRetry: successMV!)
+        let blocker = BlockingCaptchaSolve(result: AutoCaptchaSolver.SolveResult(
+            token: CaptchaToken(value: "12345", id: "shared-module"), png: Data([1])))
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            await blocker.solve()
+        }
+        let firstKey = store.all().first { $0.caseNumber == "2-100/2026" }!.key
+        let secondKey = store.all().first { $0.caseNumber == secondContext.caseNumber }!.key
+
+        let firstTask = center.refresh(key: firstKey)!
+        let secondTask = center.refresh(key: secondKey)!
+        await blocker.waitUntilStarted()
+        for _ in 0..<20 { await Task.yield() }
+        let callsBeforeRelease = await blocker.calls
+        XCTAssertEqual(callsBeforeRelease, 1,
+                       "embedded and top-level CAPTCHA for one module must share a solve")
+        await blocker.release()
+
+        let firstExecution = await firstTask.value
+        let secondExecution = await secondTask.value
+        XCTAssertEqual(firstExecution.outcome, .refreshed)
+        XCTAssertEqual(secondExecution.outcome, .refreshed)
+        let callsAfterRelease = await blocker.calls
+        XCTAssertEqual(callsAfterRelease, 1)
+        let calls = await movement.callsByCase
+        XCTAssertEqual(calls[store.record(forKey: firstKey)?.caseNumber ?? ""], 2)
+        XCTAssertEqual(calls[secondContext.caseNumber], 2)
+        XCTAssertTrue(center.captchaPendingGroups.isEmpty)
     }
 
     func testEmbeddedHigherCourtCaptchaAutoSolveRemovesStubWhenCaseIsAbsent() async throws {
@@ -955,6 +1073,22 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNil(center.lastErrors[key])
     }
 
+    func testPartialWarningCountsOnlyIncompleteSources() async throws {
+        let key = store.all()[0].key
+        var movement = successMV!
+        movement.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        movement.honestZeroDomains = ["vs--komi.sudrf.ru", "other.sudrf.ru"]
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(movement) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        let expected = "Один источник временно не обновился; сохранены последние успешные данные."
+        XCTAssertEqual(execution?.outcome, .partial(expected))
+        XCTAssertEqual(center.lastErrors[key], expected,
+                       "honest-zero sources must not inflate the incomplete count")
+    }
+
     func testTreasuryRefreshRunsAfterCourtFailureAndSavesResult() async throws {
         let ctx = makeContext()
         let key = store.all()[0].key
@@ -1091,6 +1225,52 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(rec.enforcementRecords.first {
             $0.source == .treasury
         }?.discoveryState, .notFound)
+    }
+
+    func testForcedWalkDoesNotForceFreshEnforcementCheck() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        rec.movement = movement
+        rec.movementFetchedAt = .distantPast
+        let checkedAt = Date()
+        rec.enforcementRecords = [
+            enforcementRecord(document: writ, attemptedAt: checkedAt),
+            bailiffRecord(document: writ, state: .notFound, attemptedAt: checkedAt)
+        ]
+
+        let service = FixedMovement(movement)
+        let treasury = ScriptedTreasury([])
+        let fssp = ScriptedFSSP([])
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service },
+                                   treasuryDiscover: { document, number, court in
+                                       try await treasury.discover(
+                                           document, caseNumber: number, court: court)
+                                   },
+                                   fsspDiscover: { document in
+                                       try await fssp.discover(document)
+                                   })
+
+        center.refreshAll(force: true)
+        for _ in 0..<100 {
+            if await service.calls > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for _ in 0..<100 where center.isRefreshing(key) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let courtCalls = await service.calls
+        let treasuryCalls = await treasury.documents
+        let fsspCalls = await fssp.documents
+        XCTAssertEqual(courtCalls, 1, "forced walk must still refresh court movement")
+        XCTAssertTrue(treasuryCalls.isEmpty,
+                      "fresh enforcement must remain TTL-driven during forced walk")
+        XCTAssertTrue(fsspCalls.isEmpty,
+                      "fresh enforcement must remain TTL-driven during forced walk")
     }
 
     func testTreasuryErrorPreservesLastSuccessWithoutNewBadge() async throws {

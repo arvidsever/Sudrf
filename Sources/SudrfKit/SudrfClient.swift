@@ -186,7 +186,7 @@ public actor SudrfClient {
                                              cartoteka: cartoteka, field: field,
                                              value: value, captcha: token)
             } catch SudrfError.captchaRequired {
-                await captchaStore.invalidate(domain: court.domain)
+                await captchaStore.invalidate(domain: court.domain, matching: token)
             }
         }
 
@@ -265,8 +265,8 @@ public actor SudrfClient {
                 // search с ним даст тот же ответ. Инвалидируем сейчас,
                 // чтобы вызывающая сторона не зацикливалась на плохом
                 // токене (v0.38.10).
-                if captcha != nil {
-                    await captchaStore.invalidate(domain: court.domain)
+                if let captcha {
+                    await captchaStore.invalidate(domain: court.domain, matching: captcha)
                 }
                 // Дамп — отдельно от variant_, чтобы при разборе было
                 // видно «суд отверг токен» vs «суд вернул неизвестный

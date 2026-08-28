@@ -162,6 +162,10 @@ final class RefreshCenter: ObservableObject {
     private let fsspDiscover: (CourtEnforcementDocument) async throws -> FSSPSearchStep
     private var tasks: [String: Task<RefreshExecution, Never>] = [:]
     private var enforcementTasks: [String: Task<Void, Never>] = [:]
+    /// One OCR/network continuation per court module. A refresh walk can reach
+    /// the same higher-court form from several cards; share that solve instead
+    /// of putting concurrent OCR and retry traffic on the source.
+    private var captchaSolveTasks: [String: Task<AutoCaptchaSolver.SolveResult, Never>] = [:]
     private var walkTask: Task<Void, Never>? = nil
     /// Поколение обхода: отменённый принудительным перезапуском обход не должен
     /// своим завершением сбросить walkTask/walkProgress нового обхода.
@@ -283,7 +287,7 @@ final class RefreshCenter: ObservableObject {
         let keys = store.all().compactMap { rec -> String? in
             let courtDue = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
-            let enforcementDue = force || needsEnforcementRefresh(rec, now: now, ttl: ttl)
+            let enforcementDue = needsEnforcementRefresh(rec, now: now, ttl: ttl)
             if courtDue { courtKeys.insert(rec.key) }
             return courtDue || enforcementDue ? rec.key : nil
         }
@@ -324,7 +328,7 @@ final class RefreshCenter: ObservableObject {
                         for key in caseKeys {
                             if Task.isCancelled { return }
                             if dueCourtKeys.contains(key) {
-                                _ = await self?.refresh(key: key, forceEnforcement: force)?.value
+                                _ = await self?.refresh(key: key, forceEnforcement: false)?.value
                             } else {
                                 _ = await self?.startEnforcementRefresh(key: key, force: false)?.value
                             }
@@ -703,11 +707,10 @@ final class RefreshCenter: ObservableObject {
               let settings = captchaSettings,
               settings.isEffectivelyEnabled else { return nil }
 
-        let result = await autoSolve(formURL, client, solver, settings.autoSolverSettings)
+        let result = await solveCaptcha(formURL: formURL, solver: solver, settings: settings)
         if result.cancelled || Task.isCancelled { throw CancellationError() }
-        guard let token = result.token else { return nil }
+        guard result.token != nil else { return nil }
 
-        await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
         let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
         return try await handle(retry, service: service, key: key, ctx: ctx,
                                 cart: cart, mayAutoSolve: false)
@@ -740,17 +743,16 @@ final class RefreshCenter: ObservableObject {
                 return retry
             }
             let failedCount = movement.incompleteHigherCourtDomains?.count ?? 0
-            let zeroCount = movement.honestZeroDomains?.count ?? 0
-            let count = failedCount + zeroCount
             let message: String
             if failedCount == 0 {
-                message = count == 1
+                let zeroCount = movement.honestZeroDomains?.count ?? 0
+                message = zeroCount == 1
                     ? "Один источник подтвердил пустую выдачу; сохранены ранее известные данные."
-                    : "Несколько источников подтвердили пустую выдачу (\(count)); сохранены ранее известные данные."
+                    : "Источники подтвердили пустую выдачу; сохранены ранее известные данные."
             } else {
-                message = count == 1
+                message = failedCount == 1
                     ? "Один источник временно не обновился; сохранены последние успешные данные."
-                    : "Часть источников не дала полного снимка (\(count)); сохранены последние успешные данные."
+                    : "Часть источников не дала полного снимка (\(failedCount)); сохранены последние успешные данные."
             }
             return applyMovement(key: key, ctx: ctx, mv: movement,
                                  attempt: attempt, isComplete: false,
@@ -769,15 +771,14 @@ final class RefreshCenter: ObservableObject {
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
             }
-            let result = await autoSolve(url, client, solver, settings.autoSolverSettings)
+            let result = await solveCaptcha(formURL: url, solver: solver, settings: settings)
             if result.cancelled || Task.isCancelled { throw CancellationError() }
-            guard let token = result.token else {
+            guard result.token != nil else {
                 persistAttempt(key, attempt)
                 queueCaptcha(key: key, formURL: url)
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
             }
-            await CaptchaTokenStore.shared.store(token, domain: url.host ?? "")
             let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
             return try await handle(retry, service: service, key: key, ctx: ctx,
                                     cart: cart, mayAutoSolve: false)
@@ -787,6 +788,38 @@ final class RefreshCenter: ObservableObject {
             persistAttempt(key, attempt)
             return failure(key, message)
         }
+    }
+
+    /// Coalesces simultaneous solves for the same canonical court module.
+    /// The task is intentionally kept independent from individual refresh
+    /// cancellation: one card timing out must not cancel a solve needed by
+    /// the other cards that reached the same CAPTCHA.
+    private func solveCaptcha(
+        formURL: URL,
+        solver: CaptchaSolver,
+        settings: CaptchaSettings
+    ) async -> AutoCaptchaSolver.SolveResult {
+        let host = SudrfHost.moduleHost(formURL.host?.lowercased() ?? "")
+        guard !host.isEmpty else {
+            return await autoSolve(formURL, client, solver, settings.autoSolverSettings)
+        }
+        if let existing = captchaSolveTasks[host] {
+            return await existing.value
+        }
+
+        let solve = autoSolve
+        let c = client
+        let solverSettings = settings.autoSolverSettings
+        let task = Task {
+            let result = await solve(formURL, c, solver, solverSettings)
+            if let token = result.token {
+                await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+            }
+            return result
+        }
+        captchaSolveTasks[host] = task
+        defer { captchaSolveTasks[host] = nil }
+        return await task.value
     }
 
     /// Success-путь `performRefresh`: merge / snapshot / persist / сброс

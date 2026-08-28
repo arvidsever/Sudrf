@@ -376,7 +376,7 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in provider })
         var callbackKey: String?
-        center.onRefreshed = { key, _ in callbackKey = key }
+        center.onRefreshed = { key, _, _ in callbackKey = key }
         center.repairBeforeRefresh = { [store] key in
             XCTAssertEqual(key, old.key)
             store?.upsert(context: canonical, snapshot: nil, collections: [])
@@ -391,6 +391,90 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(callbackKey, canonical.key)
         XCTAssertEqual(execution?.effectiveKey, canonical.key)
         XCTAssertEqual(execution?.outcome, .refreshed)
+    }
+
+    func testUIDMergePublishesPersistedCombinedMovementAndKeyRemap() async throws {
+        for key in store.all().map(\.key) { store.remove(key: key) }
+        let judicialUID = "11RS0001-01-2025-011255-03"
+
+        var survivorContext = makeContext()
+        survivorContext.caseID = "first-card"
+        survivorContext.judicialUID = judicialUID
+        let survivorAct = CaseAct(
+            id: "survivor-act", title: "Решение", date: "01.08.2026",
+            courtShort: survivorContext.courtTitle, instanceLevel: .first)
+        let survivorMovement = CaseMovement(
+            uid: judicialUID, caseNumber: survivorContext.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: survivorContext.courtTitle,
+                caseNumber: survivorContext.caseNumber, judge: nil,
+                domain: survivorContext.searchDomain, foundByUID: false,
+                result: "Решение", sessions: [], actID: survivorAct.id)],
+            complaints: [:], acts: [survivorAct])
+
+        var refreshedContext = makeContext()
+        refreshedContext.caseNumber = "33-200/2026"
+        refreshedContext.caseID = "appeal-card"
+        refreshedContext.judicialUID = judicialUID
+        refreshedContext.searchDomain = "vs--komi.sudrf.ru"
+        refreshedContext.displayDomain = "vs.komi.sudrf.ru"
+        refreshedContext.courtTitle = "Верховный суд Республики Коми"
+        refreshedContext.courtLevelRaw = CourtLevel.subject.rawValue
+        refreshedContext.courtCode = "11VS0001"
+        refreshedContext.cartotekaId = "g2"
+        refreshedContext.cartotekaLevelRaw = CourtLevel.subject.rawValue
+        let refreshedAct = CaseAct(
+            id: "appeal-act", title: "Апелляционное определение",
+            date: "20.08.2026", courtShort: refreshedContext.courtTitle,
+            instanceLevel: .appeal)
+        let refreshedMovement = CaseMovement(
+            uid: judicialUID, caseNumber: refreshedContext.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .appeal, court: refreshedContext.courtTitle,
+                caseNumber: refreshedContext.caseNumber, judge: nil,
+                domain: refreshedContext.searchDomain, foundByUID: true,
+                result: "Решение оставлено без изменения", sessions: [],
+                actID: refreshedAct.id)],
+            complaints: [:], acts: [refreshedAct])
+
+        func insert(_ context: MovementContext, movement: CaseMovement?) throws
+            -> TrackedCaseRecord {
+            let observation = try XCTUnwrap(
+                TrackedCaseIdentity.observation(context: context, movement: movement))
+            let state = LogicalCaseState(observation: observation)
+            let record = TrackedCaseRecord(
+                key: context.key, collections: [], caseNumber: context.caseNumber,
+                courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+                contextData: try JSONEncoder().encode(context), snapshotData: nil)
+            record.logicalCaseID = state.logicalCaseID
+            record.identityStateData = try JSONEncoder().encode(state)
+            record.judicialUID = judicialUID
+            record.movement = movement
+            store.container.mainContext.insert(record)
+            return record
+        }
+
+        let survivor = try insert(survivorContext, movement: survivorMovement)
+        let refreshed = try insert(refreshedContext, movement: nil)
+        try store.container.mainContext.save()
+        let provider = FixedMovement(refreshedMovement)
+        let center = makeCenter(service: provider) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+        var callback: (String, CaseMovement, [String: String])?
+        center.onRefreshed = { callback = ($0, $1, $2) }
+
+        let execution = await center.refresh(key: refreshed.key)?.value
+
+        XCTAssertEqual(execution?.effectiveKey, survivor.key)
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertEqual(callback?.0, survivor.key)
+        XCTAssertEqual(callback?.2, [refreshed.key: survivor.key])
+        let persistedActs = Set(try XCTUnwrap(store.record(forKey: survivor.key)?.movement)
+            .acts.map(\.id))
+        XCTAssertEqual(persistedActs, [survivorAct.id, refreshedAct.id])
+        XCTAssertEqual(Set(callback?.1.acts.map(\.id) ?? []), persistedActs,
+                       "open card must receive the full persisted dossier projection")
     }
 
     func testIntentRefreshClassifiesFailureUnderReroutedKey() async throws {
@@ -451,7 +535,7 @@ final class RefreshCenterTests: XCTestCase {
         let center = makeCenter { _, _, _, _ in solveResult }
 
         var refreshedKeys: [String] = []
-        center.onRefreshed = { key, _ in refreshedKeys.append(key) }
+        center.onRefreshed = { key, _, _ in refreshedKeys.append(key) }
 
         let key = store.all()[0].key
         _ = await center.refresh(key: key)?.value
@@ -513,7 +597,7 @@ final class RefreshCenterTests: XCTestCase {
             AutoCaptchaSolver.SolveResult(token: token, png: Data([1]))
         }
         var published: [CaseMovement] = []
-        center.onRefreshed = { _, value in published.append(value) }
+        center.onRefreshed = { _, value, _ in published.append(value) }
 
         let execution = await center.refresh(key: key)?.value
 
@@ -610,7 +694,7 @@ final class RefreshCenterTests: XCTestCase {
                 png: Data([1]))
         }
         var published: [CaseMovement] = []
-        center.onRefreshed = { _, value in published.append(value) }
+        center.onRefreshed = { _, value, _ in published.append(value) }
 
         let execution = await center.refresh(key: key)?.value
 
@@ -651,7 +735,7 @@ final class RefreshCenterTests: XCTestCase {
             AutoCaptchaSolver.SolveResult(token: nil, png: nil)
         }
         var published: [CaseMovement] = []
-        center.onRefreshed = { _, value in published.append(value) }
+        center.onRefreshed = { _, value, _ in published.append(value) }
 
         let execution = await center.refresh(key: key)?.value
 
@@ -957,7 +1041,7 @@ final class RefreshCenterTests: XCTestCase {
                                    serviceBuilder: { _ in CancelledMovement() })
         var refreshed = false
         var failed = false
-        center.onRefreshed = { _, _ in refreshed = true }
+        center.onRefreshed = { _, _, _ in refreshed = true }
         center.onRefreshFailed = { _, _ in failed = true }
 
         let execution = await center.refresh(key: key)?.value

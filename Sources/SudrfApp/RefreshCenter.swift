@@ -118,8 +118,9 @@ final class RefreshCenter: ObservableObject {
     @Published private(set) var enforcementErrors: [String: String] = [:]
     @Published private var captchaPending = CaptchaPendingQueue()
 
-    /// После успешного обновления записи (ключ, слитая карточка для показа).
-    var onRefreshed: ((String, CaseMovement) -> Void)?
+    /// После успешного обновления записи: survivor key, слитая карточка для
+    /// показа и удалённые persistent keys, переехавшие на survivor.
+    var onRefreshed: ((String, CaseMovement, [String: String]) -> Void)?
     /// При ошибке обновления (ключ, короткий текст).
     var onRefreshFailed: ((String, String) -> Void)?
     /// После успешной проверки исполнения AppRouter перестраивает ленту и
@@ -849,6 +850,8 @@ final class RefreshCenter: ObservableObject {
         let changed = movementSourceChanged || snapshotSourceChanged
 
         let persisted: TrackedCaseRecord
+        var keyRemaps: [String: String] = [:]
+        var publishedMovement = merged
         if isComplete,
            let identityObservation = TrackedCaseIdentity.observation(
                context: ctx, movement: persistedMovement, attempt: attempt,
@@ -857,11 +860,20 @@ final class RefreshCenter: ObservableObject {
             // boundary as manual tracking.  Partial/error responses never
             // establish a card/UID relation and are deliberately kept on the
             // existing record below.
+            let before = Set(store.all().map(\.key))
             persisted = store.reconcileAndUpsert(
                 context: ctx, snapshot: newSnap, movement: persistedMovement,
                 collections: rec.collectionNames,
                 identityObservation: identityObservation,
                 movementFetchedAt: attempt.provenance.observedAt)
+            let removed = before.subtracting(Set(store.all().map(\.key)))
+            keyRemaps = Dictionary(uniqueKeysWithValues: removed.map {
+                ($0, persisted.key)
+            })
+            // Reconciliation may have merged this refreshed card into a
+            // dossier whose survivor already contained other instances and
+            // acts. Publish the full persisted projection in that case.
+            publishedMovement = persisted.movement ?? merged
         } else {
             rec.snapshot = newSnap
             rec.movement = persistedMovement
@@ -879,7 +891,7 @@ final class RefreshCenter: ObservableObject {
         store.save(projection: .cases([persisted.key]))
         captchaPending.remove(key: key)
         if persisted.key != key { captchaPending.remove(key: persisted.key) }
-        onRefreshed?(persisted.key, merged)
+        onRefreshed?(persisted.key, publishedMovement, keyRemaps)
         if let partialMessage {
             if reportsPartialFailure {
                 fail(persisted.key, partialMessage)

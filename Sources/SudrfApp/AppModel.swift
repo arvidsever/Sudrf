@@ -333,8 +333,8 @@ final class AppRouter: ObservableObject {
             return outcome.effectiveKey
         }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
-        refreshCenter.onRefreshed = { [weak self] key, mv in
-            self?.applyRefreshed(key: key, movement: mv)
+        refreshCenter.onRefreshed = { [weak self] key, mv, keyRemaps in
+            self?.applyRefreshed(key: key, movement: mv, keyRemaps: keyRemaps)
         }
         refreshCenter.onRefreshFailed = { [weak self] key, text in
             self?.applyRefreshFailed(key: key, error: text)
@@ -788,12 +788,33 @@ final class AppRouter: ObservableObject {
 
     private func applyRepair(_ summary: CaseRepairSummary, presentReport: Bool = true) {
         guard summary.hasReport else { reload(); return }
+        applyKeyRemaps(summary.keyRemaps)
+        if presentReport { repairSummary = summary }
+        let affectedKeys = summary.affectedCaseKeys
+            .union(summary.keyRemaps.keys)
+            .union(summary.keyRemaps.values)
+        reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
+    }
+
+    /// Persistent keys are part of feed IDs, App Intents and Spotlight IDs.
+    /// Apply a merge mapping before rebuilding projections so an old event is
+    /// not announced again merely because its record moved to the survivor.
+    private func applyKeyRemaps(_ keyRemaps: [String: String]) {
+        guard !keyRemaps.isEmpty else { return }
+        func effectiveKey(for key: String) -> String {
+            var current = key
+            var visited = Set<String>()
+            while visited.insert(current).inserted, let next = keyRemaps[current] {
+                current = next
+            }
+            return current
+        }
         func remap(_ ids: Set<String>) -> Set<String> {
             Set(ids.map { id in
-                if let old = summary.keyRemaps.keys
+                if let old = keyRemaps.keys
                     .filter({ id.hasPrefix($0 + "#") })
                     .max(by: { $0.count < $1.count }) {
-                    return summary.effectiveKey(for: old) + id.dropFirst(old.count)
+                    return effectiveKey(for: old) + id.dropFirst(old.count)
                 }
                 return id
             })
@@ -802,14 +823,14 @@ final class AppRouter: ObservableObject {
         knownFeedIDs = remap(knownFeedIDs)
         UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
         if let openedKey {
-            let new = summary.effectiveKey(for: openedKey)
-            if new != openedKey { self.openedKey = new }
+            let new = effectiveKey(for: openedKey)
+            if new != openedKey {
+                self.openedKey = new
+                if let survivor = store.record(forKey: new) {
+                    openedCase = survivor.caseNumber
+                }
+            }
         }
-        if presentReport { repairSummary = summary }
-        let affectedKeys = summary.affectedCaseKeys
-            .union(summary.keyRemaps.keys)
-            .union(summary.keyRemaps.values)
-        reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
     }
 
     private func runImport(rows: [ImportedRow], generation: Int) async {
@@ -891,13 +912,13 @@ final class AppRouter: ObservableObject {
     /// Результат фонового обновления: снимок/кэш уже сохранены RefreshCenter,
     /// здесь — перестройка списков и (если это открытое дело) подмена карточки.
     /// reload() навигацию не трогает — открытая карточка не сбрасывается.
-    private func applyRefreshed(key: String, movement mv: CaseMovement) {
-        reload(notifyNew: true, spotlightScope: .cases([key]))
-        if let oldKey = openedKey, oldKey != key,
-           let survivor = store.record(forLocator: oldKey), survivor.key == key {
-            openedKey = key
-            openedCase = survivor.caseNumber
-        }
+    private func applyRefreshed(key: String, movement mv: CaseMovement,
+                                keyRemaps: [String: String]) {
+        applyKeyRemaps(keyRemaps)
+        let spotlightKeys = Set([key])
+            .union(keyRemaps.keys)
+            .union(keyRemaps.values)
+        reload(notifyNew: true, spotlightScope: .cases(spotlightKeys))
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv

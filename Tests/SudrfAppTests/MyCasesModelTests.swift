@@ -335,6 +335,20 @@ final class MyCasesModelTests: XCTestCase {
         context.insert(survivor)
         try context.save()
 
+        let defaults = UserDefaults.standard
+        let readKey = "overviewReadFeedIDs.v1"
+        let knownKey = "notifiedFeedIDs.v1"
+        let savedRead = defaults.object(forKey: readKey)
+        let savedKnown = defaults.object(forKey: knownKey)
+        defer {
+            if let savedRead { defaults.set(savedRead, forKey: readKey) }
+            else { defaults.removeObject(forKey: readKey) }
+            if let savedKnown { defaults.set(savedKnown, forKey: knownKey) }
+            else { defaults.removeObject(forKey: knownKey) }
+        }
+        let oldFeedID = "\(old.key)#feed#123#—#Судебное заседание"
+        defaults.set([oldFeedID], forKey: readKey)
+
         let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
         router.openCase(old.caseNumber)
 
@@ -345,12 +359,16 @@ final class MyCasesModelTests: XCTestCase {
 
         let fresh = CaseMovement(uid: "uid", caseNumber: survivor.caseNumber,
                                  inForce: false, instances: [], complaints: [:], acts: [])
-        router.refreshCenter.onRefreshed?(survivor.key, fresh)
+        router.refreshCenter.onRefreshed?(
+            survivor.key, fresh, [old.key: survivor.key])
 
         XCTAssertEqual(router.openedCase, survivor.caseNumber)
         XCTAssertEqual(router.liveMovement, fresh)
         XCTAssertEqual(router.movementFetchedAt, refreshedAt)
         XCTAssertEqual(router.refreshCenter.openedKey?(), survivor.key,
                        "следующий refresh должен искать survivor, а не удалённый alias")
+        XCTAssertEqual(defaults.stringArray(forKey: readKey), [
+            "\(survivor.key)#feed#123#—#Судебное заседание",
+        ])
     }
 }

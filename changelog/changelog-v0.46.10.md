@@ -15,6 +15,8 @@
 
 ## Проверено
 
+- `swift test`: 868 тестов, 10 пропущено, ошибок нет.
 - Focused-регрессии календарной и future-only проекций, завершённых производств,
   строгого allowlist, дедупликации и scoped/full reload.
-- Полный SwiftPM test/build, Xcode Debug и CI-пакетирование macOS-приложения.
+- Независимый adversarial review, SwiftPM, Xcode Debug и CI-пакетирование
+  macOS-приложения.

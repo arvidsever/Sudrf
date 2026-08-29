@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Combine
 import SudrfKit
 @testable import SudrfApp
 
@@ -237,5 +238,77 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         let full = projection(router)
 
         XCTAssertEqual(scoped, full)
+    }
+
+    @MainActor
+    func testEmptyRepairPreflightDoesNotPublishProjectionReload() async throws {
+        let defaults = UserDefaults.standard
+        let onboardingKey = SpotlightPreferenceStore.onboardingKey
+        let savedOnboarding = defaults.object(forKey: onboardingKey)
+        defaults.set(false, forKey: onboardingKey)
+        defer {
+            if let savedOnboarding { defaults.set(savedOnboarding, forKey: onboardingKey) }
+            else { defaults.removeObject(forKey: onboardingKey) }
+        }
+
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try record(number: "2-197/2026", marker: "repair-empty")
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        for _ in 0..<100 { await Task.yield() }
+
+        var notifications = 0
+        let subscription = router.objectWillChange.sink { _ in notifications += 1 }
+        let before = projection(router)
+        let effectiveKey = await router.refreshCenter.repairBeforeRefresh?(rec.key)
+
+        XCTAssertEqual(effectiveKey, rec.key)
+        XCTAssertEqual(notifications, 0,
+                       "пустой repair-preflight не должен запускать projection reload")
+        XCTAssertEqual(projection(router), before)
+        _ = subscription
+    }
+
+    @MainActor
+    func testReportedRepairPreflightStillPublishesProjection() async throws {
+        let defaults = UserDefaults.standard
+        let onboardingKey = SpotlightPreferenceStore.onboardingKey
+        let completedKey = "importChainRepair.v6.completed"
+        let savedOnboarding = defaults.object(forKey: onboardingKey)
+        let savedCompleted = defaults.object(forKey: completedKey)
+        defaults.set(false, forKey: onboardingKey)
+        defer {
+            if let savedOnboarding { defaults.set(savedOnboarding, forKey: onboardingKey) }
+            else { defaults.removeObject(forKey: onboardingKey) }
+            if let savedCompleted { defaults.set(savedCompleted, forKey: completedKey) }
+            else { defaults.removeObject(forKey: completedKey) }
+        }
+
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        for _ in 0..<100 { await Task.yield() }
+
+        let rec = try record(number: "2-198/2026", marker: "repair-report")
+        var context = try XCTUnwrap(rec.context)
+        context.cartotekaId = "admj"
+        context.judicialUID = "11MS0001"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        rec.context = context
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+        defaults.set([rec.key], forKey: completedKey)
+
+        var notifications = 0
+        let subscription = router.objectWillChange.sink { _ in notifications += 1 }
+        let effectiveKey = await router.refreshCenter.repairBeforeRefresh?(rec.key)
+
+        XCTAssertEqual(effectiveKey, rec.key)
+        XCTAssertEqual(rec.context?.baseInstanceLevel, .appeal)
+        XCTAssertEqual(router.cases.map(\.recordKey), [rec.key],
+                       "отчётный repair-preflight должен применить projection reload")
+        XCTAssertGreaterThan(notifications, 0)
+        _ = subscription
     }
 }

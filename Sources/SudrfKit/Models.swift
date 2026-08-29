@@ -290,8 +290,8 @@ public enum SudrfError: Error, CustomStringConvertible, LocalizedError {
     /// вместо результата операции.
     case sourceMaintenance(domain: String)
     /// Ни один известный вариант поискового URL не дал ни выдачи, ни валидной
-    /// пустой страницы — суд отвечает в неизвестном формате (другая версия
-    /// интерфейса, JS-защита, заглушка). Пустоту в этом случае показывать нельзя.
+    /// пустой страницы — суд отвечает в неизвестном формате. Пустоту в этом
+    /// случае показывать нельзя.
     case searchModuleUnavailable(domain: String)
     /// Сетевая ошибка после исчерпания ретраев вышестоящего суда (timeout /
     /// нет сети / DNS). Это НЕ «модуль недоступен» (суд отдаёт неизвестный
@@ -323,9 +323,9 @@ public enum SudrfError: Error, CustomStringConvertible, LocalizedError {
         case .sourceMaintenance(let domain):
             return "Источник \(domain) временно недоступен. Сохранённые данные оставлены без изменений."
         case .searchModuleUnavailable(let domain):
-            return "Поисковый модуль суда \(domain) не отвечает в известных форматах "
-                 + "(возможно, JS-защита или нестандартный интерфейс). "
-                 + "Попробуйте открыть сайт суда в браузере."
+            return "Поисковый модуль суда \(domain) вернул страницу, которую приложение "
+                 + "не смогло распознать. Это не считается пустой выдачей; попробуйте "
+                 + "позже или откройте сайт суда в браузере."
         case .transientNetworkError(let domain, let code, let attempt):
             return "Суд \(domain) не отвечает по сети (\(code.rawValue)) после \(attempt) попыток."
         }

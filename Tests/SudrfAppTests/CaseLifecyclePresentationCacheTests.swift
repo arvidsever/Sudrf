@@ -9,6 +9,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
     private struct PublishedProjection: Equatable {
         var cases: [String]
         var hearings: [String]
+        var calendarHearings: [String]
         var deadlines: [String]
         var feed: [String]
         var collections: [String]
@@ -39,7 +40,8 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         return String(format: "%02d.%02d.%04d", parts.day!, parts.month!, parts.year!)
     }
 
-    private func record(number: String, marker: String) throws -> TrackedCaseRecord {
+    private func record(number: String, marker: String,
+                        sessions suppliedSessions: [CaseSession]? = nil) throws -> TrackedCaseRecord {
         let context = MovementContext(
             branchRaw: "general", region: "Республика Коми",
             searchDomain: "syktsud--komi.sudrf.ru",
@@ -48,7 +50,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
             courtLevelRaw: "district", courtCode: "11RS0001",
             cartotekaId: "g1", cartotekaLevelRaw: "district",
             caseNumber: number)
-        let sessions = [
+        let sessions = suppliedSessions ?? [
             CaseSession(date: sourceDate(DateUtil.addDays(DateUtil.today, -1)),
                         event: "Судебное заседание", result: "Результат-\(marker)"),
             CaseSession(date: sourceDate(DateUtil.addDays(DateUtil.today, 1)),
@@ -79,6 +81,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
                 "\($0.recordKey)|\($0.stage.rawValue)|\($0.statusText)|\($0.last)|\($0.next)"
             },
             hearings: router.hearings.map(\.id),
+            calendarHearings: router.calendarHearings.map(\.id),
             deadlines: router.deadlines.map {
                 "\($0.id)|\($0.status.rawValue)|\($0.date.timeIntervalSinceReferenceDate)"
             },
@@ -238,6 +241,53 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         let full = projection(router)
 
         XCTAssertEqual(scoped, full)
+    }
+
+    @MainActor
+    func testCalendarReloadKeepsCompletedHistoryAndDeduplicatesExistingIDs() throws {
+        let defaults = UserDefaults.standard
+        let onboardingKey = SpotlightPreferenceStore.onboardingKey
+        let savedOnboarding = defaults.object(forKey: onboardingKey)
+        defaults.set(false, forKey: onboardingKey)
+        defer {
+            if let savedOnboarding { defaults.set(savedOnboarding, forKey: onboardingKey) }
+            else { defaults.removeObject(forKey: onboardingKey) }
+        }
+
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let past = sourceDate(DateUtil.addDays(DateUtil.today, -2))
+        let rec = try record(
+            number: "2-199/2026", marker: "completed",
+            sessions: [
+                CaseSession(date: past, time: "10:00", event: "Судебное заседание",
+                            result: "Решение вступило в законную силу"),
+                CaseSession(date: past, time: "10:00", event: "Судебное заседание",
+                            result: "Решение вступило в законную силу"),
+                CaseSession(date: past, time: "10:00", event: "Судебное слушание",
+                            result: "Решение вступило в законную силу"),
+                CaseSession(date: sourceDate(DateUtil.addDays(DateUtil.today, 1)),
+                            time: "12:00",
+                            event: "Рассмотрение исправленных материалов, поступивших в суд"),
+            ])
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+
+        XCTAssertEqual(router.cases.first?.stage, .done)
+        XCTAssertEqual(router.calendarHearings.count, 2)
+        XCTAssertEqual(Set(router.calendarHearings.map(\.id)).count,
+                       router.calendarHearings.count)
+        XCTAssertTrue(router.calendarHearings.contains {
+            DateUtil.sameDay($0.date, DateUtil.addDays(DateUtil.today, -2))
+        })
+        XCTAssertTrue(router.hearings.isEmpty,
+                      "future-only projection must keep completed production empty")
+        XCTAssertEqual(router.intentUpcomingHearings(), "Ближайших заседаний нет.")
+
+        let firstReloadIDs = router.calendarHearings.map(\.id)
+        router.reload()
+        XCTAssertEqual(router.calendarHearings.map(\.id), firstReloadIDs)
     }
 
     @MainActor

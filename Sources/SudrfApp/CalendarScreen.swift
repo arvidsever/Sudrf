@@ -67,7 +67,7 @@ struct CalendarScreen: View {
             seenIDs[base] = seen + 1
             return seen == 0 ? base : "\(base)#\(seen + 1)"
         }
-        for h in router.hearings {
+        for h in router.calendarHearings {
             out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
                 date: h.date, sortTime: h.time, kind: .hearing,
                 chip: "\(h.time) заседание · \(CaseNumberPresentation.primary(h.caseNumber))", time: h.time, heading: "ЗАСЕДАНИЕ",

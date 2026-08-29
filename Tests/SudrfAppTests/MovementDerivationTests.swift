@@ -51,6 +51,49 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(out.first?.event, "Рассмотрение жалобы")
     }
 
+    func testCalendarHearingsKeepHistoryAndStrictAllowlist() {
+        let sessions = [
+            StoredSession(dateRaw: "30.04.2026", time: "10:00", room: nil,
+                          event: "Судебное заседание",
+                          result: "Решение вступило в законную силу",
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "01.05.2026", time: "09:00", room: nil,
+                          event: "Предварительное судебное заседание",
+                          result: "Отложено", court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "05.05.2026", time: "11:00", room: nil,
+                          event: "Рассмотрение исправленных материалов, поступивших в суд",
+                          result: nil, court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "10.05.2026", time: nil, room: nil,
+                          event: "Судебное слушание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+        ]
+
+        let calendar = MovementDerivation.calendarHearings(sessions)
+
+        XCTAssertEqual(calendar.map(\.dateRaw), ["30.04.2026", "01.05.2026", "10.05.2026"])
+        XCTAssertEqual(calendar.map(\.event), [
+            "Судебное заседание", "Предварительное судебное заседание", "Судебное слушание",
+        ])
+        XCTAssertEqual(
+            MovementDerivation.futureHearings(sessions, today: today).map(\.dateRaw),
+            ["01.05.2026", "10.05.2026"])
+    }
+
+    func testCalendarHearingsPreserveSourceOrderForEqualDateAndTime() {
+        let sessions = [
+            StoredSession(dateRaw: "05.05.2026", time: "09:00", room: nil,
+                          event: "Рассмотрение жалобы", result: nil,
+                          court: "СГС", levelRaw: "first"),
+            StoredSession(dateRaw: "05.05.2026", time: "09:00", room: nil,
+                          event: "Судебное заседание", result: nil,
+                          court: "СГС", levelRaw: "first"),
+        ]
+
+        XCTAssertEqual(MovementDerivation.calendarHearings(sessions).map(\.event), [
+            "Рассмотрение жалобы", "Судебное заседание",
+        ])
+    }
+
     func testFutureHearingsUseNumericTimeAndExcludeTerminalSessionToday() {
         let sessions = [
             StoredSession(dateRaw: "01.05.2026", time: "11:00", room: nil,

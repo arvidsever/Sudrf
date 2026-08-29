@@ -98,7 +98,7 @@ final class DataCatalogTests: XCTestCase {
         let container = try ModelContainer(
             for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
             configurations: configuration)
-        let migratedStore = TrackedStore(container: container)
+        let migratedStore = try TrackedStore(container: container)
 
         XCTAssertEqual(migratedStore.all().map(\.key), [legacyContext.key])
         XCTAssertEqual(migratedStore.all().first?.collectionNames, ["Legacy"])
@@ -158,7 +158,7 @@ final class DataCatalogTests: XCTestCase {
         let container = try ModelContainer(
             for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
             configurations: configuration)
-        let migrated = TrackedStore(container: container).all().first
+        let migrated = try TrackedStore(container: container).all().first
 
         XCTAssertEqual(migrated?.movementFetchedAt, lastSuccess)
         XCTAssertEqual(migrated?.folderName, "",
@@ -231,7 +231,7 @@ final class DataCatalogTests: XCTestCase {
             let container = try ModelContainer(
                 for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
                 configurations: configuration)
-            let store = TrackedStore(container: container)
+            let store = try TrackedStore(container: container)
             XCTAssertEqual(store.all().count, 1)
             let record = try XCTUnwrap(store.all().first)
             firstIdentity = try XCTUnwrap(record.logicalCaseID)
@@ -254,7 +254,7 @@ final class DataCatalogTests: XCTestCase {
             let container = try ModelContainer(
                 for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
                 configurations: configuration)
-            let store = TrackedStore(container: container)
+            let store = try TrackedStore(container: container)
             XCTAssertEqual(store.all().count, 1)
             let record = try XCTUnwrap(store.all().first)
             XCTAssertEqual(record.logicalCaseID, firstIdentity)
@@ -266,7 +266,7 @@ final class DataCatalogTests: XCTestCase {
     }
 
     @MainActor
-    func testSourceRefreshAttemptRoundTripsWithoutChangingLastSuccess() {
+    func testSourceRefreshAttemptRoundTripsWithoutChangingLastSuccess() throws {
         let store = TrackedStore(inMemory: true)
         let context = MovementContext(
             branchRaw: CourtBranch.general.rawValue, region: "Москва",
@@ -274,7 +274,7 @@ final class DataCatalogTests: XCTestCase {
             courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
             courtCode: "77", cartotekaId: "g1",
             cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-9/2025")
-        let record = store.upsert(context: context, snapshot: nil, collections: [])
+        let record = try store.upsert(context: context, snapshot: nil, collections: [])
         let lastSuccess = Date(timeIntervalSince1970: 1_700_000_000)
         let attempt = SourceAttempt(
             kind: .captcha,
@@ -286,7 +286,7 @@ final class DataCatalogTests: XCTestCase {
         record.movementFetchedAt = lastSuccess
         record.sourceRefreshAttempt = attempt
 
-        XCTAssertTrue(store.save())
+        try store.save()
         XCTAssertEqual(record.sourceRefreshAttempt, attempt)
         XCTAssertEqual(record.movementFetchedAt, lastSuccess)
     }
@@ -300,7 +300,7 @@ final class DataCatalogTests: XCTestCase {
             courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
             courtCode: "77", cartotekaId: "g1", cartotekaLevelRaw: CourtLevel.district.rawValue,
             caseNumber: "2-9/2025")
-        let tracked = store.upsert(context: context, snapshot: nil, collections: [])
+        let tracked = try store.upsert(context: context, snapshot: nil, collections: [])
         let oldDocument = CourtEnforcementDocument(id: "old-writ", blankNumber: "ФС № 123")
         let refreshedDocument = CourtEnforcementDocument(id: "new-writ", blankNumber: "ФС 123")
         let firstCheckedAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -491,7 +491,7 @@ final class DataCatalogTests: XCTestCase {
             actBodies: [act.id: "Первый абзац.\n\nВторой абзац."],
             category: "Споры о договоре", parties: parties)
 
-        store.upsert(context: context, snapshot: nil, movement: movement, collections: ["Клиент"])
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement, collections: ["Клиент"])
         let catalog = CaseCatalog(container: store.container)
         let cases = try await catalog.cases()
         let acts = try await catalog.acts(caseKey: context.key)
@@ -499,7 +499,7 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertEqual(cases.count, 1)
         var metadataOnlyContext = context
         metadataOnlyContext.judicialUID = "77RS0001-01-2026-999999-10"
-        store.upsert(context: metadataOnlyContext, snapshot: nil, movement: nil,
+        _ = try store.upsert(context: metadataOnlyContext, snapshot: nil, movement: nil,
                      collections: ["Клиент"])
         let metadataUpdatedAct = try await catalog.act(id: acts[0].document.id)
         XCTAssertEqual(metadataUpdatedAct?.document.judicialUID,
@@ -513,7 +513,7 @@ final class DataCatalogTests: XCTestCase {
 
         var updated = movement
         updated.actBodies[act.id] = "Исправленный текст."
-        store.upsert(context: context, snapshot: nil, movement: updated, collections: ["Клиент"])
+        _ = try store.upsert(context: context, snapshot: nil, movement: updated, collections: ["Клиент"])
         let updatedActs = try await catalog.acts(caseKey: context.key)
         XCTAssertEqual(updatedActs.first?.document.id, acts.first?.document.id)
         XCTAssertNotEqual(updatedActs.first?.document.sourceHash, oldHash)
@@ -526,7 +526,7 @@ final class DataCatalogTests: XCTestCase {
         renumbered.acts = [renumberedAct]
         renumbered.actBodies = [renumberedAct.id: "Исправленный текст."]
         renumbered.instances[0].actID = renumberedAct.id
-        store.upsert(context: context, snapshot: nil, movement: renumbered,
+        _ = try store.upsert(context: context, snapshot: nil, movement: renumbered,
                      collections: ["Клиент"])
         let renumberedActs = try await catalog.acts(caseKey: context.key)
         XCTAssertEqual(renumberedActs.first?.document.id, acts.first?.document.id)
@@ -550,7 +550,7 @@ final class DataCatalogTests: XCTestCase {
         // обязано удалить её без merge-конфликта.
         var finalRevision = renumbered
         finalRevision.actBodies[renumberedAct.id] = "Новая редакция после сводки."
-        store.upsert(context: context, snapshot: nil, movement: finalRevision,
+        _ = try store.upsert(context: context, snapshot: nil, movement: finalRevision,
                      collections: ["Клиент"])
         let staleSummary = try await catalog.summary(documentID: finalDocument.id)
         let refreshedAct = try await catalog.act(id: finalDocument.id)
@@ -558,7 +558,7 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(staleSummary).isStale(
             for: refreshedDocument))
 
-        store.remove(key: context.key)
+        try store.remove(key: context.key)
         let casesAfterRemoval = try await catalog.cases()
         let actsAfterRemoval = try await catalog.acts()
         XCTAssertTrue(casesAfterRemoval.isEmpty)
@@ -583,7 +583,7 @@ final class DataCatalogTests: XCTestCase {
             instances: [], complaints: [:], acts: [act],
             actBodies: [act.id: "Сохранённый текст акта."],
             category: nil, parties: CaseParties())
-        let record = store.upsert(context: context, snapshot: nil, movement: movement,
+        let record = try store.upsert(context: context, snapshot: nil, movement: movement,
                                   collections: [])
         let catalog = CaseCatalog(container: store.container)
         let projectedActs = try await catalog.acts()
@@ -597,7 +597,7 @@ final class DataCatalogTests: XCTestCase {
             provider: "test", model: "test", promptVersion: "v1", pipelineVersion: "v1")
 
         record.movementData = Data("not-json".utf8)
-        XCTAssertTrue(store.save(projection: .full))
+        try store.save(projection: .full)
 
         let preservedActs = try await catalog.acts()
         let preservedSummary = try await catalog.summary(documentID: document.id)

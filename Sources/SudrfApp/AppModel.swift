@@ -76,6 +76,9 @@ final class AppRouter: ObservableObject {
     // Правка срока
     @Published var editingDeadline: String? = nil
     @Published var draftDate: Date? = nil
+    /// Общая dismissible ошибка для интерактивных операций, у которых нет
+    /// собственного специализированного сообщения об отказе persistence.
+    @Published var persistenceError: String? = nil
 
     // Живая карточка дела (кэш + фоновый перезапрос, см. RefreshCenter)
     @Published var liveMovement: CaseMovement? = nil
@@ -253,9 +256,9 @@ final class AppRouter: ObservableObject {
                         code: code,
                         host: presentation.challenge.requestURL.host ?? "fssp.gov.ru",
                         kind: .fsspDigits)
-                    self.applyFSSPStep(step, document: presentation.document,
-                                       caseKey: presentation.caseKey)
-                    if self.fsspCaptcha?.id == presentation.id {
+                    if self.applyFSSPStep(step, document: presentation.document,
+                                          caseKey: presentation.caseKey),
+                       self.fsspCaptcha?.id == presentation.id {
                         self.dismissFSSPCaptcha()
                     }
                 case .error(let message):
@@ -289,19 +292,35 @@ final class AppRouter: ObservableObject {
         }
     }
 
+    @discardableResult
     private func applyFSSPStep(_ step: FSSPSearchStep,
                                document: CourtEnforcementDocument,
-                               caseKey: String) {
-        refreshCenter.applyFSSPSearchStep(key: caseKey, document: document, step: step)
+                               caseKey: String) -> Bool {
+        do {
+            try refreshCenter.applyFSSPSearchStep(key: caseKey, document: document, step: step)
+            return true
+        } catch {
+            reportPersistenceFailure(error)
+            return false
+        }
     }
 
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
-            -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() }) throws {
-        let store = TrackedStore(container: suppliedModelContainer,
-                                 prepared: modelContainerIsPrepared)
+            -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
+         trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil) throws {
+        let store: TrackedStore
+        if let trackedStoreProjectionSynchronizer {
+            store = try TrackedStore(
+                container: suppliedModelContainer,
+                prepared: modelContainerIsPrepared,
+                projectionSynchronizer: trackedStoreProjectionSynchronizer)
+        } else {
+            store = try TrackedStore(container: suppliedModelContainer,
+                                     prepared: modelContainerIsPrepared)
+        }
         self.store = store
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
@@ -329,7 +348,7 @@ final class AppRouter: ObservableObject {
                                        fsspClient: fsspClient)
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
-            let outcome = await self.repairCoordinator.repairIfNeeded(key: key)
+            let outcome = try await self.repairCoordinator.repairIfNeeded(key: key)
             if outcome.summary.hasProjectionChanges {
                 self.applyRepair(outcome.summary, presentReport: false)
             }
@@ -362,8 +381,14 @@ final class AppRouter: ObservableObject {
             if !self.spotlightOnboardingRequired {
                 await self.spotlightIndexer.scheduleSynchronization(scope: .full)
             }
-            let summary = await self.repairCoordinator.runAll()
-            self.applyRepair(summary)
+            do {
+                let summary = try await self.repairCoordinator.runAll()
+                self.applyRepair(summary)
+            } catch {
+                // Startup repair is background work: keep the persisted state
+                // visible and leave retry to the next explicit refresh/start.
+                self.reload()
+            }
             self.refreshCenter.start()
         }
     }
@@ -585,13 +610,20 @@ final class AppRouter: ObservableObject {
         await refreshCenter.refreshForIntent(key: store.record(forLocator: key)?.key ?? key)
     }
 
-    func intentAddCase(key: String, collection: String) -> Bool {
+    func intentAddCase(key: String, collection: String) throws -> Bool {
         let normalized = collection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty, normalized != "Все дела",
               let record = store.record(forLocator: key) else { return false }
-        if !knownCollections.contains(normalized) { knownCollections.append(normalized) }
-        add(caseKey: record.key, to: normalized)
-        return true
+        do {
+            let added = try addMembership(caseKey: record.key, to: normalized)
+            if added, !knownCollections.contains(normalized) {
+                knownCollections.append(normalized)
+            }
+            return added
+        } catch {
+            reload()
+            throw error
+        }
     }
 
     func intentUpcomingHearings(limit: Int = 10) -> String {
@@ -679,17 +711,25 @@ final class AppRouter: ObservableObject {
     func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) {
         let snap = movement.map { MovementDerivation.snapshot(from: $0, context: ctx) }
         // Движение с экрана поиска сеет кэш — первое открытие из «Моих дел» мгновенно.
-        let record = store.reconcileAndUpsert(
-            context: ctx, snapshot: snap,
-            movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
-            collections: collections)
-        reload(spotlightScope: .cases([record.key]))
+        do {
+            let record = try store.reconcileAndUpsert(
+                context: ctx, snapshot: snap,
+                movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
+                collections: collections)
+            reload(spotlightScope: .cases([record.key]))
+        } catch {
+            reportPersistenceFailure(error)
+        }
     }
     func untrack(recordKey: String) {
         guard let record = store.record(forLocator: recordKey) else { return }
-        store.remove(key: record.key)
-        if openedKey == record.key { closeCase() }
-        reload(spotlightScope: .cases([record.key]))
+        do {
+            try store.remove(key: record.key)
+            if openedKey == record.key { closeCase() }
+            reload(spotlightScope: .cases([record.key]))
+        } catch {
+            reportPersistenceFailure(error)
+        }
     }
     func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(context: ctx) }
     func isTracked(number: String, displayDomain: String, courtCode: String? = nil) -> Bool {
@@ -699,7 +739,18 @@ final class AppRouter: ObservableObject {
     }
 
     private func markSeen(_ rec: TrackedCaseRecord) {
-        rec.seenAt = Date(); store.save(); reload()
+        rec.seenAt = Date()
+        do {
+            try store.save()
+            reload()
+        } catch {
+            reportPersistenceFailure(error)
+        }
+    }
+
+    private func reportPersistenceFailure(_ error: Error) {
+        reload()
+        persistenceError = "Изменения не сохранены. Повторите попытку."
     }
 
     func markAllFeedRead() {
@@ -729,6 +780,7 @@ final class AppRouter: ObservableObject {
     enum ImportState {
         case running(done: Int, total: Int)
         case finished(ImportSummary)
+        case failed(String)
     }
     @Published var importState: ImportState? = nil
     private var importTask: Task<Void, Never>? = nil
@@ -764,6 +816,7 @@ final class AppRouter: ObservableObject {
 
     func dismissImportSummary() {
         if case .finished = importState { importState = nil }
+        if case .failed = importState { importState = nil }
     }
 
     func dismissRepairSummary() { repairSummary = nil }
@@ -878,11 +931,25 @@ final class AppRouter: ObservableObject {
         let df = DateFormatter()
         df.dateFormat = "dd.MM.yyyy"
         let collection = "Импорт " + df.string(from: Date())
-        for rec in plan.records {
-            _ = store.reconcileAndUpsert(context: rec.context, snapshot: nil, movement: nil,
-                                         collections: [collection])
+        do {
+            try commitImport(records: plan.records, collection: collection)
+        } catch {
+            reload()
+            guard generation == importGeneration, !Task.isCancelled else { return }
+            importState = .failed(
+                "Не удалось сохранить импорт в локальной базе. Ни одна запись не сохранена; повторите попытку.")
+            return
         }
-        let repaired = await repairCoordinator.runAll()
+        let repaired: CaseRepairSummary
+        do {
+            repaired = try await repairCoordinator.runAll()
+        } catch {
+            reload()
+            guard generation == importGeneration, !Task.isCancelled else { return }
+            importState = .failed(
+                "Дела импортированы, но не удалось сохранить последующее исправление связей. Повторите обновление позже.")
+            return
+        }
         let importedKeys = Set(plan.records.map { $0.context.key })
             .union(repaired.keyRemaps.keys)
             .union(repaired.keyRemaps.values)
@@ -908,6 +975,18 @@ final class AppRouter: ObservableObject {
         summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
         guard generation == importGeneration, !Task.isCancelled else { return }
         importState = .finished(summary)
+    }
+
+    /// Stages the whole import graph and commits it together with its rebuilt
+    /// court-act projection. A failed projection or context save rolls back
+    /// every planned record and any identity merge performed by the batch.
+    func commitImport(records: [CaseImporter.PlannedRecord], collection: String) throws {
+        for record in records {
+            _ = try store.reconcileAndUpsert(
+                context: record.context, snapshot: nil, movement: nil,
+                collections: [collection], saveChanges: false)
+        }
+        try store.save(projection: .full)
     }
 
     // MARK: Живая карточка
@@ -1172,12 +1251,16 @@ final class AppRouter: ObservableObject {
         guard repairCaptchaHosts.remove(host) != nil else { return }
         Task { [weak self] in
             guard let self else { return }
-            let summary = await self.repairCoordinator.runAll()
-            if summary.hasReport {
-                self.applyRepair(summary)
-            } else {
-                self.repairSummary = nil
-                self.reload()
+            do {
+                let summary = try await self.repairCoordinator.runAll()
+                if summary.hasReport {
+                    self.applyRepair(summary)
+                } else {
+                    self.repairSummary = nil
+                    self.reload()
+                }
+            } catch {
+                self.reportPersistenceFailure(error)
             }
         }
     }
@@ -1186,16 +1269,18 @@ final class AppRouter: ObservableObject {
     /// (карточка капчей не защищена — разбирается как обычно).
     func ingestCaptchaCard(html: String) async {
         guard let ctx = captcha, let mv = liveMovement else { return }
-        defer { captcha = nil }
         let card: CaseCard
         do { card = try CaseCardParser.parse(html: html) }
-        catch { movementError = "Не удалось разобрать карточку: \(error)"; return }
+        catch {
+            movementError = "Не удалось разобрать карточку: \(error)"
+            captcha = nil
+            return
+        }
 
         let domain = ctx.formURL.host ?? ""
         let title = CourtDirectory.court(forDomain: domain)?.title ?? ctx.courtTitle
         let updated = mv.replacingCaptchaStub(domain: domain, courtTitle: title,
                                               level: ctx.level, card: card)
-        liveMovement = updated
 
         // Персистим решённую капчу — инстанция переживает перезапуск, а фоновое
         // обновление не деградирует её обратно в заглушку (правило merge).
@@ -1203,9 +1288,16 @@ final class AppRouter: ObservableObject {
             rec.movement = MovementCachePolicy.stripped(forPersist: updated)
             rec.snapshot = MovementDerivation.preservingConfirmedDeadlines(
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
-            store.save(projection: .cases([key]))
+            do {
+                try store.save(projection: .cases([key]))
+            } catch {
+                reportPersistenceFailure(error)
+                return
+            }
             reload(spotlightScope: .cases([key]), changedCaseKeys: [key])
         }
+        liveMovement = updated
+        captcha = nil
 
         // Пара captcha/captchaid сохранена — перезапрашиваем движение: другие
         // заглушки того же суда дозагрузятся без окон (пара уйдёт в URL поиска).
@@ -1230,27 +1322,39 @@ final class AppRouter: ObservableObject {
         draftDate = DateUtil.addDays(d, days)
     }
     func confirm(_ id: String) {
-        mutateDeadline(id) { $0.statusRaw = DeadlineStatus.confirmed.rawValue }
-        editingDeadline = nil; draftDate = nil
+        if mutateDeadline(id, { $0.statusRaw = DeadlineStatus.confirmed.rawValue }) {
+            editingDeadline = nil
+            draftDate = nil
+        }
     }
     func save(_ id: String) {
         if let nd = draftDate {
-            mutateDeadline(id) { $0.dateRef = DateUtil.startOfDay(nd).timeIntervalSinceReferenceDate
-                                 $0.statusRaw = DeadlineStatus.confirmed.rawValue }
+            guard mutateDeadline(id, {
+                $0.dateRef = DateUtil.startOfDay(nd).timeIntervalSinceReferenceDate
+                $0.statusRaw = DeadlineStatus.confirmed.rawValue
+            }) else { return }
         }
-        editingDeadline = nil; draftDate = nil
+        editingDeadline = nil
+        draftDate = nil
     }
     func cancelEdit() { editingDeadline = nil; draftDate = nil }
 
-    private func mutateDeadline(_ id: String, _ change: (inout StoredDeadline) -> Void) {
+    @discardableResult
+    private func mutateDeadline(_ id: String, _ change: (inout StoredDeadline) -> Void) -> Bool {
         let parts = id.split(separator: "#", maxSplits: 1).map(String.init)
         guard parts.count == 2, let rec = store.record(forKey: parts[0]),
               var snap = rec.snapshot,
-              let idx = snap.deadlines.firstIndex(where: { $0.kind == parts[1] }) else { return }
+              let idx = snap.deadlines.firstIndex(where: { $0.kind == parts[1] }) else { return false }
         change(&snap.deadlines[idx])
         rec.snapshot = snap
-        store.save()
-        reload()
+        do {
+            try store.save()
+            reload()
+            return true
+        } catch {
+            reportPersistenceFailure(error)
+            return false
+        }
     }
 
     // MARK: Сборка производных наборов из хранилища
@@ -1750,9 +1854,13 @@ final class AppRouter: ObservableObject {
         for record in records {
             record.collectionNames.removeAll { $0 == name }
         }
-        if !records.isEmpty, !store.save() {
-            reload()
-            return false
+        if !records.isEmpty {
+            do {
+                try store.save()
+            } catch {
+                reportPersistenceFailure(error)
+                return false
+            }
         }
 
         knownCollections.removeAll { $0 == name }
@@ -1767,18 +1875,31 @@ final class AppRouter: ObservableObject {
     /// Членство дела в подборке — по ключу записи (номер дела без суда
     /// неоднозначен: одно «2-115/2026» может отслеживаться в двух судах).
     func add(caseKey key: String, to name: String) {
-        guard name != "Все дела", let rec = store.record(forLocator: key),
-              !rec.collectionNames.contains(name) else { return }
-        rec.collectionNames.append(name)
-        store.save()
-        reload(spotlightScope: .cases([rec.key]))
+        do {
+            _ = try addMembership(caseKey: key, to: name)
+        } catch {
+            reportPersistenceFailure(error)
+        }
     }
     func remove(caseKey key: String, from name: String) {
         guard let rec = store.record(forLocator: key),
               rec.collectionNames.contains(name) else { return }
         rec.collectionNames.removeAll { $0 == name }
-        store.save()
+        do {
+            try store.save()
+            reload(spotlightScope: .cases([rec.key]))
+        } catch {
+            reportPersistenceFailure(error)
+        }
+    }
+
+    private func addMembership(caseKey key: String, to name: String) throws -> Bool {
+        guard name != "Все дела", let rec = store.record(forLocator: key) else { return false }
+        guard !rec.collectionNames.contains(name) else { return true }
+        rec.collectionNames.append(name)
+        try store.save()
         reload(spotlightScope: .cases([rec.key]))
+        return true
     }
 
     private func recordFor(number: String) -> TrackedCaseRecord? {

@@ -316,7 +316,7 @@ final class RefreshCenterTests: XCTestCase {
         successMV = makeSuccessMovement(court: ctx.searchCourt)
         formURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php?g1")!
         scripted = ScriptedMovement(formURL: formURL, successMV: successMV)
-        store.upsert(context: ctx, snapshot: nil, movement: nil, collections: [])
+        _ = try store.upsert(context: ctx, snapshot: nil, movement: nil, collections: [])
         // Чистый стор на нужный домен — иначе возможный хвост от
         // предыдущего тестового прогона даст ложный «успех без solve».
         await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
@@ -379,8 +379,9 @@ final class RefreshCenterTests: XCTestCase {
         center.onRefreshed = { key, _, _ in callbackKey = key }
         center.repairBeforeRefresh = { [store] key in
             XCTAssertEqual(key, old.key)
-            store?.upsert(context: canonical, snapshot: nil, collections: [])
-            store?.remove(key: old.key)
+            guard let store else { return key }
+            _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
+            try store.remove(key: old.key)
             return canonical.key
         }
 
@@ -394,7 +395,7 @@ final class RefreshCenterTests: XCTestCase {
     }
 
     func testUIDMergePublishesPersistedCombinedMovementAndKeyRemap() async throws {
-        for key in store.all().map(\.key) { store.remove(key: key) }
+        for key in store.all().map(\.key) { try store.remove(key: key) }
         let judicialUID = "11RS0001-01-2025-011255-03"
 
         var survivorContext = makeContext()
@@ -478,7 +479,7 @@ final class RefreshCenterTests: XCTestCase {
     }
 
     func testIntentRefreshUIDMergeSaveFailureRestoresDuplicatesAndReportsFailure() async throws {
-        for key in store.all().map(\.key) { store.remove(key: key) }
+        for key in store.all().map(\.key) { try store.remove(key: key) }
         let judicialUID = "11RS0001-01-2025-011255-03"
 
         var survivorContext = makeContext()
@@ -549,7 +550,7 @@ final class RefreshCenterTests: XCTestCase {
         try store.container.mainContext.save()
         let survivorKey = survivor.key
         let refreshedKey = refreshed.key
-        XCTAssertTrue(store.save(projection: .cases([survivorKey, refreshedKey])))
+        try store.save(projection: .cases([survivorKey, refreshedKey]))
         let survivorProjectionID = try XCTUnwrap(
             store.courtActID(caseKey: survivorKey, sourceActID: "survivor-act"))
         let refreshedProjectionID = try XCTUnwrap(
@@ -625,6 +626,29 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(calls.count, 2)
     }
 
+    func testCaptchaAttemptCommitFailureKeepsPendingAndReportsPersistenceFailure() async throws {
+        let key = try XCTUnwrap(store.all().first?.key)
+        let center = makeCenter { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+        var refreshed = false
+        var failed: (String, String)?
+        center.onRefreshed = { _, _, _ in refreshed = true }
+        center.onRefreshFailed = { failed = ($0, $1) }
+        store.failNextSaveForTesting = true
+
+        let outcome = await center.refreshForIntent(key: key)
+
+        let message = "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
+        XCTAssertEqual(outcome, .failed(message))
+        XCTAssertNotNil(center.captchaPendingRequest(forKey: key))
+        XCTAssertNil(store.record(forKey: key)?.sourceRefreshAttempt)
+        XCTAssertFalse(refreshed)
+        XCTAssertEqual(failed?.0, key)
+        XCTAssertEqual(failed?.1, message)
+        XCTAssertEqual(center.lastErrors[key], message)
+    }
+
     func testIntentRefreshClassifiesFailureUnderReroutedKey() async throws {
         let old = makeContext()
         var canonical = old
@@ -635,8 +659,9 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in unavailable })
         center.repairBeforeRefresh = { [store] _ in
-            store?.upsert(context: canonical, snapshot: nil, collections: [])
-            store?.remove(key: old.key)
+            guard let store else { return old.key }
+            _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
+            try store.remove(key: old.key)
             return canonical.key
         }
 
@@ -658,8 +683,9 @@ final class RefreshCenterTests: XCTestCase {
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in captcha })
         center.repairBeforeRefresh = { [store] _ in
-            store?.upsert(context: canonical, snapshot: nil, collections: [])
-            store?.remove(key: old.key)
+            guard let store else { return old.key }
+            _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
+            try store.remove(key: old.key)
             return canonical.key
         }
 
@@ -765,7 +791,7 @@ final class RefreshCenterTests: XCTestCase {
     func testEquivalentEmbeddedAndTopLevelCaptchasShareOneSolve() async throws {
         var secondContext = makeContext()
         secondContext.caseNumber = "2-101/2026"
-        store.upsert(context: secondContext, snapshot: nil, movement: nil, collections: [])
+        _ = try store.upsert(context: secondContext, snapshot: nil, movement: nil, collections: [])
 
         let embeddedFormURL = URL(string: "https://vs.komi.sudrf.ru/modules.php?name=sud_delo")!
         let topLevelFormURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?name=sud_delo")!
@@ -969,7 +995,7 @@ final class RefreshCenterTests: XCTestCase {
             let freshMovement = makeSuccessMovement(court: context.searchCourt)
             let scenarioFormURL = URL(string: "https://\(context.searchDomain)/modules.php?g1")!
             let service = ScriptedMovement(formURL: scenarioFormURL, successMV: freshMovement)
-            scenarioStore.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+            _ = try scenarioStore.upsert(context: context, snapshot: nil, movement: nil, collections: [])
             let key = try XCTUnwrap(scenarioStore.all().first?.key, scenario)
             let rec = try XCTUnwrap(scenarioStore.record(forKey: key), scenario)
             var savedMovement = freshMovement
@@ -981,7 +1007,7 @@ final class RefreshCenterTests: XCTestCase {
             rec.snapshot = savedSnapshot
             rec.movementFetchedAt = savedFetchedAt
             rec.seenAt = savedSeenAt
-            XCTAssertTrue(scenarioStore.save(projection: .cases([key])), scenario)
+            try scenarioStore.save(projection: .cases([key]))
 
             let center = RefreshCenter(
                 store: scenarioStore,
@@ -1312,7 +1338,7 @@ final class RefreshCenterTests: XCTestCase {
         context.searchDomain = MosGorSudEndpoint.host
         context.displayDomain = MosGorSudEndpoint.host
         context.caseNumber = "02-1234/2024"
-        store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+        _ = try store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
         let movement = makeSuccessMovement(court: context.searchCourt)
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in FixedMovement(movement) })
@@ -1754,7 +1780,7 @@ final class RefreshCenterTests: XCTestCase {
         await suspended.waitUntilStarted()
         let details = BailiffEnforcementDetails(proceedingNumber: "1/26/98078-ИП")
         let manualRecord = bailiffRecord(document: document, attemptedAt: Date(), details: details)
-        center.applyFSSPSearchStep(
+        try center.applyFSSPSearchStep(
             key: key, document: document,
             step: .found(EnforcementLookup(state: .found, record: manualRecord)))
         await suspended.resume()
@@ -1763,6 +1789,38 @@ final class RefreshCenterTests: XCTestCase {
         let saved = try XCTUnwrap(rec.enforcementRecords.first { $0.source == .bailiffs })
         XCTAssertEqual(saved.discoveryState, .found)
         XCTAssertEqual(saved.bailiffDetails, details)
+    }
+
+    func testEnforcementCommitFailureReportsPersistenceErrorWithoutSuccessCallback() throws {
+        let key = try XCTUnwrap(store.all().first?.key)
+        let document = CourtEnforcementDocument(id: "electronic", electronicID: "11RS#save")
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var movement = successMV!
+        movement.executionDocuments = [document]
+        record.movement = movement
+        try store.save()
+        let previous = record.enforcementRecords
+        let update = bailiffRecord(
+            document: document,
+            details: BailiffEnforcementDetails(proceedingNumber: "1/26/98078-ИП"))
+        let center = RefreshCenter(store: store, client: SudrfClient())
+        var refreshed = false
+        center.onEnforcementRefreshed = { _ in refreshed = true }
+        store.failNextSaveForTesting = true
+
+        XCTAssertThrowsError(try center.applyFSSPSearchStep(
+            key: key, document: document,
+            step: .found(EnforcementLookup(state: .found, record: update))
+        )) { error in
+            guard case .contextSave = error as? TrackedStoreCommitError else {
+                return XCTFail("Expected context-save failure, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(store.record(forKey: key)?.enforcementRecords, previous)
+        XCTAssertEqual(center.enforcementError(forKey: key),
+                       "Не удалось сохранить обновление дела в локальной базе. Повторите попытку.")
+        XCTAssertFalse(refreshed)
     }
 
     func testHigherCourtCaptchaStubDoesNotPersistCassationStage() async throws {

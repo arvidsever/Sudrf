@@ -72,11 +72,11 @@ final class MovementContextTests: XCTestCase {
     }
 
     @MainActor
-    func testSwiftDataRecordAllowsMissingDenormalizedUID() {
+    func testSwiftDataRecordAllowsMissingDenormalizedUID() throws {
         let store = TrackedStore(inMemory: true)
         let legacy = context(level: .district, cartoteka: "g1")
 
-        let record = store.upsert(context: legacy, snapshot: nil, collections: [])
+        let record = try store.upsert(context: legacy, snapshot: nil, collections: [])
 
         XCTAssertNil(record.judicialUID)
         XCTAssertEqual(record.context?.baseInstanceLevel, .first)

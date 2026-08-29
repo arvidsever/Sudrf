@@ -106,7 +106,7 @@ final class SpotlightIntegrationTests: XCTestCase {
     func testStaleActDeepLinkFallsBackToExistingCase() throws {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+        _ = try store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
         let route = store.route(for: .courtAct(
             caseKey: context.key, sourceActID: "missing-act"))
         XCTAssertEqual(route, .caseRecord(key: context.key, staleAct: true))
@@ -117,7 +117,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
         let original = makeMovement(text: "Исходный текст акта.")
-        store.upsert(context: context, snapshot: nil, movement: original,
+        _ = try store.upsert(context: context, snapshot: nil, movement: original,
                      collections: ["Доверитель"])
 
         let catalog = CaseCatalog(container: store.container)
@@ -141,7 +141,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         XCTAssertEqual(state.indexedCaseIDs.count, 1)
         XCTAssertEqual(state.indexedActIDs.count, 1)
 
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Изменённый текст акта."),
                      collections: ["Доверитель"])
         try await indexer.synchronize()
@@ -151,7 +151,7 @@ final class SpotlightIntegrationTests: XCTestCase {
 
         var metadataOnlyContext = context
         metadataOnlyContext.judicialUID = "77RS0001-01-2026-999999-10"
-        store.upsert(context: metadataOnlyContext, snapshot: nil, movement: nil,
+        _ = try store.upsert(context: metadataOnlyContext, snapshot: nil, movement: nil,
                      collections: ["Доверитель"])
         try await indexer.synchronize()
         state = await writer.snapshot()
@@ -159,7 +159,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         XCTAssertEqual(state.indexedActUIDs.last,
                        TrackedStore.normalizedUID(metadataOnlyContext.judicialUID ?? ""))
 
-        store.remove(key: context.key)
+        try store.remove(key: context.key)
         try await indexer.synchronize()
         state = await writer.snapshot()
         XCTAssertEqual(state.deletedCaseIDs, [context.key])
@@ -172,7 +172,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         try await indexer.setEnabled(false, revision: 1)
         state = await writer.snapshot()
         XCTAssertEqual(state.deleteAllCount, 2)
-        store.upsert(context: context, snapshot: nil, movement: original,
+        _ = try store.upsert(context: context, snapshot: nil, movement: original,
                      collections: ["Доверитель"])
         try await indexer.synchronize()
         let disabledState = await writer.snapshot()
@@ -183,7 +183,7 @@ final class SpotlightIntegrationTests: XCTestCase {
     func testEntityContainsLocalSearchMetadataAndDeepLink() async throws {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Мотивировка и резолютивная часть."),
                      collections: ["Доверитель"])
         let catalog = CaseCatalog(container: store.container)
@@ -221,10 +221,10 @@ final class SpotlightIntegrationTests: XCTestCase {
     func testCaseEntityQueryResolvesMergedRecordAlias() async throws {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        let record = store.upsert(context: context, snapshot: nil, collections: [])
+        let record = try store.upsert(context: context, snapshot: nil, collections: [])
         let oldIdentifier = "legacy/source/card"
         record.addLegacyKeyAlias(oldIdentifier)
-        XCTAssertTrue(store.save())
+        try store.save()
 
         let catalog = CaseCatalog(container: store.container)
         await CaseCatalogRegistry.shared.install(catalog)
@@ -248,7 +248,7 @@ final class SpotlightIntegrationTests: XCTestCase {
     func testDisableWaitsForInflightIndexAndLeavesIndexAndManifestEmpty() async throws {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Текст для гонки индекса."),
                      collections: [])
         let catalog = CaseCatalog(container: store.container)
@@ -305,9 +305,9 @@ final class SpotlightIntegrationTests: XCTestCase {
         second.displayDomain = "second.msk.sudrf.ru"
         second.searchDomain = "second--msk.sudrf.ru"
         second.caseNumber = "2-2/2026"
-        store.upsert(context: first, snapshot: nil,
+        _ = try store.upsert(context: first, snapshot: nil,
                      movement: makeMovement(text: "Первый акт."), collections: [])
-        store.upsert(context: second, snapshot: nil,
+        _ = try store.upsert(context: second, snapshot: nil,
                      movement: makeMovement(text: "Второй акт."), collections: [])
         let writer = RecordingSpotlightWriter()
         let suite = "SpotlightScopedTests-\(UUID().uuidString)"
@@ -322,7 +322,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         var state = await writer.snapshot()
         XCTAssertEqual(state.indexedActIDs.count, 2)
 
-        store.upsert(context: first, snapshot: nil,
+        _ = try store.upsert(context: first, snapshot: nil,
                      movement: makeMovement(text: "Первый акт изменён."), collections: [])
         try await indexer.synchronize(scope: .cases([first.key]))
         state = await writer.snapshot()
@@ -338,7 +338,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         }
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Актуальный акт."), collections: [])
         let suite = "SpotlightLegacyManifestTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -371,7 +371,7 @@ final class SpotlightIntegrationTests: XCTestCase {
         }
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Актуальный акт."), collections: [])
         let suite = "SpotlightVersionFourManifestTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -441,7 +441,7 @@ final class SpotlightIntegrationTests: XCTestCase {
     ) {
         let store = TrackedStore(inMemory: true)
         let context = makeContext()
-        store.upsert(context: context, snapshot: nil,
+        _ = try store.upsert(context: context, snapshot: nil,
                      movement: makeMovement(text: "Текст для быстрых переключений."),
                      collections: [])
         let suite = "SpotlightToggleTests-\(UUID().uuidString)"

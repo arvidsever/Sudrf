@@ -319,7 +319,7 @@ final class MyCasesModelTests: XCTestCase {
     @MainActor
     func testRefreshCallbackRemapsOpenedAliasToSurvivor() throws {
         let container = try SudrfModelContainerFactory.make(inMemory: true)
-        let store = TrackedStore(container: container, prepared: true)
+        let store = try TrackedStore(container: container, prepared: true)
         let context = container.mainContext
         let old = TrackedCaseRecord(
             key: "old/2-100/2026", collections: [], caseNumber: "2-100/2026",

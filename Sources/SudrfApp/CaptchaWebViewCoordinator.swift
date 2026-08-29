@@ -6,8 +6,13 @@
 import Foundation
 import WebKit
 import SudrfKit
+import os
+
+private let captchaAssistLog = Logger(subsystem: "ru.sudrf.app", category: "CaptchaAssist")
 
 final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
+    private static let unattributedNavigationAttempt = 0
+
     enum WebState {
         case loadingForm
         case ready
@@ -28,6 +33,9 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     private var submittedAttempt: Int? = nil
     private var submittedNavigation: WKNavigation? = nil
     private var expectedSubmitMarker: CaptchaWebViewSubmitMarker? = nil
+    private var observedResponseStatus: Int?
+    private var observedResponseLocation: CaptchaAssistDiagnosticLocation?
+    private var navigationAttempts: [ObjectIdentifier: Int] = [:]
 
     init(_ parent: CaptchaWebView) { self.parent = parent }
 
@@ -51,6 +59,23 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
 
     private func sendSubmissionState(_ next: CaptchaSubmissionState) {
         notifySwiftUI { $0.onSubmissionState(next) }
+    }
+
+    private func logOutcome(_ outcome: String, attempt: Int,
+                            fallbackURL: URL? = nil) {
+        let location = observedResponseLocation ?? CaptchaAssistDiagnosticLocation(url: fallbackURL)
+        let status = observedResponseStatus.map(String.init) ?? "unknown"
+        let host = location?.host ?? "unknown"
+        let path = location?.path ?? "unknown"
+        let message = "attempt=\(attempt) status=\(status) host=\(host) path=\(path) outcome=\(outcome)"
+        captchaAssistLog.info("\(message, privacy: .public)")
+    }
+
+    private func consumeNavigationAttempt(for navigation: WKNavigation?) -> Int? {
+        guard let navigation else { return nil }
+        let id = ObjectIdentifier(navigation)
+        defer { navigationAttempts.removeValue(forKey: id) }
+        return navigationAttempts[id]
     }
 
     /// A15: единый helper финализации submit. Инвалидирует ВСЕ
@@ -96,12 +121,18 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
             let attempt = attemptGenerator.start()
             submittedAttempt = attempt
             submittedNavigation = nil
-            expectedSubmitMarker = nil
+            expectedSubmitMarker = CaptchaWebViewSubmitMarker(
+                attempt: attempt,
+                expectedURL: nil,
+                setAt: Date(),
+                expectedFragment: CaptchaWebViewSubmitMarkerFactory.fragment(for: attempt))
+            observedResponseStatus = nil
+            observedResponseLocation = nil
             state = .submitting
             // A15: ЕДИНСТВЕННАЯ точка отправки .submitting в SwiftUI.
             // Раньше ещё и в submitCaptcha() дублировалось.
             sendSubmissionState(.submitting)
-            scheduleSubmitTimeout(for: attempt)
+            scheduleSubmitTimeout(for: attempt, in: webView)
             submitCaptcha(parent.captchaCode, attempt: attempt, in: webView)
         }
     }
@@ -117,12 +148,19 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
         defer { decisionHandler(.allow) }
 
         let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? false
-        let isSubmitNavigation = (navigationAction.navigationType == .formSubmitted
-                                  && isMainFrame)
-        guard isSubmitNavigation,
+        guard isMainFrame,
               state == .submitting,
               let a = attemptGenerator.activeID,
               a == submittedAttempt else { return }
+
+        if let taggedAttempt = CaptchaWebViewSubmitMarkerFactory.attempt(
+            from: navigationAction.request.url) {
+            // A late action retains the attempt fragment injected before the
+            // submit. Never relabel attempt N as the active retry N+1.
+            guard taggedAttempt == a else { return }
+        } else if navigationAction.navigationType != .formSubmitted {
+            return
+        }
 
         // Если маркер уже есть от того же attempt и не протух — keep (не
         // перезаписываем; защита от наложения submit-типов навигаций в окне
@@ -148,29 +186,66 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
         }
     }
 
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+        if navigationResponse.isForMainFrame,
+           state == .submitting,
+           let attempt = submittedAttempt,
+           attemptGenerator.activeID == attempt {
+            observedResponseStatus = (navigationResponse.response as? HTTPURLResponse)?.statusCode
+            observedResponseLocation = CaptchaAssistDiagnosticLocation(
+                url: navigationResponse.response.url)
+        }
+        decisionHandler(.allow)
+    }
+
     // A15: привязка навигации к attempt через URL+window matcher.
     func webView(_ webView: WKWebView,
                  didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard let navigation else { return }
         let now = Date()
-        let marker = expectedSubmitMarker
-            ?? CaptchaWebViewSubmitMarker(attempt: -1, expectedURL: nil, setAt: .distantPast)
-        let actualURL = webView.url
-        let decision = CaptchaWebViewSubmitMarkerFactory.decide(
-            marker: marker, actualURL: actualURL, now: now)
-        if state == .submitting,
-           let a = submittedAttempt,
-           attemptGenerator.activeID == a,
-           decision == .match {
+        guard state == .submitting,
+              let a = submittedAttempt,
+              attemptGenerator.activeID == a else {
+            expectedSubmitMarker = nil
+            return
+        }
+
+        let navigationID = ObjectIdentifier(navigation)
+        if let taggedAttempt = CaptchaWebViewSubmitMarkerFactory.attempt(from: webView.url) {
+            navigationAttempts[navigationID] = taggedAttempt
+            if taggedAttempt == a {
+                submittedNavigation = navigation
+                expectedSubmitMarker = nil
+            }
+            return
+        }
+
+        if let marker = expectedSubmitMarker {
+            let decision = CaptchaWebViewSubmitMarkerFactory.decide(
+                marker: marker, actualURL: webView.url, now: now)
+            guard decision == .match else {
+                // URL mismatch / expired / не наш attempt — очищаем, чтобы
+                // старый маркер не подхватил следующую навигацию.
+                navigationAttempts[navigationID] = Self.unattributedNavigationAttempt
+                expectedSubmitMarker = nil
+                return
+            }
+            navigationAttempts[navigationID] = marker.attempt
             submittedNavigation = navigation
             expectedSubmitMarker = nil
-        } else {
-            // URL mismatch / expired / marker nil / не наш attempt —
-            // очищаем, чтобы старый маркер не подхватил следующую навигацию.
-            expectedSubmitMarker = nil
+            return
         }
+
+        // An untagged didStart cannot be safely attributed after a retry.
+        // Preserve it as explicitly foreign; a failure delivered without any
+        // didStart still uses the markerless fallback in the decision helper.
+        navigationAttempts[navigationID] = Self.unattributedNavigationAttempt
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let navigationAttempt = consumeNavigationAttempt(for: navigation)
         let current = webView.url?.absoluteString ?? ""
 
         // A15: инспектируем результат submit'а, если он наш и attempt ещё
@@ -189,6 +264,7 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
             state: Self.mapState(state),
             submittedAttempt: submittedAttempt,
             activeID: attemptGenerator.activeID,
+            navigationAttempt: navigationAttempt,
             hasSubmittedNavigation: submittedNavigation != nil,
             navigationMatchesSubmitted: submittedNavigation === navigation)
         if case .inspect(let a) = inspectDecision {
@@ -215,26 +291,32 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     // A15: навигационный fail (offline, timeout) — разблокирует лист.
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
                  withError error: Error) {
-        handleNavigationFailure(navigation: navigation, error: error)
+        handleNavigationFailure(navigation: navigation, webView: webView, error: error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
-        handleNavigationFailure(navigation: navigation, error: error)
+        handleNavigationFailure(navigation: navigation, webView: webView, error: error)
     }
 
-    private func handleNavigationFailure(navigation: WKNavigation, error: Error) {
-        let isOurs = (state == .submitting
-                      && attemptGenerator.activeID == submittedAttempt
-                      && submittedNavigation === navigation)
+    private func handleNavigationFailure(navigation: WKNavigation, webView: WKWebView,
+                                         error: Error) {
+        let navigationAttempt = consumeNavigationAttempt(for: navigation)
         let decision = CaptchaWebViewNavigationFailureFactory.decide(
             state: Self.mapState(state),
             error: error,
-            isOurActiveAttempt: isOurs)
+            submittedAttempt: submittedAttempt,
+            activeID: attemptGenerator.activeID,
+            navigationAttempt: navigationAttempt,
+            hasSubmittedNavigation: submittedNavigation != nil,
+            navigationMatchesSubmitted: submittedNavigation === navigation)
         switch decision {
         case .ignore:
             return
         case .failSubmitting(let message):
+            if let attempt = submittedAttempt {
+                logOutcome("navigation_failed", attempt: attempt, fallbackURL: webView.url)
+            }
             // completeSubmit произойдёт в fail() если был активный attempt.
             fail(message)
         case .failLoadingForm(let message):
@@ -245,11 +327,16 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     // A15: 60-сек watchdog для .submitting без ответа. Guard по attempt:
     // если пользователь уже сделал retry, watchdog от старой попытки
     // ignore (activeID != attempt).
-    private func scheduleSubmitTimeout(for attempt: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
-            guard let self else { return }
+    private func scheduleSubmitTimeout(for attempt: Int, in webView: WKWebView) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self, weak webView] in
+            guard let self, let webView else { return }
             guard self.attemptGenerator.activeID == attempt,
                   self.state == .submitting else { return }
+            // Submission is dispatched synchronously. Stop any remaining
+            // load before enabling retry so WebKit cannot carry an untagged
+            // navigation across the attempt boundary.
+            webView.stopLoading()
+            self.logOutcome("timeout", attempt: attempt)
             self.fail("Суд не ответил. Попробуйте ещё раз.")
         }
     }
@@ -312,10 +399,12 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
                 }
             case .reject:
                 // A15: completeSubmit инвалидирует attempt + marker.
+                self.logOutcome("rejected", attempt: attempt, fallbackURL: webView.url)
                 self.completeSubmit(attempt: attempt, nextState: .loadingForm)
                 self.applyAssist(to: webView, rejected: true)
             case .failMissingToken:
                 // A15: completeSubmit инвалидирует attempt + marker ДО fail.
+                self.logOutcome("missing_token", attempt: attempt, fallbackURL: webView.url)
                 self.completeSubmit(attempt: attempt, nextState: .failed)
                 self.fail("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз.")
             }
@@ -326,18 +415,21 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
         // A15: защита attempt'а.
         guard attemptGenerator.activeID == attempt else { return }
         guard !didCapturePair, let host = webView.url?.host else {
+            logOutcome("missing_token", attempt: attempt, fallbackURL: webView.url)
             completeSubmit(attempt: attempt, nextState: .failed)
             fail("Код отправлен, но ответ суда не содержит токен. Попробуйте ещё раз.")
             return
         }
 
         guard let token = resolvedCaptchaToken(from: webView) else {
+            logOutcome("missing_token", attempt: attempt, fallbackURL: webView.url)
             completeSubmit(attempt: attempt, nextState: .failed)
             fail("Код принят страницей суда, но captchaid не найден. Попробуйте ещё раз.")
             return
         }
 
         didCapturePair = true
+        logOutcome("accepted", attempt: attempt, fallbackURL: webView.url)
         completeSubmit(attempt: attempt, nextState: .accepted)
         sendSubmissionState(.accepted)
         let store = webView.configuration.websiteDataStore.httpCookieStore
@@ -350,11 +442,13 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
         // A15: защита attempt'а.
         guard attemptGenerator.activeID == attempt else { return }
         guard let host = webView.url?.host else {
+            logOutcome("submit_failed", attempt: attempt, fallbackURL: webView.url)
             completeSubmit(attempt: attempt, nextState: .failed)
             fail("Код отправлен, но сессия суда не определена. Попробуйте ещё раз.")
             return
         }
         completeSubmit(attempt: attempt, nextState: .accepted)
+        logOutcome("accepted", attempt: attempt, fallbackURL: webView.url)
         sendSubmissionState(.accepted)
         let store = webView.configuration.websiteDataStore.httpCookieStore
         Self.copyCookies(from: store, host: host) { [weak self] in
@@ -392,9 +486,11 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     }
 
     private func submitCaptcha(_ code: String, attempt: Int, in webView: WKWebView) {
+        let navigationFragment = CaptchaWebViewSubmitMarkerFactory.fragment(for: attempt)
         let js = """
         (function(){
           const code = \(Self.jsStringLiteral(code));
+          const navigationFragment = \(Self.jsStringLiteral(navigationFragment));
           const inputs = Array.prototype.slice.call(document.getElementsByTagName('input'));
           const captchaInput = inputs.find(function(input) {
             const nm = (input.name || '').toLowerCase();
@@ -417,12 +513,22 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
             const value = ((el.value || el.textContent || '') + '').toLowerCase();
             return type === 'submit' || value.indexOf('най') >= 0 || value.indexOf('find') >= 0;
           });
+          if (form) {
+            const destination = new URL((submit && submit.formAction) || form.action || window.location.href,
+                                        window.location.href);
+            destination.hash = navigationFragment;
+            if (submit && submit.hasAttribute('formaction')) {
+              submit.formAction = destination.href;
+            } else {
+              form.action = destination.href;
+            }
+          }
           if (submit && submit.click) {
-            setTimeout(function(){ submit.click(); }, 0);
+            submit.click();
             return { ok: true, method: 'click', captchaid: captchaIDInput ? captchaIDInput.value : '' };
           }
           if (form && form.submit) {
-            setTimeout(function(){ form.submit(); }, 0);
+            form.submit();
             return { ok: true, method: 'form-submit', captchaid: captchaIDInput ? captchaIDInput.value : '' };
           }
           return { ok: false, reason: 'submit-missing' };
@@ -436,12 +542,14 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
             // completion от старой попытки ignore.
             guard self.attemptGenerator.activeID == attempt else { return }
             if let error {
+                self.logOutcome("submit_failed", attempt: attempt)
                 self.fail("Не удалось отправить код: \(error.localizedDescription)")
                 return
             }
             let dict = result as? [String: Any]
             let ok = (dict?["ok"] as? Bool) ?? false
             if !ok {
+                self.logOutcome("submit_failed", attempt: attempt)
                 self.fail("Не нашёл кнопку отправки на форме суда. Обновите окно и попробуйте ещё раз.")
                 return
             }

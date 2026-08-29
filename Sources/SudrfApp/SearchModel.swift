@@ -734,9 +734,10 @@ final class SearchModel: ObservableObject {
     /// её повторно GET-параметрами, так что последующие поиски по этому суду
     /// пройдут без окна кода (пока суд не отклонит пару). Если окно открыто из
     /// базового поиска (rerunSearch) — лист закрывается и поиск продолжается сам.
-    func storeCaptchaPair(host: String, token: CaptchaToken) {
+    @discardableResult
+    func storeCaptchaPair(host: String, token: CaptchaToken) -> Task<Void, Never> {
         let resume = captchaResumeState()
-        Task {
+        return Task {
             await CaptchaTokenStore.shared.store(token, domain: host)
             await resumeAfterCaptchaUnlock(resume)
         }

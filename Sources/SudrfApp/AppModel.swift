@@ -65,7 +65,10 @@ final class AppRouter: ObservableObject {
 
     // Производные наборы (перестраиваются из хранилища в reload())
     @Published var cases: [TrackedCase] = []
+    /// Future-only заседания для «Обзора» и App Intent «Ближайшие заседания».
     @Published var hearings: [TrackedHearing] = []
+    /// Полный семантический срез заседаний для внутреннего календаря.
+    @Published var calendarHearings: [TrackedHearing] = []
     @Published var feed: [FeedEntry] = []
     @Published var deadlines: [TrackedDeadline] = []
     @Published var collections: [(String, Int)] = []   // «Все дела» + подборки со счётчиками
@@ -1368,6 +1371,8 @@ final class AppRouter: ObservableObject {
 
         var cs: [TrackedCase] = []
         var hs: [TrackedHearing] = []
+        var calendarHs: [TrackedHearing] = []
+        var calendarHearingIDs = Set<String>()
         var dls: [TrackedDeadline] = []
         var feedItems: [FeedEntry] = []
         let readIDs = readFeedIDs
@@ -1408,15 +1413,29 @@ final class AppRouter: ObservableObject {
 
             guard let snap else { continue }
 
-            // Завершившийся круг может всё ещё содержать состоявшееся сегодня
-            // заседание. Оно остаётся в истории, но не попадает в календарь.
+            func trackedHearing(_ session: StoredSession) -> TrackedHearing? {
+                guard let date = session.date else { return nil }
+                return TrackedHearing(recordKey: rec.key, date: date,
+                    time: session.time ?? "", caseNumber: rec.caseNumber,
+                    parties: snap.partiesShort, court: session.court,
+                    room: session.room ?? "", dateLabel: DateUtil.dateLabel(date),
+                    judge: session.judge ?? "",
+                    identitySuffix: "\(session.event)#\(session.result ?? "")")
+            }
+
+            // Календарь сохраняет всю историю, включая завершённые дела.
+            // Повтор строки с той же существующей identity не должен давать
+            // нестабильный дубль в SwiftUI.
+            for s in MovementDerivation.calendarHearings(snap.sessions) {
+                guard let hearing = trackedHearing(s),
+                      calendarHearingIDs.insert(hearing.id).inserted else { continue }
+                calendarHs.append(hearing)
+            }
+
+            // Future-only проекция остаётся прежней для lifecycle и App Intent.
             if stage != .done {
                 for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
-                    guard let d = s.date else { continue }
-                    hs.append(TrackedHearing(recordKey: rec.key, date: d, time: s.time ?? "",
-                        caseNumber: rec.caseNumber, parties: snap.partiesShort,
-                        court: s.court, room: s.room ?? "", dateLabel: DateUtil.dateLabel(d),
-                        judge: s.judge ?? "", identitySuffix: "\(s.event)#\(s.result ?? "")"))
+                    if let hearing = trackedHearing(s) { hs.append(hearing) }
                 }
             }
             // Сроки.
@@ -1457,6 +1476,12 @@ final class AppRouter: ObservableObject {
             }
         }
 
+        calendarHs.sort {
+            if $0.date != $1.date { return $0.date < $1.date }
+            let t0 = CaseLifecycleResolver.hearingTimeKey($0.time)
+            let t1 = CaseLifecycleResolver.hearingTimeKey($1.time)
+            return t0 == t1 ? $0.id < $1.id : t0 < t1
+        }
         hs.sort {
             if $0.date != $1.date { return $0.date < $1.date }
             return CaseLifecycleResolver.hearingTimeKey($0.time)
@@ -1466,6 +1491,7 @@ final class AppRouter: ObservableObject {
 
         cases = cs
         hearings = hs
+        calendarHearings = calendarHs
         deadlines = dls
         feed = buildFeed(feedItems)
         collections = buildCollections(cs)

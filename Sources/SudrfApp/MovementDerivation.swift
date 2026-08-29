@@ -440,6 +440,26 @@ enum MovementDerivation {
         .map(\.element)
     }
 
+    /// Все датированные сессии-заседания для внутреннего календаря, включая
+    /// прошедшие и уже завершённые. Срез намеренно использует только
+    /// семантический предикат события: `isHearing` оставляется для
+    /// future-only lifecycle-проекций.
+    static func calendarHearings(_ sessions: [StoredSession]) -> [StoredSession] {
+        sessions.enumerated().filter { _, session in
+            guard DateUtil.parse(session.dateRaw) != nil else { return false }
+            return CaseLifecycleResolver.isHearingEvent(event: session.event)
+        }
+        .sorted {
+            let d0 = DateUtil.parse($0.element.dateRaw) ?? .distantFuture
+            let d1 = DateUtil.parse($1.element.dateRaw) ?? .distantFuture
+            if d0 != d1 { return d0 < d1 }
+            let t0 = CaseLifecycleResolver.hearingTimeKey($0.element.time)
+            let t1 = CaseLifecycleResolver.hearingTimeKey($1.element.time)
+            return t0 == t1 ? $0.offset < $1.offset : t0 < t1
+        }
+        .map(\.element)
+    }
+
     // MARK: Сроки (ОРИЕНТИРОВОЧНЫЙ расчёт — требует подтверждения пользователем)
 
     /// ВНИМАНИЕ: таблица сроков — ориентир по ГПК/КАС/КоАП/УПК, не истина в

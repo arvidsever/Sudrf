@@ -477,6 +477,154 @@ final class RefreshCenterTests: XCTestCase {
                        "open card must receive the full persisted dossier projection")
     }
 
+    func testIntentRefreshUIDMergeSaveFailureRestoresDuplicatesAndReportsFailure() async throws {
+        for key in store.all().map(\.key) { store.remove(key: key) }
+        let judicialUID = "11RS0001-01-2025-011255-03"
+
+        var survivorContext = makeContext()
+        survivorContext.caseID = "first-card"
+        survivorContext.judicialUID = judicialUID
+
+        var refreshedContext = makeContext()
+        refreshedContext.caseNumber = "33-200/2026"
+        refreshedContext.caseID = "appeal-card"
+        refreshedContext.judicialUID = judicialUID
+        refreshedContext.searchDomain = "vs--komi.sudrf.ru"
+        refreshedContext.displayDomain = "vs.komi.sudrf.ru"
+        refreshedContext.courtTitle = "Верховный суд Республики Коми"
+        refreshedContext.courtLevelRaw = CourtLevel.subject.rawValue
+        refreshedContext.courtCode = "11VS0001"
+        refreshedContext.cartotekaId = "g2"
+        refreshedContext.cartotekaLevelRaw = CourtLevel.subject.rawValue
+
+        func movement(for context: MovementContext, level: CaseInstance.Level,
+                      result: String, actID: String) -> CaseMovement {
+            let act = CaseAct(
+                id: actID, title: "Определение", date: "20.08.2026",
+                courtShort: context.courtTitle, instanceLevel: level)
+            return CaseMovement(
+                uid: judicialUID, caseNumber: context.caseNumber, inForce: false,
+                instances: [CaseInstance(
+                    level: level, court: context.courtTitle, caseNumber: context.caseNumber,
+                    judge: nil, domain: context.searchDomain, foundByUID: level != .first,
+                    result: result, sessions: [], actID: actID)],
+                complaints: [:], acts: [act], actBodies: [actID: result])
+        }
+
+        func insert(_ context: MovementContext, movement: CaseMovement,
+                    collections: [String], fetchedAt: Date, seenAt: Date) throws
+            -> TrackedCaseRecord {
+            let observation = try XCTUnwrap(
+                TrackedCaseIdentity.observation(context: context, movement: movement))
+            let state = LogicalCaseState(observation: observation)
+            let record = TrackedCaseRecord(
+                key: context.key, collections: collections, caseNumber: context.caseNumber,
+                courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+                contextData: try JSONEncoder().encode(context), snapshotData: nil)
+            record.logicalCaseID = state.logicalCaseID
+            record.identityStateData = try JSONEncoder().encode(state)
+            record.judicialUID = judicialUID
+            record.movement = movement
+            record.snapshot = MovementDerivation.snapshot(from: movement, context: context)
+            record.movementFetchedAt = fetchedAt
+            record.seenAt = seenAt
+            store.container.mainContext.insert(record)
+            return record
+        }
+
+        let survivor = try insert(
+            survivorContext,
+            movement: movement(for: survivorContext, level: .first, result: "Старое решение",
+                               actID: "survivor-act"),
+            collections: ["Первая инстанция"],
+            fetchedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            seenAt: Date(timeIntervalSince1970: 1_700_000_100))
+        let refreshed = try insert(
+            refreshedContext,
+            movement: movement(for: refreshedContext, level: .appeal, result: "Старое определение",
+                               actID: "appeal-act"),
+            collections: ["Апелляция"],
+            fetchedAt: Date(timeIntervalSince1970: 1_700_000_200),
+            seenAt: Date(timeIntervalSince1970: 1_700_000_300))
+        try store.container.mainContext.save()
+        let survivorKey = survivor.key
+        let refreshedKey = refreshed.key
+        XCTAssertTrue(store.save(projection: .cases([survivorKey, refreshedKey])))
+        let survivorProjectionID = try XCTUnwrap(
+            store.courtActID(caseKey: survivorKey, sourceActID: "survivor-act"))
+        let refreshedProjectionID = try XCTUnwrap(
+            store.courtActID(caseKey: refreshedKey, sourceActID: "appeal-act"))
+
+        let formURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?g2")!
+        let service = ScriptedMovement(
+            formURL: formURL,
+            successMV: movement(for: refreshedContext, level: .appeal, result: "Новое определение",
+                                actID: "appeal-act"))
+        let center = makeCenter(service: service) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let captchaOutcome = await center.refreshForIntent(key: refreshedKey)
+        XCTAssertEqual(captchaOutcome, .captchaRequired)
+        let pendingCaptcha = try XCTUnwrap(center.captchaPendingRequest(forKey: refreshedKey))
+        XCTAssertEqual(pendingCaptcha.formURL, formURL)
+
+        let beforeSurvivor = try XCTUnwrap(store.record(forKey: survivorKey))
+        let beforeRefreshed = try XCTUnwrap(store.record(forKey: refreshedKey))
+        let savedSurvivorMovement = beforeSurvivor.movement
+        let savedSurvivorSnapshot = beforeSurvivor.snapshot
+        let savedSurvivorFetchedAt = beforeSurvivor.movementFetchedAt
+        let savedSurvivorSeenAt = beforeSurvivor.seenAt
+        let savedSurvivorState = beforeSurvivor.identityStateData
+        let savedSurvivorAttempt = beforeSurvivor.sourceRefreshAttempt
+        let savedRefreshedMovement = beforeRefreshed.movement
+        let savedRefreshedSnapshot = beforeRefreshed.snapshot
+        let savedRefreshedFetchedAt = beforeRefreshed.movementFetchedAt
+        let savedRefreshedSeenAt = beforeRefreshed.seenAt
+        let savedRefreshedState = beforeRefreshed.identityStateData
+        let savedRefreshedAttempt = try XCTUnwrap(beforeRefreshed.sourceRefreshAttempt)
+
+        var refreshedCallback: (String, [String: String])?
+        var failed: (String, String)?
+        center.onRefreshed = { refreshedCallback = ($0, $2) }
+        center.onRefreshFailed = { failed = ($0, $1) }
+        store.failNextSaveForTesting = true
+
+        let message = "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
+        let outcome = await center.refreshForIntent(key: refreshedKey)
+
+        XCTAssertEqual(outcome, .failed(message))
+        XCTAssertFalse(store.failNextSaveForTesting)
+        XCTAssertEqual(Set(store.all().map(\.key)), Set([survivorKey, refreshedKey]))
+        let persistedSurvivor = try XCTUnwrap(store.record(forKey: survivorKey))
+        let persistedRefreshed = try XCTUnwrap(store.record(forKey: refreshedKey))
+        XCTAssertEqual(persistedSurvivor.movement, savedSurvivorMovement)
+        XCTAssertEqual(persistedSurvivor.snapshot, savedSurvivorSnapshot)
+        XCTAssertEqual(persistedSurvivor.movementFetchedAt, savedSurvivorFetchedAt)
+        XCTAssertEqual(persistedSurvivor.seenAt, savedSurvivorSeenAt)
+        XCTAssertEqual(persistedSurvivor.identityStateData, savedSurvivorState)
+        XCTAssertEqual(persistedSurvivor.sourceRefreshAttempt, savedSurvivorAttempt)
+        XCTAssertEqual(persistedSurvivor.collectionNames, ["Первая инстанция"])
+        XCTAssertEqual(persistedRefreshed.movement, savedRefreshedMovement)
+        XCTAssertEqual(persistedRefreshed.snapshot, savedRefreshedSnapshot)
+        XCTAssertEqual(persistedRefreshed.movementFetchedAt, savedRefreshedFetchedAt)
+        XCTAssertEqual(persistedRefreshed.seenAt, savedRefreshedSeenAt)
+        XCTAssertEqual(persistedRefreshed.identityStateData, savedRefreshedState)
+        XCTAssertEqual(persistedRefreshed.sourceRefreshAttempt, savedRefreshedAttempt)
+        XCTAssertEqual(persistedRefreshed.collectionNames, ["Апелляция"])
+        XCTAssertEqual(store.courtActID(caseKey: survivorKey, sourceActID: "survivor-act"),
+                       survivorProjectionID)
+        XCTAssertEqual(store.courtActID(caseKey: refreshedKey, sourceActID: "appeal-act"),
+                       refreshedProjectionID)
+        XCTAssertEqual(center.captchaPendingRequest(forKey: refreshedKey), pendingCaptcha)
+        XCTAssertNil(refreshedCallback)
+        XCTAssertEqual(failed?.0, refreshedKey)
+        XCTAssertEqual(failed?.1, message)
+        XCTAssertEqual(center.lastErrors[refreshedKey], message)
+        let calls = await service.calls
+        XCTAssertEqual(calls.count, 2)
+    }
+
     func testIntentRefreshClassifiesFailureUnderReroutedKey() async throws {
         let old = makeContext()
         var canonical = old
@@ -813,6 +961,78 @@ final class RefreshCenterTests: XCTestCase {
 
         XCTAssertEqual(outcome, .captchaRequired)
         XCTAssertEqual(center.captchaPendingGroups.count, 1)
+    }
+
+    func testIntentRefreshSaveFailureKeepsCaptchaPendingAndReportsFailure() async throws {
+        func assertRollback(for context: MovementContext, scenario: String) async throws {
+            let scenarioStore = TrackedStore(inMemory: true)
+            let freshMovement = makeSuccessMovement(court: context.searchCourt)
+            let scenarioFormURL = URL(string: "https://\(context.searchDomain)/modules.php?g1")!
+            let service = ScriptedMovement(formURL: scenarioFormURL, successMV: freshMovement)
+            scenarioStore.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+            let key = try XCTUnwrap(scenarioStore.all().first?.key, scenario)
+            let rec = try XCTUnwrap(scenarioStore.record(forKey: key), scenario)
+            var savedMovement = freshMovement
+            savedMovement.instances[0].judge = "Старый судья"
+            let savedSnapshot = MovementDerivation.snapshot(from: savedMovement, context: context)
+            let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+            let savedSeenAt = Date(timeIntervalSince1970: 1_700_000_100)
+            rec.movement = savedMovement
+            rec.snapshot = savedSnapshot
+            rec.movementFetchedAt = savedFetchedAt
+            rec.seenAt = savedSeenAt
+            XCTAssertTrue(scenarioStore.save(projection: .cases([key])), scenario)
+
+            let center = RefreshCenter(
+                store: scenarioStore,
+                client: SudrfClient(),
+                captchaSolver: CaptchaSolver(provider: NeverUsedProvider()),
+                captchaSettings: CaptchaSettings.shared,
+                autoSolve: { _, _, _, _ in
+                    AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+                },
+                serviceBuilder: { _ in service })
+            let captchaOutcome = await center.refreshForIntent(key: key)
+            XCTAssertEqual(captchaOutcome, .captchaRequired, scenario)
+            let pendingCaptcha = try XCTUnwrap(center.captchaPendingRequest(forKey: key), scenario)
+            XCTAssertEqual(pendingCaptcha.formURL, scenarioFormURL, scenario)
+            let savedAttempt = try XCTUnwrap(
+                scenarioStore.record(forKey: key)?.sourceRefreshAttempt, scenario)
+            XCTAssertEqual(savedAttempt.kind, .captcha, scenario)
+
+            var refreshed = false
+            var failed: (String, String)?
+            center.onRefreshed = { _, _, _ in refreshed = true }
+            center.onRefreshFailed = { failed = ($0, $1) }
+            scenarioStore.failNextSaveForTesting = true
+
+            let message = "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
+            let outcome = await center.refreshForIntent(key: key)
+
+            XCTAssertEqual(outcome, .failed(message), scenario)
+            XCTAssertFalse(scenarioStore.failNextSaveForTesting, scenario)
+            let persisted = try XCTUnwrap(scenarioStore.record(forKey: key), scenario)
+            XCTAssertEqual(persisted.movement, savedMovement, scenario)
+            XCTAssertEqual(persisted.snapshot, savedSnapshot, scenario)
+            XCTAssertEqual(persisted.movementFetchedAt, savedFetchedAt, scenario)
+            XCTAssertEqual(persisted.seenAt, savedSeenAt, scenario)
+            XCTAssertEqual(persisted.sourceRefreshAttempt, savedAttempt, scenario)
+            XCTAssertEqual(center.captchaPendingRequest(forKey: key), pendingCaptcha, scenario)
+            XCTAssertFalse(refreshed, scenario)
+            XCTAssertEqual(failed?.0, key, scenario)
+            XCTAssertEqual(failed?.1, message, scenario)
+            XCTAssertEqual(center.lastErrors[key], message, scenario)
+            let calls = await service.calls
+            XCTAssertEqual(calls.count, 2, scenario)
+        }
+
+        var fallback = makeContext()
+        fallback.caseID = nil
+        try await assertRollback(for: fallback, scenario: "fallback final save")
+
+        var identity = makeContext()
+        identity.caseID = "card-save-failure"
+        try await assertRollback(for: identity, scenario: "identity reconciliation save")
     }
 
     func testIntentRefreshDistinguishesNotFoundAndNetworkFailure() async throws {

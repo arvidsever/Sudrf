@@ -848,10 +848,12 @@ final class RefreshCenter: ObservableObject {
             !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
         } ?? true
         let changed = movementSourceChanged || snapshotSourceChanged
+        let saveFailure = "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
 
         let persisted: TrackedCaseRecord
         var keyRemaps: [String: String] = [:]
         var publishedMovement = merged
+        let projectionKeys: Set<String>
         if isComplete,
            let identityObservation = TrackedCaseIdentity.observation(
                context: ctx, movement: persistedMovement, attempt: attempt,
@@ -861,15 +863,21 @@ final class RefreshCenter: ObservableObject {
             // establish a card/UID relation and are deliberately kept on the
             // existing record below.
             let before = Set(store.all().map(\.key))
-            persisted = store.reconcileAndUpsert(
+            let reconciliation = store.reconcileAndUpsertReportingSave(
                 context: ctx, snapshot: newSnap, movement: persistedMovement,
                 collections: rec.collectionNames,
                 identityObservation: identityObservation,
-                movementFetchedAt: attempt.provenance.observedAt)
+                movementFetchedAt: attempt.provenance.observedAt,
+                saveChanges: false)
+            guard reconciliation.allSavesSucceeded else {
+                return failure(key, saveFailure)
+            }
+            persisted = reconciliation.record
             let removed = before.subtracting(Set(store.all().map(\.key)))
             keyRemaps = Dictionary(uniqueKeysWithValues: removed.map {
                 ($0, persisted.key)
             })
+            projectionKeys = removed.union([persisted.key])
             // Reconciliation may have merged this refreshed card into a
             // dossier whose survivor already contained other instances and
             // acts. Publish the full persisted projection in that case.
@@ -883,12 +891,15 @@ final class RefreshCenter: ObservableObject {
             // skipped in that case.
             if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
             persisted = rec
+            projectionKeys = [persisted.key]
         }
         persisted.sourceRefreshAttempt = attempt
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
-        store.save(projection: .cases([persisted.key]))
+        guard store.save(projection: .cases(projectionKeys)) else {
+            return failure(key, saveFailure)
+        }
         captchaPending.remove(key: key)
         if persisted.key != key { captchaPending.remove(key: persisted.key) }
         onRefreshed?(persisted.key, publishedMovement, keyRemaps)

@@ -6,6 +6,20 @@ import XCTest
 @testable import SudrfApp
 
 final class CorrectivePassTests: XCTestCase {
+    private struct BootstrapFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private actor BootstrapCallCounter {
+        private(set) var calls = 0
+
+        func increment() -> Int {
+            calls += 1
+            return calls
+        }
+    }
+
     private actor ChunkRetrySummarizer: ActSummarizing {
         private var calls: [String: Int] = [:]
         private var failingID: String?
@@ -390,16 +404,227 @@ final class CorrectivePassTests: XCTestCase {
 
     @MainActor
     func testBootstrapStartsLoadingAndFailsClosed() async {
-        struct ExpectedFailure: LocalizedError {
-            var errorDescription: String? { "bootstrap failed" }
-        }
-        let bootstrap = AppBootstrap(loader: { throw ExpectedFailure() })
+        let bootstrap = AppBootstrap(loader: {
+            throw BootstrapFailure(message: "bootstrap failed")
+        })
         if case .loading = bootstrap.state {} else { XCTFail("первый state должен быть loading") }
         await bootstrap.start()
-        guard case .failed(let message) = bootstrap.state else {
+        guard case .failed(let failure) = bootstrap.state else {
             return XCTFail("ошибка bootstrap не должна создавать рабочий router")
         }
-        XCTAssertEqual(message, "bootstrap failed")
+        XCTAssertEqual(failure.message, "bootstrap failed")
+        XCTAssertNil(failure.storeURL)
+        XCTAssertFalse(failure.canQuarantine)
+    }
+
+    @MainActor
+    func testBootstrapRetryCallsLoaderAgainAndConcurrentRetriesOnlyOnce() async throws {
+        let counter = BootstrapCallCounter()
+        let quarantineCalls = BootstrapCallCounter()
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let bootstrap = AppBootstrap(loader: {
+            let call = await counter.increment()
+            if call == 1 { throw BootstrapFailure(message: "bootstrap failed") }
+            try await Task.sleep(nanoseconds: 25_000_000)
+            return container
+        }, quarantine: { _, _ in
+            _ = await quarantineCalls.increment()
+            return URL(fileURLWithPath: "/tmp/unused-recovery")
+        })
+
+        await bootstrap.start()
+        guard case .failed(let failure) = bootstrap.state else {
+            return XCTFail("первая попытка должна завершиться ошибкой")
+        }
+        XCTAssertEqual(failure.message, "bootstrap failed")
+
+        let firstRetry = Task { await bootstrap.retry() }
+        let secondRetry = Task { await bootstrap.retry() }
+        await firstRetry.value
+        await secondRetry.value
+
+        guard case .ready = bootstrap.state else {
+            return XCTFail("повторная попытка должна открыть контейнер")
+        }
+        let calls = await counter.calls
+        XCTAssertEqual(calls, 2,
+                       "двойное действие не должно запускать второй loader")
+        let performedQuarantines = await quarantineCalls.calls
+        XCTAssertEqual(performedQuarantines, 0,
+                       "retry не должен самовольно запускать quarantine")
+    }
+
+    @MainActor
+    func testBootstrapFirstLaunchFailureCannotQuarantine() async {
+        let quarantineCalls = BootstrapCallCounter()
+        let storeURL = URL(fileURLWithPath: "/tmp/sudrf-fresh/default.store")
+        let bootstrap = AppBootstrap(loader: {
+            throw SudrfStoreBootstrapError(
+                underlying: BootstrapFailure(message: "fresh store failed"),
+                backupDirectory: nil, storeURL: storeURL, hadExistingStore: false)
+        }, quarantine: { _, _ in
+            _ = await quarantineCalls.increment()
+            return URL(fileURLWithPath: "/tmp/should-not-exist")
+        })
+
+        await bootstrap.start()
+        guard case .failed(let failure) = bootstrap.state else {
+            return XCTFail("ошибка первого запуска должна быть failed")
+        }
+        XCTAssertEqual(failure.storeURL, storeURL.standardizedFileURL)
+        XCTAssertFalse(failure.canQuarantine)
+
+        await bootstrap.quarantineStore()
+        guard case .failed = bootstrap.state else {
+            return XCTFail("первый запуск не должен переходить в quarantine")
+        }
+        let performedQuarantines = await quarantineCalls.calls
+        XCTAssertEqual(performedQuarantines, 0)
+    }
+
+    @MainActor
+    func testBootstrapRelaunchWithIncompleteRecoveryStaysBlocked() async {
+        let loaderCalls = BootstrapCallCounter()
+        let quarantineCalls = BootstrapCallCounter()
+        let storeURL = URL(fileURLWithPath: "/tmp/sudrf-partial/default.store")
+        let recoveryDirectory = URL(fileURLWithPath: "/tmp/sudrf-partial/recovery")
+        let bootstrap = AppBootstrap(loader: {
+            _ = await loaderCalls.increment()
+            throw SudrfStoreBootstrapError(
+                underlying: BootstrapFailure(message: "incomplete recovery"),
+                backupDirectory: nil, storeURL: storeURL, hadExistingStore: true,
+                canQuarantine: false, recoveryDirectory: recoveryDirectory)
+        }, quarantine: { _, _ in
+            _ = await quarantineCalls.increment()
+            return URL(fileURLWithPath: "/tmp/should-not-exist")
+        })
+
+        await bootstrap.start()
+        guard case .failed(let failure) = bootstrap.state else {
+            return XCTFail("relaunch с incomplete marker должен быть blocked")
+        }
+        XCTAssertEqual(failure.recoveryDirectory, recoveryDirectory.standardizedFileURL)
+        XCTAssertFalse(failure.canQuarantine)
+
+        await bootstrap.retry()
+        await bootstrap.quarantineStore()
+        let finalLoaderCalls = await loaderCalls.calls
+        let finalQuarantineCalls = await quarantineCalls.calls
+        XCTAssertEqual(finalLoaderCalls, 1)
+        XCTAssertEqual(finalQuarantineCalls, 0)
+        guard case .failed(let stillBlocked) = bootstrap.state else {
+            return XCTFail("recovery actions не должны обходить incomplete marker")
+        }
+        XCTAssertEqual(stillBlocked.recoveryDirectory,
+                       recoveryDirectory.standardizedFileURL)
+    }
+
+    @MainActor
+    func testBootstrapQuarantineFailureKeepsRetryCapabilityOnlyAfterCompleteRollback() async {
+        let loaderCalls = BootstrapCallCounter()
+        let quarantineCalls = BootstrapCallCounter()
+        let storeURL = URL(fileURLWithPath: "/tmp/sudrf-unopenable/default.store")
+        let partialDirectory = URL(fileURLWithPath: "/tmp/sudrf-partial-recovery")
+        let bootstrap = AppBootstrap(loader: {
+            _ = await loaderCalls.increment()
+            throw SudrfStoreBootstrapError(
+                underlying: BootstrapFailure(message: "store unreadable"),
+                backupDirectory: nil, storeURL: storeURL, hadExistingStore: true)
+        }, quarantine: { url, _ in
+            let call = await quarantineCalls.increment()
+            if call == 1 {
+                throw SudrfStoreQuarantineError(
+                    underlying: BootstrapFailure(message: "move failed"),
+                    storeURL: url, recoveryDirectory: nil, rollbackError: nil)
+            }
+            throw SudrfStoreQuarantineError(
+                underlying: BootstrapFailure(message: "rollback failed"),
+                storeURL: url, recoveryDirectory: partialDirectory,
+                rollbackError: BootstrapFailure(message: "rollback failed"))
+        })
+
+        await bootstrap.start()
+        await bootstrap.quarantineStore()
+        guard case .failed(let retryable) = bootstrap.state else {
+            return XCTFail("ошибка полного rollback должна остаться failed")
+        }
+        XCTAssertTrue(retryable.canQuarantine)
+        XCTAssertNil(retryable.recoveryDirectory)
+
+        await bootstrap.quarantineStore()
+        guard case .failed(let partial) = bootstrap.state else {
+            return XCTFail("ошибка неполного rollback должна остаться failed")
+        }
+        XCTAssertFalse(partial.canQuarantine)
+        XCTAssertEqual(partial.recoveryDirectory, partialDirectory)
+
+        let callsBeforeRetry = await loaderCalls.calls
+        await bootstrap.retry()
+        let callsAfterRetry = await loaderCalls.calls
+        XCTAssertEqual(callsAfterRetry, callsBeforeRetry,
+                       "при неполном rollback loader должен оставаться заблокирован")
+        guard case .failed(let stillBlocked) = bootstrap.state else {
+            return XCTFail("неполный rollback должен оставлять failed state")
+        }
+        XCTAssertEqual(stillBlocked.recoveryDirectory, partialDirectory)
+    }
+
+    @MainActor
+    func testBootstrapQuarantineAndFreshStartFailureStayInRecoveryState() async throws {
+        let counter = BootstrapCallCounter()
+        let quarantineCalls = BootstrapCallCounter()
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let storeURL = URL(fileURLWithPath: "/tmp/sudrf-unopenable/default.store")
+        let quarantineDirectory = URL(fileURLWithPath: "/tmp/sudrf-unopenable-recovery")
+        let bootstrap = AppBootstrap(loader: {
+            switch await counter.increment() {
+            case 1:
+                throw SudrfStoreBootstrapError(
+                    underlying: BootstrapFailure(message: "store unreadable"),
+                    backupDirectory: nil, storeURL: storeURL, hadExistingStore: true)
+            case 2:
+                throw BootstrapFailure(message: "fresh start failed")
+            default:
+                return container
+            }
+        }, quarantine: { _, _ in
+            _ = await quarantineCalls.increment()
+            try await Task.sleep(nanoseconds: 25_000_000)
+            return quarantineDirectory
+        })
+
+        await bootstrap.start()
+        guard case .failed(let failure) = bootstrap.state else {
+            return XCTFail("существующая неоткрываемая база должна быть в failed")
+        }
+        XCTAssertEqual(failure.storeURL, storeURL.standardizedFileURL)
+        XCTAssertTrue(failure.canQuarantine)
+
+        let firstQuarantine = Task { await bootstrap.quarantineStore() }
+        let secondQuarantine = Task { await bootstrap.quarantineStore() }
+        await firstQuarantine.value
+        await secondQuarantine.value
+        guard case .quarantined(let quarantined) = bootstrap.state else {
+            return XCTFail("после quarantine должен быть промежуточный recovery state")
+        }
+        XCTAssertEqual(quarantined.directory, quarantineDirectory)
+        XCTAssertNil(quarantined.freshStartError)
+        let performedQuarantines = await quarantineCalls.calls
+        XCTAssertEqual(performedQuarantines, 1)
+
+        await bootstrap.continueWithCleanDatabase()
+        guard case .quarantined(let failedFreshStart) = bootstrap.state else {
+            return XCTFail("ошибка fresh start должна оставить recovery screen")
+        }
+        XCTAssertEqual(failedFreshStart.directory, quarantineDirectory)
+        XCTAssertEqual(failedFreshStart.freshStartError, "fresh start failed")
+
+        await bootstrap.continueWithCleanDatabase()
+        guard case .ready = bootstrap.state else {
+            return XCTFail("повторная команда fresh start должна открыть контейнер")
+        }
+        let totalCalls = await counter.calls
+        XCTAssertEqual(totalCalls, 3)
     }
 
     @MainActor

@@ -554,7 +554,8 @@ final class TrackedCaseRepairCoordinator {
                             duplicates: [TrackedCaseRecord],
                             canonicalContext: MovementContext,
                             canonicalCard: CaseCard?,
-                            identityState: LogicalCaseState? = nil) -> [String: String]? {
+                            identityState: LogicalCaseState? = nil,
+                            saveChanges: Bool = true) -> [String: String]? {
         let all = [survivor] + duplicates
         let oldKeys = all.map(\.key)
         let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
@@ -633,7 +634,8 @@ final class TrackedCaseRepairCoordinator {
         }
         for rec in duplicates { store.deleteWithoutSaving(rec) }
         store.prepareCourtActsForReroute(from: oldKeys, to: survivor.key)
-        guard store.save(projection: .cases(Set(oldKeys + [survivor.key]))) else { return nil }
+        if saveChanges,
+           !store.save(projection: .cases(Set(oldKeys + [survivor.key]))) { return nil }
         return Dictionary(uniqueKeysWithValues: oldKeys.filter { $0 != survivor.key }
             .map { ($0, survivor.key) })
     }

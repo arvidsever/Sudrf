@@ -514,6 +514,11 @@ final class TrackedStore {
     /// Test seam for the rollback path used by the atomic identity merge.
     var failNextSaveForTesting = false
 
+    struct ReconciliationSaveResult {
+        let record: TrackedCaseRecord
+        let allSavesSucceeded: Bool
+    }
+
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
     /// Этот initializer предназначен для тестов. Production-контейнер
@@ -704,6 +709,25 @@ final class TrackedStore {
                             canonicalCard: CaseCard? = nil,
                             movementFetchedAt: Date? = nil,
                             updatesMovementFetchedAt: Bool = true) -> TrackedCaseRecord {
+        reconcileAndUpsertReportingSave(
+            context: ctx, snapshot: snap, movement: mv, collections: collections,
+            identityObservation: identityObservation,
+            adoptLinkedPresentation: adoptLinkedPresentation, canonicalCard: canonicalCard,
+            movementFetchedAt: movementFetchedAt,
+            updatesMovementFetchedAt: updatesMovementFetchedAt).record
+    }
+
+    func reconcileAndUpsertReportingSave(
+        context ctx: MovementContext, snapshot snap: CaseSnapshot?,
+        movement mv: CaseMovement? = nil,
+        collections: [String],
+        identityObservation: SourceCardObservation? = nil,
+        adoptLinkedPresentation: Bool = false,
+        canonicalCard: CaseCard? = nil,
+        movementFetchedAt: Date? = nil,
+        updatesMovementFetchedAt: Bool = true,
+        saveChanges: Bool = true
+    ) -> ReconciliationSaveResult {
         let observation = identityObservation
             ?? TrackedCaseIdentity.observation(context: ctx, movement: mv)
         guard let observation, observation.isUsableSnapshot,
@@ -711,7 +735,8 @@ final class TrackedStore {
             return upsertCandidate(context: ctx, snapshot: snap, movement: mv,
                                    collections: collections,
                                    movementFetchedAt: movementFetchedAt,
-                                   updatesMovementFetchedAt: updatesMovementFetchedAt)
+                                   updatesMovementFetchedAt: updatesMovementFetchedAt,
+                                   saveChanges: saveChanges)
         }
 
         let records = all()
@@ -723,7 +748,8 @@ final class TrackedStore {
             return upsertCandidate(context: ctx, snapshot: snap, movement: mv,
                                    collections: collections,
                                    movementFetchedAt: movementFetchedAt,
-                                   updatesMovementFetchedAt: updatesMovementFetchedAt)
+                                   updatesMovementFetchedAt: updatesMovementFetchedAt,
+                                   saveChanges: saveChanges)
         }
 
         let remainingIDs = Set(states.map(\.logicalCaseID))
@@ -749,23 +775,25 @@ final class TrackedStore {
                 guard TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: ctx, canonicalCard: canonicalCard,
-                    identityState: persistedState) != nil else {
+                    identityState: persistedState, saveChanges: saveChanges) != nil else {
                     storeLog.error("Atomic official-relation merge failed; retained pre-merge records.")
-                    return survivor
+                    return ReconciliationSaveResult(record: survivor, allSavesSucceeded: false)
                 }
-                return survivor
+                return ReconciliationSaveResult(record: survivor, allSavesSucceeded: true)
             }
+            let mergeScope = Set(mergedGroup.map(\.key))
             if !duplicates.isEmpty {
-                // Merge user-visible projections before writing the new graph.
+                // Keep the merge and refreshed projection in one transaction:
+                // a failed refresh must restore every duplicate and old key.
                 let canonical = survivor.context ?? ctx
                 guard TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: canonical, canonicalCard: nil,
-                    identityState: persistedState) != nil else {
+                    identityState: persistedState, saveChanges: false) != nil else {
                     // `atomicMerge` already rolled back the ModelContext.
                     // Do not write the partially reconciled graph separately.
                     storeLog.error("Atomic identity merge failed; retained pre-merge records.")
-                    return survivor
+                    return ReconciliationSaveResult(record: survivor, allSavesSucceeded: false)
                 }
             }
 
@@ -799,20 +827,31 @@ final class TrackedStore {
                     projectedSnapshot = cachedSnapshot ?? snap
                 }
             }
-            update(record: survivor, context: ctx, snapshot: projectedSnapshot,
-                   movement: projectedMovement,
-                   collections: collections, identityState: persistedState,
-                   adoptPresentation: adoptsIncomingCard,
-                   addLocator: ownsOrCanClaimLocator,
-                   movementFetchedAt: movementFetchedAt,
-                   updatesMovementFetchedAt: updatesMovementFetchedAt)
-            return survivor
+            let saved = update(record: survivor, context: ctx, snapshot: projectedSnapshot,
+                               movement: projectedMovement,
+                               collections: collections, identityState: persistedState,
+                               adoptPresentation: adoptsIncomingCard,
+                               addLocator: ownsOrCanClaimLocator,
+                               movementFetchedAt: movementFetchedAt,
+                               updatesMovementFetchedAt: updatesMovementFetchedAt,
+                               saveChanges: saveChanges && duplicates.isEmpty)
+            let allSavesSucceeded: Bool
+            if duplicates.isEmpty {
+                allSavesSucceeded = saved
+            } else if saveChanges {
+                allSavesSucceeded = save(projection: .cases(mergeScope))
+            } else {
+                allSavesSucceeded = true
+            }
+            return ReconciliationSaveResult(record: survivor,
+                                            allSavesSucceeded: allSavesSucceeded)
         }
 
         return insert(context: ctx, snapshot: snap, movement: mv, collections: collections,
                       logicalCaseID: state.logicalCaseID, identityState: state,
                       movementFetchedAt: movementFetchedAt,
-                      updatesMovementFetchedAt: updatesMovementFetchedAt)
+                      updatesMovementFetchedAt: updatesMovementFetchedAt,
+                      saveChanges: saveChanges)
     }
 
     /// Persistent projections have a user-visible canonical card even though
@@ -855,20 +894,23 @@ final class TrackedStore {
     private func upsertCandidate(context movementContext: MovementContext,
                                  snapshot: CaseSnapshot?, movement: CaseMovement?,
                                  collections: [String], movementFetchedAt: Date?,
-                                 updatesMovementFetchedAt: Bool)
-        -> TrackedCaseRecord {
+                                 updatesMovementFetchedAt: Bool,
+                                 saveChanges: Bool)
+        -> ReconciliationSaveResult {
         if let existing = record(forKey: movementContext.key) {
-            update(record: existing, context: movementContext, snapshot: snapshot,
-                   movement: movement, collections: collections, identityState: nil,
-                   adoptPresentation: true, addLocator: true,
-                   movementFetchedAt: movementFetchedAt,
-                   updatesMovementFetchedAt: updatesMovementFetchedAt)
-            return existing
+            let saved = update(record: existing, context: movementContext, snapshot: snapshot,
+                               movement: movement, collections: collections, identityState: nil,
+                               adoptPresentation: true, addLocator: true,
+                               movementFetchedAt: movementFetchedAt,
+                               updatesMovementFetchedAt: updatesMovementFetchedAt,
+                               saveChanges: saveChanges)
+            return ReconciliationSaveResult(record: existing, allSavesSucceeded: saved)
         }
         return insert(context: movementContext, snapshot: snapshot, movement: movement,
                       collections: collections, logicalCaseID: UUID(), identityState: nil,
                       movementFetchedAt: movementFetchedAt,
-                      updatesMovementFetchedAt: updatesMovementFetchedAt)
+                      updatesMovementFetchedAt: updatesMovementFetchedAt,
+                      saveChanges: saveChanges)
     }
 
     private func update(record: TrackedCaseRecord, context movementContext: MovementContext,
@@ -876,7 +918,8 @@ final class TrackedStore {
                         collections: [String], identityState: LogicalCaseState?,
                         adoptPresentation: Bool, addLocator: Bool,
                         movementFetchedAt: Date?,
-                        updatesMovementFetchedAt: Bool) {
+                        updatesMovementFetchedAt: Bool,
+                        saveChanges: Bool = true) -> Bool {
         let oldCaseNumber = record.caseNumber
         let oldJudicialUID = record.judicialUID
         if adoptPresentation {
@@ -910,14 +953,16 @@ final class TrackedStore {
            oldCaseNumber != record.caseNumber || oldJudicialUID != record.judicialUID {
             synchronizeCourtActMetadata(caseKey: record.key)
         }
-        _ = save(projection: movement == nil ? .none : .cases([record.key]))
+        guard saveChanges else { return true }
+        return save(projection: movement == nil ? .none : .cases([record.key]))
     }
 
     private func insert(context movementContext: MovementContext, snapshot: CaseSnapshot?,
                         movement: CaseMovement?, collections: [String],
                         logicalCaseID: UUID, identityState: LogicalCaseState?,
                         movementFetchedAt: Date?,
-                        updatesMovementFetchedAt: Bool) -> TrackedCaseRecord {
+                        updatesMovementFetchedAt: Bool,
+                        saveChanges: Bool) -> ReconciliationSaveResult {
         let sourceLocatorTaken = record(forLocator: movementContext.key) != nil
         let key = sourceLocatorTaken
             ? "case/\(logicalCaseID.uuidString.lowercased())" : movementContext.key
@@ -943,8 +988,10 @@ final class TrackedStore {
             TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: record), to: record)
         }
         context.insert(record)
-        _ = save(projection: movement == nil ? .none : .cases([record.key]))
-        return record
+        let saved = saveChanges
+            ? save(projection: movement == nil ? .none : .cases([record.key]))
+            : true
+        return ReconciliationSaveResult(record: record, allSavesSucceeded: saved)
     }
 
     func remove(key: String) {

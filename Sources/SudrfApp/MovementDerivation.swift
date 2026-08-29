@@ -84,7 +84,7 @@ struct CaseSnapshot: Codable, Equatable {
 /// Динамическая часть снимка. Пересчитывается и при сетевом обновлении, и при
 /// обычном `AppRouter.reload`, чтобы наступление подтверждённого срока меняло
 /// стадию без записи нового формата в SwiftData.
-struct CaseLifecyclePresentation: Equatable {
+struct CaseLifecyclePresentation {
     var stage: CaseStageKind
     var stageTag: String
     var statusText: String

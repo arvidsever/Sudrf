@@ -46,7 +46,7 @@ public enum MagistrateResultsParser {
         do { doc = try SwiftSoup.parse(html) }
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать выдачу мирового участка") }
 
-        let anchors = (try? doc.select("#search_results a[href*=op=cs][href*=case_id]").array()) ?? []
+        let anchors = magistrateCardAnchors(in: doc)
         var rows: [CaseSearchResult] = []
         for a in anchors {
             let href = (try? a.attr("href")) ?? ""
@@ -116,6 +116,19 @@ public enum MagistrateResultsParser {
             if seen.insert(key).inserted { out.append(r) }
         }
         return out
+    }
+}
+
+/// Ссылки на карточки встречаются и в старой форме `op=cs`, и в новой
+/// `name_op=case`. Узкий селектор не позволяет посторонней ссылке с `case_id`
+/// выдать неизвестную страницу за разобранную выдачу.
+private func magistrateCardAnchors(in doc: Document) -> [Element] {
+    let candidates = (try? doc.select("#search_results a[href*=case_id]").array()) ?? []
+    return candidates.filter { anchor in
+        let href = (try? anchor.attr("href")) ?? ""
+        guard MagistrateResultsParser.queryValue("case_id", in: href) != nil else { return false }
+        return MagistrateResultsParser.queryValue("op", in: href) == "cs"
+            || MagistrateResultsParser.queryValue("name_op", in: href) == "case"
     }
 }
 
@@ -301,45 +314,50 @@ public actor MagistrateClient: CaseProviding {
         let builder = MagistrateURLBuilder(court: court)
         let firstURL = try builder.searchURL(cartoteka: cartoteka, field: field, value: value)
         let firstHTML = try await client.fetchHTML(firstURL)
-        if CaptchaDetector.hasCaptcha(in: firstHTML) {
-            throw SudrfError.captchaRequired(formURL: try builder.formURL())
-        }
-        // v0.38.10: проверяем на .captchaRejected (через общий
-        // SearchPageClassifier) ДО MagistratePageClassifier —
-        // если суд отверг наш токен, это другой диагноз, чем
-        // «неизвестный формат». Дамп отдельно и продолжаем общий ручной
-        // captcha-flow, как для федеральных судов.
-        if SearchPageClassifier.classify(html: firstHTML) == .captchaRejected {
+        let firstKind = MagistratePageClassifier.classify(html: firstHTML)
+        if firstKind == .captchaRejected {
+            // Отвергнутый код — другой диагноз, чем неизвестный формат.
             SearchDiagnostics.dumpCaptchaRejected(data: Data(firstHTML.utf8), host: court.domain)
             throw SudrfError.captchaRequired(formURL: try builder.formURL())
         }
-        if SearchPageClassifier.classify(html: firstHTML) == .maintenance {
+        if firstKind == .captcha {
+            throw SudrfError.captchaRequired(formURL: try builder.formURL())
+        }
+        if firstKind == .maintenance {
             throw SudrfError.sourceMaintenance(domain: court.domain)
         }
-        guard MagistratePageClassifier.classify(html: firstHTML) != .unrecognized else {
+        guard firstKind != .unrecognized else {
             throw SudrfError.searchModuleUnavailable(domain: court.domain)
         }
         var rows = try MagistrateResultsParser.parse(html: firstHTML, court: court)
+        if firstKind == .results, rows.isEmpty {
+            throw SudrfError.searchModuleUnavailable(domain: court.domain)
+        }
         let pages = MagistrateResultsParser.pageNumbers(html: firstHTML)
             .filter { $0 > 0 && $0 < maxPages }
         for page in pages {
             let url = try builder.searchURL(cartoteka: cartoteka, field: field,
                                             value: value, page: page)
             let html = try await client.fetchHTML(url)
-            if CaptchaDetector.hasCaptcha(in: html) {
-                throw SudrfError.captchaRequired(formURL: try builder.formURL())
-            }
-            if SearchPageClassifier.classify(html: html) == .captchaRejected {
+            let pageKind = MagistratePageClassifier.classify(html: html)
+            if pageKind == .captchaRejected {
                 SearchDiagnostics.dumpCaptchaRejected(data: Data(html.utf8), host: court.domain)
                 throw SudrfError.captchaRequired(formURL: try builder.formURL())
             }
-            if SearchPageClassifier.classify(html: html) == .maintenance {
+            if pageKind == .captcha {
+                throw SudrfError.captchaRequired(formURL: try builder.formURL())
+            }
+            if pageKind == .maintenance {
                 throw SudrfError.sourceMaintenance(domain: court.domain)
             }
-            if SearchPageClassifier.classify(html: html) == .unrecognized {
+            if pageKind == .unrecognized {
                 throw SudrfError.searchModuleUnavailable(domain: court.domain)
             }
-            rows += try MagistrateResultsParser.parse(html: html, court: court)
+            let pageRows = try MagistrateResultsParser.parse(html: html, court: court)
+            if pageKind == .results, pageRows.isEmpty {
+                throw SudrfError.searchModuleUnavailable(domain: court.domain)
+            }
+            rows += pageRows
         }
         return MagistrateResultsParser.deduplicated(rows)
     }
@@ -380,20 +398,46 @@ public actor MagistrateClient: CaseProviding {
 
 public enum MagistratePageClassifier {
     public static func classify(html: String) -> SearchPageKind {
+        if SearchPageClassifier.captchaRejectedMarkers.contains(where: html.contains) {
+            return .captchaRejected
+        }
         if CaptchaDetector.hasCaptcha(in: html) { return .captcha }
-        if SearchPageClassifier.classify(html: html) == .maintenance { return .maintenance }
-        if let doc = try? SwiftSoup.parse(html),
-           let anchors = try? doc.select("a[href*=op=cs][href*=case_id]"),
-           anchors.size() > 0 {
+        let commonKind = SearchPageClassifier.classify(html: html)
+        if commonKind == .captcha || commonKind == .captchaRejected || commonKind == .maintenance {
+            return commonKind
+        }
+        if let doc = try? SwiftSoup.parse(html), !magistrateCardAnchors(in: doc).isEmpty {
             return .results
         }
-        if html.contains("Найдено дел: 0") || html.contains("Данных по запросу не обнаружено")
-            || html.contains("Ничего не найдено") {
+        if [
+            "Данных по запросу не обнаружено",
+            "Данных по запросу не найдено",
+            "Ничего не найдено"
+        ].contains(where: html.localizedCaseInsensitiveContains) {
             return .empty
         }
-        if html.contains("id=\"search_results\"") || html.contains("case-count") {
-            return .empty
+        if let count = resultCount(in: html) {
+            return count == 0 ? .empty : .unrecognized
         }
         return .unrecognized
+    }
+
+    private static func resultCount(in html: String) -> Int? {
+        let patterns = [
+            #"Найдено\s+дел\s*:(?:\s|&nbsp;|&#160;|&#xA0;|<[^>]+>)*(\d+)"#,
+            #"Всего\s+по\s+запросу\s+найдено\s*[-—:]?(?:\s|&nbsp;|&#160;|&#xA0;|<[^>]+>)*(\d+)"#
+        ]
+        let ns = html as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern,
+                                                         options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: html, range: range),
+                  match.numberOfRanges > 1 else { continue }
+            if let count = Int(ns.substring(with: match.range(at: 1))) {
+                return count
+            }
+        }
+        return nil
     }
 }

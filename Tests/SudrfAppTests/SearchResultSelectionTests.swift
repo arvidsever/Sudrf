@@ -1,5 +1,5 @@
 import XCTest
-import SudrfKit
+@testable import SudrfKit
 @testable import SudrfApp
 @testable import CaptchaSolver
 
@@ -81,6 +81,35 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testMagistrateCardFailureKeepsSuccessfulListing() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateListingAndCardStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let model = SearchModel(client: client)
+        let court = SearchModel.CourtOption(
+            domain: "example.msudrf.ru", title: "Судебный участок № 2", level: .magistrate
+        )
+        model.tier = .magistrate
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "adm"
+        model.queryName = "Новикова"
+
+        await model.runSearch()
+
+        let listed = try XCTUnwrap(model.results.first)
+        XCTAssertEqual(listed.caseNumber, "5-10/2026")
+        XCTAssertEqual(model.status, "Найдено: 1 (ФИО)")
+
+        await model.openCard(listed)
+
+        XCTAssertEqual(model.results.map(\.caseNumber), ["5-10/2026"])
+        XCTAssertEqual(model.selectedResult?.caseNumber, "5-10/2026")
+        XCTAssertTrue(model.status.contains("Карточка дела временно недоступна"))
+        XCTAssertTrue(model.actText.isEmpty)
+    }
+
+    @MainActor
     func testCaptchaCorpusBootstrapUsesSubmittedTokenAfterStoreOverwrite() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("SearchModelCorpusTests-\(UUID().uuidString)")
@@ -131,4 +160,35 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertEqual(count, 0)
         XCTAssertNotNil(model.lastSubmittedCaptcha)
     }
+}
+
+private final class MagistrateListingAndCardStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let operation = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first { $0.name == "op" }?.value
+        let body: String
+        if operation == "cs" {
+            body = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        } else {
+            body = """
+            <div id="search_results"><div class="case-count">Найдено дел: <b>1</b></div>
+              <table><tr><td><a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=10&amp;delo_id=1500001">5-10/2026</a></td></tr></table>
+            </div>
+            """
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

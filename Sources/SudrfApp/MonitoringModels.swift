@@ -16,7 +16,7 @@ enum Palette {
     static let green     = Color(red: 0.114, green: 0.478, blue: 0.239)   // #1d7a3d — завершено / в силе
 
     // RawRepresentable — чтобы цвет чипа сериализовался в снимок дела.
-    enum Chip: String { case blue, gray, green, proposed, confirmed }
+    enum Chip: String, Equatable { case blue, gray, green, proposed, confirmed }
 
     static func chipFg(_ c: Chip) -> Color {
         switch c {

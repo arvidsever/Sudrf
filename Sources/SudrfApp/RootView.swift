@@ -14,34 +14,119 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class AppBootstrap: ObservableObject {
+    struct Failure: Equatable {
+        let message: String
+        let storeURL: URL?
+        let canQuarantine: Bool
+        let recoveryDirectory: URL?
+    }
+
+    struct Quarantined: Equatable {
+        let directory: URL
+        let freshStartError: String?
+    }
+
     enum State {
         case loading
         case ready(AppRouter)
-        case failed(String)
+        case failed(Failure)
+        case quarantined(Quarantined)
     }
 
     @Published private(set) var state: State = .loading
-    private var started = false
+    private var operationInFlight = false
     private let loader: @Sendable () async throws -> ModelContainer
+    private let quarantine: @Sendable (URL, String) async throws -> URL
 
     init(loader: @escaping @Sendable () async throws -> ModelContainer = {
         try await Task.detached(priority: .userInitiated) {
             try PersistentStoreBootstrapper().prepareProduction()
         }.value
-    }) {
+    }, quarantine: (@Sendable (URL, String) async throws -> URL)? = nil) {
         self.loader = loader
+        self.quarantine = quarantine ?? { storeURL, message in
+            try await Task.detached(priority: .userInitiated) {
+                let error = NSError(
+                    domain: "ru.sudrf.app.store-recovery", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: message])
+                return try SudrfPersistentStoreBackup.quarantineUnopenableStore(
+                    storeURL: storeURL, error: error)
+            }.value
+        }
     }
 
     func start() async {
-        guard !started else { return }
-        started = true
+        guard case .loading = state else { return }
+        await load()
+    }
+
+    func retry() async {
+        guard !operationInFlight,
+              case .failed(let failure) = state,
+              failure.recoveryDirectory == nil else { return }
+        state = .loading
+        await load()
+    }
+
+    func quarantineStore() async {
+        guard !operationInFlight,
+              case .failed(let failure) = state,
+              failure.canQuarantine,
+              let storeURL = failure.storeURL else { return }
+        operationInFlight = true
+        defer { operationInFlight = false }
+        do {
+            let directory = try await quarantine(storeURL, failure.message)
+            state = .quarantined(Quarantined(
+                directory: directory, freshStartError: nil))
+        } catch {
+            let recoveryDirectory = (error as? SudrfStoreQuarantineError)?.recoveryDirectory
+            state = .failed(Failure(
+                message: error.localizedDescription,
+                storeURL: storeURL,
+                canQuarantine: recoveryDirectory == nil && failure.canQuarantine,
+                recoveryDirectory: recoveryDirectory ?? failure.recoveryDirectory))
+        }
+    }
+
+    /// После карантина это единственная команда, которая может создать новый
+    /// store. Та же операция используется для повторной попытки после ошибки.
+    func continueWithCleanDatabase() async {
+        guard !operationInFlight,
+              case .quarantined(let quarantined) = state else { return }
+        state = .loading
+        await load(keeping: quarantined)
+    }
+
+    private func load(keeping quarantined: Quarantined? = nil) async {
+        guard !operationInFlight else { return }
+        operationInFlight = true
         do {
             let container = try await loader()
             state = .ready(try AppRouter(
                 modelContainer: container, modelContainerIsPrepared: true))
         } catch {
-            state = .failed(error.localizedDescription)
+            let failure = makeFailure(from: error)
+            if let quarantined {
+                state = .quarantined(Quarantined(
+                    directory: quarantined.directory,
+                    freshStartError: failure.message))
+            } else {
+                state = .failed(failure)
+            }
         }
+        operationInFlight = false
+    }
+
+    private func makeFailure(from error: Error) -> Failure {
+        guard let bootstrapError = error as? SudrfStoreBootstrapError else {
+            return Failure(message: error.localizedDescription, storeURL: nil,
+                           canQuarantine: false, recoveryDirectory: nil)
+        }
+        return Failure(message: bootstrapError.localizedDescription,
+                       storeURL: bootstrapError.storeURL,
+                       canQuarantine: bootstrapError.canQuarantine,
+                       recoveryDirectory: bootstrapError.recoveryDirectory)
     }
 }
 
@@ -55,8 +140,14 @@ struct RootView: View {
                 .task { await bootstrap.start() }
         case .ready(let router):
             OperationalRootView(router: router)
-        case .failed(let message):
-            StorageStartupFailureView(message: message)
+        case .failed(let failure):
+            StorageStartupFailureView(failure: failure,
+                                      onRetry: { Task { await bootstrap.retry() } },
+                                      onQuarantine: { Task { await bootstrap.quarantineStore() } })
+        case .quarantined(let quarantined):
+            StorageQuarantinedView(
+                quarantined: quarantined,
+                onContinue: { Task { await bootstrap.continueWithCleanDatabase() } })
         }
     }
 }
@@ -215,7 +306,10 @@ private struct SpotlightOnboardingView: View {
 }
 
 private struct StorageStartupFailureView: View {
-    let message: String
+    let failure: AppBootstrap.Failure
+    let onRetry: () -> Void
+    let onQuarantine: () -> Void
+    @State private var showingQuarantineConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -224,17 +318,104 @@ private struct StorageStartupFailureView: View {
                 .foregroundStyle(.red)
             Text("Чтобы не потерять отслеживаемые дела, приложение остановило работу с базой.")
                 .font(.system(size: 13, weight: .semibold))
-            Text(message)
+            if let storeURL = failure.storeURL {
+                Text("Путь базы: \(storeURL.path)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.secondary)
+            }
+            Text(failure.message)
                 .font(.system(size: 11.5, design: .monospaced))
                 .textSelection(.enabled)
                 .foregroundStyle(.secondary)
+            if let recoveryDirectory = failure.recoveryDirectory {
+                Text("Неполный карантин сохранён здесь: \(recoveryDirectory.path)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.orange)
+            }
             Text("Закройте Sudrf перед восстановлением файлов.")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                if failure.recoveryDirectory == nil {
+                    Button("Попробовать ещё раз", action: onRetry)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
+                if let recoveryDirectory = failure.recoveryDirectory {
+                    Button("Показать восстановление в Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([recoveryDirectory])
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if failure.canQuarantine, failure.storeURL != nil {
+                    Button("Отложить базу и начать заново…", role: .destructive) {
+                        showingQuarantineConfirmation = true
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
+            }
         }
         .padding(24)
         .frame(maxWidth: 620, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.red.opacity(0.25)))
+        .shadow(radius: 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.98))
+        .confirmationDialog(
+            "Отложить неоткрываемую базу?",
+            isPresented: $showingQuarantineConfirmation,
+            titleVisibility: .visible) {
+                Button("Отложить базу и начать заново", role: .destructive,
+                       action: onQuarantine)
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Файлы будут перемещены в отдельную папку без удаления. Новая база появится только после следующего подтверждения.")
+            }
+    }
+}
+
+private struct StorageQuarantinedView: View {
+    let quarantined: AppBootstrap.Quarantined
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Старая база отложена", systemImage: "externaldrive.badge.checkmark")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.orange)
+            Text("Исходные файлы сохранены в отдельной папке. Проверьте её перед созданием чистой базы.")
+                .font(.system(size: 13, weight: .semibold))
+            Text(quarantined.directory.path)
+                .font(.system(size: 11.5, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
+            if let freshStartError = quarantined.freshStartError {
+                Text("Не удалось создать чистую базу: \(freshStartError)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(.red)
+            }
+            HStack(spacing: 10) {
+                Button("Показать в Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([quarantined.directory])
+                }
+                .buttonStyle(.bordered)
+                Button(
+                    quarantined.freshStartError == nil
+                        ? "Продолжить с чистой базой"
+                        : "Повторить создание чистой базы",
+                    action: onContinue)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: 620, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.orange.opacity(0.3)))
         .shadow(radius: 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.98))

@@ -4,6 +4,15 @@ import SwiftData
 import os
 
 private let backupLog = Logger(subsystem: "ru.sudrf.app", category: "StoreBackup")
+private let storeBootstrapLog = Logger(subsystem: "ru.sudrf.app", category: "StoreBootstrap")
+
+private let storeBootstrapBundleIdentifier = Bundle.main.bundleIdentifier ?? "unknown"
+private let storeBootstrapAppVersion: String = {
+    let info = Bundle.main.infoDictionary ?? [:]
+    let shortVersion = info["CFBundleShortVersionString"] as? String ?? "unknown"
+    let build = info["CFBundleVersion"] as? String ?? "unknown"
+    return shortVersion + " (" + build + ")"
+}()
 
 // MARK: - SwiftData schema and shared container
 
@@ -514,15 +523,21 @@ actor PersistentStoreBootstrapper {
     func prepareProduction(storeURL: URL? = nil,
                            defaultsSuiteName: String? = nil) throws -> ModelContainer {
         let defaults = defaultsSuiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
-        let storeURL = try storeURL ?? SudrfPersistentStoreLocation.productionURL()
+        let storeURL = (try storeURL ?? SudrfPersistentStoreLocation.productionURL())
+            .resolvingSymlinksInPath().standardizedFileURL
         // Замеряем ДО всего: от этого зависит, есть ли что терять.
         let hadExistingStore = FileManager.default.fileExists(atPath: storeURL.path)
+        logStartup(storeURL: storeURL, outcome: "not_started",
+                   newlyCreated: !hadExistingStore)
         var backup: URL?
         do {
             backup = try SudrfPersistentStoreBackup.prepare(storeURL: storeURL,
                                                              defaults: defaults)
-            return try open(storeURL: storeURL, defaults: defaults)
+            return try open(storeURL: storeURL, defaults: defaults,
+                            newlyCreated: !hadExistingStore)
         } catch {
+            logStartup(storeURL: storeURL, outcome: "failure",
+                       newlyCreated: !hadExistingStore, error: error)
             // Первого запуска это касаться не должно. Базы до нас не было,
             // отслеживаемых дел тоже — значит терять нечего, и упираться в
             // тупик не за что. Убираем обломки неудавшегося создания (их
@@ -538,12 +553,17 @@ actor PersistentStoreBootstrapper {
         }
     }
 
-    private func open(storeURL: URL, defaults: UserDefaults) throws -> ModelContainer {
+    private func open(storeURL: URL, defaults: UserDefaults,
+                      newlyCreated: Bool) throws -> ModelContainer {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         let context = ModelContext(container)
         context.autosaveEnabled = false
         try TrackedStorePreparation.prepare(context: context)
+        let trackedCaseRecordCount = try context.fetch(
+            FetchDescriptor<TrackedCaseRecord>()).count
         SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
+        logStartup(storeURL: storeURL, outcome: "success", newlyCreated: newlyCreated,
+                   trackedCaseRecordCount: trackedCaseRecordCount)
         return container
     }
 
@@ -556,7 +576,42 @@ actor PersistentStoreBootstrapper {
                     URL(fileURLWithPath: storeURL.path + "-shm")] {
             try? FileManager.default.removeItem(at: url)
         }
-        return try open(storeURL: storeURL, defaults: defaults)
+        return try open(storeURL: storeURL, defaults: defaults, newlyCreated: true)
+    }
+
+    private func logStartup(storeURL: URL, outcome: String, newlyCreated: Bool,
+                            trackedCaseRecordCount: Int? = nil, error: Error? = nil) {
+        let sidecars = [
+            ("store", storeURL),
+            ("wal", URL(fileURLWithPath: storeURL.path + "-wal")),
+            ("shm", URL(fileURLWithPath: storeURL.path + "-shm")),
+        ]
+        let fileState = sidecars.map { name, url in
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            let size: String
+            if exists,
+               let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let number = attributes[.size] as? NSNumber {
+                size = String(number.int64Value)
+            } else {
+                size = "unknown"
+            }
+            return name + "Exists=" + String(exists) + " " + name + "Bytes=" + size
+        }.joined(separator: " ")
+        var publicFields = "fileState=" + fileState
+            + " bundle=" + storeBootstrapBundleIdentifier
+            + " appVersion=" + storeBootstrapAppVersion
+            + " schemaVersion=" + String(describing: SudrfSchemaV6.versionIdentifier)
+            + " openOutcome=" + outcome
+            + " newlyCreated=" + String(newlyCreated)
+        if let trackedCaseRecordCount {
+            publicFields += " trackedCaseRecordCount=" + String(trackedCaseRecordCount)
+        }
+        if let error {
+            publicFields += " errorType=" + String(reflecting: type(of: error))
+        }
+        storeBootstrapLog.notice(
+            "storeURL=\(storeURL.path, privacy: .private) \(publicFields, privacy: .public)")
     }
 }
 

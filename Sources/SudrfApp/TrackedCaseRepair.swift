@@ -129,7 +129,7 @@ final class TrackedCaseRepairCoordinator {
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
     private var completedKey: String { "\(Self.migrationID).completed" }
-    private var runningTask: Task<CaseRepairSummary, Never>?
+    private var runningTask: Task<CaseRepairSummary, Error>?
 
     init(store: TrackedStore, client: SudrfClient, originResolver: any CaseOriginResolving,
          defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init,
@@ -158,31 +158,30 @@ final class TrackedCaseRepairCoordinator {
         }
     }
 
-    func runAll() async -> CaseRepairSummary {
-        if let runningTask { return await runningTask.value }
-        let task = Task { @MainActor [self] in await runAllPass() }
+    func runAll() async throws -> CaseRepairSummary {
+        if let runningTask { return try await runningTask.value }
+        let task = Task { @MainActor [self] in try await runAllPass() }
         runningTask = task
-        let summary = await task.value
-        runningTask = nil
-        return summary
+        defer { runningTask = nil }
+        return try await task.value
     }
 
-    private func runAllPass() async -> CaseRepairSummary {
+    private func runAllPass() async throws -> CaseRepairSummary {
         var summary = CaseRepairSummary()
-        let normalized = normalizeStoredKoAPRoutes()
+        let normalized = try normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
 
         // Снимок ключей после локального слияния: сеть не должна работать с уже
         // удалёнными managed objects.
-        let keys = store.all().compactMap { rec -> String? in
+        let keys = try store.allForMutation().compactMap { rec -> String? in
             guard let ctx = rec.context, shouldRepair(ctx) else { return nil }
             return rec.key
         }
         for key in keys {
             guard !Task.isCancelled else { break }
             guard shouldAttempt(key: key) else { continue }
-            await repairHigherAnchor(key: key, summary: &summary)
+            try await repairHigherAnchor(key: key, summary: &summary)
         }
         summary.notFound = Self.unique(summary.notFound)
         summary.ambiguous = Self.unique(summary.ambiguous)
@@ -191,29 +190,30 @@ final class TrackedCaseRepairCoordinator {
 
     /// Точечный preflight для RefreshCenter. Общий reconciler гарантирует,
     /// что refresh продолжится уже по каноническому persistent locator.
-    func repairIfNeeded(key: String) async -> Outcome {
+    func repairIfNeeded(key: String) async throws -> Outcome {
         if let runningTask {
-            let summary = await runningTask.value
+            let summary = try await runningTask.value
             return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
         }
         var summary = CaseRepairSummary()
-        let normalized = normalizeStoredKoAPRoutes()
+        let normalized = try normalizeStoredKoAPRoutes()
         summary.rerouted += normalized.count
         summary.affectedCaseKeys.formUnion(normalized.keys)
         let localKey = summary.effectiveKey(for: key)
-        guard let rec = store.record(forLocator: localKey),
+        guard let rec = try store.recordForMutation(forLocator: localKey),
               let ctx = rec.context,
               shouldRepair(ctx),
               shouldAttempt(key: localKey) else {
             return Outcome(effectiveKey: localKey, summary: summary)
         }
-        await repairHigherAnchor(key: localKey, summary: &summary)
+        try await repairHigherAnchor(key: localKey, summary: &summary)
         return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
     }
 
     private func repairHigherAnchor(key: String, summary: inout CaseRepairSummary,
-                                    allowAutoSolve: Bool = true) async {
-        guard let rec = store.record(forLocator: key), let anchorContext = rec.context else { return }
+                                    allowAutoSolve: Bool = true) async throws {
+        guard let rec = try store.recordForMutation(forLocator: key),
+              let anchorContext = rec.context else { return }
         // Самостоятельный материал уже является корректным базовым якорем:
         // он участвует в локальном UID-слиянии, но не требует даже загрузки
         // карточки. Сетевой поиск нужен только 13/13а с проверяемым родителем.
@@ -234,8 +234,8 @@ final class TrackedCaseRepairCoordinator {
                     rec.judicialUID = TrackedStore.normalizedUID(uid)
                 }
                 rec.movementFetchedAt = nil
-                store.synchronizeCourtActMetadata(caseKey: rec.key)
-                _ = store.save()
+                try store.synchronizeCourtActMetadata(caseKey: rec.key)
+                try store.save()
                 summary.rerouted += 1
                 summary.affectedCaseKeys.insert(rec.key)
             }
@@ -246,7 +246,7 @@ final class TrackedCaseRepairCoordinator {
                                             anchorCard: anchorCard)
                 let primaryNumber = CaseNumberPresentation.primary(canonical.caseNumber)
                 if !primaryNumber.isEmpty { canonical.caseNumber = primaryNumber }
-                guard let result = reconcileResolvedOrigin(
+                guard let result = try reconcileResolvedOrigin(
                     anchor: rec, canonicalContext: canonical,
                     canonicalCard: origin.card) else {
                     summary.transient += 1
@@ -278,7 +278,7 @@ final class TrackedCaseRepairCoordinator {
                                                           anchorCard: anchorCard)
             let canonical = makeContext(origin: origin, anchor: effectiveContext,
                                         anchorCard: anchorCard)
-            guard let result = reconcileResolvedOrigin(
+            guard let result = try reconcileResolvedOrigin(
                 anchor: rec, canonicalContext: canonical,
                 canonicalCard: origin.card) else {
                 summary.transient += 1
@@ -296,6 +296,9 @@ final class TrackedCaseRepairCoordinator {
                 summary.reanchored += 1
             }
             summary.merged += result.remaps.count
+        } catch let error as TrackedStoreCommitError {
+            // Rollback leaves both the record and retry/defaults state untouched.
+            throw error
         } catch let error as CaseOriginResolutionError {
             switch error {
             case .noReference:
@@ -339,7 +342,7 @@ final class TrackedCaseRepairCoordinator {
                     if let token = solved.token {
                         await CaptchaTokenStore.shared.store(
                             token, domain: formURL.host ?? anchorContext.searchDomain)
-                        await repairHigherAnchor(
+                        try await repairHigherAnchor(
                             key: key, summary: &summary, allowAutoSolve: false)
                         return
                     }
@@ -391,10 +394,10 @@ final class TrackedCaseRepairCoordinator {
 
     /// Исправляет сохранённые уровни и точные цели без сети. Записи admj без
     /// УИД остаются кандидатами сетевого прохода, где роль уточняется по карточке.
-    private func normalizeStoredKoAPRoutes() -> (count: Int, keys: Set<String>) {
+    private func normalizeStoredKoAPRoutes() throws -> (count: Int, keys: Set<String>) {
         var changedCount = 0
         var changedKeys = Set<String>()
-        for rec in store.all() {
+        for rec in try store.allForMutation() {
             guard let context = rec.context, context.cartotekaId.hasPrefix("adm") else { continue }
             let normalized = normalizedKoAPContext(context, card: nil)
             guard normalized.changed else { continue }
@@ -403,11 +406,11 @@ final class TrackedCaseRepairCoordinator {
                 rec.judicialUID = TrackedStore.normalizedUID(uid)
             }
             rec.movementFetchedAt = nil
-            store.synchronizeCourtActMetadata(caseKey: rec.key)
+            try store.synchronizeCourtActMetadata(caseKey: rec.key)
             changedCount += 1
             changedKeys.insert(rec.key)
         }
-        if changedCount > 0 { _ = store.save() }
+        if changedCount > 0 { try store.save() }
         return (changedCount, changedKeys)
     }
 
@@ -490,14 +493,6 @@ final class TrackedCaseRepairCoordinator {
         return ctx
     }
 
-    @discardableResult
-    private func merge(survivor: TrackedCaseRecord, duplicates: [TrackedCaseRecord],
-                       canonicalContext: MovementContext,
-                       canonicalCard: CaseCard?) -> [String: String]? {
-        Self.atomicMerge(store: store, survivor: survivor, duplicates: duplicates,
-                         canonicalContext: canonicalContext, canonicalCard: canonicalCard)
-    }
-
     /// A resolved lower/predecessor card is official source evidence, not a
     /// display-key heuristic. Feed it through the shared reconciler first;
     /// only its confirmed decision may merge persistent records or move the
@@ -506,7 +501,7 @@ final class TrackedCaseRepairCoordinator {
         anchor: TrackedCaseRecord,
         canonicalContext: MovementContext,
         canonicalCard: CaseCard
-    ) -> (survivor: TrackedCaseRecord, remaps: [String: String])? {
+    ) throws -> (survivor: TrackedCaseRecord, remaps: [String: String])? {
         let movement = Self.movement(from: canonicalCard, context: canonicalContext)
         guard let base = TrackedCaseIdentity.observation(
             context: canonicalContext, movement: movement, observedAt: now()) else {
@@ -526,8 +521,8 @@ final class TrackedCaseRepairCoordinator {
             outcome: base.outcome,
             provenance: base.provenance)
 
-        let before = Set(store.all().map(\.key))
-        let survivor = store.reconcileAndUpsert(
+        let before = Set(try store.allForMutation().map(\.key))
+        let survivor = try store.reconcileAndUpsert(
             context: canonicalContext,
             snapshot: MovementDerivation.snapshot(from: movement, context: canonicalContext),
             movement: movement,
@@ -541,7 +536,7 @@ final class TrackedCaseRepairCoordinator {
         // the persisted graph.
         guard TrackedCaseIdentity.state(for: survivor)
             .contains(card: observation.cardIdentity) else { return nil }
-        let removed = before.subtracting(Set(store.all().map(\.key)))
+        let removed = before.subtracting(Set(try store.allForMutation().map(\.key)))
         let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, survivor.key) })
         return (survivor, remaps)
     }
@@ -549,13 +544,12 @@ final class TrackedCaseRepairCoordinator {
     /// Единственное атомарное слияние persistent records. Его используют и
     /// legacy repair, и общий identity reconciler: движения, акты, подборки,
     /// aliases и весь graph identity переезжают в одном `ModelContext.save()`.
-    @discardableResult
     static func atomicMerge(store: TrackedStore, survivor: TrackedCaseRecord,
                             duplicates: [TrackedCaseRecord],
                             canonicalContext: MovementContext,
                             canonicalCard: CaseCard?,
                             identityState: LogicalCaseState? = nil,
-                            saveChanges: Bool = true) -> [String: String]? {
+                            saveChanges: Bool = true) throws -> [String: String] {
         let all = [survivor] + duplicates
         let oldKeys = all.map(\.key)
         let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
@@ -594,7 +588,7 @@ final class TrackedCaseRepairCoordinator {
         // `key` is a permanent technical locator since V6. The current
         // display-derived formula remains discoverable as an alias instead of
         // rotating deep links, Spotlight IDs and projected court acts.
-        let locatorOwner = store.record(forLocator: context.key)
+        let locatorOwner = try store.recordForMutation(forLocator: context.key)
         let locatorBelongsToMerge = locatorOwner.map { owner in
             owner === survivor || duplicates.contains { $0 === owner }
         } ?? true
@@ -633,9 +627,10 @@ final class TrackedCaseRepairCoordinator {
             survivor.snapshot = snapshot
         }
         for rec in duplicates { store.deleteWithoutSaving(rec) }
-        store.prepareCourtActsForReroute(from: oldKeys, to: survivor.key)
-        if saveChanges,
-           !store.save(projection: .cases(Set(oldKeys + [survivor.key]))) { return nil }
+        try store.prepareCourtActsForReroute(from: oldKeys, to: survivor.key)
+        if saveChanges {
+            try store.save(projection: .cases(Set(oldKeys + [survivor.key])))
+        }
         return Dictionary(uniqueKeysWithValues: oldKeys.filter { $0 != survivor.key }
             .map { ($0, survivor.key) })
     }

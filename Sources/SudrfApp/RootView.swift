@@ -263,6 +263,14 @@ private struct OperationalRootView: View {
                 .environmentObject(router)
                 .interactiveDismissDisabled()
         }
+        .alert("Не удалось сохранить изменения", isPresented: Binding(
+            get: { router.persistenceError != nil },
+            set: { shown in if !shown { router.persistenceError = nil } }
+        )) {
+            Button("Понятно", role: .cancel) { router.persistenceError = nil }
+        } message: {
+            Text(router.persistenceError ?? "")
+        }
     }
 
     /// Меню «Файл → Импортировать дела из CSV…»: выбор файла и запуск импорта.
@@ -447,6 +455,17 @@ private struct ImportSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Движение дел загрузится фоном (обход каждые 10 минут); открытие дела подтягивает его сразу.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Готово") { router.dismissImportSummary() }
+                        .buttonStyle(.borderedProminent).controlSize(.regular)
+                        .keyboardShortcut(.defaultAction)
+                }
+            case .failed(let message):
+                Text("Ошибка импорта").font(.system(size: 15, weight: .bold))
+                Text(message)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Spacer()

@@ -278,7 +278,7 @@ final class AISummaryPipelineTests: XCTestCase {
             actBodies: [selected.id: "ТОЛЬКО ВЫБРАННЫЙ АКТ",
                         foreign.id: "РЕАЛЬНЫЙ ПОСТОРОННИЙ АКТ"],
             category: nil, parties: CaseParties())
-        store.upsert(context: context, snapshot: nil, movement: movement, collections: [])
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement, collections: [])
         let documents = try await CaseCatalog(container: store.container).acts()
         let document = try XCTUnwrap(
             documents.first(where: { $0.document.sourceActID == selected.id })?.document)

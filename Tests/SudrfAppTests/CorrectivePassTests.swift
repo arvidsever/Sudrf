@@ -315,23 +315,23 @@ final class CorrectivePassTests: XCTestCase {
         let store = TrackedStore(inMemory: true)
         let first = makeContext(number: "2-1/2026", domain: "first.msk.sudrf.ru")
         let second = makeContext(number: "2-2/2026", domain: "second.msk.sudrf.ru")
-        store.upsert(context: first, snapshot: nil,
+        _ = try store.upsert(context: first, snapshot: nil,
                      movement: makeMovement(context: first, text: "Первый старый."),
                      collections: [])
-        let secondRecord = store.upsert(
+        let secondRecord = try store.upsert(
             context: second, snapshot: nil,
             movement: makeMovement(context: second, text: "Второй старый."), collections: [])
         let catalog = CaseCatalog(container: store.container)
 
         secondRecord.movement = makeMovement(context: second, text: "Второй новый.")
-        store.upsert(context: first, snapshot: nil,
+        _ = try store.upsert(context: first, snapshot: nil,
                      movement: makeMovement(context: first, text: "Первый новый."),
                      collections: [])
 
         var secondActs = try await catalog.acts(caseKey: second.key)
         var secondAct = try XCTUnwrap(secondActs.first)
         XCTAssertEqual(secondAct.document.sourceText, "Второй старый.")
-        XCTAssertTrue(store.save(projection: .cases([second.key])))
+        try store.save(projection: .cases([second.key]))
         secondActs = try await catalog.acts(caseKey: second.key)
         secondAct = try XCTUnwrap(secondActs.first)
         XCTAssertEqual(secondAct.document.sourceText, "Второй новый.")
@@ -344,7 +344,7 @@ final class CorrectivePassTests: XCTestCase {
         var new = old
         new.displayDomain = "new.msk.sudrf.ru"
         new.searchDomain = "new--msk.sudrf.ru"
-        let record = store.upsert(
+        let record = try store.upsert(
             context: old, snapshot: nil,
             movement: makeMovement(context: old, text: "Исходный акт."), collections: [])
         let catalog = CaseCatalog(container: store.container)
@@ -362,7 +362,7 @@ final class CorrectivePassTests: XCTestCase {
         record.context = new
         record.displayDomain = new.displayDomain
         record.addLegacyKeyAlias(new.key)
-        XCTAssertTrue(store.save(projection: .cases([record.key])))
+        try store.save(projection: .cases([record.key]))
 
         XCTAssertEqual(record.key, old.key)
         XCTAssertTrue(store.record(forLocator: new.key) === record)
@@ -415,6 +415,23 @@ final class CorrectivePassTests: XCTestCase {
         XCTAssertEqual(failure.message, "bootstrap failed")
         XCTAssertNil(failure.storeURL)
         XCTAssertFalse(failure.canQuarantine)
+    }
+
+    @MainActor
+    func testBootstrapTreatsStartupReconciliationCommitFailureAsRetryOnly() async {
+        let bootstrap = AppBootstrap(loader: {
+            throw TrackedStoreCommitError.contextSave(details: "startup reconciliation failed")
+        })
+
+        await bootstrap.start()
+
+        guard case .failed(let failure) = bootstrap.state else {
+            return XCTFail("startup reconciliation failure must keep the app blocked")
+        }
+        XCTAssertTrue(failure.message.contains("startup reconciliation failed"))
+        XCTAssertNil(failure.storeURL)
+        XCTAssertFalse(failure.canQuarantine)
+        XCTAssertNil(failure.recoveryDirectory)
     }
 
     @MainActor

@@ -262,7 +262,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         var notifications = 0
         let subscription = router.objectWillChange.sink { _ in notifications += 1 }
         let before = projection(router)
-        let effectiveKey = await router.refreshCenter.repairBeforeRefresh?(rec.key)
+        let effectiveKey = try await router.refreshCenter.repairBeforeRefresh?(rec.key)
 
         XCTAssertEqual(effectiveKey, rec.key)
         XCTAssertEqual(notifications, 0,
@@ -315,7 +315,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
 
         var notifications = 0
         let subscription = router.objectWillChange.sink { _ in notifications += 1 }
-        let effectiveKey = await router.refreshCenter.repairBeforeRefresh?(rec.key)
+        let effectiveKey = try await router.refreshCenter.repairBeforeRefresh?(rec.key)
 
         XCTAssertEqual(effectiveKey, rec.key)
         XCTAssertEqual(rec.context?.baseInstanceLevel, .appeal)

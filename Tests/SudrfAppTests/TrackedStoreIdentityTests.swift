@@ -1,5 +1,6 @@
 import XCTest
 import SudrfKit
+import SwiftData
 @testable import SudrfApp
 
 @MainActor
@@ -37,7 +38,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
     func testSameSourceCardRenumberingKeepsPersistentKeyActsCollectionsAndDeepLinks() async throws {
         let store = TrackedStore(inMemory: true)
         let original = context(number: "8Г-123/2026", cardID: "native-card", judicialUID: oldUID)
-        let first = store.reconcileAndUpsert(
+        let first = try store.reconcileAndUpsert(
             context: original, snapshot: nil, movement: movement(for: original),
             collections: ["Подборка"])
         let persistentKey = first.key
@@ -46,7 +47,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
 
         var renumbered = original
         renumbered.caseNumber = "88-123/2026"
-        let refreshed = store.reconcileAndUpsert(
+        let refreshed = try store.reconcileAndUpsert(
             context: renumbered, snapshot: nil, movement: movement(for: renumbered),
             collections: ["Подборка"])
 
@@ -80,8 +81,8 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let appeal = context(number: "33-200/2026", cardID: "appeal-card", judicialUID: oldUID,
                              domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
 
-        let trackedFirst = store.reconcileAndUpsert(context: first, snapshot: nil, collections: ["A"])
-        let trackedAppeal = store.reconcileAndUpsert(context: appeal, snapshot: nil, collections: ["B"])
+        let trackedFirst = try store.reconcileAndUpsert(context: first, snapshot: nil, collections: ["A"])
+        let trackedAppeal = try store.reconcileAndUpsert(context: appeal, snapshot: nil, collections: ["B"])
 
         XCTAssertTrue(trackedFirst === trackedAppeal)
         XCTAssertEqual(store.all().count, 1)
@@ -94,7 +95,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
     func testOfficialPredecessorCanAddSequentialUIDWithoutChangingDossier() throws {
         let store = TrackedStore(inMemory: true)
         let previous = context(number: "2-100/2025", cardID: "previous-card", judicialUID: oldUID)
-        let existing = store.reconcileAndUpsert(context: previous, snapshot: nil, collections: [])
+        let existing = try store.reconcileAndUpsert(context: previous, snapshot: nil, collections: [])
         let previousObservation = try XCTUnwrap(TrackedCaseIdentity.observation(context: previous))
 
         let replacement = context(number: "2-101/2026", cardID: "replacement-card", judicialUID: newUID)
@@ -108,7 +109,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
             officialRelations: [relation], outcome: .usableSnapshot,
             provenance: base.provenance)
 
-        let linked = store.reconcileAndUpsert(
+        let linked = try store.reconcileAndUpsert(
             context: replacement, snapshot: nil, collections: [],
             identityObservation: replacementObservation)
 
@@ -125,8 +126,8 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let second = context(number: "2-101/2026", cardID: "second-card", caseUID: "same-link",
                              judicialUID: "11RS0001-01")
 
-        _ = store.reconcileAndUpsert(context: first, snapshot: nil, collections: [])
-        _ = store.reconcileAndUpsert(context: second, snapshot: nil, collections: [])
+        _ = try store.reconcileAndUpsert(context: first, snapshot: nil, collections: [])
+        _ = try store.reconcileAndUpsert(context: second, snapshot: nil, collections: [])
 
         XCTAssertEqual(store.all().count, 2)
         XCTAssertTrue(store.records(forJudicialUID: "11RS0001-01").isEmpty)
@@ -143,17 +144,17 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let observation = try XCTUnwrap(TrackedCaseIdentity.observation(
             context: value, attempt: attempt, outcome: .usableSnapshot))
 
-        let first = store.reconcileAndUpsert(
+        let first = try store.reconcileAndUpsert(
             context: value, snapshot: nil, movement: movement(for: value), collections: [],
             identityObservation: observation, movementFetchedAt: observedAt)
         let initialState = try JSONDecoder().decode(
             LogicalCaseState.self, from: XCTUnwrap(first.identityStateData))
         let initialRefresh = first.movementFetchedAt
         store.failNextSaveForTesting = true
-        XCTAssertEqual(store.reconcileStoredIdentity(), IdentityReconciliationSummary())
+        XCTAssertEqual(try store.reconcileStoredIdentity(), IdentityReconciliationSummary())
         XCTAssertTrue(store.failNextSaveForTesting,
                       "an already canonical graph must not invoke saveContext")
-        XCTAssertEqual(store.reconcileStoredIdentity(), IdentityReconciliationSummary())
+        XCTAssertEqual(try store.reconcileStoredIdentity(), IdentityReconciliationSummary())
         XCTAssertTrue(store.failNextSaveForTesting,
                       "reconciliation must remain idempotent on the next launch")
 
@@ -170,11 +171,11 @@ final class TrackedStoreIdentityTests: XCTestCase {
             let uid = "11RS0001-01-2026-\(String(format: "%06d", index + 1))-10"
             let value = context(number: "2-\(index + 1)/2026", cardID: "card-\(index)",
                                 judicialUID: uid)
-            _ = store.reconcileAndUpsert(context: value, snapshot: nil, collections: [])
+            _ = try store.reconcileAndUpsert(context: value, snapshot: nil, collections: [])
         }
 
         store.failNextSaveForTesting = true
-        let summary = store.reconcileStoredIdentity()
+        let summary = try store.reconcileStoredIdentity()
 
         XCTAssertEqual(summary, IdentityReconciliationSummary())
         XCTAssertTrue(store.failNextSaveForTesting,
@@ -185,7 +186,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
     func testRepeatedPreparationAndProjectionAreNoOps() throws {
         let store = TrackedStore(inMemory: true)
         let value = context(number: "2-100/2026", cardID: "same-card", judicialUID: oldUID)
-        let record = store.reconcileAndUpsert(
+        let record = try store.reconcileAndUpsert(
             context: value, snapshot: nil, movement: movement(for: value), collections: [])
 
         XCTAssertFalse(store.container.mainContext.hasChanges)
@@ -194,7 +195,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertFalse(store.container.mainContext.hasChanges)
 
         store.failNextSaveForTesting = true
-        XCTAssertTrue(store.save(projection: .cases([record.key])))
+        try store.save(projection: .cases([record.key]))
         XCTAssertTrue(store.failNextSaveForTesting,
                       "an unchanged court-act projection must not invoke saveContext")
     }
@@ -227,15 +228,91 @@ final class TrackedStoreIdentityTests: XCTestCase {
         try store.container.mainContext.save()
 
         store.failNextSaveForTesting = true
-        let returned = store.reconcileAndUpsert(
+        XCTAssertThrowsError(try store.reconcileAndUpsert(
             context: appeal, snapshot: nil, collections: ["Must not persist"],
-            identityObservation: appealObservation)
+            identityObservation: appealObservation
+        )) { error in
+            guard case .contextSave = error as? TrackedStoreCommitError else {
+                return XCTFail("Expected context-save failure, got \(error)")
+            }
+        }
 
-        XCTAssertEqual(returned.key, first.key)
         XCTAssertEqual(store.all().count, 2)
         XCTAssertEqual(store.record(forKey: first.key)?.collectionNames, ["Existing"])
         XCTAssertEqual(store.record(forKey: appeal.key)?.collectionNames, ["Appeal"])
         XCTAssertEqual(TrackedCaseIdentity.state(for: try XCTUnwrap(store.record(forKey: first.key))).cards.count,
                        1)
+    }
+
+    func testProjectionSynchronizationFailureRollsBackTrackedChanges() throws {
+        struct ProjectionFailure: LocalizedError {
+            var errorDescription: String? { "forced projection failure" }
+        }
+
+        var failNextProjection = false
+        let store = TrackedStore(inMemory: true) { context, scope in
+            if failNextProjection { throw ProjectionFailure() }
+            try CourtActProjectionSynchronizer.synchronize(context: context, scope: scope)
+        }
+        let original = context(number: "2-100/2026", cardID: "source-card", judicialUID: oldUID)
+        let tracked = try store.reconcileAndUpsert(
+            context: original, snapshot: nil, movement: movement(for: original),
+            collections: ["Existing"])
+        let originalActs = tracked.movement?.acts
+
+        var updated = original
+        updated.caseNumber = "2-101/2026"
+        failNextProjection = true
+        XCTAssertThrowsError(try store.reconcileAndUpsert(
+            context: updated, snapshot: nil, movement: movement(for: updated, actID: "act-2"),
+            collections: ["Must not persist"]
+        )) { error in
+            guard case .projectionSynchronization = error as? TrackedStoreCommitError else {
+                return XCTFail("Expected projection failure, got \(error)")
+            }
+        }
+
+        let persisted = try XCTUnwrap(store.record(forKey: tracked.key))
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertEqual(persisted.caseNumber, original.caseNumber)
+        XCTAssertEqual(persisted.collectionNames, ["Existing"])
+        XCTAssertEqual(persisted.movement?.acts, originalActs)
+    }
+
+    func testStartupIdentityReconciliationPropagatesCommitFailureWithoutMerging() throws {
+        struct ProjectionFailure: LocalizedError {
+            var errorDescription: String? { "forced startup projection failure" }
+        }
+
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let first = context(number: "2-100/2026", cardID: "first-card", judicialUID: oldUID)
+        let appeal = context(
+            number: "33-200/2026", cardID: "appeal-card", judicialUID: oldUID,
+            domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
+        func legacyRecord(_ value: MovementContext, collections: [String]) throws -> TrackedCaseRecord {
+            TrackedCaseRecord(
+                key: value.key, collections: collections, caseNumber: value.caseNumber,
+                courtTitle: value.courtTitle, displayDomain: value.displayDomain,
+                contextData: try JSONEncoder().encode(value), snapshotData: nil)
+        }
+        let firstRecord = try legacyRecord(first, collections: ["First"])
+        let appealRecord = try legacyRecord(appeal, collections: ["Appeal"])
+        container.mainContext.insert(firstRecord)
+        container.mainContext.insert(appealRecord)
+        try container.mainContext.save()
+
+        XCTAssertThrowsError(try TrackedStore(
+            container: container, prepared: true,
+            projectionSynchronizer: { _, _ in throw ProjectionFailure() }
+        )) { error in
+            guard case .projectionSynchronization = error as? TrackedStoreCommitError else {
+                return XCTFail("Expected projection failure, got \(error)")
+            }
+        }
+
+        let records = try container.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>())
+        XCTAssertEqual(Set(records.map(\.key)), Set([first.key, appeal.key]))
+        XCTAssertEqual(records.first { $0.key == first.key }?.collectionNames, ["First"])
+        XCTAssertEqual(records.first { $0.key == appeal.key }?.collectionNames, ["Appeal"])
     }
 }

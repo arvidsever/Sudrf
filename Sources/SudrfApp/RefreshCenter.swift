@@ -131,8 +131,8 @@ final class RefreshCenter: ObservableObject {
     /// ей бейдж «обновлено» (см. правило seenAt в задаче обновления).
     var openedKey: (() -> String?)?
     /// Точечный repair-preflight. Может переякорить запись и вернуть
-    /// новый ключ; nil сохраняет поведение тестов и старых вызовов.
-    var repairBeforeRefresh: ((String) async -> String)?
+    /// новый ключ; отказ commit поднимается в refresh как persistence failure.
+    var repairBeforeRefresh: ((String) async throws -> String)?
 
     private let store: TrackedStore
     private let client: SudrfClient
@@ -172,6 +172,8 @@ final class RefreshCenter: ObservableObject {
     /// своим завершением сбросить walkTask/walkProgress нового обхода.
     private var walkGeneration = 0
     private var timerTask: Task<Void, Never>? = nil
+    private static let persistenceFailureMessage =
+        "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
 
     init(store: TrackedStore, client: SudrfClient,
          captchaSolver: CaptchaSolver? = nil,
@@ -401,7 +403,7 @@ final class RefreshCenter: ObservableObject {
     /// Сохраняет результат явного ручного шага CAPTCHA тем же способом, что
     /// фоновая проверка. Картинка и `code_id` в хранилище не попадают.
     func applyFSSPSearchStep(key: String, document: CourtEnforcementDocument,
-                             step: FSSPSearchStep) {
+                             step: FSSPSearchStep) throws {
         guard let record = store.record(forKey: key) else { return }
         let previous = record.enforcementRecords
         let attemptedAt = Date()
@@ -424,7 +426,12 @@ final class RefreshCenter: ObservableObject {
             previous: previous, current: current, courtDocuments: documents)
         record.enforcementRecords = current
         if changed && openedKey?() != key { record.seenAt = nil }
-        store.save()
+        do {
+            try store.save()
+        } catch {
+            enforcementErrors[key] = Self.persistenceFailureMessage
+            throw error
+        }
         onEnforcementRefreshed?(key)
     }
 
@@ -521,7 +528,12 @@ final class RefreshCenter: ObservableObject {
             courtDocuments: record.movement?.executionDocuments ?? [])
         record.enforcementRecords = current
         if changed && openedKey?() != key { record.seenAt = nil }
-        store.save()
+        do {
+            try store.save()
+        } catch {
+            enforcementErrors[key] = Self.persistenceFailureMessage
+            return
+        }
 
         let hasSuccess = updates.contains {
             $0.discoveryState != .error
@@ -630,7 +642,14 @@ final class RefreshCenter: ObservableObject {
     }
 
     private func performRefresh(key: String) async -> RefreshExecution {
-        let effectiveKey = await repairBeforeRefresh?(key) ?? key
+        let effectiveKey: String
+        do {
+            effectiveKey = try await repairBeforeRefresh?(key) ?? key
+        } catch is TrackedStoreCommitError {
+            return failure(key, Self.persistenceFailureMessage)
+        } catch {
+            return failure(key, error.localizedDescription)
+        }
         if Task.isCancelled {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         }
@@ -647,6 +666,8 @@ final class RefreshCenter: ObservableObject {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
+        } catch is TrackedStoreCommitError {
+            return failure(effectiveKey, Self.persistenceFailureMessage)
         } catch {
             return failure(effectiveKey,
                            "Не удалось собрать движение дела: \(error.localizedDescription)")
@@ -731,11 +752,11 @@ final class RefreshCenter: ObservableObject {
                 mayAutoSolve: mayAutoSolve) {
                 return retry
             }
-            return applyMovement(key: key, ctx: ctx, mv: movement,
-                                 attempt: attempt, isComplete: true)
+            return try applyMovement(key: key, ctx: ctx, mv: movement,
+                                     attempt: attempt, isComplete: true)
         case .partial(let movement, let attempt):
             guard let movement else {
-                persistAttempt(key, attempt)
+                try persistAttempt(key, attempt)
                 return failure(key, "Суд вернул неполный ответ без пригодного движения дела.")
             }
             if let retry = try await retryEmbeddedCaptchaIfNeeded(
@@ -755,28 +776,28 @@ final class RefreshCenter: ObservableObject {
                     ? "Один источник временно не обновился; сохранены последние успешные данные."
                     : "Часть источников не дала полного снимка (\(failedCount)); сохранены последние успешные данные."
             }
-            return applyMovement(key: key, ctx: ctx, mv: movement,
-                                 attempt: attempt, isComplete: false,
-                                 partialMessage: message,
-                                 reportsPartialFailure: failedCount > 0)
+            return try applyMovement(key: key, ctx: ctx, mv: movement,
+                                     attempt: attempt, isComplete: false,
+                                     partialMessage: message,
+                                     reportsPartialFailure: failedCount > 0)
         case .honestZero(let attempt):
-            persistAttempt(key, attempt)
+            try persistAttempt(key, attempt)
             return failure(key, "Источник подтвердил пустую выдачу; сохранённое дело не удалено.")
         case .captcha(let url, let attempt):
             guard mayAutoSolve,
                   let solver = captchaSolver,
                   let settings = captchaSettings,
                   settings.isEffectivelyEnabled else {
-                persistAttempt(key, attempt)
                 queueCaptcha(key: key, formURL: url)
+                try persistAttempt(key, attempt)
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
             }
             let result = await solveCaptcha(formURL: url, solver: solver, settings: settings)
             if result.cancelled || Task.isCancelled { throw CancellationError() }
             guard result.token != nil else {
-                persistAttempt(key, attempt)
                 queueCaptcha(key: key, formURL: url)
+                try persistAttempt(key, attempt)
                 fail(key, "Форма домашнего суда ждёт код с картинки: \(url.absoluteString)")
                 return RefreshExecution(effectiveKey: key, outcome: .captchaRequired)
             }
@@ -786,7 +807,7 @@ final class RefreshCenter: ObservableObject {
         case .maintenance(let message, let attempt),
              .transportFailure(let message, let attempt),
              .parserFailure(let message, let attempt):
-            persistAttempt(key, attempt)
+            try persistAttempt(key, attempt)
             return failure(key, message)
         }
     }
@@ -831,7 +852,7 @@ final class RefreshCenter: ObservableObject {
     private func applyMovement(key: String, ctx: MovementContext,
                                mv: CaseMovement, attempt: SourceAttempt,
                                isComplete: Bool, partialMessage: String? = nil,
-                               reportsPartialFailure: Bool = true) -> RefreshExecution {
+                               reportsPartialFailure: Bool = true) throws -> RefreshExecution {
         guard let rec = store.record(forKey: key) else {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
         }
@@ -848,7 +869,6 @@ final class RefreshCenter: ObservableObject {
             !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
         } ?? true
         let changed = movementSourceChanged || snapshotSourceChanged
-        let saveFailure = "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
 
         let persisted: TrackedCaseRecord
         var keyRemaps: [String: String] = [:]
@@ -863,16 +883,13 @@ final class RefreshCenter: ObservableObject {
             // establish a card/UID relation and are deliberately kept on the
             // existing record below.
             let before = Set(store.all().map(\.key))
-            let reconciliation = store.reconcileAndUpsertReportingSave(
+            let reconciled = try store.reconcileAndUpsert(
                 context: ctx, snapshot: newSnap, movement: persistedMovement,
                 collections: rec.collectionNames,
                 identityObservation: identityObservation,
                 movementFetchedAt: attempt.provenance.observedAt,
                 saveChanges: false)
-            guard reconciliation.allSavesSucceeded else {
-                return failure(key, saveFailure)
-            }
-            persisted = reconciliation.record
+            persisted = reconciled
             let removed = before.subtracting(Set(store.all().map(\.key)))
             keyRemaps = Dictionary(uniqueKeysWithValues: removed.map {
                 ($0, persisted.key)
@@ -897,9 +914,7 @@ final class RefreshCenter: ObservableObject {
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
-        guard store.save(projection: .cases(projectionKeys)) else {
-            return failure(key, saveFailure)
-        }
+        try store.save(projection: .cases(projectionKeys))
         captchaPending.remove(key: key)
         if persisted.key != key { captchaPending.remove(key: persisted.key) }
         onRefreshed?(persisted.key, publishedMovement, keyRemaps)
@@ -915,10 +930,10 @@ final class RefreshCenter: ObservableObject {
         return RefreshExecution(effectiveKey: persisted.key, outcome: .refreshed)
     }
 
-    private func persistAttempt(_ key: String, _ attempt: SourceAttempt) {
+    private func persistAttempt(_ key: String, _ attempt: SourceAttempt) throws {
         guard let rec = store.record(forKey: key) else { return }
         rec.sourceRefreshAttempt = attempt
-        store.save()
+        try store.save()
     }
 
     private func queueCaptcha(key: String, formURL: URL) {

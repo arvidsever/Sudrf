@@ -514,14 +514,6 @@ enum SudrfPersistentStoreLocation {
 /// возврата контейнера выполнены backup, schema migration, legacy-поля и полная
 /// проекция актов; UI получает только полностью подготовленное хранилище.
 actor PersistentStoreBootstrapper {
-    private let backupRoot: URL?
-
-    /// `backupRoot` инжектируется только тестами; production использует
-    /// Application Support через значение `nil`.
-    init(backupRoot: URL? = nil) {
-        self.backupRoot = backupRoot
-    }
-
     /// `storeURL` и `defaultsSuiteName` инжектируются только тестами. Боевой путь
     /// живёт в `Application Support/Sudrf`; старый `default.store` переносится
     /// туда до открытия. Без инжекции сценарий первого запуска —
@@ -540,7 +532,6 @@ actor PersistentStoreBootstrapper {
         var backup: URL?
         do {
             backup = try SudrfPersistentStoreBackup.prepare(storeURL: storeURL,
-                                                             backupRoot: backupRoot,
                                                              defaults: defaults)
             return try open(storeURL: storeURL, defaults: defaults,
                             newlyCreated: !hadExistingStore)
@@ -607,17 +598,20 @@ actor PersistentStoreBootstrapper {
             }
             return name + "Exists=" + String(exists) + " " + name + "Bytes=" + size
         }.joined(separator: " ")
-        var message = "storeURL=\(storeURL.path) \(fileState) "
-            + "bundle=\(storeBootstrapBundleIdentifier) appVersion=\(storeBootstrapAppVersion) "
-            + "schemaVersion=\(String(describing: SudrfSchemaV6.versionIdentifier)) "
-            + "openOutcome=\(outcome) newlyCreated=\(newlyCreated)"
+        var publicFields = "fileState=" + fileState
+            + " bundle=" + storeBootstrapBundleIdentifier
+            + " appVersion=" + storeBootstrapAppVersion
+            + " schemaVersion=" + String(describing: SudrfSchemaV6.versionIdentifier)
+            + " openOutcome=" + outcome
+            + " newlyCreated=" + String(newlyCreated)
         if let trackedCaseRecordCount {
-            message += " trackedCaseRecordCount=\(trackedCaseRecordCount)"
+            publicFields += " trackedCaseRecordCount=" + String(trackedCaseRecordCount)
         }
         if let error {
-            message += " errorType=\(String(reflecting: type(of: error)))"
+            publicFields += " errorType=" + String(reflecting: type(of: error))
         }
-        storeBootstrapLog.notice("\(message, privacy: .public)")
+        storeBootstrapLog.notice(
+            "storeURL=\(storeURL.path, privacy: .private) \(publicFields, privacy: .public)")
     }
 }
 

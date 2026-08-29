@@ -165,34 +165,31 @@ final class StoreBootstrapTests: XCTestCase {
         XCTAssertTrue(existing.errorDescription?.contains("восстановите базу из копии") ?? false)
     }
 
-    /// Ошибка существующего store блокирует запуск, а исходный store и его
-    /// SQLite-sidecars остаются доступными и попадают в backup.
+    /// Обычный relaunch после завершённой миграции не заменяет существующий
+    /// неоткрываемый store чистой базой и оставляет его sidecars на месте.
     func testExistingUnopenableStoreFailsClosedAndPreservesStoreFiles() async throws {
         let store = freshStoreURL!
         let wal = URL(fileURLWithPath: store.path + "-wal")
         let shm = URL(fileURLWithPath: store.path + "-shm")
-        let backups = root.appendingPathComponent("store-backups")
         let files = [
-            (store, Data("not-a-swiftdata-store".utf8), "default.store"),
-            (wal, Data("wal-before-failure".utf8), "default.store-wal"),
-            (shm, Data("shm-before-failure".utf8), "default.store-shm"),
+            (store, Data("not-a-swiftdata-store".utf8)),
+            (wal, Data("wal-before-failure".utf8)),
+            (shm, Data("shm-before-failure".utf8)),
         ]
-        for (url, data, _) in files {
+        for (url, data) in files {
             try data.write(to: url)
         }
+        SudrfPersistentStoreBackup.markMigrationCompleted(defaults: defaults)
 
         do {
-            _ = try await PersistentStoreBootstrapper(backupRoot: backups)
+            _ = try await PersistentStoreBootstrapper()
                 .prepareProduction(storeURL: store, defaultsSuiteName: suiteName)
             XCTFail("существующий неоткрываемый store не должен заменяться чистым")
         } catch let error as SudrfStoreBootstrapError {
             XCTAssertTrue(error.hadExistingStore)
-            let backup = try XCTUnwrap(error.backupDirectory)
-            XCTAssertEqual(backup.deletingLastPathComponent().standardizedFileURL,
-                           backups.standardizedFileURL)
-            for (url, data, name) in files {
+            XCTAssertNil(error.backupDirectory)
+            for (url, data) in files {
                 XCTAssertEqual(try Data(contentsOf: url), data)
-                XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent(name)), data)
             }
         } catch {
             XCTFail("ожидался SudrfStoreBootstrapError, получено: \(error)")

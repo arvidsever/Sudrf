@@ -3,6 +3,13 @@ import XCTest
 
 final class MagistrateTests: XCTestCase {
 
+    private func fixture(_ name: String) throws -> String {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: name, withExtension: "html", subdirectory: "Fixtures"
+        ))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
     func testNumberExtractsFixedWidthMSCode() {
         let expected: [(String, Int)] = [
             ("11MS0001", 1), ("11MS0002", 2),
@@ -141,6 +148,66 @@ final class MagistrateTests: XCTestCase {
         XCTAssertEqual(MagistrateResultsParser.pageNumbers(html: html), [1])
     }
 
+    func testUserArchivePositiveListingParsesWithoutFalseZero() throws {
+        let html = try fixture("magistrate_results")
+        let court = Court(domain: "petrozavodskoj.komi.msudrf.ru",
+                          title: "Петрозаводский судебный участок", level: .magistrate)
+
+        XCTAssertEqual(MagistratePageClassifier.classify(html: html), .results)
+        let rows = try MagistrateResultsParser.parse(html: html, court: court)
+
+        XCTAssertEqual(rows.map(\.caseNumber), ["2-871/2026", "2-775/2026", "9-452/2026"])
+        XCTAssertEqual(rows.map(\.caseID), ["900000001", "900000002", "900000003"])
+        XCTAssertEqual(Set(rows.compactMap(\.cardURL?.host)), [court.domain])
+        XCTAssertEqual(MagistrateResultsParser.pageNumbers(html: html), [1])
+    }
+
+    func testMagistrateClassifierRequiresEvidenceForHonestZero() {
+        XCTAssertEqual(MagistratePageClassifier.classify(
+            html: #"<div id="search_results"><div class="case-count">Найдено дел: <b>0</b></div></div>"#
+        ), .empty)
+        XCTAssertEqual(MagistratePageClassifier.classify(
+            html: #"<div id="search_results"><div class="case-count">Найдено дел: <b>5</b></div></div>"#
+        ), .unrecognized)
+        XCTAssertEqual(MagistratePageClassifier.classify(
+            html: #"<div id="search_results"><div class="case-count"></div></div>"#
+        ), .unrecognized)
+        XCTAssertEqual(MagistratePageClassifier.classify(
+            html: #"<div id="search_results"><a href="/help?case_id=1">справка</a></div>"#
+        ), .unrecognized)
+        XCTAssertEqual(MagistratePageClassifier.classify(
+            html: #"<div id="search_results"><div class="case-count">Найдено дел:&nbsp;<b>0</b></div></div>"#
+        ), .empty)
+    }
+
+    func testMagistrateClassifierPrioritizesCaptchaOverResultLinks() {
+        let html = """
+        <form id="kcaptchaForm">
+          <img src="/captcha.php">
+          <input type="text" name="captcha-response">
+        </form>
+        <div id="search_results">
+          <a href="/modules.php?name=sud_delo&amp;op=cs&amp;case_id=42">5-42/2026</a>
+        </div>
+        """
+
+        XCTAssertEqual(MagistratePageClassifier.classify(html: html), .captcha)
+    }
+
+    func testNewerMagistrateCardLinkVariantParses() throws {
+        let html = """
+        <div id="search_results"><div class="case-count">Найдено дел: <b>1</b></div>
+          <table><tr><td><a href="/modules.php?name=sud_delo&amp;name_op=case&amp;case_id=42">
+            5-42/2026
+          </a></td></tr></table>
+        </div>
+        """
+        let court = Court(domain: "example.msudrf.ru", title: "Участок", level: .magistrate)
+
+        XCTAssertEqual(MagistratePageClassifier.classify(html: html), .results)
+        XCTAssertEqual(try MagistrateResultsParser.parse(html: html, court: court).map(\.caseID), ["42"])
+    }
+
     func testResultsDeduplicationFallsBackToRelativeCardURLWithoutCaseID() throws {
         let sameURL = try XCTUnwrap(URL(string: "modules.php?name=sud_delo&op=cs&row=same"))
         let otherURL = try XCTUnwrap(URL(string: "modules.php?name=sud_delo&op=cs&row=other"))
@@ -237,6 +304,69 @@ final class MagistrateTests: XCTestCase {
         } catch SudrfError.searchModuleUnavailable(let domain) {
             XCTAssertEqual(domain, court.domain)
         }
+    }
+
+    func testPositiveCountWithoutParsableRowsIsParserFailureNotHonestZero() async throws {
+        MagistrateSearchStub.reset(responses: [
+            "first": #"<div id="search_results"><div class="case-count">Найдено дел: <b>5</b></div></div>"#
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateSearchStub.self]
+        let client = MagistrateClient(
+            sudrfClient: SudrfClient(session: URLSession(configuration: configuration), minInterval: 0))
+        let court = Court(domain: "petrozavodskoj.komi.msudrf.ru",
+                          title: "Петрозаводский судебный участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+
+        do {
+            _ = try await client.search(court: court, cartoteka: cartoteka,
+                                        field: .name, value: "Новикова")
+            XCTFail("положительный счётчик без разобранных строк не должен давать honest zero")
+        } catch SudrfError.searchModuleUnavailable(let domain) {
+            XCTAssertEqual(domain, court.domain)
+        }
+    }
+
+    func testExplicitZeroCrossesTypedBoundaryAsHonestZero() async throws {
+        MagistrateSearchStub.reset(responses: [
+            "first": #"<div id="search_results"><div class="case-count">Найдено дел: <b>0</b></div></div>"#
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateSearchStub.self]
+        let provider = MagistrateClient(
+            sudrfClient: SudrfClient(session: URLSession(configuration: configuration), minInterval: 0))
+        let court = Court(domain: "example.msudrf.ru", title: "Участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
+
+        let outcome = try await provider.searchOutcome(
+            court: court, cartoteka: cartoteka, field: .name, value: "Нет такого лица"
+        )
+
+        guard case .honestZero(let attempt) = outcome else {
+            return XCTFail("явный нулевой счётчик должен быть honestZero")
+        }
+        XCTAssertEqual(attempt.kind, .honestZero)
+        XCTAssertEqual(attempt.provenance.sourceFamily, "msudrf")
+    }
+
+    func testTransportFailureDoesNotCrossTypedBoundaryAsHonestZero() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MagistrateTransportFailureStub.self]
+        let transport = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        await transport.setMaxAttemptsForTesting(1)
+        let provider = MagistrateClient(sudrfClient: transport)
+        let court = Court(domain: "example.msudrf.ru", title: "Участок", level: .magistrate)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
+
+        let outcome = try await provider.searchOutcome(
+            court: court, cartoteka: cartoteka, field: .name, value: "Новикова"
+        )
+
+        guard case .transportFailure(_, let attempt) = outcome else {
+            return XCTFail("таймаут msudrf должен оставаться transportFailure")
+        }
+        XCTAssertEqual(attempt.kind, .transportFailure)
+        XCTAssertEqual(attempt.provenance.attemptCount, 1)
     }
 
     func testCardParserReadsMagistrateTabs() throws {
@@ -358,5 +488,14 @@ private final class MagistrateSearchStub: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
 
+    override func stopLoading() {}
+}
+
+private final class MagistrateTransportFailureStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+    }
     override func stopLoading() {}
 }

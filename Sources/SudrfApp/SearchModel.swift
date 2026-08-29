@@ -140,7 +140,7 @@ final class SearchModel: ObservableObject {
 
     private let resolver = DistrictCourtResolver()
     private let magistrateResolver = MagistrateCourtResolver()
-    private let client = SudrfClient()
+    private let client: SudrfClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient = MosGorSudClient()
@@ -160,7 +160,8 @@ final class SearchModel: ObservableObject {
 
     init(captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
-         corpusStore: CorpusStore = .shared) {
+         corpusStore: CorpusStore = .shared,
+         client: SudrfClient = SudrfClient()) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
         // сконфигурированный этой же настройкой. Так гарантируется,
         // что `preprocessingEnabled` и `preprocessorHosts` действуют
@@ -170,6 +171,7 @@ final class SearchModel: ObservableObject {
         let settings = captchaSettings ?? CaptchaSettings.shared
         self.captchaSettings = settings
         self.corpusStore = corpusStore
+        self.client = client
         self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }
 

@@ -4,7 +4,7 @@
 
 - При ошибке сохранения Sudrf больше не сообщает UI и App Intent,
   что дело успешно обновлено.
-- Движение, snapshot, identity/key-remap и метаданны refresh
+- Движение, snapshot, identity/key-remap и метаданные refresh
   сохраняются одной транзакцией; rollback возвращает прежнее состояние.
 - После отказа остаются доступными ручной CAPTCHA retry и прежний
   сохранённый кэш.
@@ -12,3 +12,9 @@
 ## Совместимость
 
 - SwiftData V6, UI, публичные API и формат хранилища не изменились.
+
+## Проверено
+
+- `swift test`: 854 теста, 10 пропущено, ошибок нет.
+- Focused-регрессии RefreshCenter, identity/key-remap и rollback.
+- SwiftPM, Xcode Debug и CI-пакетирование macOS-приложения.

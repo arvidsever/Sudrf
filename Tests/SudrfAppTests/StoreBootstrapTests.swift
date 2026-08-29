@@ -165,21 +165,67 @@ final class StoreBootstrapTests: XCTestCase {
         XCTAssertTrue(existing.errorDescription?.contains("восстановите базу из копии") ?? false)
     }
 
-    /// Второй запуск открывает уже созданную базу и видит сохранённое дело.
+    /// Ошибка существующего store блокирует запуск, а исходный store и его
+    /// SQLite-sidecars остаются доступными и попадают в backup.
+    func testExistingUnopenableStoreFailsClosedAndPreservesStoreFiles() async throws {
+        let store = freshStoreURL!
+        let wal = URL(fileURLWithPath: store.path + "-wal")
+        let shm = URL(fileURLWithPath: store.path + "-shm")
+        let backups = root.appendingPathComponent("store-backups")
+        let files = [
+            (store, Data("not-a-swiftdata-store".utf8), "default.store"),
+            (wal, Data("wal-before-failure".utf8), "default.store-wal"),
+            (shm, Data("shm-before-failure".utf8), "default.store-shm"),
+        ]
+        for (url, data, _) in files {
+            try data.write(to: url)
+        }
+
+        do {
+            _ = try await PersistentStoreBootstrapper(backupRoot: backups)
+                .prepareProduction(storeURL: store, defaultsSuiteName: suiteName)
+            XCTFail("существующий неоткрываемый store не должен заменяться чистым")
+        } catch let error as SudrfStoreBootstrapError {
+            XCTAssertTrue(error.hadExistingStore)
+            let backup = try XCTUnwrap(error.backupDirectory)
+            XCTAssertEqual(backup.deletingLastPathComponent().standardizedFileURL,
+                           backups.standardizedFileURL)
+            for (url, data, name) in files {
+                XCTAssertEqual(try Data(contentsOf: url), data)
+                XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent(name)), data)
+            }
+        } catch {
+            XCTFail("ожидался SudrfStoreBootstrapError, получено: \(error)")
+        }
+    }
+
+    /// Второй запуск открывает уже созданную базу и видит все сохранённые
+    /// дела, включая их независимые durable keys.
     func testSecondLaunchReopensExistingStore() async throws {
         let store = freshStoreURL!, suite = suiteName!
-        let first = try await PersistentStoreBootstrapper()
-            .prepareProduction(storeURL: store, defaultsSuiteName: suite)
-        let writing = ModelContext(first)
-        writing.insert(TrackedCaseRecord(
-            key: "court/2-1/2026", collections: [], caseNumber: "2-1/2026",
-            courtTitle: "Тестовый районный суд", displayDomain: "court.sudrf.ru",
-            contextData: Data(), snapshotData: nil))
-        try writing.save()
+        let cases = [
+            ("court/2-1/2026", "2-1/2026"),
+            ("court/2-2/2026", "2-2/2026"),
+            ("court/2-3/2026", "2-3/2026"),
+        ]
+        do {
+            let first = try await PersistentStoreBootstrapper()
+                .prepareProduction(storeURL: store, defaultsSuiteName: suite)
+            let writing = ModelContext(first)
+            for (key, caseNumber) in cases {
+                writing.insert(TrackedCaseRecord(
+                    key: key, collections: [], caseNumber: caseNumber,
+                    courtTitle: "Тестовый районный суд", displayDomain: "court.sudrf.ru",
+                    contextData: Data(), snapshotData: nil))
+            }
+            try writing.save()
+        }
 
         let second = try await PersistentStoreBootstrapper()
             .prepareProduction(storeURL: store, defaultsSuiteName: suite)
         let reading = ModelContext(second)
-        XCTAssertEqual(try reading.fetch(FetchDescriptor<TrackedCaseRecord>()).count, 1)
+        let records = try reading.fetch(FetchDescriptor<TrackedCaseRecord>())
+        XCTAssertEqual(records.count, cases.count)
+        XCTAssertEqual(Set(records.map(\.key)), Set(cases.map { $0.0 }))
     }
 }

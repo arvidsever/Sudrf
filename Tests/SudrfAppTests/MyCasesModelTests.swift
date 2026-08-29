@@ -367,6 +367,8 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(router.movementFetchedAt, refreshedAt)
         XCTAssertEqual(router.refreshCenter.openedKey?(), survivor.key,
                        "следующий refresh должен искать survivor, а не удалённый alias")
+        XCTAssertEqual(router.cases.map(\.recordKey), [survivor.key],
+                       "scoped reload не должен оставлять alias или дублировать survivor")
         XCTAssertEqual(defaults.stringArray(forKey: readKey), [
             "\(survivor.key)#feed#123#—#Судебное заседание",
         ])

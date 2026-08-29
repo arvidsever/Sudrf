@@ -57,6 +57,10 @@ struct CaseRepairSummary: Equatable {
             || transient > 0 || !captchaRequests.isEmpty
     }
 
+    var hasProjectionChanges: Bool {
+        !affectedCaseKeys.isEmpty || !keyRemaps.isEmpty
+    }
+
     /// Слияние дублей и последующее переякоривание могут дать цепочку
     /// `старый -> промежуточный -> канонический`. Потребители всегда должны
     /// получать конечный ключ, независимо от порядка операций repair.

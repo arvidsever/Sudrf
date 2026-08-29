@@ -140,6 +140,7 @@ final class AppRouter: ObservableObject {
     private static let knownFeedIDsKey = "notifiedFeedIDs.v1"
     private var knownFeedIDs = Set((UserDefaults.standard.stringArray(forKey: knownFeedIDsKey) ?? [])
         .map(AppRouter.feedIDDroppingKind))
+    private var lifecyclePresentationCache = CaseLifecyclePresentationCache()
 
     var isRefreshingOpenCase: Bool {
         openedKey.map { refreshCenter.isRefreshing($0) } ?? false
@@ -329,7 +330,9 @@ final class AppRouter: ObservableObject {
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
             let outcome = await self.repairCoordinator.repairIfNeeded(key: key)
-            self.applyRepair(outcome.summary, presentReport: false)
+            if outcome.summary.hasProjectionChanges {
+                self.applyRepair(outcome.summary, presentReport: false)
+            }
             return outcome.effectiveKey
         }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
@@ -915,10 +918,11 @@ final class AppRouter: ObservableObject {
     private func applyRefreshed(key: String, movement mv: CaseMovement,
                                 keyRemaps: [String: String]) {
         applyKeyRemaps(keyRemaps)
-        let spotlightKeys = Set([key])
+        let changedCaseKeys = Set([key])
             .union(keyRemaps.keys)
             .union(keyRemaps.values)
-        reload(notifyNew: true, spotlightScope: .cases(spotlightKeys))
+        reload(notifyNew: true, spotlightScope: .cases(changedCaseKeys),
+               changedCaseKeys: changedCaseKeys)
         guard openedKey == key else { return }   // карточка закрыта / другое дело
         let keepAct = selectedActID
         liveMovement = mv
@@ -942,7 +946,8 @@ final class AppRouter: ObservableObject {
     }
 
     private func applyEnforcementRefreshed(key: String) {
-        reload(notifyNew: true, spotlightScope: .cases([key]))
+        reload(notifyNew: true, spotlightScope: .cases([key]),
+               changedCaseKeys: [key])
     }
 
     func selectAct(_ id: String) { selectedActID = id }
@@ -1199,7 +1204,7 @@ final class AppRouter: ObservableObject {
             rec.snapshot = MovementDerivation.preservingConfirmedDeadlines(
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
             store.save(projection: .cases([key]))
-            reload(spotlightScope: .cases([key]))
+            reload(spotlightScope: .cases([key]), changedCaseKeys: [key])
         }
 
         // Пара captcha/captchaid сохранена — перезапрашиваем движение: другие
@@ -1251,9 +1256,11 @@ final class AppRouter: ObservableObject {
     // MARK: Сборка производных наборов из хранилища
 
     func reload(notifyNew: Bool = false,
-                spotlightScope: SpotlightSyncScope? = nil) {
+                spotlightScope: SpotlightSyncScope? = nil,
+                changedCaseKeys: Set<String>? = nil) {
         let recs = store.all()
         let today = DateUtil.today
+        lifecyclePresentationCache.prepare(for: today, changedCaseKeys: changedCaseKeys)
 
         var cs: [TrackedCase] = []
         var hs: [TrackedHearing] = []
@@ -1263,12 +1270,10 @@ final class AppRouter: ObservableObject {
 
         for rec in recs {
             let snap = rec.snapshot
-            let presentation: CaseLifecyclePresentation?
-            if let snap, let movement = rec.movement {
-                presentation = MovementDerivation.lifecyclePresentation(
+            let presentation = lifecyclePresentationCache.presentation(for: rec.key) {
+                guard let snap = rec.snapshot, let movement = rec.movement else { return nil }
+                return MovementDerivation.lifecyclePresentation(
                     from: movement, snapshot: snap, context: rec.context, today: today)
-            } else {
-                presentation = nil
             }
             let stage = presentation?.stage
                 ?? snap.map { CaseStageKind(rawValue: $0.stageRaw) ?? .first }

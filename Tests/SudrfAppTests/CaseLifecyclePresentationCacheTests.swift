@@ -271,6 +271,19 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         _ = subscription
     }
 
+    func testRepairReportWithoutCaseChangesDoesNotRequireProjectionReload() {
+        var summary = CaseRepairSummary()
+        summary.transient = 1
+        summary.notFound = ["2-199/2026"]
+        summary.ambiguous = ["2-200/2026"]
+
+        XCTAssertTrue(summary.hasReport)
+        XCTAssertFalse(summary.hasProjectionChanges)
+
+        summary.affectedCaseKeys.insert("changed")
+        XCTAssertTrue(summary.hasProjectionChanges)
+    }
+
     @MainActor
     func testReportedRepairPreflightStillPublishesProjection() async throws {
         let defaults = UserDefaults.standard

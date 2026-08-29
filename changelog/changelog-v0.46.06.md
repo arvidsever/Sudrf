@@ -27,7 +27,7 @@
 - Регрессии покрывают первый полный reload, same-day scoped invalidation,
   untouched records, deletion/key remap, смену дня и эквивалентность scoped и
   full проекций `cases`, `hearings`, `deadlines`, `feed` и счётчиков.
-- Полный `swift test` — 838 тестов, ошибок нет; `swift build` проходит.
+- Полный `swift test` — 839 тестов, ошибок нет; `swift build` проходит.
 
 ## Границы
 

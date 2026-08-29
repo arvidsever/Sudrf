@@ -330,7 +330,7 @@ final class AppRouter: ObservableObject {
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
             let outcome = await self.repairCoordinator.repairIfNeeded(key: key)
-            if outcome.summary.hasReport {
+            if outcome.summary.hasProjectionChanges {
                 self.applyRepair(outcome.summary, presentReport: false)
             }
             return outcome.effectiveKey

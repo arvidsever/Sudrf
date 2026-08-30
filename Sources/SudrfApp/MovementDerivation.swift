@@ -21,8 +21,25 @@ struct StoredSession: Codable, Equatable {
     var court: String
     var judge: String? = nil
     var levelRaw: String       // CaseInstance.Level.rawValue
+    /// Номер производства инстанции пересмотра, из которой пришло событие.
+    /// Optional сохраняет декодирование старых snapshots.
+    var caseNumber: String? = nil
     var level: CaseInstance.Level { CaseInstance.Level(rawValue: levelRaw) ?? .first }
     var date: Date? { DateUtil.parse(dateRaw) }
+
+    /// Старый snapshot не хранил номер сессии. Его отсутствие совместимо с
+    /// номером, выведенным при следующем refresh, и не должно создавать badge.
+    func hasSameRefreshSource(as other: StoredSession) -> Bool {
+        dateRaw == other.dateRaw
+            && time == other.time
+            && room == other.room
+            && event == other.event
+            && result == other.result
+            && court == other.court
+            && judge == other.judge
+            && levelRaw == other.levelRaw
+            && (caseNumber == other.caseNumber || caseNumber == nil || other.caseNumber == nil)
+    }
 }
 
 struct StoredDeadline: Codable, Equatable {
@@ -75,7 +92,8 @@ struct CaseSnapshot: Codable, Equatable {
             && leadCharges == other.leadCharges
             && secondPartyLine == other.secondPartyLine
             && lastEvent == other.lastEvent
-            && sessions == other.sessions
+            && sessions.count == other.sessions.count
+            && zip(sessions, other.sessions).allSatisfy { $0.hasSameRefreshSource(as: $1) }
             && deadlines == other.deadlines
             && actsFingerprint == other.actsFingerprint
     }
@@ -130,7 +148,8 @@ enum MovementDerivation {
                 sessions.append(StoredSession(
                     dateRaw: s.date, time: s.time, room: s.room,
                     event: s.event, result: s.result,
-                    court: inst.court, judge: inst.judge, levelRaw: inst.level.rawValue))
+                    court: inst.court, judge: inst.judge, levelRaw: inst.level.rawValue,
+                    caseNumber: reviewNumber(for: inst)))
             }
         }
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
@@ -210,7 +229,8 @@ enum MovementDerivation {
         // инстанции при сборке снимка. Иначе — суд текущего круга, и только
         // когда в строке реально показывается его номер: именно комбинацию
         // «номер апелляции + суд первой инстанции» issue и запрещает.
-        let currentReviewNumber = reviewNumber(for: resolution.currentInstance)
+        let currentReviewNumber = reviewNumber(
+            for: resolution.currentInstance, baseCaseNumber: mv.caseNumber)
         let reviewHearing = nextHearing.flatMap { $0.level == .first ? nil : $0 }
         let nextEventCourt = courtLabel(reviewHearing?.court)
             ?? (currentReviewNumber == nil ? nil : courtLabel(resolution.currentInstance?.court))
@@ -298,9 +318,13 @@ enum MovementDerivation {
               [.appeal, .cassation, .vsCassation, .supervisory].contains(instance.level),
               instance.captchaFormURL == nil,
               instance.transientError != true else { return nil }
-        let number = CaseNumberPresentation.primary(instance.caseNumber)
-        guard !number.isEmpty, !["—", "–", "-"].contains(number) else { return nil }
-        return number
+        return CaseNumberPresentation.secondary(instance.caseNumber, distinctFrom: "")
+    }
+
+    static func reviewNumber(for instance: CaseInstance?,
+                             baseCaseNumber: String) -> String? {
+        guard let number = reviewNumber(for: instance) else { return nil }
+        return CaseNumberPresentation.secondary(number, distinctFrom: baseCaseNumber)
     }
 
     /// Классификация намеренно живёт в presentation: она зависит от текущего

@@ -94,6 +94,72 @@ final class MovementDerivationTests: XCTestCase {
         ])
     }
 
+    func testSessionsKeepNumbersOfTheirOwnHistoricalInstances() {
+        let appeal = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми",
+            caseNumber: "33-2267/2026", judge: nil, domain: "vs.komi.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "02.05.2026", event: "Судебное заседание")]
+        )
+        let cassation = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-41/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "03.05.2026", event: "Рассмотрение жалобы")]
+        )
+        let supreme = CaseInstance(
+            level: .vsCassation, court: "Верховный Суд Российской Федерации",
+            caseNumber: "8-КГ26-7-К2", judge: nil, domain: "vsrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "04.05.2026", event: "Судебное заседание")]
+        )
+        let snapshot = MovementDerivation.snapshot(
+            from: movement(sessions: [CaseSession(date: "01.05.2026", event: "Решение")],
+                           instances: [appeal, cassation, supreme]),
+            context: context(), today: today)
+
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: snapshot.sessions.map { ($0.court, $0.caseNumber) }),
+            [
+                "СГС": nil,
+                "Верховный суд Республики Коми": "33-2267/2026",
+                "Третий кассационный суд общей юрисдикции": "8Г-41/2026",
+                "Верховный Суд Российской Федерации": "8-КГ26-7-К2",
+            ]
+        )
+    }
+
+    func testLegacySessionNumberIsMigrationSafeButDifferentKnownNumbersAreChanges() throws {
+        let appeal = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми",
+            caseNumber: "33-2267/2026", judge: nil, domain: "vs.komi.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "02.05.2026", event: "Судебное заседание")]
+        )
+        let source = movement(
+            sessions: [CaseSession(date: "01.05.2026", event: "Решение")],
+            instances: [appeal])
+        let fresh = MovementDerivation.snapshot(from: source, context: context(), today: today)
+        let index = try XCTUnwrap(fresh.sessions.firstIndex {
+            $0.court == "Верховный суд Республики Коми"
+        })
+
+        let legacySession = try JSONDecoder().decode(StoredSession.self, from: Data(
+            #"{"dateRaw":"02.05.2026","event":"Судебное заседание","court":"Верховный суд Республики Коми","levelRaw":"appeal"}"#
+                .utf8))
+        var legacy = fresh
+        legacy.sessions[index] = legacySession
+        XCTAssertTrue(legacy.hasSameRefreshSource(as: fresh))
+
+        var different = fresh
+        different.sessions[index].caseNumber = "33-2268/2026"
+        XCTAssertFalse(fresh.hasSameRefreshSource(as: different))
+
+        var changedSource = source
+        changedSource.instances[1].caseNumber = "33-2268/2026"
+        XCTAssertFalse(MovementDerivation.hasSameRefreshSource(source, changedSource))
+    }
+
     func testFutureHearingsUseNumericTimeAndExcludeTerminalSessionToday() {
         let sessions = [
             StoredSession(dateRaw: "01.05.2026", time: "11:00", room: nil,

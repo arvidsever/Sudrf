@@ -198,7 +198,8 @@ struct MyCasesView: View {
                         Text("№ \(CaseNumberPresentation.primary(c.caseNumber))")
                             .font(.system(size: 11, weight: .semibold)).monospacedDigit()
                             .foregroundStyle(.tertiary)
-                        if let review = c.currentReviewNumber {
+                        if let review = CaseNumberPresentation.secondary(
+                            c.currentReviewNumber, distinctFrom: c.caseNumber) {
                             Text(review)
                                 .font(.system(size: 11, weight: .semibold)).monospacedDigit()
                                 .foregroundStyle(.tertiary)
@@ -521,7 +522,8 @@ struct MyCasesView: View {
                     Text(CaseNumberPresentation.primary(c.caseNumber))
                         .font(.system(size: 12.5, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    if let review = c.currentReviewNumber {
+                    if let review = CaseNumberPresentation.secondary(
+                        c.currentReviewNumber, distinctFrom: c.caseNumber) {
                         Text(review)
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(.secondary)

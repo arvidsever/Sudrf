@@ -19,4 +19,15 @@ public enum CaseNumberPresentation {
         }
         return value
     }
+
+    /// Второй номер в интерфейсе — только если это реальный номер другого
+    /// производства, а не повтор исходного номера дела.
+    public static func secondary(_ raw: String?, distinctFrom base: String) -> String? {
+        guard let raw else { return nil }
+        let number = primary(raw)
+        guard !number.isEmpty,
+              !["—", "–", "-"].contains(number),
+              number != primary(base) else { return nil }
+        return number
+    }
 }

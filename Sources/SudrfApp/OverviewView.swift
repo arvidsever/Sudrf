@@ -133,6 +133,12 @@ struct OverviewView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("№ \(CaseNumberPresentation.primary(h.caseNumber))")
                         .font(.system(size: 13, weight: .semibold))
+                    if let review = h.reviewNumber {
+                        Text(review)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(h.parties)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -438,6 +444,12 @@ struct OverviewView: View {
                             .font(.system(size: 10.5))
                             .foregroundStyle(.tertiary)
                     }
+                }
+                if let review = f.reviewNumber {
+                    Text(review)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(f.text)
                     .font(.system(size: 12))

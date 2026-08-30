@@ -36,6 +36,9 @@ struct CaseMovementView: View {
     @Binding var expanded: Set<String>
     var backTitle: String = "Выдача"
     var onBack: () -> Void
+    /// Ссылка базовой карточки из сохранённого контекста. Нужна как fallback
+    /// для старого movement-кэша, созданного до появления per-instance URL.
+    var sourceURL: URL? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Отслеживание (раздел «Мои дела»): кнопка показывается, только если задан
     /// onTrack (из поиска). Из самой карточки мониторинга — не передаётся.
@@ -136,6 +139,14 @@ struct CaseMovementView: View {
                 }
                 .buttonStyle(.glass)
                 .controlSize(.small)
+                if let sourceURL = primarySourceURL {
+                    Link(destination: sourceURL) {
+                        Label("На сайте суда", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .help("Открыть карточку на сайте суда")
+                }
                 if let onTrack {
                     if isTracked {
                         Button {} label: {
@@ -206,6 +217,12 @@ struct CaseMovementView: View {
         // Полоса во всю ширину — прямоугольник без скругления: шапка примыкает
         // к кромкам окна, скруглённые углы открыли бы контент по краям.
         .glassEffect(.regular, in: .rect)
+    }
+
+    private var primarySourceURL: URL? {
+        sourceURL ?? movement.instances.first {
+            $0.caseNumber == movement.caseNumber && $0.sourceURL != nil
+        }?.sourceURL
     }
 
     /// «обновляется…» / «обновлено 5 мин назад» / «обновлено только что».
@@ -716,6 +733,16 @@ private struct InstanceBlock: View {
                     .shadow(color: instance.level.tint.opacity(0.55), radius: 3)
                 Text(instance.court).font(.system(size: 12.5, weight: .bold)).lineLimit(1)
                 Text("№ \(instance.caseNumber)").font(.caption).foregroundStyle(.secondary)
+                if let sourceURL = instance.sourceURL {
+                    Link(destination: sourceURL) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(instance.level.tint)
+                    .help("Открыть карточку на сайте суда")
+                    .accessibilityLabel("Открыть карточку на сайте суда")
+                }
                 if instance.foundByUID { TinyChip(text: "по УИД", color: instance.level.tint) }
                 if let note = instance.note {
                     TinyChip(text: note, color: Color(red: 0.72, green: 0.20, blue: 0.30))

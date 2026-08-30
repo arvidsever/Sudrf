@@ -902,4 +902,20 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(merged.acts.count, 1)
         XCTAssertEqual(merged.actBodies.count, 1)
     }
+
+    func testMovementMergeKeepsSourceURLFromDuplicateInstance() throws {
+        let first = movement(level: .appeal, number: "33-1/2026",
+                             domain: "vs--komi.sudrf.ru",
+                             actID: "act_vs--komi.sudrf.ru#33-1/2026")
+        var duplicate = movement(level: .appeal, number: "33-1/2026",
+                                 domain: "vs.komi.sudrf.ru",
+                                 actID: "act_vs.komi.sudrf.ru#33-1/2026")
+        duplicate.instances[0].sourceURL = try XCTUnwrap(
+            URL(string: "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=2&name_op=case"))
+
+        let merged = try XCTUnwrap(
+            TrackedCaseRepairCoordinator.mergeMovements([first, duplicate]))
+
+        XCTAssertEqual(merged.instances.first?.sourceURL, duplicate.instances[0].sourceURL)
+    }
 }

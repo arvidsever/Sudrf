@@ -58,7 +58,8 @@ extension MovementService {
             result: base.result ?? baseCard?.result,
             sessions: baseCard?.sessions ?? [],
             actID: nil,
-            actURL: baseCard?.actLinks.first)]
+            actURL: baseCard?.actLinks.first,
+            sourceURL: base.cardURL)]
 
         var acts: [CaseAct] = []
         var actBodies: [String: String] = [:]
@@ -116,7 +117,8 @@ extension MovementService {
                         result: r.result ?? card?.result,
                         sessions: card?.sessions ?? [],
                         actID: nil,
-                        actURL: card?.actLinks.first))
+                        actURL: card?.actLinks.first,
+                        sourceURL: r.cardURL))
                 }
             }
         }
@@ -220,7 +222,9 @@ extension MovementService {
                             foundByUID: true,
                             result: r.result ?? card.result,
                             sessions: card.sessions,
-                            actID: card.actText != nil ? actID : nil))
+                            actID: card.actText != nil ? actID : nil,
+                            sourceURL: Self.sourceURL(for: r, court: court,
+                                                      cartoteka: cart)))
                     }
                     break   // найдено в этой картотеке — к следующему суду
                 } catch SudrfError.captchaRequired(let formURL) {

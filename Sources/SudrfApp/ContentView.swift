@@ -344,6 +344,8 @@ private struct ResultsPane: View {
             } else if let mv = model.movement {
                 CaseMovementView(movement: mv, expanded: $model.expandedComplaints,
                                  onBack: { model.exitMovement() },
+                                 sourceURL: model.currentContext()?.cardURLString
+                                     .flatMap(URL.init(string:)),
                                  onSolveCaptcha: { model.beginCaptcha(for: $0) },
                                  isTracked: model.currentContext().map { router.isTracked($0) } ?? false,
                                  onTrack: {

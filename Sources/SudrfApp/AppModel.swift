@@ -165,6 +165,11 @@ final class AppRouter: ObservableObject {
     }
 
     var openEnforcementError: String? { refreshCenter.enforcementError(forKey: openedKey) }
+    var openCaseSourceURL: URL? {
+        openedKey
+            .flatMap { store.record(forKey: $0)?.context?.cardURLString }
+            .flatMap(URL.init(string:))
+    }
 
     // MARK: FSSP CAPTCHA presentation
 

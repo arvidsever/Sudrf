@@ -12,22 +12,33 @@ import Foundation
 public actor MosGorSudClient {
 
     private let transport: HTMLCourtTransport
+    private let actFileLoader: ActFileLoader
     public var maxAttempts = 3
 
     public init(minInterval: TimeInterval = 2.0,
                 userAgent: String = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
                 trustCourtCertificates: Bool = true) {
+        let cfg = Self.productionConfiguration()
+        let delegate: (any URLSessionDelegate)? = trustCourtCertificates
+            ? SudrfTLSDelegate(strictEvaluation: true,
+                               allowedRedirectHosts: PublishedActURLPolicy.allowedMosGorSudHosts)
+            : nil
+        self.transport = HTMLCourtTransport(
+            session: URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil),
+            userAgent: userAgent, minInterval: minInterval,
+            decodingPolicy: .utf8Only, throttleSemantics: .lastRequestStart)
+        self.actFileLoader = ActFileLoader()
+    }
+
+    static func productionConfiguration() -> URLSessionConfiguration {
         let cfg = URLSessionConfiguration.default
         cfg.httpCookieStorage = HTTPCookieStorage.shared
         cfg.httpShouldSetCookies = true
         cfg.httpCookieAcceptPolicy = .always
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.timeoutIntervalForRequest = 30
-        let delegate: (any URLSessionDelegate)? = trustCourtCertificates ? SudrfTLSDelegate() : nil
-        self.transport = HTMLCourtTransport(
-            session: URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil),
-            userAgent: userAgent, minInterval: minInterval,
-            decodingPolicy: .utf8Only, throttleSemantics: .lastRequestStart)
+        cfg.timeoutIntervalForResource = 120
+        return cfg
     }
 
     /// Внутренний init для тестов с URLProtocol-stub'ом.
@@ -37,6 +48,7 @@ public actor MosGorSudClient {
         self.transport = HTMLCourtTransport(
             session: session, userAgent: userAgent, minInterval: minInterval,
             decodingPolicy: .utf8Only, throttleSemantics: .lastRequestStart)
+        self.actFileLoader = ActFileLoader()
     }
 
     /// Поиск по порталу. Пустой courtAlias — по всем судам Москвы сразу.
@@ -70,6 +82,20 @@ public actor MosGorSudClient {
     public func fetchCard(url: URL) async throws -> MosGorSudCard {
         let html = try await fetchUTF8(url)
         return try MosGorSudCardParser.parse(html: html)
+    }
+
+    /// Fetches and verifies a published attachment. A successful HTTP request
+    /// alone is not enough: HTML/CAPTCHA responses, misleading MIME types and
+    /// unsafe Office containers are rejected before any caller can persist an
+    /// act or make it searchable.
+    public func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+        let response = try await transport.fetchFile(
+            url, maxAttempts: maxAttempts,
+            allowedHosts: PublishedActURLPolicy.allowedMosGorSudHosts,
+            maxBytes: ActFileLoader.Limits.production.maxDownloadBytes)
+        return try await actFileLoader.extract(
+            data: response.data, sourceURL: url, finalURL: response.finalURL,
+            contentType: response.contentType)
     }
 
     // MARK: - сеть

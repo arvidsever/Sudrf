@@ -171,11 +171,25 @@ public enum MosGorSudCardParser {
         }
 
         // Тексты актов — вложения по ссылке /…/cases/docs/content/<uuid>.
-        var actLinks: [URL] = []
+        // Дата и название живут в соседних ячейках той же строки таблицы.
+        var actFiles: [MosGorSudActLink] = []
+        var seenActURLs = Set<String>()
         for a in (try? doc.select("a[href]").array()) ?? [] {
             let href = (try? a.attr("href")) ?? ""
             guard href.contains("cases/docs/content") else { continue }
-            if let url = MGSParse.absoluteURL(href) { actLinks.append(url) }
+            guard let rawURL = MGSParse.absoluteURL(href),
+                  let url = PublishedActURLPolicy.safeMosGorSudURL(rawURL),
+                  seenActURLs.insert(url.absoluteString).inserted else {
+                continue
+            }
+            let cells = ((try? a.parent()?.parent()?.select("td").array()) ?? [])
+                .map { (try? $0.text())?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+            let values = cells.filter { !$0.isEmpty && !$0.localizedCaseInsensitiveContains("скачать файл") }
+            let date = values.first(where: {
+                $0.range(of: #"^\d{2}\.\d{2}\.\d{4}$"#, options: .regularExpression) != nil
+            })
+            let title = values.first(where: { $0 != date })
+            actFiles.append(MosGorSudActLink(url: url, date: date, title: title))
         }
 
         // Стороны: пары `<p class="table-bold-text">Роль</p>Имя<br/>Имя…`.
@@ -203,7 +217,7 @@ public enum MosGorSudCardParser {
             higherNumber: field("вышестоящей инстанции").flatMap(firstCaseNumberLike),
             sessions: sessions,
             participants: participants,
-            actLinks: actLinks,
+            actFiles: actFiles,
             rawText: rawText)
     }
 

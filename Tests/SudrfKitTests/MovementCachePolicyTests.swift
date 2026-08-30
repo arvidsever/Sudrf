@@ -224,4 +224,40 @@ final class MovementCachePolicyTests: XCTestCase {
         XCTAssertEqual(merged.actBodies[actID1], "Тело акта 1")
         XCTAssertEqual(merged.actBodies[actID2], "Тело акта 2")
     }
+
+    func testPartialFileRefreshKeepsEveryPreviouslyVerifiedAttachment() {
+        let firstID = "act_mos-gorsud.ru#3а-1/2026#file-one"
+        let secondID = "act_mos-gorsud.ru#3а-1/2026#file-two"
+        let cachedInstance = CaseInstance(
+            level: .first, court: "Московский городской суд", caseNumber: "3а-1/2026",
+            judge: nil, domain: MosGorSudEndpoint.host, foundByUID: false, result: nil,
+            sessions: [], actID: firstID, actIDs: [firstID, secondID])
+        let cached = movement(
+            [cachedInstance],
+            acts: [
+                CaseAct(id: firstID, title: "Определение", date: "01.06.2026",
+                        courtShort: "МГС", instanceLevel: .first),
+                CaseAct(id: secondID, title: "Решение", date: "02.06.2026",
+                        courtShort: "МГС", instanceLevel: .first),
+            ],
+            bodies: [firstID: "Старый текст определения", secondID: "Старый текст решения"])
+        let freshInstance = CaseInstance(
+            level: .first, court: "Московский городской суд", caseNumber: "3а-1/2026",
+            judge: nil, domain: MosGorSudEndpoint.host, foundByUID: false, result: nil,
+            sessions: [], actID: firstID, actIDs: [firstID],
+            actFileError: "Не удалось прочитать один опубликованный файл.")
+        var fresh = movement(
+            [freshInstance],
+            acts: [CaseAct(id: firstID, title: "Определение", date: "01.06.2026",
+                           courtShort: "МГС", instanceLevel: .first)],
+            bodies: [firstID: "Новый текст определения"])
+        fresh.incompleteHigherCourtDomains = [MosGorSudEndpoint.host]
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertEqual(Set(merged.instances[0].linkedActIDs), [firstID, secondID])
+        XCTAssertEqual(merged.actBodies[firstID], "Новый текст определения")
+        XCTAssertEqual(merged.actBodies[secondID], "Старый текст решения")
+        XCTAssertEqual(Set(merged.acts.map(\.id)), [firstID, secondID])
+    }
 }

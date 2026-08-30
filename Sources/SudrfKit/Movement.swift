@@ -72,6 +72,9 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     public var sessions: [CaseSession]
     /// id опубликованного судебного акта этой инстанции (для переключателя), если есть.
     public var actID: String?
+    /// Все опубликованные акты этой инстанции. `actID` остаётся первым
+    /// элементом для обратной совместимости со старыми movement-кэшами.
+    public var actIDs: [String]?
     /// Если задан — инстанция не загружена автоматически (форма суда под капчей).
     /// URL формы поиска, которую нужно открыть, чтобы пользователь ввёл код вручную.
     public var captchaFormURL: URL?
@@ -92,6 +95,12 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// файлами, а не инлайном (в отличие от sud_delo, где текст идёт в actID).
     /// Опционал: старые кэши декодируются без миграции.
     public var actURL: URL?
+    /// Все исходные ссылки файловых актов этой инстанции. `actURL` остаётся
+    /// первой ссылкой для обратной совместимости со старыми movement-кэшами.
+    public var actURLs: [URL]?
+    /// Причина, по которой опубликованный файл не вошёл в движение.
+    /// Ссылка остаётся доступна для ручного открытия.
+    public var actFileError: String?
     /// Точная ссылка на карточку именно этой инстанции. Не подменяется
     /// главной страницей суда; nil означает, что надёжная ссылка неизвестна.
     /// Опционал сохраняет декодирование старых кэшей без миграции.
@@ -100,14 +109,31 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
                 sessions: [CaseSession], actID: String? = nil,
+                actIDs: [String]? = nil,
                 captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil,
-                sourceURL: URL? = nil, transientError: Bool? = nil) {
+                actURLs: [URL]? = nil, actFileError: String? = nil, sourceURL: URL? = nil,
+                transientError: Bool? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
         self.result = result; self.sessions = sessions; self.actID = actID
+        self.actIDs = actIDs
         self.captchaFormURL = captchaFormURL; self.note = note; self.actURL = actURL
+        self.actURLs = actURLs
+        self.actFileError = actFileError
         self.sourceURL = sourceURL
         self.transientError = transientError
+    }
+
+    public var linkedActIDs: [String] {
+        var values = actIDs ?? []
+        if let actID, !values.contains(actID) { values.insert(actID, at: 0) }
+        return values
+    }
+
+    public var linkedActURLs: [URL] {
+        var values = actURLs ?? []
+        if let actURL, !values.contains(actURL) { values.insert(actURL, at: 0) }
+        return values
     }
 }
 
@@ -117,11 +143,15 @@ public struct CaseAct: Sendable, Equatable, Identifiable, Codable {
     public var date: String
     public var courtShort: String    // «1-я инстанция», «ВС Коми», «3-й КСОЮ»
     public var instanceLevel: CaseInstance.Level
+    /// Проверенная provenance файлового акта. nil у inline-текстов и старых кэшей.
+    public var fileProvenance: PublishedActProvenance?
 
     public init(id: String, title: String, date: String, courtShort: String,
-                instanceLevel: CaseInstance.Level) {
+                instanceLevel: CaseInstance.Level,
+                fileProvenance: PublishedActProvenance? = nil) {
         self.id = id; self.title = title; self.date = date
         self.courtShort = courtShort; self.instanceLevel = instanceLevel
+        self.fileProvenance = fileProvenance
     }
 }
 

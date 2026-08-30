@@ -48,16 +48,35 @@ public enum MovementCachePolicy {
             }
             guard !realInstances.isEmpty else { return false }
             for r in realInstances {
-                if !instances.contains(where: {
+                if let freshIndex = instances.firstIndex(where: {
                     SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(r.domain)
                         && MovementService.sameCaseNumber($0.caseNumber, r.caseNumber)
                 }) {
+                    if instances[freshIndex].actID == nil {
+                        instances[freshIndex].actID = r.actID
+                    }
+                    var linked = instances[freshIndex].linkedActIDs
+                    for id in r.linkedActIDs where !linked.contains(id) { linked.append(id) }
+                    instances[freshIndex].actIDs = linked.isEmpty ? nil : linked
+                    if instances[freshIndex].actURL == nil {
+                        instances[freshIndex].actURL = r.actURL
+                    }
+                    var sourceURLs = instances[freshIndex].linkedActURLs
+                    for url in r.linkedActURLs where !sourceURLs.contains(url) {
+                        sourceURLs.append(url)
+                    }
+                    instances[freshIndex].actURLs = sourceURLs.isEmpty ? nil : sourceURLs
+                } else {
                     instances.append(r)
                 }
-                if let actID = r.actID, !acts.contains(where: { $0.id == actID }),
-                   let act = cached.acts.first(where: { $0.id == actID }) {
+                for actID in r.linkedActIDs where !acts.contains(where: { $0.id == actID }) {
+                    guard let body = cached.actBodies[actID],
+                          !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          let act = cached.acts.first(where: { $0.id == actID }) else {
+                        continue
+                    }
                     acts.append(act)
-                    if let body = cached.actBodies[actID] { actBodies[actID] = body }
+                    actBodies[actID] = body
                 }
             }
             return true

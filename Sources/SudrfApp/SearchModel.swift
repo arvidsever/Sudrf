@@ -88,6 +88,10 @@ final class SearchModel: ObservableObject {
     @Published var selectedResultID: String?
     @Published var actText = ""
     @Published var actLinks: [URL] = []
+    @Published var cardActs: [CaseAct] = []
+    @Published var cardActBodies: [String: String] = [:]
+    @Published var selectedCardActID: String?
+    @Published var actFileError: String?
     @Published var actMissing = false
     @Published var hasSearched = false
 
@@ -132,6 +136,16 @@ final class SearchModel: ObservableObject {
 
     var isDrilled: Bool { movement != nil || loadingMovement }
     var selectedActText: String? { selectedActID.flatMap { movement?.actBodies[$0] } }
+    var selectedCardAct: CaseAct? {
+        selectedCardActID.flatMap { id in cardActs.first { $0.id == id } }
+    }
+    var unextractedCardActLinks: [URL] {
+        let extracted: Set<URL> = Set(cardActs.compactMap { act -> URL? in
+            guard let sourceURL = act.fileProvenance?.sourceURL else { return nil }
+            return PublishedActURLPolicy.safeMosGorSudURL(sourceURL)
+        })
+        return actLinks.filter { !extracted.contains($0) }
+    }
 
     /// Картотеки текущего звена (для ВС РФ — пусто: парсинг не подключён).
     var cartoteki: [Cartoteka] {
@@ -602,8 +616,44 @@ final class SearchModel: ObservableObject {
             do {
                 let card = try await mosGorSudClient.fetchCard(url: url)
                 guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-                actMissing = card.actLinks.isEmpty
-                actLinks = card.actLinks
+                actLinks = card.actLinks.compactMap(PublishedActURLPolicy.safeMosGorSudURL)
+                actMissing = actLinks.isEmpty
+                var loadedActs: [CaseAct] = []
+                var loadedBodies: [String: String] = [:]
+                var failures = 0
+                for attachment in card.actFiles
+                where PublishedActURLPolicy.isAllowedMosGorSud(attachment.url) {
+                    do {
+                        let file = try await mosGorSudClient.fetchPublishedAct(url: attachment.url)
+                        guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                        let id = file.provenance.sourceURL.absoluteString
+                        guard !loadedActs.contains(where: { $0.id == id }) else { continue }
+                        loadedActs.append(CaseAct(
+                            id: id,
+                            title: Self.nonempty(attachment.title) ?? "Судебный акт",
+                            date: Self.nonempty(attachment.date) ?? "—",
+                            courtShort: card.court ?? court.title,
+                            instanceLevel: Self.moscowLevel(for: cart),
+                            fileProvenance: file.provenance))
+                        loadedBodies[id] = file.text
+                    } catch is CancellationError {
+                        return
+                    } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                        return
+                    } catch {
+                        failures += 1
+                    }
+                }
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                cardActs = loadedActs
+                cardActBodies = loadedBodies
+                selectedCardActID = loadedActs.first?.id
+                actText = loadedActs.first.flatMap { loadedBodies[$0.id] } ?? ""
+                if failures > 0 {
+                    actFileError = failures == 1
+                        ? "Не удалось прочитать один опубликованный файл. Оригинал можно открыть по ссылке."
+                        : "Не удалось прочитать опубликованные файлы: \(failures). Оригиналы можно открыть по ссылкам."
+                }
             } catch let e as SudrfError {
                 guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
                 status = e.description
@@ -702,7 +752,29 @@ final class SearchModel: ObservableObject {
     private func clearActPreview() {
         actText = ""
         actLinks = []
+        cardActs = []
+        cardActBodies = [:]
+        selectedCardActID = nil
+        actFileError = nil
         actMissing = false
+    }
+
+    func selectCardAct(_ id: String) {
+        guard cardActs.contains(where: { $0.id == id }), let body = cardActBodies[id] else { return }
+        selectedCardActID = id
+        actText = body
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func moscowLevel(for cartoteka: Cartoteka) -> CaseInstance.Level {
+        let instance = MosGorSudRouting.map(cartoteka: cartoteka).instance
+        if instance >= MosGorSudInstance.review { return .cassation }
+        return instance == MosGorSudInstance.appeal ? .appeal : .first
     }
 
     /// Возвращает только опубликованный текст акта. Текст всей карточки нельзя

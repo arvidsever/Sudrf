@@ -121,6 +121,164 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testMosGorSudCardLoadsAllPublishedActsAndSelectsBetweenThem() async throws {
+        let cardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/multi"))
+        let firstURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/first"))
+        let secondURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/second"))
+        let row = CaseSearchResult(caseNumber: "02-10/2026", cardURL: cardURL)
+        let court = SearchModel.CourtOption(domain: MosGorSudEndpoint.host,
+                                             title: "Тверской районный суд",
+                                             level: .district,
+                                             code: "77RS0001")
+        let card = MosGorSudCard(
+            caseNumber: row.caseNumber,
+            court: court.title,
+            judge: "Иванова И. И.",
+            receiptDate: "31.07.2026",
+            actFiles: [
+                MosGorSudActLink(url: firstURL, date: "01.08.2026", title: "Решение"),
+                MosGorSudActLink(url: secondURL, title: "Определение")
+            ])
+        let first = Self.publishedAct(text: "Текст первого акта", url: firstURL)
+        let second = Self.publishedAct(text: "Текст второго акта", url: secondURL)
+        let model = SearchModel(
+            mosGorSudClient: SearchMosGorSudStub(
+                card: card,
+                publishedActs: [firstURL: first, secondURL: second]))
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [row]
+
+        await model.openCard(row)
+
+        XCTAssertEqual(model.actLinks, [firstURL, secondURL])
+        XCTAssertEqual(model.cardActs.map(\.id), [firstURL.absoluteString, secondURL.absoluteString])
+        XCTAssertEqual(model.cardActs.map(\.title), ["Решение", "Определение"])
+        XCTAssertEqual(model.cardActs.map(\.date), ["01.08.2026", "—"])
+        XCTAssertEqual(model.cardActBodies[firstURL.absoluteString], first.text)
+        XCTAssertEqual(model.cardActBodies[secondURL.absoluteString], second.text)
+        XCTAssertEqual(model.cardActs[0].fileProvenance, first.provenance)
+        XCTAssertEqual(model.cardActs[1].fileProvenance, second.provenance)
+        XCTAssertEqual(model.selectedCardActID, firstURL.absoluteString)
+        XCTAssertEqual(model.actText, first.text)
+        XCTAssertNil(model.actFileError)
+        XCTAssertFalse(model.actMissing)
+
+        model.selectCardAct(secondURL.absoluteString)
+
+        XCTAssertEqual(model.selectedCardActID, secondURL.absoluteString)
+        XCTAssertEqual(model.actText, second.text)
+    }
+
+    @MainActor
+    func testMosGorSudCardKeepsSuccessfulActWhenAnotherFileFails() async throws {
+        let cardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/partial"))
+        let goodURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/good"))
+        let failedURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/failed"))
+        let unsafeURL = try XCTUnwrap(URL(string: "https://example.test/cases/docs/content/phishing"))
+        let row = CaseSearchResult(caseNumber: "02-11/2026", cardURL: cardURL)
+        let court = SearchModel.CourtOption(domain: MosGorSudEndpoint.host,
+                                             title: "Тверской районный суд",
+                                             level: .district,
+                                             code: "77RS0001")
+        let card = MosGorSudCard(
+            caseNumber: row.caseNumber,
+            actFiles: [
+                MosGorSudActLink(url: goodURL, date: "02.08.2026", title: "Решение"),
+                MosGorSudActLink(url: failedURL, date: "03.08.2026", title: "Определение"),
+                MosGorSudActLink(url: unsafeURL, title: "Подмена")
+            ])
+        let good = Self.publishedAct(text: "Текст доступного акта", url: goodURL)
+        let model = SearchModel(
+            mosGorSudClient: SearchMosGorSudStub(
+                card: card, publishedActs: [goodURL: good]))
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [row]
+
+        await model.openCard(row)
+
+        XCTAssertEqual(model.actLinks, [goodURL, failedURL])
+        XCTAssertEqual(model.unextractedCardActLinks, [failedURL])
+        XCTAssertEqual(model.cardActs.map(\.id), [goodURL.absoluteString])
+        XCTAssertEqual(model.cardActBodies[goodURL.absoluteString], good.text)
+        XCTAssertEqual(model.selectedCardActID, goodURL.absoluteString)
+        XCTAssertEqual(model.actText, good.text)
+        let error = try XCTUnwrap(model.actFileError)
+        XCTAssertTrue(error.contains("Не удалось"))
+        XCTAssertTrue(error.contains("один"))
+        XCTAssertTrue(error.contains("Оригинал"))
+        XCTAssertFalse(model.actMissing)
+    }
+
+    @MainActor
+    func testLatePublishedActLoadCannotPublishAfterNewerCardSelection() async throws {
+        let firstCardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/late-first"))
+        let secondCardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/late-second"))
+        let firstActURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/late-first"))
+        let secondActURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/late-second"))
+        let first = CaseSearchResult(caseNumber: "02-12/2026", cardURL: firstCardURL)
+        let second = CaseSearchResult(caseNumber: "02-13/2026", cardURL: secondCardURL)
+        let court = SearchModel.CourtOption(domain: MosGorSudEndpoint.host,
+                                             title: "Тверской районный суд",
+                                             level: .district,
+                                             code: "77RS0001")
+        let firstCard = MosGorSudCard(
+            caseNumber: first.caseNumber,
+            actFiles: [MosGorSudActLink(url: firstActURL, title: "Первый акт")])
+        let secondCard = MosGorSudCard(
+            caseNumber: second.caseNumber,
+            actFiles: [MosGorSudActLink(url: secondActURL, title: "Второй акт")])
+        let firstFile = Self.publishedAct(text: "Запоздалый первый акт", url: firstActURL)
+        let secondFile = Self.publishedAct(text: "Актуальный второй акт", url: secondActURL)
+        let client = DelayedSearchMosGorSudActStub(
+            cards: [firstCardURL: firstCard, secondCardURL: secondCard],
+            files: [firstActURL: firstFile, secondActURL: secondFile])
+        let model = SearchModel(mosGorSudClient: client)
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [first, second]
+
+        let firstLoad = Task { @MainActor in await model.openCard(first) }
+        await client.waitUntilCardFetchStarts(for: firstCardURL)
+        await client.resumeCard(firstCardURL)
+        await client.waitUntilActFetchStarts(for: firstActURL)
+
+        let secondLoad = Task { @MainActor in await model.openCard(second) }
+        await client.waitUntilCardFetchStarts(for: secondCardURL)
+        await client.resumeCard(secondCardURL)
+        await client.waitUntilActFetchStarts(for: secondActURL)
+
+        await client.resumeAct(firstActURL)
+        await firstLoad.value
+
+        XCTAssertEqual(model.selectedResultID, second.stableID)
+        XCTAssertTrue(model.loadingCard)
+        XCTAssertTrue(model.cardActs.isEmpty)
+        XCTAssertTrue(model.cardActBodies.isEmpty)
+        XCTAssertTrue(model.actText.isEmpty)
+        XCTAssertEqual(model.actLinks, [secondActURL])
+        XCTAssertNil(model.actFileError)
+
+        await client.resumeAct(secondActURL)
+        await secondLoad.value
+
+        XCTAssertEqual(model.selectedResultID, second.stableID)
+        XCTAssertFalse(model.loadingCard)
+        XCTAssertEqual(model.cardActs.map(\.id), [secondActURL.absoluteString])
+        XCTAssertEqual(model.cardActBodies[secondActURL.absoluteString], secondFile.text)
+        XCTAssertEqual(model.actText, secondFile.text)
+        XCTAssertEqual(model.actLinks, [secondActURL])
+        XCTAssertNil(model.actFileError)
+    }
+
+    @MainActor
     func testFailedOrClosedCardClearsStaleActPreview() async throws {
         let cardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/1"))
         let actURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/1"))
@@ -419,10 +577,30 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertEqual(count, 0)
         XCTAssertNotNil(model.lastSubmittedCaptcha)
     }
+
+    private static func publishedAct(text: String, url: URL) -> PublishedActFile {
+        let bytes = text.lengthOfBytes(using: .utf8)
+        let provenance = PublishedActProvenance(
+            sourceURL: url,
+            finalURL: url,
+            format: .docx,
+            contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            contentHash: "test-hash-\(url.lastPathComponent)",
+            byteCount: bytes,
+            fetchedAt: Date(timeIntervalSince1970: 1_756_000_000),
+            extractorVersion: 1)
+        return PublishedActFile(text: text, provenance: provenance)
+    }
 }
 
 private struct SearchMosGorSudStub: MosGorSudProviding {
     let card: MosGorSudCard?
+    let publishedActs: [URL: PublishedActFile]
+
+    init(card: MosGorSudCard?, publishedActs: [URL: PublishedActFile] = [:]) {
+        self.card = card
+        self.publishedActs = publishedActs
+    }
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
                 participant: String?, instance: Int,
@@ -433,6 +611,13 @@ private struct SearchMosGorSudStub: MosGorSudProviding {
     func fetchCard(url: URL) async throws -> MosGorSudCard {
         guard let card else { throw SearchMosGorSudStubError.unavailable }
         return card
+    }
+
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+        guard let publishedAct = publishedActs[url] else {
+            throw SearchMosGorSudStubError.unavailable
+        }
+        return publishedAct
     }
 }
 
@@ -464,6 +649,60 @@ private actor DelayedSearchMosGorSudStub: MosGorSudProviding {
 
     func resume(_ url: URL, with card: MosGorSudCard) {
         fetchContinuations.removeValue(forKey: url)?.resume(returning: card)
+    }
+}
+
+private actor DelayedSearchMosGorSudActStub: MosGorSudProviding {
+    private let cards: [URL: MosGorSudCard]
+    private let files: [URL: PublishedActFile]
+    private var cardContinuations: [URL: CheckedContinuation<MosGorSudCard, Never>] = [:]
+    private var actContinuations: [URL: CheckedContinuation<PublishedActFile, Never>] = [:]
+    private var cardStartWaiters: [URL: [CheckedContinuation<Void, Never>]] = [:]
+    private var actStartWaiters: [URL: [CheckedContinuation<Void, Never>]] = [:]
+
+    init(cards: [URL: MosGorSudCard], files: [URL: PublishedActFile]) {
+        self.cards = cards
+        self.files = files
+    }
+
+    func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                participant: String?, instance: Int,
+                processType: MosGorSudProcessType) async -> [MosGorSudResult] {
+        []
+    }
+
+    func fetchCard(url: URL) async throws -> MosGorSudCard {
+        guard cards[url] != nil else { throw SearchMosGorSudStubError.unavailable }
+        return await withCheckedContinuation { continuation in
+            cardContinuations[url] = continuation
+            cardStartWaiters.removeValue(forKey: url)?.forEach { $0.resume() }
+        }
+    }
+
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+        guard files[url] != nil else { throw SearchMosGorSudStubError.unavailable }
+        return await withCheckedContinuation { continuation in
+            actContinuations[url] = continuation
+            actStartWaiters.removeValue(forKey: url)?.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilCardFetchStarts(for url: URL) async {
+        guard cardContinuations[url] == nil else { return }
+        await withCheckedContinuation { cardStartWaiters[url, default: []].append($0) }
+    }
+
+    func waitUntilActFetchStarts(for url: URL) async {
+        guard actContinuations[url] == nil else { return }
+        await withCheckedContinuation { actStartWaiters[url, default: []].append($0) }
+    }
+
+    func resumeCard(_ url: URL) {
+        cardContinuations.removeValue(forKey: url)?.resume(returning: cards[url]!)
+    }
+
+    func resumeAct(_ url: URL) {
+        actContinuations.removeValue(forKey: url)?.resume(returning: files[url]!)
     }
 }
 

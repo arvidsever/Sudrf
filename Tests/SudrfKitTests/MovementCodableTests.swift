@@ -57,11 +57,45 @@ final class MovementCodableTests: XCTestCase {
         let encoded = try JSONEncoder().encode(movement)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "executionDocuments")
+        object["instances"] = (object["instances"] as? [[String: Any]])?.map { value in
+            var value = value
+            value.removeValue(forKey: "actIDs")
+            value.removeValue(forKey: "actFileError")
+            return value
+        }
+        object["acts"] = (object["acts"] as? [[String: Any]])?.map { value in
+            var value = value
+            value.removeValue(forKey: "fileProvenance")
+            return value
+        }
         let oldData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(CaseMovement.self, from: oldData)
         XCTAssertNil(decoded.executionDocuments)
         XCTAssertEqual(decoded.uid, movement.uid)
+    }
+
+    func testPublishedFileProvenanceRoundTrip() throws {
+        let source = URL(string: "https://mos-gorsud.ru/mgs/cases/docs/content/abc")!
+        let provenance = PublishedActProvenance(
+            sourceURL: source, finalURL: source, format: .docx,
+            contentType: "application/octet-stream", contentHash: "abc123",
+            byteCount: 42, fetchedAt: Date(timeIntervalSince1970: 100), extractorVersion: 1)
+        let act = CaseAct(id: "act-file", title: "Решение", date: "01.08.2026",
+                          courtShort: "МГС", instanceLevel: .first,
+                          fileProvenance: provenance)
+        let instance = CaseInstance(
+            level: .first, court: "МГС", caseNumber: "3а-1/2026", judge: nil,
+            domain: MosGorSudEndpoint.host, foundByUID: false, result: nil,
+            sessions: [], actID: act.id, actIDs: [act.id])
+        let movement = CaseMovement(uid: "", caseNumber: instance.caseNumber, inForce: false,
+                                    instances: [instance], complaints: [:], acts: [act],
+                                    actBodies: [act.id: "Текст решения"])
+
+        let decoded = try JSONDecoder().decode(
+            CaseMovement.self, from: JSONEncoder().encode(movement))
+        XCTAssertEqual(decoded, movement)
+        XCTAssertEqual(decoded.acts.first?.fileProvenance, provenance)
     }
 
     func testCourtExecutionDocumentStableIDPrefersPaperNumber() throws {

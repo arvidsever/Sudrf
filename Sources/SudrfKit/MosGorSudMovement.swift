@@ -4,6 +4,7 @@
 //  портале (параметры instance=2/3), дальше дело уходит на общую платформу —
 //  2-й КСОЮ (sudrf.ru) и ВС РФ, как у любого другого региона.
 
+import CryptoKit
 import Foundation
 
 /// Часть интерфейса `MosGorSudClient`, нужная сервису движения (подменяется в тестах).
@@ -12,9 +13,16 @@ public protocol MosGorSudProviding: Sendable {
                 participant: String?, instance: Int,
                 processType: MosGorSudProcessType) async throws -> [MosGorSudResult]
     func fetchCard(url: URL) async throws -> MosGorSudCard
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile
 }
 
 extension MosGorSudClient: MosGorSudProviding {}
+
+public extension MosGorSudProviding {
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+        throw PublishedActFileError.extractionFailed
+    }
+}
 
 extension MovementService {
 
@@ -46,23 +54,90 @@ extension MovementService {
         func markIncomplete(_ domain: String) { appendUnique(domain, to: &incompleteDomains) }
         func markHonestZero(_ domain: String) { appendUnique(domain, to: &honestZeroDomains) }
 
+        func nonempty(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+
+        func publishedActs(from card: MosGorSudCard?, caseNumber: String,
+                           level: CaseInstance.Level, court: String) async throws
+            -> (acts: [CaseAct], bodies: [String: String], ids: [String], error: String?) {
+            guard let card, !card.actFiles.isEmpty else { return ([], [:], [], nil) }
+            var loadedActs: [CaseAct] = []
+            var bodies: [String: String] = [:]
+            var ids: [String] = []
+            var failures: [String] = []
+            for attachment in card.actFiles {
+                guard PublishedActURLPolicy.isAllowedMosGorSud(attachment.url) else {
+                    failures.append("Ссылка на опубликованный акт ведёт за пределы портала суда.")
+                    continue
+                }
+                do {
+                    let file = try await mosgorsud.fetchPublishedAct(url: attachment.url)
+                    let id = Self.moscowPublishedActID(url: file.provenance.sourceURL,
+                                                       caseNumber: caseNumber)
+                    guard !ids.contains(id) else { continue }
+                    ids.append(id)
+                    loadedActs.append(CaseAct(
+                        id: id,
+                        title: nonempty(attachment.title) ?? "Судебный акт",
+                        date: nonempty(attachment.date) ?? "—",
+                        courtShort: court,
+                        instanceLevel: level,
+                        fileProvenance: file.provenance))
+                    bodies[id] = file.text
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    throw error
+                } catch let error as PublishedActFileError {
+                    failures.append(error.errorDescription
+                        ?? "Не удалось прочитать опубликованный файл судебного акта.")
+                } catch {
+                    failures.append("Не удалось загрузить опубликованный файл судебного акта.")
+                }
+            }
+            let error: String?
+            if failures.isEmpty {
+                error = nil
+            } else if failures.count == 1 {
+                error = failures[0]
+            } else {
+                error = "Не удалось прочитать опубликованные файлы судебных актов: \(failures.count)."
+            }
+            return (loadedActs, bodies, ids, error)
+        }
+
         let baseLevel: CaseInstance.Level = route.instance >= 3 ? .cassation
                                           : route.instance == 2 ? .appeal : .first
+        let baseCourt = base.court ?? baseCard?.court ?? "Суд Москвы (mos-gorsud.ru)"
+        let baseActURLs = baseCard?.actFiles.compactMap {
+            PublishedActURLPolicy.safeMosGorSudURL($0.url)
+        } ?? []
+        let basePublished = try await publishedActs(from: baseCard,
+                                                    caseNumber: base.caseNumber,
+                                                    level: baseLevel,
+                                                    court: baseCourt)
+        if basePublished.error != nil { markIncomplete(MosGorSudEndpoint.host) }
         var instances: [CaseInstance] = [CaseInstance(
             level: baseLevel,
-            court: base.court ?? baseCard?.court ?? "Суд Москвы (mos-gorsud.ru)",
+            court: baseCourt,
             caseNumber: base.caseNumber,
             judge: base.judge ?? baseCard?.judge,
             domain: MosGorSudEndpoint.host,
             foundByUID: false,
             result: base.result ?? baseCard?.result,
             sessions: baseCard?.sessions ?? [],
-            actID: nil,
-            actURL: baseCard?.actLinks.first,
+            actID: basePublished.ids.first,
+            actIDs: basePublished.ids.isEmpty ? nil : basePublished.ids,
+            actURL: baseActURLs.first,
+            actURLs: baseActURLs.isEmpty ? nil : baseActURLs,
+            actFileError: basePublished.error,
             sourceURL: base.cardURL)]
 
-        var acts: [CaseAct] = []
-        var actBodies: [String: String] = [:]
+        var acts: [CaseAct] = basePublished.acts
+        var actBodies: [String: String] = basePublished.bodies
 
         // 2. Вышестоящие инстанции на самом портале: апелляция (instance=2) и
         //    кассация Мосгорсуда (instance=4 — «Кассационная»; `3` на портале
@@ -107,17 +182,31 @@ extension MovementService {
                         markIncomplete(MosGorSudEndpoint.host)
                         continue
                     }
+                    let court = r.court ?? card?.court ?? "Московский городской суд"
+                    let actURLs = card?.actFiles.compactMap {
+                        PublishedActURLPolicy.safeMosGorSudURL($0.url)
+                    } ?? []
+                    let published = try await publishedActs(from: card,
+                                                             caseNumber: r.caseNumber,
+                                                             level: up.level,
+                                                             court: court)
+                    if published.error != nil { markIncomplete(MosGorSudEndpoint.host) }
+                    acts.append(contentsOf: published.acts)
+                    actBodies.merge(published.bodies) { current, _ in current }
                     instances.append(CaseInstance(
                         level: up.level,
-                        court: r.court ?? card?.court ?? "Московский городской суд",
+                        court: court,
                         caseNumber: r.caseNumber,
                         judge: r.judge ?? card?.judge,
                         domain: MosGorSudEndpoint.host,
                         foundByUID: true,
                         result: r.result ?? card?.result,
                         sessions: card?.sessions ?? [],
-                        actID: nil,
-                        actURL: card?.actLinks.first,
+                        actID: published.ids.first,
+                        actIDs: published.ids.isEmpty ? nil : published.ids,
+                        actURL: actURLs.first,
+                        actURLs: actURLs.isEmpty ? nil : actURLs,
+                        actFileError: published.error,
                         sourceURL: r.cardURL))
                 }
             }
@@ -167,6 +256,14 @@ extension MovementService {
                             incompleteHigherCourtDomains: incompleteDomains.isEmpty
                                 ? nil : incompleteDomains,
                             honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains)
+    }
+
+    private static func moscowPublishedActID(url: URL, caseNumber: String) -> String {
+        let sanitized = ActFileLoader.sanitizedURL(url)
+        let identity = "\(sanitized.host?.lowercased() ?? MosGorSudEndpoint.host)\(sanitized.path)"
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "act_\(MosGorSudEndpoint.host)#\(caseNumber)#file-\(digest)"
     }
 
     /// УИД-поиск в кассационных судах платформы sudrf (для Москвы — 2-й КСОЮ).

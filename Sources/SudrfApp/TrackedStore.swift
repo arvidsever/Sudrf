@@ -160,8 +160,19 @@ enum CourtActProjectionSynchronizer {
                 continue
             }
             for act in movement.acts {
+                guard let sourceText = movement.actBodies[act.id],
+                      !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    // A partial file refresh may retain attachment metadata while
+                    // extraction failed. Keep an already verified projection, but
+                    // never create or overwrite one with an empty body.
+                    for existing in byExact[lookupKey(trackedRecord.key, act.id)] ?? [] {
+                        desiredIDs.insert(existing.id)
+                        unmatched.remove(ObjectIdentifier(existing))
+                    }
+                    continue
+                }
                 let instance = movement.instances.first {
-                    $0.actID == act.id || $0.level == act.instanceLevel
+                    $0.linkedActIDs.contains(act.id) || $0.level == act.instanceLevel
                 }
                 let document = ActDocument(
                     caseKey: trackedRecord.key, sourceActID: act.id,
@@ -171,7 +182,7 @@ enum CourtActProjectionSynchronizer {
                         ?? (movement.uid.isEmpty ? nil : movement.uid),
                     court: instance?.court ?? act.courtShort,
                     instanceLevel: act.instanceLevel, kind: act.title, date: act.date,
-                    sourceText: movement.actBodies[act.id] ?? "")
+                    sourceText: sourceText)
                 let semanticKey = semanticKey(
                     caseKey: trackedRecord.key, level: act.instanceLevel,
                     court: instance?.court ?? act.courtShort,

@@ -97,9 +97,21 @@ public struct MosGorSudResult: Sendable, Equatable {
     }
 }
 
+/// Метаданные опубликованного файлового акта mos-gorsud.
+public struct MosGorSudActLink: Sendable, Equatable {
+    public var url: URL
+    public var date: String?
+    public var title: String?
+
+    public init(url: URL, date: String? = nil, title: String? = nil) {
+        self.url = url
+        self.date = date
+        self.title = title
+    }
+}
+
 /// Карточка дела на портале. Тексты актов на mos-gorsud публикуются
-/// ВЛОЖЕНИЯМИ (DOC/PDF, ссылка /…/cases/docs/content/…), а не инлайном —
-/// поэтому вместо текста `actLinks`.
+/// вложениями (DOC/PDF, ссылка /…/cases/docs/content/…), а не инлайном.
 public struct MosGorSudCard: Sendable, Equatable {
     public var uid: String?
     public var caseNumber: String?
@@ -112,6 +124,8 @@ public struct MosGorSudCard: Sendable, Equatable {
     public var higherNumber: String?
     public var sessions: [CaseSession]
     public var participants: [String]
+    public var actFiles: [MosGorSudActLink]
+    /// Совместимое представление URL для старых вызывающих путей.
     public var actLinks: [URL]
     public var rawText: String
 
@@ -119,12 +133,17 @@ public struct MosGorSudCard: Sendable, Equatable {
                 judge: String? = nil, category: String? = nil, result: String? = nil,
                 receiptDate: String? = nil, legalForceDate: String? = nil,
                 higherNumber: String? = nil, sessions: [CaseSession] = [],
-                participants: [String] = [], actLinks: [URL] = [], rawText: String = "") {
+                participants: [String] = [], actLinks: [URL] = [],
+                actFiles: [MosGorSudActLink] = [], rawText: String = "") {
         self.uid = uid; self.caseNumber = caseNumber; self.court = court
         self.judge = judge; self.category = category; self.result = result
         self.receiptDate = receiptDate; self.legalForceDate = legalForceDate
         self.higherNumber = higherNumber; self.sessions = sessions
-        self.participants = participants; self.actLinks = actLinks; self.rawText = rawText
+        self.participants = participants
+        let files = actFiles.isEmpty ? actLinks.map { MosGorSudActLink(url: $0) } : actFiles
+        self.actFiles = files
+        self.actLinks = files.map(\.url)
+        self.rawText = rawText
     }
 }
 

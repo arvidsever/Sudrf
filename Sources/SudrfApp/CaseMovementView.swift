@@ -673,6 +673,9 @@ private struct InstanceBlock: View {
                 // pure-transient сценарий: кэша нет, инстанция не загружена.
                 transientPrompt
             }
+            if let error = instance.actFileError {
+                actFilePrompt(error)
+            }
             ForEach(instance.sessions) { s in
                 SessionRow(session: s, color: instance.level.tint,
                            complaint: s.complaintID.flatMap { complaints[$0] },
@@ -717,6 +720,23 @@ private struct InstanceBlock: View {
                     Text("Повторить").font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.glassProminent).controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .overlay(Divider(), alignment: .top)
+    }
+
+    private func actFilePrompt(_ error: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.badge.exclamationmark").foregroundStyle(.orange)
+            Text(error)
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            let links = instance.linkedActURLs.compactMap(PublishedActURLPolicy.safeMosGorSudURL)
+            ForEach(Array(links.enumerated()), id: \.offset) { index, url in
+                Link(links.count == 1 ? "Открыть оригинал" : "Оригинал #\(index + 1)",
+                     destination: url)
+                    .font(.system(size: 11, weight: .semibold))
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)

@@ -516,6 +516,7 @@ private struct InspectorPane: View {
                 .padding(EdgeInsets(top: 0, leading: 10, bottom: 10, trailing: 10))
             }
         }
+        .padding(.top, NavChrome.contentInset)
     }
 }
 

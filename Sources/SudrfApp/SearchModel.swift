@@ -138,7 +138,7 @@ final class SearchModel: ObservableObject {
         return CartotekaRegistry.sets(for: level)
     }
 
-    private let resolver = DistrictCourtResolver()
+    private let resolver: DistrictCourtResolver
     private let magistrateResolver = MagistrateCourtResolver()
     private let client: SudrfClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
@@ -157,11 +157,13 @@ final class SearchModel: ObservableObject {
     /// при провале search или при следующем вызове `handleCaptcha`.
     var lastSubmittedCaptcha: (png: Data, token: CaptchaToken)?
     private var magistrateDistrictCourts: [DistrictCourt] = []
+    private var courtResolutionGeneration = 0
 
     init(captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
          corpusStore: CorpusStore = .shared,
-         client: SudrfClient = SudrfClient()) {
+         client: SudrfClient = SudrfClient(),
+         resolver: DistrictCourtResolver = DistrictCourtResolver()) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
         // сконфигурированный этой же настройкой. Так гарантируется,
         // что `preprocessingEnabled` и `preprocessorHosts` действуют
@@ -172,6 +174,7 @@ final class SearchModel: ObservableObject {
         self.captchaSettings = settings
         self.corpusStore = corpusStore
         self.client = client
+        self.resolver = resolver
         self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }
 
@@ -216,11 +219,23 @@ final class SearchModel: ObservableObject {
     var regionPickerEnabled: Bool { branch == .general && (tier == .district || tier == .magistrate) }
     var uidSearchEnabled: Bool { tier != .magistrate }
 
-    /// Вызывается при смене ветви/звена: чинит картотеку и перечитывает суды.
-    func branchOrTierChanged() {
-        if branch == .military && tier == .magistrate { tier = .district }
+    /// Инвалидирует текущую загрузку до запуска новой, чтобы старый ответ
+    /// не оставил суд, выбранный для другого набора фильтров.
+    func courtScopeChanged() {
+        let tierWillChange = branch == .military && tier == .magistrate
+        if tierWillChange { tier = .district }
         if cartoteka == nil { cartotekaId = cartoteki.first?.id ?? "" }
-        Task { await resolveCourts() }
+        courtResolutionGeneration &+= 1
+        let generation = courtResolutionGeneration
+        courts = []
+        selectedCourtID = ""
+        magistrateDistrictCourts = []
+        resolving = true
+        status = "Загружаю суды…"
+        // Изменение tier вызовет этот же обработчик повторно. Первый вызов
+        // только инвалидирует старое состояние, чтобы не запускать два GV-запроса.
+        guard !tierWillChange else { return }
+        Task { await resolveCourts(generation: generation) }
     }
     var selectedResult: CaseSearchResult? {
         guard let id = selectedResultID else { return nil }
@@ -232,20 +247,35 @@ final class SearchModel: ObservableObject {
     }
 
     func resolveCourts() async {
-        guard tier != .supreme else {
-            courts = []; selectedCourtID = ""
+        courtResolutionGeneration &+= 1
+        await resolveCourts(generation: courtResolutionGeneration)
+    }
+
+    private func resolveCourts(generation: Int) async {
+        guard courtResolutionGeneration == generation else { return }
+        let requestedBranch = branch
+        let requestedTier = tier
+        let requestedRegion = region
+
+        guard requestedTier != .supreme else {
+            courts = []; selectedCourtID = ""; magistrateDistrictCourts = []
             status = "Верховный Суд РФ — задел на будущее: у него отдельный портал "
                    + "(vsrf.ru), парсинг ещё не подключён."
+            resolving = false
             return
         }
         resolving = true; status = "Загружаю суды…"
-        defer { resolving = false }
+        defer {
+            if courtResolutionGeneration == generation { resolving = false }
+        }
         do {
             let list: [CourtOption]
-            switch (branch, tier) {
+            var resolvedMagistrateDistrictCourts: [DistrictCourt] = []
+            switch (requestedBranch, requestedTier) {
             case (.general, .magistrate):
-                let magistrates = try await magistrateResolver.courts(forSubjectCode: region)
-                magistrateDistrictCourts = ((try? await resolver.courts(forSubjectCode: region)) ?? [])
+                let magistrates = try await magistrateResolver.courts(forSubjectCode: requestedRegion)
+                resolvedMagistrateDistrictCourts =
+                    ((try? await resolver.courts(forSubjectCode: requestedRegion)) ?? [])
                 list = magistrates.map { m in
                     CourtOption(domain: m.domain,
                                 title: m.isSupported ? m.title : m.title + " — портал не подключён",
@@ -256,13 +286,12 @@ final class SearchModel: ObservableObject {
                                 number: m.number)
                 }
             case (.general, .district):
-                magistrateDistrictCourts = []
                 // Единственная ступень с пикером региона. Районные суды Москвы
                 // (город, субъект 77) живут не на sudrf.ru, а на едином портале
                 // mos-gorsud.ru — их список берётся из запечённого справочника,
                 // а не из живого резолвера. Гейт по КОДУ субъекта (region уже
                 // код) — Московская область (50) сюда не попадает.
-                if region == MosGorSudCourtDirectory.moscowSubjectCode {
+                if requestedRegion == MosGorSudCourtDirectory.moscowSubjectCode {
                     list = MosGorSudCourtDirectory.districtCourts.map {
                         // code — настоящий классификационный код (77RS…), он
                         // питает вычисление вышестоящих судов; портальный alias
@@ -272,12 +301,11 @@ final class SearchModel: ObservableObject {
                                     mosGorSudAlias: $0.alias)
                     }
                 } else {
-                    list = try await resolver.courts(forSubjectCode: region)
+                    list = try await resolver.courts(forSubjectCode: requestedRegion)
                         .map { CourtOption(domain: $0.domain, title: $0.title,
                                            level: .district, code: $0.code) }
                 }
             case (.general, .subject):
-                magistrateDistrictCourts = []
                 // Все суды субъектов из встроенного справочника, без региона.
                 // Мосгорсуд поддержан через портал mos-gorsud.ru; прочие суды
                 // вне платформы sudrf (Н.Новгород, Пенза, Ульяновск) — нет.
@@ -292,60 +320,58 @@ final class SearchModel: ObservableObject {
                                        mosGorSudAlias: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil)
                 }
             case (.general, .appeal):
-                magistrateDistrictCourts = []
                 list = CourtDirectory.appealCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .appeal,
                                        number: $0.number) }
             case (.general, .cassation):
-                magistrateDistrictCourts = []
                 list = CourtDirectory.cassationCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .cassation,
                                        number: $0.number) }
             case (.military, .district):
-                magistrateDistrictCourts = []
                 // Все гарнизонные суды страны (включая зарубежные, код 95) —
                 // один типовой запрос портала (court_type=GV&court_subj=0).
                 list = try await resolver.garrisonCourts()
                     .map { CourtOption(domain: $0.domain, title: $0.title,
                                        level: .district, code: $0.code) }
             case (.military, .subject):
-                magistrateDistrictCourts = []
                 list = CourtDirectory.okrugMilitaryCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .subject) }
             case (.military, .appeal):
-                magistrateDistrictCourts = []
                 let c = CourtDirectory.appellateMilitaryCourt
                 list = [CourtOption(domain: c.domain, title: c.title, level: .appeal)]
             case (.military, .cassation):
-                magistrateDistrictCourts = []
                 let c = CourtDirectory.cassationMilitaryCourt
                 list = [CourtOption(domain: c.domain, title: c.title, level: .cassation)]
             case (.military, .magistrate):
-                magistrateDistrictCourts = []
                 list = []
             case (_, .supreme):
                 list = []   // недостижимо: отсечено guard'ом выше
             }
-            courts = Self.ordered(list)
+            guard courtResolutionGeneration == generation else { return }
+            let orderedCourts = Self.ordered(list)
+            courts = orderedCourts
+            magistrateDistrictCourts = resolvedMagistrateDistrictCourts
 
             // Прежний выбор сохраняем, если он остался в списке; список из
             // одного суда выбираем сразу, иначе оставляем «— выберите —».
-            if !courts.contains(where: { $0.id == selectedCourtID }) {
-                selectedCourtID = courts.count == 1 ? courts[0].id : ""
+            if !orderedCourts.contains(where: { $0.id == selectedCourtID }) {
+                selectedCourtID = orderedCourts.count == 1 ? orderedCourts[0].id : ""
             }
 
-            switch (courts.isEmpty, branch) {
+            switch (orderedCourts.isEmpty, requestedBranch) {
             case (false, _):
-                status = courts.count == 1 ? "Суд определён." : "Судов в списке: \(courts.count)"
+                status = orderedCourts.count == 1 ? "Суд определён." : "Судов в списке: \(orderedCourts.count)"
             case (true, .military):
                 status = "Гарнизонные суды не загрузились — портал мог не ответить; "
                        + "повторите выбор звена."
             case (true, .general):
-                status = (tier == .district || tier == .magistrate) ? "Суды не найдены — проверьте регион."
+                status = (requestedTier == .district || requestedTier == .magistrate) ? "Суды не найдены — проверьте регион."
                                                                     : "Суды не найдены."
             }
         } catch {
-            status = "Ошибка загрузки судов: \(error)"
+            if courtResolutionGeneration == generation {
+                status = "Ошибка загрузки судов: \(error)"
+            }
         }
     }
 

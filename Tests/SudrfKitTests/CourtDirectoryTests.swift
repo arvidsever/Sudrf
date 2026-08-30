@@ -87,7 +87,9 @@ extension CourtDirectoryTests {
         }
         XCTAssertEqual(court("11RS0001").codeLetters, "RS")
         XCTAssertEqual(court("54GV0011").codeLetters, "GV")
+        XCTAssertEqual(court("78OV0000").codeLetters, "OV")
         XCTAssertEqual(court("50AV0001").codeLetters, "AV")
+        XCTAssertEqual(court("54KV0001").codeLetters, "KV")
         XCTAssertNil(court(nil).codeLetters)
     }
 }

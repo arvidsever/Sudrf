@@ -54,6 +54,19 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertFalse(searched.contains(Self.linkGUID))
         XCTAssertEqual(movement.uid, Self.uid)
         XCTAssertTrue(movement.instances.contains { $0.level == .appeal && $0.foundByUID })
+
+        let baseURL = try SudrfURLBuilder(court: districtCourt()).cardURL(
+            caseID: "30636693", caseUID: Self.linkGUID,
+            deloID: cart.deloID, new: cart.new)
+        XCTAssertEqual(movement.instances.first { $0.level == .first }?.sourceURL, baseURL)
+
+        let higherCourt = Court(domain: "vs--komi.sudrf.ru", title: "ВС Коми",
+                                level: .subject)
+        let higherCart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "g2"))
+        let appealURL = try SudrfURLBuilder(court: higherCourt).cardURL(
+            caseID: "40133205", caseUID: "2aa596f3-44c4-4fab-adad-cd2ad3318db4",
+            deloID: higherCart.deloID, new: higherCart.new)
+        XCTAssertEqual(movement.instances.first { $0.level == .appeal }?.sourceURL, appealURL)
     }
 
     /// Два круга апелляции (исходный + новый после возврата из кассации) — оба видны,
@@ -224,6 +237,42 @@ final class MovementServiceTests: XCTestCase {
             base: CaseSearchResult(caseNumber: "2-1/2025", caseUID: Self.linkGUID),
             court: districtCourt())
         XCTAssertEqual(mv.uid, "")   // карточка не загружалась — УИД неизвестен
+    }
+
+    func testMinimalMovementKeepsSelfContainedVintageCardURL() throws {
+        let source = try XCTUnwrap(URL(string: "https://old.example.test/card?_uid=legacy"))
+        let mv = MovementService.minimalMovement(
+            base: CaseSearchResult(caseNumber: "2-1/2025", cardURL: source),
+            court: districtCourt())
+        XCTAssertEqual(mv.instances.first?.sourceURL, source)
+    }
+
+    func testSourceURLPreservesExactSearchResultServerNumber() throws {
+        let source = try XCTUnwrap(URL(string:
+            "https://court.example.test/modules.php?name=sud_delo&srv_num=3&name_op=case&case_id=42&case_uid=guid&delo_id=5"))
+        let row = CaseSearchResult(caseNumber: "2-1/2026", caseID: "42",
+                                   caseUID: "guid", cardURL: source)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        XCTAssertEqual(MovementService.sourceURL(for: row, court: districtCourt(),
+                                                  cartoteka: cart), source)
+    }
+
+    func testLegacyCaseInstanceWithoutSourceURLStillDecodes() throws {
+        let legacy = CaseInstance(level: .appeal, court: "Суд", caseNumber: "33-1/2026",
+                                  judge: nil, domain: "court.example", foundByUID: true,
+                                  result: nil, sessions: [])
+        let decoded = try JSONDecoder().decode(CaseInstance.self,
+                                               from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decoded.sourceURL)
+    }
+
+    func testVSRFProductionCarriesItsExactCardURL() throws {
+        let production = VSRFProduction(cardID: "12-34154493", cardSection: .cases,
+                                        kind: .caseFile, number: "3-КГ23-1-К3")
+        let instance = MovementService.mapProduction(production)
+        XCTAssertEqual(instance.sourceURL,
+                       VSRFEndpoint.cardURL(productionID: "12-34154493", section: .cases))
     }
 
     // Юнит-проверки фолбэка по «Результату рассмотрения» (когда вкладка

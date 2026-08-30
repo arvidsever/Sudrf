@@ -92,16 +92,21 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// файлами, а не инлайном (в отличие от sud_delo, где текст идёт в actID).
     /// Опционал: старые кэши декодируются без миграции.
     public var actURL: URL?
+    /// Точная ссылка на карточку именно этой инстанции. Не подменяется
+    /// главной страницей суда; nil означает, что надёжная ссылка неизвестна.
+    /// Опционал сохраняет декодирование старых кэшей без миграции.
+    public var sourceURL: URL?
 
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
                 sessions: [CaseSession], actID: String? = nil,
                 captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil,
-                transientError: Bool? = nil) {
+                sourceURL: URL? = nil, transientError: Bool? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
         self.result = result; self.sessions = sessions; self.actID = actID
         self.captchaFormURL = captchaFormURL; self.note = note; self.actURL = actURL
+        self.sourceURL = sourceURL
         self.transientError = transientError
     }
 }
@@ -361,7 +366,8 @@ public actor MovementService: MovementProviding {
         }
 
         guard Self.hasCardAccess(base) else {
-            return Self.minimalMovement(base: base, court: court, level: baseInstanceLevel)
+            return Self.minimalMovement(base: base, court: court, cartoteka: cartoteka,
+                                        level: baseInstanceLevel)
         }
 
         // 1. Базовая карточка: обычно 1-я инстанция, но импорт/legacy-записи
@@ -420,7 +426,8 @@ public actor MovementService: MovementProviding {
             foundByUID: false,
             result: base.result ?? baseCard.result,
             sessions: baseCard.sessions,
-            actID: baseActID)]
+            actID: baseActID,
+            sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))]
         var incompleteHigherCourtDomains: [String] = []
         var honestZeroDomains: [String] = []
         func markHigherCourtIncomplete(_ domain: String) {
@@ -502,7 +509,8 @@ public actor MovementService: MovementProviding {
                     foundByUID: true,
                     result: r.result ?? card.result,
                     sessions: card.sessions,
-                    actID: roundActID))
+                    actID: roundActID,
+                    sourceURL: Self.sourceURL(for: r, court: court, cartoteka: cartoteka)))
             }
         }
 
@@ -557,7 +565,8 @@ public actor MovementService: MovementProviding {
                 instances.append(CaseInstance(
                     level: .material, court: court.title, caseNumber: r.caseNumber,
                     judge: r.judge ?? card.judge, domain: court.domain, foundByUID: true,
-                    result: r.result ?? card.result, sessions: card.sessions, actID: matActID))
+                    result: r.result ?? card.result, sessions: card.sessions, actID: matActID,
+                    sourceURL: Self.sourceURL(for: r, court: court, cartoteka: mCart)))
             }
         }
 
@@ -630,7 +639,9 @@ public actor MovementService: MovementProviding {
                             foundByUID: true,
                             result: r.result ?? higherCard.result,
                             sessions: higherCard.sessions,
-                            actID: higherCard.actText != nil ? actID : nil)
+                            actID: higherCard.actText != nil ? actID : nil,
+                            sourceURL: Self.sourceURL(for: r, court: higherCourt,
+                                                      cartoteka: higherCart))
                         rounds.append((inst, act, body,
                                        Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
                     }
@@ -838,7 +849,8 @@ public actor MovementService: MovementProviding {
         let inst = CaseInstance(level: kc.level, court: kc.courtTitle, caseNumber: number,
                                 judge: card.judge, domain: kc.domain, foundByUID: false,
                                 result: card.result, sessions: card.sessions,
-                                actID: act?.id)
+                                actID: act?.id,
+                                sourceURL: Self.sourceURL(for: kc))
         return (inst, act, body)
     }
 
@@ -912,6 +924,26 @@ extension MovementService {
     /// тогда самодостаточна сама ссылка).
     static func hasCardAccess(_ row: CaseSearchResult) -> Bool {
         (row.caseID != nil && row.caseUID != nil) || row.cardURL != nil
+    }
+
+    /// Точная ссылка из выдачи сохраняет конкретный экземпляр базы (`srv_num`).
+    /// Если выдача URL не дала, канонический адрес строится из идентификаторов.
+    /// Главная страница суда не используется.
+    static func sourceURL(for row: CaseSearchResult, court: Court,
+                          cartoteka: Cartoteka?) -> URL? {
+        if let cardURL = row.cardURL { return cardURL }
+        if let id = row.caseID, let uid = row.caseUID, let cartoteka {
+            return try? SudrfURLBuilder(court: court).cardURL(
+                caseID: id, caseUID: uid, deloID: cartoteka.deloID, new: cartoteka.new)
+        }
+        return nil
+    }
+
+    static func sourceURL(for knownCard: KnownCard) -> URL? {
+        let court = Court(domain: knownCard.domain, title: knownCard.courtTitle, level: .district)
+        return try? SudrfURLBuilder(court: court).cardURL(
+            caseID: knownCard.caseID, caseUID: knownCard.caseUID,
+            deloID: knownCard.deloID, new: knownCard.new)
     }
 
     /// Карточка по строке выдачи: пара ID → канонический URL через билдер
@@ -1318,18 +1350,21 @@ extension MovementService {
             result: disposition,
             sessions: sessions,
             actID: nil,
-            note: note)
+            note: note,
+            sourceURL: p.cardURL)
     }
 
     /// Минимальное движение без сетевых запросов — когда у записи нет ID карточки.
     /// УИД здесь неизвестен: карточка не загружалась, а `base.caseUID` — это
     /// GUID ссылки на карточку, а не УИД.
     static func minimalMovement(base: CaseSearchResult, court: Court,
+                                cartoteka: Cartoteka? = nil,
                                 level: CaseInstance.Level = .first) -> CaseMovement {
         let inst = CaseInstance(
             level: level, court: court.title, caseNumber: base.caseNumber,
             judge: base.judge, domain: court.domain, foundByUID: false,
-            result: base.result, sessions: [], actID: nil)
+            result: base.result, sessions: [], actID: nil,
+            sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))
         return CaseMovement(uid: "", caseNumber: base.caseNumber,
                             inForce: base.legalForceDate != nil,
                             instances: [inst], complaints: [:], acts: [], actBodies: [:],

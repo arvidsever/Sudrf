@@ -727,6 +727,7 @@ final class TrackedCaseRepairCoordinator {
                         ?? inst.transientError
                     out.instances[index].note = out.instances[index].note ?? inst.note
                     out.instances[index].actURL = out.instances[index].actURL ?? inst.actURL
+                    out.instances[index].sourceURL = out.instances[index].sourceURL ?? inst.sourceURL
                     out.instances[index].foundByUID = out.instances[index].foundByUID
                         && inst.foundByUID
                     for session in inst.sessions
@@ -825,7 +826,8 @@ final class TrackedCaseRepairCoordinator {
         let inst = CaseInstance(level: level, court: context.courtTitle,
                                 caseNumber: context.caseNumber, judge: card.judge,
                                 domain: context.searchDomain, foundByUID: false,
-                                result: card.result, sessions: card.sessions, actID: actID)
+                                result: card.result, sessions: card.sessions, actID: actID,
+                                sourceURL: context.cardURLString.flatMap(URL.init(string:)))
         return CaseMovement(uid: card.uid ?? context.judicialUID ?? "",
                             caseNumber: context.caseNumber,
                             inForce: card.legalForceDate != nil,

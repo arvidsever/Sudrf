@@ -292,6 +292,11 @@ struct TrackedHearing: Identifiable {
     /// При времени «—» несколько событий одного дня иначе имеют одинаковый id.
     /// Источник сохраняется только в UI-идентификаторе, формат снимка не меняется.
     var identitySuffix: String = ""
+    /// Номер инстанции именно этого заседания; не участвует в устойчивом id.
+    var instanceCaseNumber: String? = nil
+    var reviewNumber: String? {
+        CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+    }
 }
 
 struct FeedEntry: Identifiable {
@@ -306,8 +311,13 @@ struct FeedEntry: Identifiable {
     var text: String
     var actID: String?
     var isUnread: Bool
+    /// Номер инстанции именно этого события; id ленты от него не зависит.
+    var instanceCaseNumber: String? = nil
 
     var hasAct: Bool { actID != nil }
+    var reviewNumber: String? {
+        CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+    }
 }
 
 struct OverviewHearingBuckets {

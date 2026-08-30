@@ -1441,7 +1441,8 @@ final class AppRouter: ObservableObject {
                     parties: snap.partiesShort, court: session.court,
                     room: session.room ?? "", dateLabel: DateUtil.dateLabel(date),
                     judge: session.judge ?? "",
-                    identitySuffix: "\(session.event)#\(session.result ?? "")")
+                    identitySuffix: "\(session.event)#\(session.result ?? "")",
+                    instanceCaseNumber: session.caseNumber)
             }
 
             // Календарь сохраняет всю историю, включая завершённые дела.
@@ -1477,7 +1478,8 @@ final class AppRouter: ObservableObject {
                     feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
                         time: s.time ?? "—", recordKey: rec.key, caseNumber: rec.caseNumber,
                         client: client, kind: kind, text: text, actID: nil,
-                        isUnread: unreadByCase && !readIDs.contains(id)))
+                        isUnread: unreadByCase && !readIDs.contains(id),
+                        instanceCaseNumber: s.caseNumber))
                 }
             }
             // Опубликованные акты берём из полного кэша движения, когда он есть.
@@ -1492,7 +1494,9 @@ final class AppRouter: ObservableObject {
                     feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
                         time: "—", recordKey: rec.key, caseNumber: rec.caseNumber,
                         client: client, kind: .act, text: text, actID: act.id,
-                        isUnread: unreadByCase && !readIDs.contains(id)))
+                        isUnread: unreadByCase && !readIDs.contains(id),
+                        instanceCaseNumber: Self.actReviewNumber(
+                            for: act, instances: mv.instances, baseCaseNumber: rec.caseNumber)))
                 }
             }
         }
@@ -1652,6 +1656,21 @@ final class AppRouter: ObservableObject {
             ? .hearing : .movement
     }
 
+    /// Акт привязан к точной инстанции через actID/actIDs. Для старых кэшей
+    /// без этой связи используем уровень только при единственном номере.
+    nonisolated static func actReviewNumber(for act: CaseAct,
+                                            instances: [CaseInstance],
+                                            baseCaseNumber: String) -> String? {
+        let linked = instances.filter { $0.linkedActIDs.contains(act.id) }
+        let candidates = linked.isEmpty
+            ? instances.filter { $0.level == act.instanceLevel }
+            : linked
+        let numbers = Set(candidates.compactMap {
+            MovementDerivation.reviewNumber(for: $0, baseCaseNumber: baseCaseNumber)
+        })
+        return numbers.count == 1 ? numbers.first : nil
+    }
+
     /// Идентификатор записи ленты. Вид (`kind`) в него НЕ входит: он —
     /// производная классификация, и её уточнение (#99) меняло бы id у давно
     /// прочитанных записей. Тогда они возвращались бы в ленту непрочитанными и
@@ -1786,7 +1805,8 @@ final class AppRouter: ObservableObject {
         return entries.filter { entry in
             (filter.kind == nil || entry.kind == filter.kind)
             && (!unreadOnly || entry.isUnread)
-            && (q.isEmpty || (entry.caseNumber + " " + entry.client + " " + entry.text)
+            && (q.isEmpty || (entry.caseNumber + " " + (entry.reviewNumber ?? "")
+                + " " + entry.client + " " + entry.text)
                 .lowercased().contains(q))
         }
     }

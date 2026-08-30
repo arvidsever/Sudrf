@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import SudrfKit
 @testable import SudrfApp
 
 final class OverviewModelTests: XCTestCase {
@@ -48,6 +49,74 @@ final class OverviewModelTests: XCTestCase {
         let b = TrackedHearing(recordKey: "court/2-1", date: date, time: "", caseNumber: "2-1/2026",
                                parties: "", court: "СГС", room: "", dateLabel: "", identitySuffix: "Отложено#")
         XCTAssertNotEqual(a.id, b.id)
+    }
+
+    func testOverviewModelsKeepEventInstanceNumbersWithoutChangingIDs() {
+        let date = DateUtil.addDays(today, 2)
+        var hearing = TrackedHearing(
+            recordKey: "court/2-8236/2025", date: date, time: "10:00",
+            caseNumber: "2-8236/2025", parties: "", court: "ВС Коми", room: "",
+            dateLabel: "", identitySuffix: "Заседание#",
+            instanceCaseNumber: "33-2267/2026")
+        let hearingID = hearing.id
+        XCTAssertEqual(hearing.reviewNumber, "33-2267/2026")
+        hearing.instanceCaseNumber = "8Г-41/2026"
+        XCTAssertEqual(hearing.id, hearingID)
+
+        var feed = FeedEntry(
+            id: "court/2-8236/2025#feed#1#10:00#Заседание", dayHead: nil, date: date,
+            time: "10:00", recordKey: "court/2-8236/2025", caseNumber: "2-8236/2025",
+            client: "", kind: .hearing, text: "Заседание", actID: nil, isUnread: false,
+            instanceCaseNumber: "8-КГ26-7-К2")
+        let feedID = feed.id
+        XCTAssertEqual(feed.reviewNumber, "8-КГ26-7-К2")
+        feed.instanceCaseNumber = "8-КГ26-8-К2"
+        XCTAssertEqual(feed.id, feedID)
+
+        let equal = TrackedHearing(
+            recordKey: "court/2-8236/2025", date: date, time: "10:00",
+            caseNumber: "2-8236/2025", parties: "", court: "СГС", room: "",
+            dateLabel: "", instanceCaseNumber: "2-8236/2025")
+        let unknown = FeedEntry(
+            id: "unknown", dayHead: nil, date: date, time: "—",
+            recordKey: "court/2-8236/2025", caseNumber: "2-8236/2025",
+            client: "", kind: .movement, text: "", actID: nil, isUnread: false)
+        XCTAssertNil(equal.reviewNumber)
+        XCTAssertNil(unknown.reviewNumber)
+    }
+
+    func testActReviewNumberPrefersLinkedInstanceAndRejectsAmbiguousLevel() {
+        let linkedAppeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-2267/2026", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil, sessions: [],
+            actID: "appeal-act")
+        let otherAppeal = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-100/2025", judge: nil,
+            domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil, sessions: [])
+        let act = CaseAct(id: "appeal-act", title: "Определение", date: "01.07.2026",
+                          courtShort: "ВС Коми", instanceLevel: .appeal)
+        XCTAssertEqual(
+            AppRouter.actReviewNumber(for: act, instances: [linkedAppeal, otherAppeal],
+                                      baseCaseNumber: "2-8236/2025"),
+            "33-2267/2026"
+        )
+
+        let unlinked = CaseAct(id: "legacy-act", title: "Определение", date: "01.07.2026",
+                               courtShort: "3 КСОЮ", instanceLevel: .cassation)
+        let cassation = CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-41/2026", judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: true, result: nil, sessions: [])
+        XCTAssertEqual(
+            AppRouter.actReviewNumber(for: unlinked, instances: [cassation],
+                                      baseCaseNumber: "2-8236/2025"),
+            "8Г-41/2026"
+        )
+        XCTAssertNil(
+            AppRouter.actReviewNumber(for: unlinked, instances: [cassation, CaseInstance(
+                level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-42/2026", judge: nil,
+                domain: "3kas.sudrf.ru", foundByUID: true, result: nil, sessions: [])],
+                                      baseCaseNumber: "2-8236/2025")
+        )
     }
 
     // MARK: Retention расчётных сроков (#98)
@@ -123,6 +192,12 @@ final class OverviewModelTests: XCTestCase {
                                                      unreadOnly: true, query: "").map(\.id), ["a", "c"])
         XCTAssertEqual(AppRouter.filteredFeedEntries(rows, filter: .all,
                                                      unreadOnly: false, query: "акт").map(\.id), ["b"])
+
+        var review = feed("review", kind: .movement, plus: -3, unread: false)
+        review.instanceCaseNumber = "8-КГ26-7-К2"
+        XCTAssertEqual(AppRouter.filteredFeedEntries([review], filter: .all,
+                                                     unreadOnly: false, query: "8-кг26").map(\.id),
+                       ["review"])
     }
 
     func testEnforcementFeedUsesRSSGUIDAndStaysUnreadIndependentlyOfCaseState() {

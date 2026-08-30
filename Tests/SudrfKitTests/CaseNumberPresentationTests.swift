@@ -20,4 +20,14 @@ final class CaseNumberPresentationTests: XCTestCase {
         XCTAssertEqual(CaseNumberPresentation.primary("М-2417/2026"), "М-2417/2026")
         XCTAssertEqual(CaseNumberPresentation.primary("2-1/2026"), "2-1/2026")
     }
+
+    func testSecondaryShowsOnlyDistinctKnownInstanceNumber() {
+        XCTAssertEqual(
+            CaseNumberPresentation.secondary(" № 33-2267/2026", distinctFrom: "2-8236/2025"),
+            "33-2267/2026"
+        )
+        XCTAssertNil(CaseNumberPresentation.secondary(nil, distinctFrom: "2-8236/2025"))
+        XCTAssertNil(CaseNumberPresentation.secondary("2-8236/2025", distinctFrom: "2-8236/2025"))
+        XCTAssertNil(CaseNumberPresentation.secondary("—", distinctFrom: "2-8236/2025"))
+    }
 }

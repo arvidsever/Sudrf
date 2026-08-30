@@ -145,6 +145,61 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor SuspendedMovement: MovementProviding {
+        let value: CaseMovement
+        private var started = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        init(_ value: CaseMovement) { self.value = value }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            started = true
+            await withCheckedContinuation { continuation = $0 }
+            return value
+        }
+
+        func waitUntilStarted() async {
+            while !started { await Task.yield() }
+        }
+
+        func resume() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    private actor SuspendedCaptchaRetryMovement: MovementProviding {
+        let formURL: URL
+        let value: CaseMovement
+        private var calls = 0
+        private var retryContinuation: CheckedContinuation<Void, Never>?
+
+        init(formURL: URL, value: CaseMovement) {
+            self.formURL = formURL
+            self.value = value
+        }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            if calls == 1 {
+                throw SudrfError.captchaRequired(formURL: formURL)
+            }
+            await withCheckedContinuation { retryContinuation = $0 }
+            return value
+        }
+
+        func waitUntilRetryStarted() async {
+            while calls < 2 { await Task.yield() }
+        }
+
+        func resumeRetry() {
+            retryContinuation?.resume()
+            retryContinuation = nil
+        }
+    }
+
     private actor CaptchaMovement: MovementProviding {
         let url: URL
         init(url: URL) { self.url = url }
@@ -843,6 +898,50 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertTrue(center.captchaPendingGroups.isEmpty)
     }
 
+    func testCancellingOneCaseDoesNotCancelSharedCaptchaSolveForNeighbor() async throws {
+        var secondContext = makeContext()
+        secondContext.caseNumber = "2-101/2026"
+        _ = try store.upsert(context: secondContext, snapshot: nil, movement: nil, collections: [])
+
+        let embeddedFormURL = URL(string: "https://vs.komi.sudrf.ru/modules.php?name=sud_delo")!
+        let topLevelFormURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?name=sud_delo")!
+        var embeddedFirst = successMV!
+        embeddedFirst.instances.append(CaseInstance(
+            level: .cassation, court: "Верховный суд Республики Коми",
+            caseNumber: "—", judge: nil, domain: "vs.komi.sudrf.ru",
+            foundByUID: false, result: nil, sessions: [],
+            captchaFormURL: embeddedFormURL))
+        embeddedFirst.incompleteHigherCourtDomains = ["vs.komi.sudrf.ru"]
+        let movement = MixedCaptchaMovement(
+            embeddedFirst: embeddedFirst, embeddedRetry: successMV,
+            topLevelCaseNumber: secondContext.caseNumber,
+            topLevelFormURL: topLevelFormURL, topLevelRetry: successMV)
+        let blocker = BlockingCaptchaSolve(result: AutoCaptchaSolver.SolveResult(
+            token: CaptchaToken(value: "12345", id: "shared-after-untrack"), png: Data([1])))
+        let center = makeCenter(service: movement) { _, _, _, _ in await blocker.solve() }
+        let firstKey = store.all().first { $0.caseNumber == "2-100/2026" }!.key
+        let secondKey = store.all().first { $0.caseNumber == secondContext.caseNumber }!.key
+        var refreshedKeys: [String] = []
+        center.onRefreshed = { key, _, _ in refreshedKeys.append(key) }
+
+        let firstTask = center.refresh(key: firstKey)!
+        let secondTask = center.refresh(key: secondKey)!
+        await blocker.waitUntilStarted()
+        for _ in 0..<20 { await Task.yield() }
+        try store.remove(key: firstKey)
+        center.cancelTracking(for: firstKey)
+        await blocker.release()
+
+        _ = await firstTask.value
+        let secondExecution = await secondTask.value
+        let solveCalls = await blocker.calls
+        XCTAssertEqual(secondExecution.outcome, .refreshed)
+        XCTAssertEqual(solveCalls, 1)
+        XCTAssertEqual(refreshedKeys, [secondKey])
+        XCTAssertNil(store.record(forKey: firstKey))
+        XCTAssertNotNil(store.record(forKey: secondKey)?.movement)
+    }
+
     func testEmbeddedHigherCourtCaptchaAutoSolveRemovesStubWhenCaseIsAbsent() async throws {
         let key = store.all()[0].key
         let formURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
@@ -1297,6 +1396,146 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNil(center.lastErrors[key])
         XCTAssertFalse(refreshed)
         XCTAssertFalse(failed)
+    }
+
+    func testCancelTrackingStopsLateRefreshAndDoesNotRestoreDeletedRecord() async throws {
+        let key = store.all()[0].key
+        let service = SuspendedMovement(successMV)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+        var refreshed = false
+        var failed = false
+        center.onRefreshed = { _, _, _ in refreshed = true }
+        center.onRefreshFailed = { _, _ in failed = true }
+
+        let task = center.refresh(key: key)!
+        await service.waitUntilStarted()
+        try store.remove(key: key)
+        center.cancelTracking(for: key)
+        await service.resume()
+        _ = await task.value
+
+        XCTAssertNil(store.record(forKey: key))
+        XCTAssertFalse(center.isRefreshing(key))
+        XCTAssertFalse(refreshed)
+        XCTAssertFalse(failed)
+    }
+
+    func testCancelTrackingStopsPostCaptchaRetryFromWritingIntoRetrackedRecord() async throws {
+        let context = makeContext()
+        let key = store.all()[0].key
+        let service = SuspendedCaptchaRetryMovement(formURL: formURL, value: successMV)
+        let center = makeCenter(service: service) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(
+                token: CaptchaToken(value: "12345", id: "cancelled-retry"),
+                png: Data([1]))
+        }
+        var refreshed = false
+        var failed = false
+        center.onRefreshed = { _, _, _ in refreshed = true }
+        center.onRefreshFailed = { _, _ in failed = true }
+
+        let task = center.refresh(key: key)!
+        await service.waitUntilRetryStarted()
+        try store.remove(key: key)
+        center.cancelTracking(for: key)
+        _ = try store.upsert(context: context, snapshot: nil, movement: nil, collections: [])
+        await service.resumeRetry()
+        _ = await task.value
+
+        XCTAssertNil(store.record(forKey: key)?.movement)
+        XCTAssertFalse(center.isRefreshing(key))
+        XCTAssertFalse(refreshed)
+        XCTAssertFalse(failed)
+    }
+
+    func testCancelTrackingCanonicalKeyStopsTaskRegisteredBeforeRepairRemap() async throws {
+        let old = makeContext()
+        var canonical = old
+        canonical.displayDomain = "canonical.komi.sudrf.ru"
+        canonical.searchDomain = "canonical--komi.sudrf.ru"
+        canonical.caseNumber = "2-291/2026"
+        let movement = makeSuccessMovement(court: canonical.searchCourt)
+        let service = SuspendedMovement(movement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+        center.repairBeforeRefresh = { [store] _ in
+            guard let store else { return old.key }
+            _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
+            try store.remove(key: old.key)
+            return canonical.key
+        }
+        var refreshed = false
+        center.onRefreshed = { _, _, _ in refreshed = true }
+
+        let task = center.refresh(key: old.key)!
+        await service.waitUntilStarted()
+        try store.remove(key: canonical.key)
+        center.cancelTracking(for: canonical.key)
+        await service.resume()
+        _ = await task.value
+
+        XCTAssertNil(store.record(forKey: canonical.key))
+        XCTAssertFalse(center.isRefreshing(old.key))
+        XCTAssertFalse(refreshed)
+    }
+
+    func testCancelTrackingStopsLateEnforcementCallback() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let record = try XCTUnwrap(store.record(forKey: key))
+        record.movement = movement
+        let suspended = SuspendedFSSP(step: .notFound(EnforcementLookup(state: .notFound)))
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            fsspDiscover: { document in await suspended.discover(document) })
+        var refreshed = false
+        center.onEnforcementRefreshed = { _ in refreshed = true }
+
+        let task = center.refreshEnforcement(key: key)!
+        await suspended.waitUntilStarted()
+        try store.remove(key: key)
+        center.cancelTracking(for: key)
+        await suspended.resume()
+        await task.value
+
+        XCTAssertNil(store.record(forKey: key))
+        XCTAssertFalse(center.isRefreshingEnforcement(key))
+        XCTAssertNil(center.enforcementError(forKey: key))
+        XCTAssertFalse(refreshed)
+    }
+
+    func testCancelTrackingClearsCaptchaAndSourceErrors() async throws {
+        let key = store.all()[0].key
+        let writ = paperWrit()
+        var movement = successMV!
+        movement.executionDocuments = [writ]
+        let record = try XCTUnwrap(store.record(forKey: key))
+        record.movement = movement
+        let treasury = ScriptedTreasury([.failure])
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            serviceBuilder: { _ in CaptchaMovement(url: self.formURL) },
+            treasuryDiscover: { document, number, court in
+                try await treasury.discover(document, caseNumber: number, court: court)
+            },
+            fsspDiscover: noFSSP)
+
+        _ = await center.refreshEnforcement(key: key)?.value
+        _ = await center.refresh(key: key)?.value
+        XCTAssertNotNil(center.enforcementError(forKey: key))
+        XCTAssertNotNil(center.lastErrors[key])
+        XCTAssertNotNil(center.captchaPendingRequest(forKey: key))
+
+        center.cancelTracking(for: key)
+
+        XCTAssertNil(center.enforcementError(forKey: key))
+        XCTAssertNil(center.lastErrors[key])
+        XCTAssertNil(center.captchaPendingRequest(forKey: key))
+        XCTAssertFalse(center.isRefreshing(key))
+        XCTAssertFalse(center.isRefreshingEnforcement(key))
     }
 
     func testCancellationDuringAutoSolveDoesNotPersistCaptchaFailure() async throws {

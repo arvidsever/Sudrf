@@ -17,6 +17,7 @@ struct MyCasesView: View {
     @EnvironmentObject var router: AppRouter
     @State private var creatingCollection = false
     @State private var newCollectionName = ""
+    @State private var pendingUntrack: PendingUntrack?
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -33,6 +34,27 @@ struct MyCasesView: View {
         .padding(EdgeInsets(top: NavChrome.contentInset, leading: 20, bottom: 18, trailing: 20))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .sudrfContent).ignoresSafeArea())
+        .confirmationDialog(
+            "Убрать дело из отслеживания?",
+            isPresented: Binding(
+                get: { pendingUntrack != nil },
+                set: { if !$0 { pendingUntrack = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Убрать", role: .destructive) {
+                guard let pendingUntrack else { return }
+                router.untrack(recordKey: pendingUntrack.recordKey)
+                self.pendingUntrack = nil
+            }
+            Button("Отмена", role: .cancel) {
+                pendingUntrack = nil
+            }
+        } message: {
+            if let pendingUntrack {
+                Text("Дело № \(pendingUntrack.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
+            }
+        }
     }
 
     // MARK: Шапка с переключателем вида
@@ -184,6 +206,7 @@ struct MyCasesView: View {
                         if c.isNew { StatusChip(text: "обновлено", kind: .blue) }
                         Spacer()
                         Text(c.stageTag).font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                        caseActionsMenu(for: c)
                     }
                     .frame(height: 20)
                     // Главный текст карточки — стороны. Две строки бронируются
@@ -212,7 +235,7 @@ struct MyCasesView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Убрать из отслеживания", role: .destructive) { router.untrack(recordKey: c.recordKey) }
+            Button("Убрать из отслеживания…", role: .destructive) { requestUntrack(c) }
         }
     }
 
@@ -428,7 +451,7 @@ struct MyCasesView: View {
                         }
                     }
                     Spacer(minLength: 0)
-                    Text("Клик — карточка дела · в подборку — значок или перетаскивание строки · ⌫ — убрать из отслеживания")
+                    Text("Клик — карточка дела · в подборку — значок или перетаскивание строки · … — действия с делом")
                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.vertical, 9)
@@ -547,6 +570,7 @@ struct MyCasesView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     collectionsMenu(for: c)
+                    caseActionsMenu(for: c)
                 }
                 .frame(minWidth: 94, maxWidth: 130, alignment: .topLeading)
             }
@@ -559,8 +583,33 @@ struct MyCasesView: View {
         .overlay(Divider(), alignment: .top)
         .draggable(c.recordKey)   // drop — на подборку в сайдбаре
         .contextMenu {
-            Button("Убрать из отслеживания", role: .destructive) { router.untrack(recordKey: c.recordKey) }
+            Button("Убрать из отслеживания…", role: .destructive) { requestUntrack(c) }
         }
+    }
+
+    /// Постоянная точка входа для действий с делом. Само destructive-действие
+    /// остаётся внутри меню и всегда требует отдельного подтверждения.
+    private func caseActionsMenu(for c: TrackedCase) -> some View {
+        Menu {
+            Button("Убрать из отслеживания…", role: .destructive) {
+                requestUntrack(c)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Действия с делом")
+    }
+
+    private func requestUntrack(_ c: TrackedCase) {
+        pendingUntrack = PendingUntrack(
+            recordKey: c.recordKey,
+            caseNumber: CaseNumberPresentation.primary(c.caseNumber))
     }
 
     /// Значок папки в строке: чек-лист подборок, членство переключается кликом.
@@ -591,6 +640,11 @@ struct MyCasesView: View {
     }
 
     private func countLabel(_ n: Int) -> String { "\(n) " + DateUtil.plural(n, "дело", "дела", "дел") }
+}
+
+private struct PendingUntrack {
+    let recordKey: String
+    let caseNumber: String
 }
 
 // MARK: - Пункт «подборка» в сайдбаре

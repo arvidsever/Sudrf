@@ -56,6 +56,22 @@ final class FalliblePersistenceInteractionTests: XCTestCase {
         XCTAssertEqual(router.persistenceError, "Изменения не сохранены. Повторите попытку.")
     }
 
+    func testFreshFSSPResultOrErrorRequiresSameOpenCaseAndRequest() {
+        let request = UUID()
+        XCTAssertTrue(AppRouter.acceptsFreshFSSPStep(
+            activeRequestID: request, requestID: request,
+            openedKey: "case", caseKey: "case"))
+        XCTAssertFalse(AppRouter.acceptsFreshFSSPStep(
+            activeRequestID: UUID(), requestID: request,
+            openedKey: "case", caseKey: "case"))
+        XCTAssertFalse(AppRouter.acceptsFreshFSSPStep(
+            activeRequestID: request, requestID: request,
+            openedKey: nil, caseKey: "case"))
+        XCTAssertFalse(AppRouter.acceptsFreshFSSPStep(
+            activeRequestID: request, requestID: request,
+            openedKey: "replacement", caseKey: "case"))
+    }
+
     func testDeadlineSaveFailureKeepsEditorDraftAndStoredDate() throws {
         let gate = ProjectionGate()
         let router = try router(using: gate)

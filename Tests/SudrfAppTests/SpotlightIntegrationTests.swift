@@ -331,6 +331,42 @@ final class SpotlightIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testCaseScopedSynchronizationDeletesOnlyUntrackedCaseAndActs() async throws {
+        let store = TrackedStore(inMemory: true)
+        let first = makeContext()
+        var second = first
+        second.displayDomain = "second.msk.sudrf.ru"
+        second.searchDomain = "second--msk.sudrf.ru"
+        second.caseNumber = "2-2/2026"
+        _ = try store.upsert(context: first, snapshot: nil,
+                     movement: makeMovement(text: "Первый акт."), collections: [])
+        _ = try store.upsert(context: second, snapshot: nil,
+                     movement: makeMovement(text: "Второй акт."), collections: [])
+        let writer = RecordingSpotlightWriter()
+        let suite = "SpotlightUntrackTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: SpotlightManifestStore(suiteName: suite, key: "manifest"),
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        try await indexer.synchronize()
+        try store.remove(key: first.key)
+        try await indexer.synchronize(scope: .cases([first.key]))
+
+        let state = await writer.snapshot()
+        XCTAssertEqual(state.indexedCaseIDs.count, 2,
+                       "соседнее дело не должно переиндексироваться")
+        XCTAssertEqual(state.indexedActIDs.count, 2,
+                       "акты соседнего дела не должны переиндексироваться")
+        XCTAssertEqual(state.deletedCaseIDs, [first.key])
+        XCTAssertEqual(state.deletedActIDs, ["\(first.key)#act-1"])
+        XCTAssertEqual(state.currentCaseIDs, [second.key])
+        XCTAssertEqual(state.currentActIDs, ["\(second.key)#act-1"])
+    }
+
+    @MainActor
     func testLegacyManifestForcesPurgeAndFullRebuild() async throws {
         struct LegacyManifest: Codable {
             let cases: [String: String]

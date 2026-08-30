@@ -41,6 +41,9 @@ struct CaseMovementView: View {
     /// onTrack (из поиска). Из самой карточки мониторинга — не передаётся.
     var isTracked: Bool = false
     var onTrack: (() -> Void)? = nil
+    /// Явное снятие с отслеживания доступно только в карточке из «Моих дел».
+    /// Карточка поисковой выдачи не передаёт callback и не показывает меню.
+    var onUntrack: (() -> Void)? = nil
     /// Кэш и фоновое обновление (мониторинг): когда карточка получена с портала,
     /// идёт ли обновление, тихая ошибка фона, принудительный перезапрос.
     /// Из поиска не передаются — там карточка всегда живая.
@@ -59,6 +62,7 @@ struct CaseMovementView: View {
     /// Открыть свежую задачу CAPTCHA ФССП для конкретного документа. Фоновый
     /// refresh этот callback не вызывает: он лишь сохраняет `.captchaRequired`.
     var onSolveFSSPCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
+    @State private var confirmingUntrack = false
 
     var body: some View {
         ScrollView {
@@ -110,6 +114,16 @@ struct CaseMovementView: View {
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .scrollEdgeEffectStyle(.soft, for: .top)
         .background(Color(nsColor: .sudrfContent))
+        .confirmationDialog(
+            "Убрать дело из отслеживания?",
+            isPresented: $confirmingUntrack,
+            titleVisibility: .visible
+        ) {
+            Button("Убрать", role: .destructive) { onUntrack?() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
+        }
     }
 
     private var header: some View {
@@ -147,6 +161,19 @@ struct CaseMovementView: View {
                     .disabled(isRefreshing)
                     Text(freshnessLabel)
                         .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                }
+                if onUntrack != nil {
+                    Menu {
+                        Button("Убрать из отслеживания…", role: .destructive) {
+                            confirmingUntrack = true
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 26, height: 26)
+                    .help("Действия с делом")
                 }
             }
             if let refreshNote {

@@ -14,18 +14,38 @@ import CaptchaSolver
 final class SearchModel: ObservableObject {
 
     // Ввод
-    @Published var branch: CourtBranch = .general
-    @Published var tier: CourtTier = .district
+    @Published var branch: CourtBranch = .general {
+        didSet {
+            if branch != oldValue { searchScopeChanged() }
+        }
+    }
+    @Published var tier: CourtTier = .district {
+        didSet {
+            if tier != oldValue { searchScopeChanged() }
+        }
+    }
     // Регион идентифицируется КОДОМ субъекта (под капотом), пользователь в
     // пикере по-прежнему выбирает словесное имя. «11» — Республика Коми.
-    @Published var region = "11"
+    @Published var region = "11" {
+        didSet {
+            if region != oldValue && usesRegion { searchScopeChanged() }
+        }
+    }
 
     /// Человекочитаемое имя выбранного региона — для слоёв, где имя интринсик
     /// (движение, персистенс сохранённых дел, сопоставление судов).
     var regionName: String { CourtDirectory.subjectName(forSubjectCode: region) ?? region }
     @Published var courts: [CourtOption] = []
-    @Published var selectedCourtID = ""
-    @Published var cartotekaId = "adm"
+    @Published var selectedCourtID = "" {
+        didSet {
+            if selectedCourtID != oldValue { searchScopeChanged() }
+        }
+    }
+    @Published var cartotekaId = "adm" {
+        didSet {
+            if cartotekaId != oldValue { searchScopeChanged() }
+        }
+    }
 
     /// Суд в пикере — единый вид для всех источников (живой резолвер портала,
     /// встроенный справочник субъектов/АСОЮ/КСОЮ).
@@ -79,9 +99,21 @@ final class SearchModel: ObservableObject {
         }
     }
 
-    @Published var queryCaseNumber = ""
-    @Published var queryName = ""
-    @Published var queryUID = ""
+    @Published var queryCaseNumber = "" {
+        didSet {
+            if queryCaseNumber != oldValue { invalidateSearch() }
+        }
+    }
+    @Published var queryName = "" {
+        didSet {
+            if queryName != oldValue { invalidateSearch() }
+        }
+    }
+    @Published var queryUID = "" {
+        didSet {
+            if queryUID != oldValue { invalidateSearch() }
+        }
+    }
 
     // Вывод
     @Published var results: [CaseSearchResult] = []
@@ -147,10 +179,14 @@ final class SearchModel: ObservableObject {
         return actLinks.filter { !extracted.contains($0) }
     }
 
-    /// Картотеки текущего звена (для ВС РФ — пусто: парсинг не подключён).
+    /// Допустимые измерения текущей формы поиска.
+    var searchDimensions: CourtSearchDimensions {
+        CartotekaRegistry.searchDimensions(branch: branch, tier: tier)
+    }
+
+    /// Картотеки текущей ветви и звена (для ВС РФ — пусто: парсинг не подключён).
     var cartoteki: [Cartoteka] {
-        guard let level = tier.level else { return [] }
-        return CartotekaRegistry.sets(for: level)
+        searchDimensions.cartoteki
     }
 
     private let resolver: DistrictCourtResolver
@@ -173,7 +209,9 @@ final class SearchModel: ObservableObject {
     var lastSubmittedCaptcha: (png: Data, token: CaptchaToken)?
     private var magistrateDistrictCourts: [DistrictCourt] = []
     private var courtResolutionGeneration = 0
+    private var searchGeneration = 0
     private var cardLoadGeneration = 0
+    private var movementLoadGeneration = 0
 
     init(captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
@@ -227,19 +265,55 @@ final class SearchModel: ObservableObject {
         }
     }
     var cartoteka: Cartoteka? {
-        guard let level = tier.level else { return nil }
-        return CartotekaRegistry.find(level: level, id: cartotekaId)
+        CartotekaRegistry.find(branch: branch, tier: tier, id: cartotekaId)
     }
 
-    /// Регион нужен только районным/городским судам — у всех остальных
-    /// ступеней список судов выдаётся сразу целиком (для военных — после
-    /// однократного общероссийского скана портала с кэшем).
-    var regionPickerEnabled: Bool { branch == .general && (tier == .district || tier == .magistrate) }
-    var uidSearchEnabled: Bool { tier != .magistrate }
+    var usesRegion: Bool { searchDimensions.usesRegion }
+    var uidSearchEnabled: Bool { searchDimensions.supportsUID }
+
+    /// Изменение региона не может менять состав военных судов: их список
+    /// формируется по общероссийскому справочнику соответствующего звена.
+    func regionChanged() {
+        guard usesRegion else { return }
+        courtScopeChanged()
+    }
+
+    /// Запрещает уже начатому поиску менять экран после изменения входных
+    /// параметров. Отмена сетевого запроса здесь не нужна: ответ просто
+    /// теряет право публиковать результаты и статус.
+    private func invalidateSearch() {
+        searchGeneration &+= 1
+        searching = false
+        lastSubmittedCaptcha = nil
+        captcha = nil
+        status = ""
+    }
+
+    private func beginSearch() -> Int {
+        searchGeneration &+= 1
+        return searchGeneration
+    }
+
+    private func isCurrentSearch(_ generation: Int) -> Bool {
+        searchGeneration == generation
+    }
+
+    /// Смена набора судов/картотек очищает всё, что относится к прежнему
+    /// судебному scope, и инвалидирует любые незавершённые search/card запросы.
+    private func searchScopeChanged() {
+        invalidateSearch()
+        invalidateCardLoad()
+        results = []
+        selectedResultID = nil
+        clearActPreview()
+        hasSearched = false
+        exitMovement()
+    }
 
     /// Инвалидирует текущую загрузку до запуска новой, чтобы старый ответ
     /// не оставил суд, выбранный для другого набора фильтров.
     func courtScopeChanged() {
+        searchScopeChanged()
         let tierWillChange = branch == .military && tier == .magistrate
         if tierWillChange { tier = .district }
         if cartoteka == nil { cartotekaId = cartoteki.first?.id ?? "" }
@@ -406,9 +480,10 @@ final class SearchModel: ObservableObject {
         // Авто-выбор картотеки по индексу номера дела: «2а-…» → КАС, «10-…» →
         // апелляция на мировых, «3/…» → материалы и т.п. Срабатывает, только если
         // текущая картотека номеру заведомо не соответствует, а подходит ровно одна.
-        if !num.isEmpty, let level = tier.level, let current = cartoteka,
+        if !num.isEmpty, let current = cartoteka,
            !CartotekaRegistry.prefixMatches(current, caseNumber: num) {
-            let candidates = CartotekaRegistry.matches(caseNumber: num, level: level)
+            let candidates = CartotekaRegistry.matches(caseNumber: num,
+                                                       branch: branch, tier: tier)
             if candidates.count == 1, let c = candidates.first { cartotekaId = c.id }
         }
         guard let cart = cartoteka else {
@@ -420,11 +495,14 @@ final class SearchModel: ObservableObject {
             status = "Заполните хотя бы одно поле запроса."; return
         }
 
+        let generation = beginSearch()
         invalidateCardLoad()
         searching = true; status = "Идёт поиск…"
         results = []; clearActPreview(); selectedResultIndex = nil
         hasSearched = false
-        defer { searching = false }
+        defer {
+            if isCurrentSearch(generation) { searching = false }
+        }
 
         // Суды Москвы — отдельный портал mos-gorsud.ru: свой /search (без капчи,
         // все поля запроса можно передать разом), карточки — по ссылке из выдачи.
@@ -438,6 +516,7 @@ final class SearchModel: ObservableObject {
                     participant: name.isEmpty ? nil : name,
                     instance: route.instance,
                     processType: route.processType)
+                guard isCurrentSearch(generation) else { return }
                 // Клиент уже отфильтровал строки по разделу (вид×инстанция).
                 // В выдаче портала нет отдельной колонки «дата поступления»
                 // и УИД — они добираются из карточки.
@@ -457,16 +536,19 @@ final class SearchModel: ObservableObject {
                     ? "Ничего не найдено (учтите ограничения публикации по 262-ФЗ)."
                     : "Найдено: \(results.count) (портал mos-gorsud.ru)"
             } catch let e as SudrfError {
+                guard isCurrentSearch(generation) else { return }
                 status = e.description
             } catch {
+                guard isCurrentSearch(generation) else { return }
                 status = "Ошибка поиска mos-gorsud: \(error)"
             }
             return
         }
 
         do {
-            try await executeSearch(allowAutoSolve: true)
+            try await executeSearch(allowAutoSolve: true, generation: generation)
         } catch SudrfError.captchaRequired(let formURL) {
+            guard isCurrentSearch(generation) else { return }
             // Сюда попадаем, если auto-solver выключен / не уверен /
             // исчерпал попытки / выдал неверный код и повторный поиск
             // тоже упал на капче. Открываем ручное окно.
@@ -481,8 +563,10 @@ final class SearchModel: ObservableObject {
                                      rerunSearch: true)
             status = "Требуется код с картинки — введите его в окне, поиск продолжится сам."
         } catch let e as SudrfError {
+            guard isCurrentSearch(generation) else { return }
             status = e.description
         } catch {
+            guard isCurrentSearch(generation) else { return }
             status = "Ошибка поиска: \(error)"
         }
     }
@@ -492,7 +576,8 @@ final class SearchModel: ObservableObject {
     /// решить; на успех повторяет запрос с `allowAutoSolve: false` (чтобы
     /// не зациклиться, если авто-ответ неверный); на неудачу пробрасывает
     /// ошибку наверх в `runSearch` для открытия ручного листа.
-    private func executeSearch(allowAutoSolve: Bool) async throws {
+    private func executeSearch(allowAutoSolve: Bool, generation: Int) async throws {
+        guard isCurrentSearch(generation) else { return }
         guard let selected = selectedCourt else { return }
         let court = selected.searchCourt
         let num = queryCaseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -510,6 +595,7 @@ final class SearchModel: ObservableObject {
         do {
             let fetched = try await searchClient.search(court: court, cartoteka: cart,
                                                         field: primary.0, value: primary.1)
+            guard isCurrentSearch(generation) else { return }
             let res = Self.filteredSearchResults(fetched, primary: primary.0,
                                                  caseNumber: num, name: name)
             results = res
@@ -518,9 +604,12 @@ final class SearchModel: ObservableObject {
             if court.level != .magistrate { searchInputs.append((uid, "УИД")) }
             let used = searchInputs.filter { !$0.0.isEmpty }.map(\.1)
             status = Self.searchStatus(for: res, used: used)
+            guard isCurrentSearch(generation) else { return }
             await bootstrapCaptchaToCorpus(host: court.domain, results: res)
         } catch SudrfError.captchaRequired(let formURL) {
-            try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve, host: formURL.host)
+            guard isCurrentSearch(generation) else { return }
+            try await handleCaptcha(formURL: formURL, allowAutoSolve: allowAutoSolve,
+                                    host: formURL.host, generation: generation)
         }
     }
 
@@ -545,7 +634,9 @@ final class SearchModel: ObservableObject {
     /// Хелпер для `executeSearch` — на `captchaRequired` пытается решить
     /// авто-солвером, на успех рекурсивно повторяет с `allowAutoSolve: false`,
     /// на провал пробрасывает ошибку дальше.
-    private func handleCaptcha(formURL: URL, allowAutoSolve: Bool, host: String?) async throws {
+    private func handleCaptcha(formURL: URL, allowAutoSolve: Bool, host: String?,
+                               generation: Int) async throws {
+        guard isCurrentSearch(generation) else { return }
         if allowAutoSolve,
            let solver = captchaSolver,
            let settings = captchaSettings,
@@ -556,11 +647,13 @@ final class SearchModel: ObservableObject {
                 solver: solver,
                 settings: settings.autoSolverSettings
             )
+            guard isCurrentSearch(generation) else { return }
             if result.cancelled || Task.isCancelled { throw CancellationError() }
             guard let token = result.token else {
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
             await CaptchaTokenStore.shared.store(token, domain: host ?? formURL.host ?? "")
+            guard isCurrentSearch(generation) else { return }
             // Запоминаем PNG, на котором солвер выдал этот токен, для
             // bootstrap в `CorpusStore` (v0.38.9). Сохраняем после
             // успешного search (см. конец `executeSearch`).
@@ -572,10 +665,11 @@ final class SearchModel: ObservableObject {
             // (сервер отклонил наш ответ) сразу открыть ручной лист, а не
             // крутить солвер по кругу.
             do {
-                try await executeSearch(allowAutoSolve: false)
+                try await executeSearch(allowAutoSolve: false, generation: generation)
             } catch SudrfError.captchaRequired {
                 // Сервер отклонил авто-ответ — инвалидируем и пробрасываем.
                 await CaptchaTokenStore.shared.invalidate(domain: host ?? formURL.host ?? "")
+                guard isCurrentSearch(generation) else { return }
                 lastSubmittedCaptcha = nil
                 throw SudrfError.captchaRequired(formURL: formURL)
             }
@@ -802,6 +896,8 @@ final class SearchModel: ObservableObject {
         invalidateCardLoad()
         clearActPreview()
         selectedResultID = base.stableID
+        let generation = beginMovementLoad()
+        defer { finishMovementLoad(generation, resultID: base.stableID) }
 
         // Та же формула, что у MovementContext.key (единый источник правды):
         // для судов Москвы домен общий, различает их код суда.
@@ -809,27 +905,49 @@ final class SearchModel: ObservableObject {
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
         if let hit = MovementMemoryCache.shared.get(cacheKey) {
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             movement = hit.movement
             expandedComplaints = []
             selectedActID = hit.movement.acts.first(where: { $0.instanceLevel == .first })?.id
                          ?? hit.movement.acts.first?.id
-            loadingMovement = false
             return
         }
 
-        loadingMovement = true; movement = nil; expandedComplaints = []
-        defer { loadingMovement = false }
+        movement = nil; expandedComplaints = []
         do {
             let service = makeMovementService(for: option, base: base)
             let mv = try await service.movement(for: base, court: court, cartoteka: cart)
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             movement = mv
             selectedActID = mv.acts.first(where: { $0.instanceLevel == .first })?.id ?? mv.acts.first?.id
             MovementMemoryCache.shared.put(cacheKey, mv)
         } catch let e as SudrfError {
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             status = e.description
         } catch {
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             status = "Не удалось собрать движение дела: \(error)"
         }
+    }
+
+    private func beginMovementLoad() -> Int {
+        movementLoadGeneration &+= 1
+        loadingMovement = true
+        return movementLoadGeneration
+    }
+
+    private func finishMovementLoad(_ generation: Int, resultID: String) {
+        guard isCurrentMovementLoad(generation, resultID: resultID) else { return }
+        loadingMovement = false
+    }
+
+    private func invalidateMovementLoad() {
+        movementLoadGeneration &+= 1
+        loadingMovement = false
+    }
+
+    private func isCurrentMovementLoad(_ generation: Int, resultID: String) -> Bool {
+        movementLoadGeneration == generation && selectedResultID == resultID
     }
 
     func selectAct(_ id: String) { selectedActID = id }
@@ -840,7 +958,8 @@ final class SearchModel: ObservableObject {
     }
 
     func exitMovement() {
-        movement = nil; loadingMovement = false
+        invalidateMovementLoad()
+        movement = nil
         selectedActID = nil; expandedComplaints = []
         captcha = nil
     }
@@ -946,8 +1065,7 @@ final class SearchModel: ObservableObject {
     // MARK: - Маршрут движения мировых судей
 
     private func movementTargets(for option: CourtOption, base: CaseSearchResult?) -> [MovementSearchTarget]? {
-        guard let cart = cartoteka
-            ?? CartotekaRegistry.find(level: option.level, id: cartotekaId) else { return nil }
+        guard let cart = cartoteka else { return nil }
         return MovementTargetBuilder.targets(
             branch: branch, courtLevel: option.level,
             baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,

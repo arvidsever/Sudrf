@@ -45,6 +45,42 @@ final class MilitaryCourtPickerTests: XCTestCase {
         XCTAssertTrue(model.courts.allSatisfy { $0.level == .district })
     }
 
+    func testMilitaryRegionChangeDoesNotResolveCourtsAndRestoringGeneralResetsFilters() async throws {
+        MilitaryPickerURLProtocol.reset()
+        let model = await makeModel()
+        model.branch = .military
+        model.tier = .district
+        model.cartotekaId = "u2" // допустима только как апелляция на мирового в общих судах
+        let retained = CaseSearchResult(caseNumber: "1-1/2026")
+        model.results = [retained]
+        model.hasSearched = true
+        model.status = "Предыдущая выдача"
+        model.region = "77"
+
+        model.regionChanged()
+        XCTAssertEqual(MilitaryPickerURLProtocol.garrisonRequestCount(), 0)
+        XCTAssertFalse(model.usesRegion)
+        XCTAssertEqual(model.results, [retained])
+        XCTAssertTrue(model.hasSearched)
+        XCTAssertEqual(model.status, "Предыдущая выдача")
+
+        model.region = "11"
+        model.courtScopeChanged()
+        try await waitUntil { model.courts.map(\.code) == ["11GV0001"] }
+        XCTAssertEqual(model.cartotekaId, "u1")
+        XCTAssertEqual(model.cartoteki.map(\.id), ["u1", "g1", "p1", "adm", "admj", "m"])
+        XCTAssertNotEqual(model.cartotekaId, "u2")
+
+        model.branch = .general
+        model.courtScopeChanged()
+        try await waitUntil { model.courts.map(\.code) == ["11RS0001"] }
+        XCTAssertTrue(model.usesRegion)
+        XCTAssertTrue(["u2", "g2", "p2"].allSatisfy { id in
+            model.cartoteki.contains { $0.id == id }
+        })
+        XCTAssertNotNil(model.cartoteka)
+    }
+
     func testTierChangeClearsSelectionBeforeReplacementResolutionRuns() async {
         let model = await makeModel()
         let garrison = SearchModel.CourtOption(

@@ -87,6 +87,7 @@ final class SearchModel: ObservableObject {
     @Published var results: [CaseSearchResult] = []
     @Published var selectedResultID: String?
     @Published var actText = ""
+    @Published var actLinks: [URL] = []
     @Published var actMissing = false
     @Published var hasSearched = false
 
@@ -143,7 +144,7 @@ final class SearchModel: ObservableObject {
     private let client: SudrfClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
-    private let mosGorSudClient = MosGorSudClient()
+    private let mosGorSudClient: any MosGorSudProviding
     /// Авто-солвер капчи. Опциональный — если `nil`, поведение прежнее
     /// (только ручной ввод через CaptchaAssistSheet). Создаётся в init
     /// или передаётся извне (для тестов и для общего инстанса с `RefreshCenter`).
@@ -158,12 +159,14 @@ final class SearchModel: ObservableObject {
     var lastSubmittedCaptcha: (png: Data, token: CaptchaToken)?
     private var magistrateDistrictCourts: [DistrictCourt] = []
     private var courtResolutionGeneration = 0
+    private var cardLoadGeneration = 0
 
     init(captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
          corpusStore: CorpusStore = .shared,
          client: SudrfClient = SudrfClient(),
-         resolver: DistrictCourtResolver = DistrictCourtResolver()) {
+         resolver: DistrictCourtResolver = DistrictCourtResolver(),
+         mosGorSudClient: any MosGorSudProviding = MosGorSudClient()) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
         // сконфигурированный этой же настройкой. Так гарантируется,
         // что `preprocessingEnabled` и `preprocessorHosts` действуют
@@ -175,6 +178,7 @@ final class SearchModel: ObservableObject {
         self.corpusStore = corpusStore
         self.client = client
         self.resolver = resolver
+        self.mosGorSudClient = mosGorSudClient
         self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }
 
@@ -402,9 +406,10 @@ final class SearchModel: ObservableObject {
             status = "Заполните хотя бы одно поле запроса."; return
         }
 
+        invalidateCardLoad()
         searching = true; status = "Идёт поиск…"
-        results = []; actText = ""; selectedResultIndex = nil
-        hasSearched = false; actMissing = false
+        results = []; clearActPreview(); selectedResultIndex = nil
+        hasSearched = false
         defer { searching = false }
 
         // Суды Москвы — отдельный портал mos-gorsud.ru: свой /search (без капчи,
@@ -566,9 +571,10 @@ final class SearchModel: ObservableObject {
     }
 
     func resetQueries() {
+        invalidateCardLoad()
         queryCaseNumber = ""; queryName = ""; queryUID = ""
-        results = []; actText = ""; selectedResultIndex = nil
-        hasSearched = false; actMissing = false
+        results = []; clearActPreview(); selectedResultIndex = nil
+        hasSearched = false
         status = courts.isEmpty ? "" : "Судов в списке: \(courts.count)"
     }
 
@@ -590,16 +596,20 @@ final class SearchModel: ObservableObject {
                 status = "У записи нет ссылки на карточку."; return
             }
             selectedResultID = r.stableID
-            loadingCard = true; actText = ""
-            defer { loadingCard = false }
+            clearActPreview()
+            let generation = beginCardLoad()
+            defer { finishCardLoad(generation, resultID: r.stableID) }
             do {
                 let card = try await mosGorSudClient.fetchCard(url: url)
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
                 actMissing = card.actLinks.isEmpty
-                actText = Self.mosGorSudCardText(card)
+                actLinks = card.actLinks
             } catch let e as SudrfError {
-                actText = ""; status = e.description
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                status = e.description
             } catch {
-                actText = ""; status = "Ошибка карточки mos-gorsud: \(error)"
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                status = "Ошибка карточки mos-gorsud: \(error)"
             }
             return
         }
@@ -609,23 +619,33 @@ final class SearchModel: ObservableObject {
                 status = "У записи нет ссылки на карточку."; return
             }
             selectedResultID = r.stableID
-            loadingCard = true; actText = ""
-            defer { loadingCard = false }
+            clearActPreview()
+            let generation = beginCardLoad()
+            defer { finishCardLoad(generation, resultID: r.stableID) }
             do {
                 let card = try await magistrateClient.fetchCard(url: url)
-                actMissing = card.actText == nil
-                actText = card.actText ?? card.rawText
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                let text = Self.publishedActText(from: card)
+                actMissing = text == nil
+                actText = text ?? ""
             } catch let e as SudrfError {
-                actText = ""; status = e.description
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                status = e.description
             } catch {
-                actText = ""; status = "Ошибка карточки мирового участка: \(error)"
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                status = "Ошибка карточки мирового участка: \(error)"
             }
             return
         }
 
+        guard (r.caseID != nil && r.caseUID != nil) || r.cardURL != nil else {
+            status = "У записи нет ни идентификаторов, ни ссылки на карточку."
+            return
+        }
         selectedResultID = r.stableID
-        loadingCard = true; actText = ""
-        defer { loadingCard = false }
+        clearActPreview()
+        let generation = beginCardLoad()
+        defer { finishCardLoad(generation, resultID: r.stableID) }
         do {
             let card: CaseCard
             if let caseID = r.caseID, let caseUID = r.caseUID {
@@ -637,52 +657,60 @@ final class SearchModel: ObservableObject {
                 // `_uid` — карточка открывается по готовой ссылке выдачи.
                 card = try await client.fetchCard(url: url)
             } else {
-                status = "У записи нет ни идентификаторов, ни ссылки на карточку."
                 return
             }
-            actMissing = card.actText == nil
-            actText = card.actText ?? card.rawText
+            guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+            let text = Self.publishedActText(from: card)
+            actMissing = text == nil
+            actText = text ?? ""
         } catch let e as SudrfError {
-            actText = ""; status = e.description
+            guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+            status = e.description
         } catch {
-            actText = ""; status = "Ошибка карточки: \(error)"
+            guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+            status = "Ошибка карточки: \(error)"
         }
     }
 
     func closeInspector() {
+        invalidateCardLoad()
         selectedResultIndex = nil
-        actText = ""
-        actMissing = false
+        clearActPreview()
         exitMovement()
     }
 
-    /// Текстовое представление карточки mos-gorsud для инспектора: сводка полей
-    /// и ссылки на акты-вложения; если поля не распознаны — сырой текст страницы.
-    static func mosGorSudCardText(_ card: MosGorSudCard) -> String {
-        var lines: [String] = []
-        if let v = card.caseNumber { lines.append("Дело: \(v)") }
-        if let v = card.uid { lines.append("УИД: \(v)") }
-        if let v = card.court { lines.append("Суд: \(v)") }
-        if let v = card.judge { lines.append("Судья: \(v)") }
-        if let v = card.category { lines.append("Категория: \(v)") }
-        if let v = card.receiptDate { lines.append("Дата регистрации: \(v)") }
-        if let v = card.result { lines.append("Результат: \(v)") }
-        if !card.sessions.isEmpty {
-            lines.append("")
-            lines.append("Заседания:")
-            for s in card.sessions {
-                let time = s.time.map { " \($0)" } ?? ""
-                let res = s.result.map { " — \($0)" } ?? ""
-                lines.append("  \(s.date)\(time): \(s.event)\(res)")
-            }
-        }
-        if !card.actLinks.isEmpty {
-            lines.append("")
-            lines.append("Тексты актов (вложения портала):")
-            for u in card.actLinks { lines.append("  \(u.absoluteString)") }
-        }
-        let summary = lines.joined(separator: "\n")
-        return summary.isEmpty ? card.rawText : summary
+    private func beginCardLoad() -> Int {
+        cardLoadGeneration &+= 1
+        loadingCard = true
+        return cardLoadGeneration
+    }
+
+    private func finishCardLoad(_ generation: Int, resultID: String) {
+        guard isCurrentCardLoad(generation, resultID: resultID) else { return }
+        loadingCard = false
+    }
+
+    private func invalidateCardLoad() {
+        cardLoadGeneration &+= 1
+        loadingCard = false
+    }
+
+    private func isCurrentCardLoad(_ generation: Int, resultID: String) -> Bool {
+        cardLoadGeneration == generation && selectedResultID == resultID
+    }
+
+    private func clearActPreview() {
+        actText = ""
+        actLinks = []
+        actMissing = false
+    }
+
+    /// Возвращает только опубликованный текст акта. Текст всей карточки нельзя
+    /// показывать как судебный акт: это метаданные, движение и стороны дела.
+    static func publishedActText(from card: CaseCard) -> String? {
+        guard let text = card.actText,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
     }
 
     // MARK: - Движение дела (двойной клик)
@@ -699,6 +727,8 @@ final class SearchModel: ObservableObject {
               let cart = cartoteka, let option = selectedCourt else { return }
         let court = option.searchCourt
         let base = results[index]
+        invalidateCardLoad()
+        clearActPreview()
         selectedResultID = base.stableID
 
         // Та же формула, что у MovementContext.key (единый источник правды):

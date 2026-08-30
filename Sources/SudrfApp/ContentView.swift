@@ -485,21 +485,26 @@ private struct InspectorPane: View {
                 Group {
                     if model.loadingCard {
                         CenterNote(spinner: true, title: "Загружаю карточку…")
-                    } else if model.actMissing && model.actText.isEmpty {
-                        CenterNote(title: "Текст акта по делу № \(r.caseNumber) не опубликован",
-                                   caption: "Карточка получена, но судебный акт отсутствует "
-                                          + "в публикации (262-ФЗ).")
-                    } else {
+                    } else if !model.actLinks.isEmpty {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
-                                if model.actMissing {
-                                    Text("Текст акта не опубликован (262-ФЗ) — ниже сырой текст карточки.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                Text("Опубликованные судебные акты")
+                                    .font(.headline)
+                                ForEach(Array(model.actLinks.enumerated()), id: \.offset) { index, url in
+                                    Link("Судебный акт #\(index + 1)", destination: url)
                                 }
-                                ActTextView(text: model.actText)
                             }
                             .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else if model.actMissing && model.actText.isEmpty {
+                        CenterNote(title: "Судебный акт ещё не опубликован",
+                                   caption: "В карточке дела № \(r.caseNumber) нет "
+                                          + "опубликованного текста или файла акта.")
+                    } else {
+                        ScrollView {
+                            ActTextView(text: model.actText)
+                                .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }

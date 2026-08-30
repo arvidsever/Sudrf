@@ -116,7 +116,12 @@ extension SudrfCLI {
             do {
                 let card = try await client.fetchCard(
                     court: court, caseID: caseID, caseUID: caseUID, deloID: deloID, new: new)
-                print(card.actText ?? card.rawText)
+                guard let actText = card.actText,
+                      !actText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    FileHandle.standardError.write(Data("Судебный акт по карточке не опубликован.\n".utf8))
+                    throw ExitCode.failure
+                }
+                print(actText)
             } catch let e as SudrfError {
                 FileHandle.standardError.write(Data((e.description + "\n").utf8))
                 throw ExitCode.failure

@@ -53,7 +53,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         XCTAssertEqual(d, .skipStateNotAllowed)
     }
 
-    // MARK: - CaptchaWebViewNavigationFailureFactory (7 unit-тестов)
+    // MARK: - CaptchaWebViewNavigationFailureFactory
 
     private let cancelledError = NSError(
         domain: NSURLErrorDomain, code: NSURLErrorCancelled)
@@ -63,35 +63,50 @@ final class CaptchaSheetStateTests: XCTestCase {
     func testNavFailureCancelledIgnored() {
         // Замечание 5: NSURLErrorCancelled — не наш кейс.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .submitting, error: cancelledError, isOurActiveAttempt: true)
+            state: .submitting, error: cancelledError,
+            submittedAttempt: 1, activeID: 1,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .ignore)
     }
 
     func testNavFailureReadyIgnored() {
         // background-ресурс не должен морозить готовый лист.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .ready, error: genericError, isOurActiveAttempt: false)
+            state: .ready, error: genericError,
+            submittedAttempt: nil, activeID: nil,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .ignore)
     }
 
     func testNavFailureAcceptedIgnored() {
         // submit прошёл, токен получен; background-навигация может упасть.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .accepted, error: genericError, isOurActiveAttempt: false)
+            state: .accepted, error: genericError,
+            submittedAttempt: nil, activeID: nil,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .ignore)
     }
 
     func testNavFailureFailedIgnored() {
         // уже-failed; не дублируем.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .failed, error: genericError, isOurActiveAttempt: false)
+            state: .failed, error: genericError,
+            submittedAttempt: nil, activeID: nil,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .ignore)
     }
 
     func testNavFailureSubmittingOursFails() {
         // Замечание 1+5: наш submit упал → fail.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .submitting, error: genericError, isOurActiveAttempt: true)
+            state: .submitting, error: genericError,
+            submittedAttempt: 1, activeID: 1,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         if case .failSubmitting(let msg) = d {
             XCTAssertTrue(msg.contains("Не удалось отправить код"))
         } else {
@@ -99,16 +114,54 @@ final class CaptchaSheetStateTests: XCTestCase {
         }
     }
 
-    func testNavFailureSubmittingNotOursIgnored() {
-        // Замечание 1: submit #1 упал, но submit #2 уже активен → ignore.
+    func testNavFailureSubmittingStaleAttemptIgnored() {
+        // submit #1 упал, но submit #2 уже активен → ignore.
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .submitting, error: genericError, isOurActiveAttempt: false)
+            state: .submitting, error: genericError,
+            submittedAttempt: 1, activeID: 2,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .ignore)
+    }
+
+    func testNavFailureSubmittingNavigationFromOlderAttemptIgnored() {
+        // didStart сохранил связь навигации с submit #1; после retry #2
+        // поздний fail не должен завершать текущую попытку.
+        let d = CaptchaWebViewNavigationFailureFactory.decide(
+            state: .submitting, error: genericError,
+            submittedAttempt: 2, activeID: 2,
+            navigationAttempt: 1,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .ignore)
+    }
+
+    func testNavFailureSubmittingMismatchedNavigationIgnored() {
+        // У текущего attempt уже есть marker, но навигация чужая → ignore.
+        let d = CaptchaWebViewNavigationFailureFactory.decide(
+            state: .submitting, error: genericError,
+            submittedAttempt: 2, activeID: 2,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: true, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .ignore)
+    }
+
+    func testNavFailureSubmittingMatchedNavigationFails() {
+        let d = CaptchaWebViewNavigationFailureFactory.decide(
+            state: .submitting, error: genericError,
+            submittedAttempt: 2, activeID: 2,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: true, navigationMatchesSubmitted: true)
+        if case .failSubmitting = d {} else {
+            XCTFail("expected .failSubmitting, got \(d)")
+        }
     }
 
     func testNavFailureLoadingFormFails() {
         let d = CaptchaWebViewNavigationFailureFactory.decide(
-            state: .loadingForm, error: genericError, isOurActiveAttempt: false)
+            state: .loadingForm, error: genericError,
+            submittedAttempt: nil, activeID: nil,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         if case .failLoadingForm(let msg) = d {
             XCTAssertTrue(msg.contains("Не удалось загрузить форму"))
         } else {
@@ -124,6 +177,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         // должен инспектироваться, а не висеть до 60-сек watchdog.
         let d = CaptchaWebViewDidFinishDecisionFactory.decide(
             state: .submitting, submittedAttempt: 1, activeID: 1,
+            navigationAttempt: nil,
             hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .inspect(attempt: 1))
     }
@@ -132,6 +186,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         // Маркер сработал и навигация совпала → инспектируем.
         let d = CaptchaWebViewDidFinishDecisionFactory.decide(
             state: .submitting, submittedAttempt: 2, activeID: 2,
+            navigationAttempt: nil,
             hasSubmittedNavigation: true, navigationMatchesSubmitted: true)
         XCTAssertEqual(d, .inspect(attempt: 2))
     }
@@ -140,6 +195,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         // Маркер выставлен, но пришёл чужой поздний didFinish → skip.
         let d = CaptchaWebViewDidFinishDecisionFactory.decide(
             state: .submitting, submittedAttempt: 2, activeID: 2,
+            navigationAttempt: nil,
             hasSubmittedNavigation: true, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .skip)
     }
@@ -148,6 +204,17 @@ final class CaptchaSheetStateTests: XCTestCase {
         // Поздний didFinish от submit #1 после retry #2 (activeID != attempt) → skip.
         let d = CaptchaWebViewDidFinishDecisionFactory.decide(
             state: .submitting, submittedAttempt: 1, activeID: 2,
+            navigationAttempt: nil,
+            hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
+        XCTAssertEqual(d, .skip)
+    }
+
+    func testDidFinishSkipsNavigationFromOlderAttempt() {
+        // didStart сохранил связь навигации с submit #1; после retry #2
+        // поздний didFinish не должен инспектировать текущую страницу.
+        let d = CaptchaWebViewDidFinishDecisionFactory.decide(
+            state: .submitting, submittedAttempt: 2, activeID: 2,
+            navigationAttempt: 1,
             hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .skip)
     }
@@ -156,6 +223,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         // Навигация формы/фон в .loadingForm — не инспектируем как submit.
         let d = CaptchaWebViewDidFinishDecisionFactory.decide(
             state: .loadingForm, submittedAttempt: nil, activeID: nil,
+            navigationAttempt: nil,
             hasSubmittedNavigation: false, navigationMatchesSubmitted: false)
         XCTAssertEqual(d, .skip)
     }
@@ -177,7 +245,7 @@ final class CaptchaSheetStateTests: XCTestCase {
         XCTAssertNil(g.activeID)
     }
 
-    // MARK: - CaptchaWebViewSubmitMarkerFactory (3 unit-теста, URL+window matcher)
+    // MARK: - CaptchaWebViewSubmitMarkerFactory
 
     private let submitURL = URL(string: "https://sudrf.ru/modules.php?name=sud_delo&name_op=case")!
 
@@ -211,5 +279,40 @@ final class CaptchaSheetStateTests: XCTestCase {
         let d = CaptchaWebViewSubmitMarkerFactory.decide(
             marker: marker, actualURL: submitURL, now: now)
         XCTAssertEqual(d, .ignore)
+    }
+
+    func testAttemptFragmentRoundTrips() {
+        let fragment = CaptchaWebViewSubmitMarkerFactory.fragment(for: 7)
+        let url = URL(string: "https://sudrf.ru/modules.php#\(fragment)")!
+        XCTAssertEqual(CaptchaWebViewSubmitMarkerFactory.attempt(from: url), 7)
+        XCTAssertNil(CaptchaWebViewSubmitMarkerFactory.attempt(
+            from: URL(string: "https://sudrf.ru/modules.php#foreign")))
+    }
+
+    func testAttemptFragmentRejectsLateNavigationFromPreviousSubmit() {
+        let now = Date()
+        let currentFragment = CaptchaWebViewSubmitMarkerFactory.fragment(for: 2)
+        let oldFragment = CaptchaWebViewSubmitMarkerFactory.fragment(for: 1)
+        let marker = CaptchaWebViewSubmitMarker(
+            attempt: 2,
+            expectedURL: nil,
+            setAt: now,
+            expectedFragment: currentFragment)
+        let oldURL = URL(string: "https://sudrf.ru/modules.php#\(oldFragment)")!
+        XCTAssertEqual(
+            CaptchaWebViewSubmitMarkerFactory.decide(
+                marker: marker,
+                actualURL: oldURL,
+                now: now),
+            .ignore)
+    }
+
+    // MARK: - CaptchaAssistDiagnosticLocation
+
+    func testDiagnosticLocationDropsQueryAndFragment() {
+        let url = URL(string: "https://Example.sudrf.ru/modules.php?name_op=case&captcha=123&captchaid=secret#result")!
+        let location = CaptchaAssistDiagnosticLocation(url: url)
+        XCTAssertEqual(location?.host, "example.sudrf.ru")
+        XCTAssertEqual(location?.path, "/modules.php")
     }
 }

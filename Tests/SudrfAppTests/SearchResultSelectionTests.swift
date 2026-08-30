@@ -110,6 +110,65 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testManualCaptchaContinuationResumesOriginalSearch() async throws {
+        ManualCaptchaContinuationStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ManualCaptchaContinuationStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let settings = CaptchaSettings.shared
+        let wasForceDisabled = settings.forceDisabled
+        settings.forceDisabled = true
+        defer { settings.forceDisabled = wasForceDisabled }
+
+        let displayHost = "leninsky.orb.sudrf.ru"
+        let moduleHost = "leninsky--orb.sudrf.ru"
+        await CaptchaTokenStore.shared.invalidate(domain: displayHost)
+        defer { Task { await CaptchaTokenStore.shared.invalidate(domain: displayHost) } }
+
+        let model = SearchModel(captchaSettings: settings, client: client)
+        let court = SearchModel.CourtOption(
+            domain: displayHost,
+            title: "Ленинский районный суд г. Оренбурга",
+            level: .district
+        )
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.queryCaseNumber = "2-42/2026"
+        model.queryName = "Иванов"
+
+        await model.runSearch()
+
+        let challenge = try XCTUnwrap(model.captcha)
+        XCTAssertTrue(challenge.rerunSearch)
+        XCTAssertEqual(challenge.formURL.host, moduleHost)
+        XCTAssertEqual(model.queryCaseNumber, "2-42/2026")
+        XCTAssertEqual(model.queryName, "Иванов")
+
+        let token = CaptchaToken(value: "12345", id: "captcha-id")
+        await model.storeCaptchaPair(host: challenge.formURL.host ?? "", token: token).value
+
+        XCTAssertNil(model.captcha)
+        XCTAssertEqual(model.selectedCourtID, court.id)
+        XCTAssertEqual(model.cartotekaId, "g1")
+        XCTAssertEqual(model.queryCaseNumber, "2-42/2026")
+        XCTAssertEqual(model.queryName, "Иванов")
+        XCTAssertEqual(model.results.map(\.caseNumber), ["2-42/2026"])
+        XCTAssertEqual(model.status, "Найдено: 1 (№ дела + ФИО)")
+        let storedToken = await CaptchaTokenStore.shared.token(forDomain: displayHost)
+        XCTAssertEqual(storedToken, token)
+
+        let resumedRequest = try XCTUnwrap(ManualCaptchaContinuationStub.requests.last)
+        XCTAssertEqual(resumedRequest.host, moduleHost)
+        let query = try XCTUnwrap(
+            URLComponents(url: resumedRequest, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(query.first { $0.name == "captcha" }?.value, token.value)
+        XCTAssertEqual(query.first { $0.name == "captchaid" }?.value, token.id)
+    }
+
+    @MainActor
     func testCaptchaCorpusBootstrapUsesSubmittedTokenAfterStoreOverwrite() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("SearchModelCorpusTests-\(UUID().uuidString)")
@@ -185,6 +244,51 @@ private final class MagistrateListingAndCardStub: URLProtocol {
         }
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                        headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class ManualCaptchaContinuationStub: URLProtocol {
+    nonisolated(unsafe) static var requests: [URL] = []
+
+    static func reset() {
+        requests = []
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.requests.append(url)
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let hasToken = query.contains { $0.name == "captcha" && $0.value == "12345" }
+            && query.contains { $0.name == "captchaid" && $0.value == "captcha-id" }
+        let body = hasToken
+            ? """
+              <div id="search_results"><table><tr>
+                <td><a href="/modules.php?name=sud_delo&amp;name_op=case&amp;case_id=42&amp;case_uid=uid-42">2-42/2026</a></td>
+                <td>01.08.2026</td><td>Иванов</td>
+              </tr></table></div>
+              """
+            : """
+              <form><label>Проверочный код</label>
+                <input name="captcha"><input type="hidden" name="captchaid" value="captcha-id">
+              </form>
+              """
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=utf-8"]
+        )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)

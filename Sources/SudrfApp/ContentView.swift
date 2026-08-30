@@ -107,16 +107,17 @@ private struct FilterPane: View {
                     }
                     .labelsHidden()
                 }
-                GridRow {
-                    FormLabel("Регион")
-                    Picker("", selection: $model.region) {
-                        // Пользователь видит имя, под капотом выбирается код субъекта.
-                        ForEach(CourtDirectory.subjectRegions) { r in
-                            Text(r.name).tag(r.code)
+                if model.usesRegion {
+                    GridRow {
+                        FormLabel("Регион")
+                        Picker("", selection: $model.region) {
+                            // Пользователь видит имя, под капотом выбирается код субъекта.
+                            ForEach(CourtDirectory.subjectRegions) { r in
+                                Text(r.name).tag(r.code)
+                            }
                         }
+                        .labelsHidden()
                     }
-                    .labelsHidden()
-                    .disabled(!model.regionPickerEnabled)
                 }
                 GridRow {
                     FormLabel("Суд")
@@ -198,7 +199,7 @@ private struct FilterPane: View {
                 .padding(EdgeInsets(top: 10, leading: 16, bottom: 14, trailing: 16))
         }
         .onChange(of: model.region) {
-            model.courtScopeChanged()
+            model.regionChanged()
         }
         .onChange(of: model.branch) {
             model.courtScopeChanged()

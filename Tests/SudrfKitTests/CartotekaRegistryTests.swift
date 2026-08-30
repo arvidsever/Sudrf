@@ -14,6 +14,46 @@ final class CartotekaRegistryTests: XCTestCase {
         XCTAssertTrue(ids.contains("p2"), "апелляция на мировых: КАС (11а-)")
     }
 
+    func testMilitarySearchDimensionsUseExplicitFamilyMatrices() throws {
+        let general = CartotekaRegistry.searchDimensions(branch: .general, tier: .district)
+        XCTAssertTrue(general.usesRegion)
+        XCTAssertTrue(general.supportsUID)
+        XCTAssertTrue(["u2", "g2", "p2"].allSatisfy { id in
+            general.cartoteki.contains { $0.id == id }
+        })
+
+        let garrison = CartotekaRegistry.searchDimensions(branch: .military, tier: .district)
+        XCTAssertFalse(garrison.usesRegion)
+        XCTAssertTrue(garrison.supportsUID)
+        XCTAssertEqual(garrison.cartoteki.map(\.id), ["u1", "g1", "p1", "adm", "admj", "m"])
+        XCTAssertNil(CartotekaRegistry.find(branch: .military, tier: .district, id: "u2"))
+        XCTAssertNotNil(CartotekaRegistry.find(branch: .military, tier: .district, id: "admj"))
+        XCTAssertTrue(CartotekaRegistry.matches(
+            caseNumber: "10-1/2026", branch: .military, tier: .district).isEmpty)
+
+        let okrug = CartotekaRegistry.searchDimensions(branch: .military, tier: .subject)
+        XCTAssertFalse(okrug.usesRegion)
+        XCTAssertEqual(okrug.cartoteki.map(\.id), ["u1", "u2", "g1", "g2", "p1", "p2", "adm1", "m"])
+        XCTAssertTrue(["u33", "g33", "p33", "adm2", "adm33"].allSatisfy { id in
+            CartotekaRegistry.find(branch: .military, tier: .subject, id: id) == nil
+        })
+
+        let appeal = CartotekaRegistry.searchDimensions(branch: .military, tier: .appeal)
+        XCTAssertFalse(appeal.usesRegion)
+        XCTAssertEqual(appeal.cartoteki.map(\.id), ["u2", "g2", "p2"])
+
+        let cassation = CartotekaRegistry.searchDimensions(branch: .military, tier: .cassation)
+        XCTAssertFalse(cassation.usesRegion)
+        XCTAssertEqual(cassation.cartoteki.map(\.id), ["u3", "g3", "p3", "adm3", "m"])
+        let cassationMaterials = try XCTUnwrap(cassation.cartoteki.first { $0.id == "m" })
+        let districtMaterials = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "m"))
+        XCTAssertEqual(cassationMaterials, districtMaterials)
+        XCTAssertEqual(cassationMaterials.deloID, "1610001")
+
+        XCTAssertTrue(CartotekaRegistry.searchDimensions(
+            branch: .military, tier: .magistrate).cartoteki.isEmpty)
+    }
+
     func testSubjectSetIncludesKASFirstInstance() {
         XCTAssertNotNil(CartotekaRegistry.find(level: .subject, id: "p1"),
                         "КАС 1-й инстанции в суде субъекта (3а-)")

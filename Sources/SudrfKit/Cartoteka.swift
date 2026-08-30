@@ -35,11 +35,53 @@ public struct Cartoteka: Sendable, Equatable {
     }
 }
 
+/// Допустимые измерения формы поиска для конкретной ветви и звена суда.
+/// Технический `CourtLevel` недостаточен для формы: например, гарнизонный
+/// суд использует платформенный набор районного звена, но не рассматривает
+/// апелляции на акты мировых судей.
+public struct CourtSearchDimensions: Sendable, Equatable {
+    public let usesRegion: Bool
+    public let supportsUID: Bool
+    public let cartoteki: [Cartoteka]
+}
+
 public enum CartotekaRegistry {
+
+    /// Контракт формы поиска для ветви и звена. Все UI-выборы и автоподбор
+    /// картотеки должны использовать этот набор, а не только `CourtLevel`.
+    public static func searchDimensions(branch: CourtBranch,
+                                        tier: CourtTier) -> CourtSearchDimensions {
+        guard CourtTier.cases(for: branch).contains(tier) else {
+            return CourtSearchDimensions(usesRegion: false, supportsUID: false, cartoteki: [])
+        }
+
+        let cartoteki: [Cartoteka]
+        switch (branch, tier) {
+        case (.military, .district):
+            cartoteki = militaryGarrison
+        case (.military, .subject):
+            cartoteki = militaryOkrug
+        case (.military, .appeal):
+            cartoteki = militaryAppeal
+        case (.military, .cassation):
+            cartoteki = militaryCassation
+        case (_, let tier):
+            cartoteki = tier.level.map(sets(for:)) ?? []
+        }
+        return CourtSearchDimensions(
+            usesRegion: branch == .general && (tier == .district || tier == .magistrate),
+            supportsUID: tier.level != nil && tier != .magistrate,
+            cartoteki: cartoteki)
+    }
 
     /// Найти картотеку по звену суда и ключу (id). nil — если такой нет.
     public static func find(level: CourtLevel, id: String) -> Cartoteka? {
         sets(for: level).first { $0.id == id }
+    }
+
+    /// Найти картотеку, допустимую именно в форме поиска выбранной ветви.
+    public static func find(branch: CourtBranch, tier: CourtTier, id: String) -> Cartoteka? {
+        searchDimensions(branch: branch, tier: tier).cartoteki.first { $0.id == id }
     }
 
     /// Все картотеки для звена. У каждого звена — свой набор; id уникальны
@@ -64,10 +106,21 @@ public enum CartotekaRegistry {
     /// неоднозначность (в суде субъекта «21-…» — обе КоАП-картотеки второй
     /// инстанции) — тогда возвращаются все кандидаты, выбор за вызывающим.
     public static func matches(caseNumber: String, level: CourtLevel) -> [Cartoteka] {
+        matches(caseNumber: caseNumber, cartoteki: sets(for: level))
+    }
+
+    /// Картотеки формы поиска, чьим индексам соответствует номер дела.
+    public static func matches(caseNumber: String, branch: CourtBranch,
+                               tier: CourtTier) -> [Cartoteka] {
+        matches(caseNumber: caseNumber,
+                cartoteki: searchDimensions(branch: branch, tier: tier).cartoteki)
+    }
+
+    private static func matches(caseNumber: String, cartoteki: [Cartoteka]) -> [Cartoteka] {
         let n = normalizedNumber(caseNumber)
         guard !n.isEmpty else { return [] }
         var hits: [(cart: Cartoteka, len: Int)] = []
-        for c in sets(for: level) {
+        for c in cartoteki {
             for raw in c.prefixes {
                 let p = normalizedNumber(raw)
                 let ok = p.hasSuffix("/") ? n.hasPrefix(p) : n.hasPrefix(p + "-")
@@ -385,4 +438,25 @@ public enum CartotekaRegistry {
             // и решения по делам об АП рассматривает КСОЮ (судья единолично,
             // акт — постановление). «П16-…» встречается наряду с «16-…».
     ]
+
+    // MARK: - Военные суды
+
+    /// Военные звенья используют те же технические формы `sud_delo`, но не
+    /// образуют иерархию наборов общих судов. Списки ниже намеренно заданы
+    /// явными идентификаторами, чтобы нельзя было случайно унаследовать
+    /// исторические/неподсудные военной ветви картотеки.
+    private static let militaryGarrison = district.filter {
+        ["u1", "g1", "p1", "adm", "admj", "m"].contains($0.id)
+    }
+
+    private static let militaryOkrug = subject.filter {
+        ["u1", "u2", "g1", "g2", "p1", "p2", "adm1"].contains($0.id)
+    } + district.filter { $0.id == "m" }
+
+    /// Военный апелляционный суд использует тот же проверенный набор, что АСОЮ.
+    private static let militaryAppeal = appealSOYu
+
+    /// Материалы КВС подтверждены существующей формой `m_case` с
+    /// `delo_id=1610001`; берём уже проверенные параметры районной картотеки.
+    private static let militaryCassation = cassationSOYu + district.filter { $0.id == "m" }
 }

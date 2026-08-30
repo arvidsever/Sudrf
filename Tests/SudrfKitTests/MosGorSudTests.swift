@@ -172,8 +172,32 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(card.judge, "Михалева Т.Д.")
         XCTAssertEqual(card.receiptDate, "18.03.2020")
         XCTAssertEqual(card.sessions.count, 8)
-        XCTAssertGreaterThanOrEqual(card.actLinks.count, 1)
+        XCTAssertEqual(card.actFiles.count, 4)
+        XCTAssertEqual(card.actFiles.map(\.date),
+                       ["20.03.2020", "20.03.2020", "26.10.2020", "05.10.2021"])
+        XCTAssertEqual(card.actFiles.map(\.title), [
+            "Определение о подготовке дела к судебному разбирательству",
+            "Определение об отказе в применении мер по обеспечению (предварительной защите) иска",
+            "Мотивированное решение",
+            "ОПРЕДЕЛЕНИЕ",
+        ])
+        XCTAssertEqual(Set(card.actLinks).count, 4)
         XCTAssertTrue(card.participants.contains { $0.hasPrefix("Административный истец:") })
+    }
+
+    func testCardParserDropsUnsafePublishedActLinks() throws {
+        let html = """
+        <div class="left">Номер дела</div><div class="right">3а-1/2026</div>
+        <table><tr><td>01.01.2026</td><td>
+        <a href="https://example.test/cases/docs/content/phishing">Скачать файл</a>
+        </td></tr><tr><td>02.01.2026</td><td>
+        <a href="http://mos-gorsud.ru/mgs/cases/docs/content/insecure">Скачать файл</a>
+        </td></tr><tr><td>03.01.2026</td><td>
+        <a href="https://user:secret@mos-gorsud.ru/mgs/cases/docs/content/credentials">Скачать файл</a>
+        </td></tr></table>
+        """
+        let card = try MosGorSudCardParser.parse(html: html)
+        XCTAssertTrue(card.actFiles.isEmpty)
     }
 
     // MARK: - московская ветка движения
@@ -230,6 +254,48 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(mv.instances.firstIndex(of: first)),
                           try XCTUnwrap(mv.instances.firstIndex(of: appeal)))
         XCTAssertEqual(mv.category, "Споры ЗПП")
+    }
+
+    func testMoscowMovementPublishesEveryVerifiedAttachment() async throws {
+        let firstURL = URL(string: "https://mos-gorsud.ru/mgs/cases/docs/content/first")!
+        let secondURL = URL(string: "https://mos-gorsud.ru/mgs/cases/docs/content/second")!
+        func file(_ url: URL, text: String, hash: String) -> PublishedActFile {
+            PublishedActFile(
+                text: text,
+                provenance: PublishedActProvenance(
+                    sourceURL: url, finalURL: url, format: .docx,
+                    contentType: "application/octet-stream", contentHash: hash,
+                    byteCount: text.utf8.count, fetchedAt: Date(timeIntervalSince1970: 1),
+                    extractorVersion: 1))
+        }
+        let card = MosGorSudCard(
+            caseNumber: "3а-3843/2020", court: "Московский городской суд",
+            receiptDate: "10.01.2025",
+            actFiles: [
+                MosGorSudActLink(url: firstURL, date: "20.03.2020", title: "Определение"),
+                MosGorSudActLink(url: secondURL, title: "Решение"),
+            ])
+        let cardURL = URL(string: "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/base")!
+        let provider = MockMosGorSud(
+            searchByInstance: [:], cards: ["base": card],
+            publishedActs: [
+                firstURL: file(firstURL, text: "Текст определения", hash: "01"),
+                secondURL: file(secondURL, text: "Текст решения", hash: "02"),
+            ])
+        let base = MosGorSudResult(caseNumber: "3а-3843/2020",
+                                   court: "Московский городской суд", cardURL: cardURL)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "p1"))
+        let movement = try await MovementService(client: MockEmptyCase(),
+                                                 higherCourtDomains: [], mosgorsud: provider)
+            .moscowMovement(for: base, cartoteka: cart)
+
+        let instance = try XCTUnwrap(movement.instances.first)
+        XCTAssertEqual(instance.linkedActIDs.count, 2)
+        XCTAssertEqual(instance.linkedActURLs, [firstURL, secondURL])
+        XCTAssertEqual(movement.acts.map(\.title), ["Определение", "Решение"])
+        XCTAssertEqual(movement.acts.map(\.date), ["20.03.2020", "—"])
+        XCTAssertEqual(Set(movement.actBodies.values), ["Текст определения", "Текст решения"])
+        XCTAssertEqual(movement.acts.map { $0.fileProvenance?.contentHash }, ["01", "02"])
     }
 
     func testMoscowMovementReachesKSOYuOnSudrf() async throws {
@@ -322,6 +388,7 @@ private struct MockMosGorSud: MosGorSudProviding {
     let searchByInstance: [Int: [MosGorSudResult]]
     let cards: [String: MosGorSudCard]   // ключ — последний сегмент cardURL
     var searchFailures: Set<Int> = []
+    var publishedActs: [URL: PublishedActFile] = [:]
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
                 participant: String?, instance: Int,
@@ -334,6 +401,10 @@ private struct MockMosGorSud: MosGorSudProviding {
             throw SudrfError.http(status: 404)
         }
         return card
+    }
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+        guard let file = publishedActs[url] else { throw SudrfError.http(status: 404) }
+        return file
     }
 }
 

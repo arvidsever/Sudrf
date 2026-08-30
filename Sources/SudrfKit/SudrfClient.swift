@@ -499,6 +499,13 @@ private extension URL {
 final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
 
     private let trustedSuffixes = ["sudrf.ru", "msudrf.ru", "mos-gorsud.ru"]
+    private let strictEvaluation: Bool
+    private let allowedRedirectHosts: Set<String>?
+
+    init(strictEvaluation: Bool = false, allowedRedirectHosts: Set<String>? = nil) {
+        self.strictEvaluation = strictEvaluation
+        self.allowedRedirectHosts = allowedRedirectHosts
+    }
 
     /// «Russian Trusted Root CA» и промежуточные «Russian Trusted Sub CA»
     /// (2022 и 2024) — DER-файлы из ресурсов SudrfKit.
@@ -525,11 +532,33 @@ final class SudrfTLSDelegate: NSObject, URLSessionDelegate {
         }
         // Российские корни — В ДОПОЛНЕНИЕ к системным (не вместо них):
         // суды с сертификатами публичных ЦС тоже проходят.
+        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString))
         SecTrustSetAnchorCertificates(trust, Self.russianAnchors as CFArray)
         SecTrustSetAnchorCertificatesOnly(trust, false)
-        _ = SecTrustEvaluateWithError(trust, nil)
+        let accepted = SecTrustEvaluateWithError(trust, nil)
+        if strictEvaluation, !accepted {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
         // Провал оценки не отклоняет соединение (см. докстринг): сертификат
-        // суда принимается как есть.
+        // суда принимается как есть только в историческом soft-режиме.
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let allowedRedirectHosts else {
+            completionHandler(request)
+            return
+        }
+        guard let url = request.url, url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), url.user == nil, url.password == nil,
+              allowedRedirectHosts.contains(host) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

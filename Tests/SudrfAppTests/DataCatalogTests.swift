@@ -460,6 +460,54 @@ final class DataCatalogTests: XCTestCase {
     }
 
     @MainActor
+    func testMissingExtractedFileBodyDoesNotCreateOrOverwriteActProjection() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: MosGorSudEndpoint.host, displayDomain: MosGorSudEndpoint.host,
+            courtTitle: "Московский городской суд", courtLevelRaw: CourtLevel.subject.rawValue,
+            courtCode: "77OS0000", cartotekaId: "p1",
+            cartotekaLevelRaw: CourtLevel.subject.rawValue, caseNumber: "3а-1/2026")
+        let actID = "act_mos-gorsud.ru#3а-1/2026#file-one"
+        let instance = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.displayDomain, foundByUID: false, result: nil,
+            sessions: [], actID: actID)
+        let act = CaseAct(id: actID, title: "Решение", date: "01.08.2026",
+                          courtShort: context.courtTitle, instanceLevel: .first)
+        var movement = CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
+                                    instances: [instance], complaints: [:], acts: [act],
+                                    actBodies: [actID: "Проверенный текст решения"])
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                             collections: [])
+        let catalog = CaseCatalog(container: store.container)
+        let originalActs = try await catalog.acts(caseKey: context.key)
+        let original = try XCTUnwrap(originalActs.first)
+
+        movement.actBodies = [:]
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                             collections: [])
+        let preservedActs = try await catalog.acts(caseKey: context.key)
+        let preserved = try XCTUnwrap(preservedActs.first)
+        XCTAssertEqual(preserved.document.id, original.document.id)
+        XCTAssertEqual(preserved.document.sourceText, "Проверенный текст решения")
+
+        let newContext = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: MosGorSudEndpoint.host, displayDomain: MosGorSudEndpoint.host,
+            courtTitle: "Московский городской суд", courtLevelRaw: CourtLevel.subject.rawValue,
+            courtCode: "77OS0000", cartotekaId: "p1",
+            cartotekaLevelRaw: CourtLevel.subject.rawValue, caseNumber: "3а-2/2026")
+        var firstFailure = movement
+        firstFailure.caseNumber = newContext.caseNumber
+        firstFailure.instances[0].caseNumber = newContext.caseNumber
+        _ = try store.upsert(context: newContext, snapshot: nil, movement: firstFailure,
+                             collections: [])
+        let firstFailureActs = try await catalog.acts(caseKey: newContext.key)
+        XCTAssertTrue(firstFailureActs.isEmpty)
+    }
+
+    @MainActor
     func testProjectionAndCatalogLifecycle() async throws {
         let store = TrackedStore(inMemory: true)
         var context = MovementContext(

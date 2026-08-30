@@ -487,12 +487,51 @@ private struct InspectorPane: View {
                 Group {
                     if model.loadingCard {
                         CenterNote(spinner: true, title: "Загружаю карточку…")
+                    } else if !model.cardActs.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(model.cardActs) { act in
+                                    CourtActListRow(
+                                        act: act,
+                                        selected: act.id == model.selectedCardActID
+                                    ) {
+                                        model.selectCardAct(act.id)
+                                    }
+                                }
+                                if let error = model.actFileError {
+                                    Label(error, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                    ForEach(Array(model.unextractedCardActLinks.enumerated()),
+                                            id: \.offset) { index, url in
+                                        Link("Открыть недоступный оригинал #\(index + 1)",
+                                             destination: url)
+                                            .font(.caption)
+                                    }
+                                }
+                                if let rawURL = model.selectedCardAct?.fileProvenance?.sourceURL,
+                                   let url = PublishedActURLPolicy.safeMosGorSudURL(rawURL) {
+                                    Link("Открыть оригинал на сайте суда", destination: url)
+                                        .font(.caption)
+                                }
+                                ActTextView(text: model.actText)
+                            }
+                            .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     } else if !model.actLinks.isEmpty {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
+                                if let error = model.actFileError {
+                                    Label(error, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
                                 Text("Опубликованные судебные акты")
                                     .font(.headline)
-                                ForEach(Array(model.actLinks.enumerated()), id: \.offset) { index, url in
+                                ForEach(Array(model.actLinks.compactMap(
+                                    PublishedActURLPolicy.safeMosGorSudURL
+                                ).enumerated()), id: \.offset) { index, url in
                                     Link("Судебный акт #\(index + 1)", destination: url)
                                 }
                             }
@@ -641,6 +680,12 @@ private struct ActSwitcherPane: View {
                     CourtActListRow(act: a, selected: a.id == model.selectedActID) {
                         model.selectAct(a.id)
                     }
+                }
+                if let selected = acts.first(where: { $0.id == model.selectedActID }),
+                   let rawURL = selected.fileProvenance?.sourceURL,
+                   let url = PublishedActURLPolicy.safeMosGorSudURL(rawURL) {
+                    Link("Открыть оригинал на сайте суда", destination: url)
+                        .font(.caption)
                 }
             }
             .padding(EdgeInsets(top: 14, leading: 14, bottom: 10, trailing: 14))

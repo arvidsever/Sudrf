@@ -700,9 +700,10 @@ final class TrackedCaseRepairCoordinator {
             SudrfHost.moduleHost(movement.instances[i].domain) == SudrfHost.moduleHost(context.searchDomain)
                 && CaseOriginResolver.sameCaseNumber(movement.instances[i].caseNumber, context.caseNumber) {
             movement.instances[i].level = context.baseInstanceLevel
-            if let actID = movement.instances[i].actID,
-               let ai = movement.acts.firstIndex(where: { $0.id == actID }) {
-                movement.acts[ai].instanceLevel = context.baseInstanceLevel
+            for actID in movement.instances[i].linkedActIDs {
+                if let ai = movement.acts.firstIndex(where: { $0.id == actID }) {
+                    movement.acts[ai].instanceLevel = context.baseInstanceLevel
+                }
             }
         }
         return movement
@@ -721,6 +722,13 @@ final class TrackedCaseRepairCoordinator {
                     out.instances[index].judge = out.instances[index].judge ?? inst.judge
                     out.instances[index].result = out.instances[index].result ?? inst.result
                     out.instances[index].actID = out.instances[index].actID ?? inst.actID
+                    let linkedActIDs = unique(out.instances[index].linkedActIDs + inst.linkedActIDs)
+                    out.instances[index].actIDs = linkedActIDs.isEmpty ? nil : linkedActIDs
+                    var linkedActURLs = out.instances[index].linkedActURLs
+                    for url in inst.linkedActURLs where !linkedActURLs.contains(url) {
+                        linkedActURLs.append(url)
+                    }
+                    out.instances[index].actURLs = linkedActURLs.isEmpty ? nil : linkedActURLs
                     out.instances[index].captchaFormURL = out.instances[index].captchaFormURL
                         ?? inst.captchaFormURL
                     out.instances[index].transientError = out.instances[index].transientError
@@ -739,11 +747,15 @@ final class TrackedCaseRepairCoordinator {
                 }
             }
             for act in movement.acts {
-                if let existing = out.acts.first(where: {
+                if let existingIndex = out.acts.firstIndex(where: {
                     canonicalActKey($0.id) == canonicalActKey(act.id)
                 }) {
+                    let existing = out.acts[existingIndex]
                     if out.actBodies[existing.id] == nil, let body = movement.actBodies[act.id] {
                         out.actBodies[existing.id] = body
+                    }
+                    if out.acts[existingIndex].fileProvenance == nil {
+                        out.acts[existingIndex].fileProvenance = act.fileProvenance
                     }
                 } else {
                     out.acts.append(act)
@@ -780,11 +792,11 @@ final class TrackedCaseRepairCoordinator {
             return (SudrfHost.moduleHost(context.searchDomain), context.caseNumber)
         }
         guard !aliases.isEmpty else { return movement }
-        let removedActIDs = Set(movement.instances.compactMap { instance -> String? in
+        let removedActIDs = Set(movement.instances.flatMap { instance -> [String] in
             aliases.contains { host, number in
                 SudrfHost.moduleHost(instance.domain) == host
                     && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
-            } ? instance.actID : nil
+            } ? instance.linkedActIDs : []
         })
         movement.instances.removeAll { instance in
             aliases.contains { host, number in
@@ -796,7 +808,7 @@ final class TrackedCaseRepairCoordinator {
         // `act_<domain>`. Поэтому удалённая предварительная инстанция может
         // ссылаться на тот же акт, что и оставшаяся основная. Удаляем только
         // действительно осиротевшие акты, сравнивая также alternate/module host.
-        let retainedActKeys = Set(movement.instances.compactMap(\.actID).map(canonicalActKey))
+        let retainedActKeys = Set(movement.instances.flatMap(\.linkedActIDs).map(canonicalActKey))
         let orphanedActKeys = Set(removedActIDs.map(canonicalActKey))
             .subtracting(retainedActKeys)
         let orphanedActIDs = movement.acts.compactMap { act in

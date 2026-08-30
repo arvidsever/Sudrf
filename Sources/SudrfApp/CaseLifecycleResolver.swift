@@ -662,7 +662,7 @@ enum CaseLifecycleResolver {
         // Для домашней карточки без УИД таким источником является опубликованный
         // акт (обычный production-путь, не произвольная строка выдачи).
         return instance.foundByUID || hasDatedSession(instance)
-            || instance.actID != nil || instance.actURL != nil
+            || !instance.linkedActIDs.isEmpty
     }
 
     /// Промежуточные объекты производства: их судьба итогом дела не является.

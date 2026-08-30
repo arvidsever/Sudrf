@@ -11,6 +11,12 @@ import Foundation
 /// TLS-политику и позволяет подменять URLSession в тестах.
 actor HTMLCourtTransport {
 
+    struct DownloadedFile: Sendable {
+        let data: Data
+        let finalURL: URL
+        let contentType: String?
+    }
+
     enum DecodingPolicy: Sendable {
         /// Портал Москвы документированно отвечает UTF-8.
         case utf8Only
@@ -89,6 +95,95 @@ actor HTMLCourtTransport {
             }
         }
         throw lastError
+    }
+
+    /// Downloads a court attachment through the same session, TLS delegate,
+    /// cookies, throttle and retry policy as HTML requests. Unlike
+    /// `URLSession.data(for:)`, `bytes(for:)` lets us stop the transfer at a
+    /// hard byte limit even when a server lies about Content-Length.
+    func fetchFile(_ url: URL, maxAttempts: Int, allowedHosts: Set<String>,
+                   maxBytes: Int) async throws -> DownloadedFile {
+        guard Self.isAllowedSecureURL(url, hosts: allowedHosts), maxBytes > 0 else {
+            throw PublishedActFileError.unsafeSourceURL
+        }
+
+        var lastError: Error = SudrfError.http(status: 0)
+        let attempts = max(1, maxAttempts)
+        for attempt in 0..<attempts {
+            try Task.checkCancellation()
+            try await throttle()
+            var request = URLRequest(url: url)
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue(
+                "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream;q=0.8,*/*;q=0.1",
+                forHTTPHeaderField: "Accept")
+            request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+
+            do {
+                let (bytes, response) = try await session.bytes(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw PublishedActFileError.unexpectedHTTPStatus(0)
+                }
+                guard http.statusCode == 200 else {
+                    throw PublishedActFileError.unexpectedHTTPStatus(http.statusCode)
+                }
+                let finalURL = http.url ?? url
+                guard Self.isAllowedSecureURL(finalURL, hosts: allowedHosts) else {
+                    throw PublishedActFileError.unsafeFinalURL
+                }
+                if let length = Self.contentLength(http), length > maxBytes {
+                    throw PublishedActFileError.downloadTooLarge(limit: maxBytes)
+                }
+
+                var data = Data()
+                if let length = Self.contentLength(http) {
+                    data.reserveCapacity(min(length, maxBytes))
+                }
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    guard data.count < maxBytes else {
+                        throw PublishedActFileError.downloadTooLarge(limit: maxBytes)
+                    }
+                    data.append(byte)
+                }
+                return DownloadedFile(
+                    data: data, finalURL: finalURL,
+                    contentType: http.value(forHTTPHeaderField: "Content-Type"))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw error
+            } catch let error as PublishedActFileError {
+                if case .unexpectedHTTPStatus(let status) = error,
+                   (500..<600).contains(status), attempt + 1 < attempts {
+                    lastError = error
+                    try await backoff(attempt)
+                    continue
+                }
+                throw error
+            } catch let error as URLError {
+                lastError = error
+                guard attempt + 1 < attempts else { throw error }
+                try await backoff(attempt)
+            }
+        }
+        throw lastError
+    }
+
+    private static func isAllowedSecureURL(_ url: URL, hosts: Set<String>) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
+              url.user == nil, url.password == nil else {
+            return false
+        }
+        return hosts.contains(host)
+    }
+
+    private static func contentLength(_ response: HTTPURLResponse) -> Int? {
+        guard let raw = response.value(forHTTPHeaderField: "Content-Length"),
+              let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), value >= 0 else {
+            return nil
+        }
+        return value
     }
 
     private func backoff(_ attempt: Int) async throws {

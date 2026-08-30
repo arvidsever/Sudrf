@@ -84,6 +84,14 @@ final class TrackedCaseRepairTests: XCTestCase {
                             actBodies: [actID: "Текст \(actID)"])
     }
 
+    private func fileProvenance(_ name: String) -> PublishedActProvenance {
+        let source = URL(string: "https://mos-gorsud.ru/mgs/cases/docs/content/\(name).docx")!
+        return PublishedActProvenance(
+            sourceURL: source, finalURL: source, format: .docx,
+            contentType: "application/octet-stream", contentHash: "hash-\(name)",
+            byteCount: 42, fetchedAt: Date(timeIntervalSince1970: 123), extractorVersion: 1)
+    }
+
     /// Inserts the shape an existing V5 database can contain before V6 runs
     /// its common reconciler. Normal `store.upsert` deliberately cannot create
     /// these duplicates anymore.
@@ -917,5 +925,128 @@ final class TrackedCaseRepairTests: XCTestCase {
             TrackedCaseRepairCoordinator.mergeMovements([first, duplicate]))
 
         XCTAssertEqual(merged.instances.first?.sourceURL, duplicate.instances[0].sourceURL)
+    }
+
+    func testMovementMergeKeepsEveryLinkedFileActAndItsProvenance() throws {
+        let firstID = "act_mos-gorsud.ru#3а-1318/2021#file-first"
+        let secondID = "act_mos-gorsud.ru#3а-1318/2021#file-second"
+        let thirdID = "act_mos-gorsud.ru#3а-1318/2021#file-third"
+        let firstProvenance = fileProvenance("first")
+        let secondProvenance = fileProvenance("second")
+        let thirdProvenance = fileProvenance("third")
+
+        var first = movement(level: .first, number: "3а-1318/2021",
+                             domain: "mos-gorsud.ru", actID: firstID)
+        first.instances[0].actIDs = [firstID, secondID]
+        first.acts[0].fileProvenance = firstProvenance
+        first.acts.append(CaseAct(id: secondID, title: "Определение", date: "19.08.2025",
+                                  courtShort: "Московский городской суд", instanceLevel: .first,
+                                  fileProvenance: secondProvenance))
+        first.actBodies[secondID] = "Текст второго файла"
+
+        var duplicate = movement(level: .first, number: "3а-1318/2021",
+                                 domain: "mos-gorsud.ru", actID: thirdID)
+        duplicate.instances[0].actIDs = [thirdID]
+        duplicate.acts[0].fileProvenance = thirdProvenance
+
+        let merged = try XCTUnwrap(TrackedCaseRepairCoordinator.mergeMovements([first, duplicate]))
+
+        XCTAssertEqual(merged.instances, [CaseInstance(
+            level: .first, court: "Суд", caseNumber: "3а-1318/2021", judge: nil,
+            domain: "mos-gorsud.ru", foundByUID: false, result: "Решение",
+            sessions: first.instances[0].sessions, actID: firstID,
+            actIDs: [firstID, secondID, thirdID])])
+        XCTAssertEqual(Set(merged.acts.map(\.id)), Set([firstID, secondID, thirdID]))
+        XCTAssertEqual(merged.acts.first(where: { $0.id == firstID })?.fileProvenance,
+                       firstProvenance)
+        XCTAssertEqual(merged.acts.first(where: { $0.id == secondID })?.fileProvenance,
+                       secondProvenance)
+        XCTAssertEqual(merged.acts.first(where: { $0.id == thirdID })?.fileProvenance,
+                       thirdProvenance)
+    }
+
+    func testAtomicMergeNormalizesEveryLinkedFileActWithoutDroppingProvenance() throws {
+        let store = TrackedStore(inMemory: true)
+        let canonical = context(level: .first, number: "2-7212/2025",
+                                domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                                courtLevel: .district)
+        let firstID = "act_mos-gorsud.ru#2-7212/2025#file-first"
+        let secondID = "act_mos-gorsud.ru#2-7212/2025#file-second"
+        let firstProvenance = fileProvenance("normalization-first")
+        let secondProvenance = fileProvenance("normalization-second")
+        var stale = movement(level: .appeal, number: canonical.caseNumber,
+                             domain: canonical.searchDomain, actID: firstID)
+        stale.instances[0].actIDs = [firstID, secondID]
+        stale.acts[0].fileProvenance = firstProvenance
+        stale.acts.append(CaseAct(id: secondID, title: "Определение", date: "19.08.2025",
+                                  courtShort: "Суд", instanceLevel: .appeal,
+                                  fileProvenance: secondProvenance))
+        stale.actBodies[secondID] = "Текст второго файла"
+        let record = try insertLegacy(into: store, context: canonical, snapshot: nil,
+                                      movement: stale, collections: [])
+
+        _ = try TrackedCaseRepairCoordinator.atomicMerge(
+            store: store, survivor: record, duplicates: [], canonicalContext: canonical,
+            canonicalCard: nil)
+
+        let saved = try XCTUnwrap(store.record(forKey: canonical.key)?.movement)
+        XCTAssertEqual(saved.instances.first?.level, .first)
+        XCTAssertEqual(saved.instances.first?.linkedActIDs, [firstID, secondID])
+        XCTAssertEqual(Set(saved.acts.map(\.instanceLevel)), [.first])
+        XCTAssertEqual(saved.acts.first(where: { $0.id == firstID })?.fileProvenance,
+                       firstProvenance)
+        XCTAssertEqual(saved.acts.first(where: { $0.id == secondID })?.fileProvenance,
+                       secondProvenance)
+    }
+
+    func testAtomicMergePrunesAllOrphanedFileActsButKeepsSharedFileAct() throws {
+        let store = TrackedStore(inMemory: true)
+        let preliminary = context(level: .first, number: "М-2417/2026",
+                                  domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                                  courtLevel: .district)
+        let main = context(level: .first, number: "2а-5090/2026",
+                           domain: "vyborgsky--lo.sudrf.ru", cartoteka: "p1",
+                           courtLevel: .district)
+        let sharedID = "act_mos-gorsud.ru#2а-5090/2026#file-shared"
+        let firstOrphanID = "act_mos-gorsud.ru#М-2417/2026#file-first"
+        let secondOrphanID = "act_mos-gorsud.ru#М-2417/2026#file-second"
+        let sharedProvenance = fileProvenance("shared")
+
+        var mainMovement = movement(level: .first, number: main.caseNumber,
+                                    domain: main.searchDomain, actID: sharedID)
+        mainMovement.instances[0].actIDs = [sharedID]
+        mainMovement.acts[0].fileProvenance = sharedProvenance
+
+        var preliminaryMovement = movement(level: .first, number: preliminary.caseNumber,
+                                           domain: preliminary.searchDomain, actID: firstOrphanID)
+        preliminaryMovement.instances[0].actIDs = [firstOrphanID, secondOrphanID, sharedID]
+        preliminaryMovement.acts[0].fileProvenance = fileProvenance("first-orphan")
+        preliminaryMovement.acts.append(CaseAct(
+            id: secondOrphanID, title: "Определение", date: "19.08.2025",
+            courtShort: "Суд", instanceLevel: .first,
+            fileProvenance: fileProvenance("second-orphan")))
+        preliminaryMovement.acts.append(CaseAct(
+            id: sharedID, title: "Решение", date: "20.08.2025",
+            courtShort: "Суд", instanceLevel: .first, fileProvenance: sharedProvenance))
+        preliminaryMovement.actBodies[secondOrphanID] = "Текст второго предварительного файла"
+        preliminaryMovement.actBodies[sharedID] = "Текст общего файла"
+
+        let survivor = try insertLegacy(into: store, context: main, snapshot: nil,
+                                        movement: mainMovement, collections: [])
+        let duplicate = try insertLegacy(into: store, context: preliminary, snapshot: nil,
+                                         movement: preliminaryMovement, collections: [])
+
+        _ = try TrackedCaseRepairCoordinator.atomicMerge(
+            store: store, survivor: survivor, duplicates: [duplicate], canonicalContext: main,
+            canonicalCard: nil)
+
+        let saved = try XCTUnwrap(store.record(forKey: main.key)?.movement)
+        XCTAssertEqual(saved.instances.map(\.caseNumber), [main.caseNumber])
+        XCTAssertEqual(saved.instances.first?.linkedActIDs, [sharedID])
+        XCTAssertEqual(saved.acts.map(\.id), [sharedID])
+        XCTAssertEqual(saved.actBodies, [sharedID: "Текст \(sharedID)"])
+        XCTAssertEqual(saved.acts.first?.fileProvenance, sharedProvenance)
+        XCTAssertNil(saved.actBodies[firstOrphanID])
+        XCTAssertNil(saved.actBodies[secondOrphanID])
     }
 }

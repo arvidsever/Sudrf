@@ -198,13 +198,13 @@ private struct FilterPane: View {
                 .padding(EdgeInsets(top: 10, leading: 16, bottom: 14, trailing: 16))
         }
         .onChange(of: model.region) {
-            Task { await model.resolveCourts() }
+            model.courtScopeChanged()
         }
         .onChange(of: model.branch) {
-            model.branchOrTierChanged()
+            model.courtScopeChanged()
         }
         .onChange(of: model.tier) {
-            model.branchOrTierChanged()
+            model.courtScopeChanged()
         }
     }
 

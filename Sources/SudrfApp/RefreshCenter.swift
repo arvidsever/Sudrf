@@ -163,6 +163,14 @@ final class RefreshCenter: ObservableObject {
     private let fsspDiscover: (CourtEnforcementDocument) async throws -> FSSPSearchStep
     private var tasks: [String: Task<RefreshExecution, Never>] = [:]
     private var enforcementTasks: [String: Task<Void, Never>] = [:]
+    /// Поколения не дают позднему завершению отменённой задачи очистить
+    /// registry новой задачи того же дела после повторного добавления.
+    private var taskGenerations: [String: Int] = [:]
+    private var enforcementTaskGenerations: [String: Int] = [:]
+    /// Repair может переякорить запись, пока task всё ещё зарегистрирован под
+    /// исходным ключом. Карта позволяет untrack канонического дела отменить и
+    /// такую задачу.
+    private var effectiveKeysByTaskKey: [String: String] = [:]
     /// One OCR/network continuation per court module. A refresh walk can reach
     /// the same higher-court form from several cards; share that solve instead
     /// of putting concurrent OCR and retry traffic on the source.
@@ -254,6 +262,30 @@ final class RefreshCenter: ObservableObject {
             lastErrors[key] = nil
             refresh(key: key)
         }
+    }
+
+    /// Останавливает только работу удалённого дела. Общая CAPTCHA-задача суда
+    /// может обслуживать соседние дела и потому намеренно остаётся активной.
+    func cancelTracking(for key: String) {
+        let courtTaskKeys = tasks.keys.filter {
+            $0 == key || effectiveKeysByTaskKey[$0] == key
+        }
+        for taskKey in courtTaskKeys {
+            taskGenerations[taskKey, default: 0] += 1
+            tasks.removeValue(forKey: taskKey)?.cancel()
+            effectiveKeysByTaskKey[taskKey] = nil
+            refreshing.remove(taskKey)
+            lastErrors[taskKey] = nil
+            captchaPending.remove(key: taskKey)
+        }
+        taskGenerations[key, default: 0] += 1
+        enforcementTaskGenerations[key, default: 0] += 1
+        enforcementTasks.removeValue(forKey: key)?.cancel()
+        refreshing.remove(key)
+        refreshingEnforcement.remove(key)
+        lastErrors[key] = nil
+        enforcementErrors[key] = nil
+        captchaPending.remove(key: key)
     }
 
     // MARK: Периодический цикл
@@ -368,6 +400,8 @@ final class RefreshCenter: ObservableObject {
         if let existing = tasks[key] { return existing }
         guard store.record(forKey: key) != nil else { return nil }
 
+        taskGenerations[key, default: 0] += 1
+        let generation = taskGenerations[key]!
         refreshing.insert(key)
         let task = Task { [weak self] in
             guard let self else {
@@ -378,8 +412,11 @@ final class RefreshCenter: ObservableObject {
                 _ = await self.startEnforcementRefresh(
                     key: execution.effectiveKey, force: forceEnforcement)?.value
             }
-            self.refreshing.remove(key)
-            self.tasks[key] = nil
+            if self.taskGenerations[key] == generation {
+                self.refreshing.remove(key)
+                self.tasks[key] = nil
+                self.effectiveKeysByTaskKey[key] = nil
+            }
             return execution
         }
         tasks[key] = task
@@ -442,12 +479,16 @@ final class RefreshCenter: ObservableObject {
               force || needsEnforcementRefresh(record, now: Date(), ttl: RefreshSettings.ttl)
         else { return nil }
 
+        enforcementTaskGenerations[key, default: 0] += 1
+        let generation = enforcementTaskGenerations[key]!
         refreshingEnforcement.insert(key)
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performEnforcementRefresh(key: key)
-            self.refreshingEnforcement.remove(key)
-            self.enforcementTasks[key] = nil
+            if self.enforcementTaskGenerations[key] == generation {
+                self.refreshingEnforcement.remove(key)
+                self.enforcementTasks[key] = nil
+            }
         }
         enforcementTasks[key] = task
         return task
@@ -472,6 +513,7 @@ final class RefreshCenter: ObservableObject {
                 let attemptedAt = Date()
                 do {
                     let step = try await fsspDiscover(document)
+                    guard !Task.isCancelled else { return }
                     switch step {
                     case .captchaRequired(_):
                         if let lookup = step.lookup {
@@ -490,6 +532,7 @@ final class RefreshCenter: ObservableObject {
                             attemptedAt: attemptedAt, message: message))
                     }
                 } catch {
+                    guard !Task.isCancelled else { return }
                     let message = error.localizedDescription
                     errors.append("ФССП: \(message)")
                     updates.append(fsspErrorUpdate(
@@ -504,10 +547,12 @@ final class RefreshCenter: ObservableObject {
             let attemptedAt = Date()
             do {
                 let lookup = try await treasuryDiscover(document, record.caseNumber, record.courtTitle)
+                guard !Task.isCancelled else { return }
                 updates.append(sourceUpdate(
                     lookup: lookup, document: document, source: .treasury,
                     attemptedAt: attemptedAt))
             } catch {
+                guard !Task.isCancelled else { return }
                 let message = error.localizedDescription
                 errors.append("Казначейство: \(message)")
                 updates.append(treasuryErrorUpdate(
@@ -515,6 +560,8 @@ final class RefreshCenter: ObservableObject {
                     attemptedAt: attemptedAt, message: message))
             }
         }
+
+        guard !Task.isCancelled else { return }
 
         // Сеть могла ждать CAPTCHA/throttle, пока ручной поток уже сохранил
         // более свежий результат. Сливаем в актуальное состояние записи, а не
@@ -650,6 +697,7 @@ final class RefreshCenter: ObservableObject {
         } catch {
             return failure(key, error.localizedDescription)
         }
+        effectiveKeysByTaskKey[key] = effectiveKey
         if Task.isCancelled {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         }
@@ -660,6 +708,9 @@ final class RefreshCenter: ObservableObject {
         let service = serviceBuilder(ctx)
         do {
             let outcome = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
+            guard !Task.isCancelled else {
+                return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
+            }
             return try await handle(outcome, service: service, key: effectiveKey,
                                     ctx: ctx, cart: cart, mayAutoSolve: true)
         } catch is CancellationError {
@@ -745,6 +796,7 @@ final class RefreshCenter: ObservableObject {
                         service: any MovementProviding, key: String,
                         ctx: MovementContext, cart: Cartoteka,
                         mayAutoSolve: Bool) async throws -> RefreshExecution {
+        guard !Task.isCancelled else { throw CancellationError() }
         switch outcome {
         case .usableSnapshot(let movement, let attempt):
             if let retry = try await retryEmbeddedCaptchaIfNeeded(

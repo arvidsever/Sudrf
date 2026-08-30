@@ -8,6 +8,56 @@ import SwiftData
 /// разделитель сторон «⚔», сортировка и живой фильтр таблицы «Списком».
 final class MyCasesModelTests: XCTestCase {
 
+    @MainActor
+    func testTrackUntrackReloadAndTrackAgainUpdatesEveryProjection() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: CourtLevel.district.rawValue, courtCode: "11RS0001",
+            cartotekaId: "g1", cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: "2-91/2026")
+        let sessions = [
+            CaseSession(date: "29.08.2026", event: "Передача материалов судье"),
+            CaseSession(date: "15.09.2026", event: "Судебное заседание"),
+        ]
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+                judge: nil, domain: context.searchDomain, foundByUID: false,
+                result: nil, sessions: sessions)],
+            complaints: [:], acts: [])
+
+        router.track(context: context, movement: movement)
+        let key = try XCTUnwrap(router.cases.first?.recordKey)
+        XCTAssertFalse(router.hearings.isEmpty)
+        XCTAssertFalse(router.feed.isEmpty)
+        XCTAssertEqual(router.collections.first?.1, 1)
+        router.openCase(key: key)
+
+        router.untrackOpenCase()
+        router.reload()
+
+        XCTAssertTrue(router.cases.isEmpty)
+        XCTAssertTrue(router.hearings.isEmpty)
+        XCTAssertTrue(router.deadlines.isEmpty)
+        XCTAssertTrue(router.feed.isEmpty)
+        XCTAssertEqual(router.collections.first?.1, 0)
+        XCTAssertTrue(router.stageCounts.allSatisfy { $0.1 == 0 })
+        XCTAssertTrue(router.tierCounts.allSatisfy { $0.1 == 0 })
+        XCTAssertNil(router.openedCase)
+
+        router.track(context: context, movement: movement)
+
+        XCTAssertEqual(router.cases.map(\.recordKey), [key])
+        XCTAssertEqual(router.collections.first?.1, 1)
+        XCTAssertFalse(router.hearings.isEmpty)
+    }
+
     // MARK: Вид производства по префиксу номера
 
     func testProductionTypeByPrefix() {

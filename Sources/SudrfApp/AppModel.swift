@@ -234,8 +234,10 @@ final class AppRouter: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                self.applyFSSPStep(.error(error.localizedDescription),
-                                   document: document, caseKey: caseKey)
+                self.handleFreshFSSPStep(.error(error.localizedDescription),
+                                         document: document,
+                                         caseKey: caseKey,
+                                         requestID: requestID)
             }
         }
     }
@@ -248,6 +250,8 @@ final class AppRouter: ObservableObject {
             do {
                 let step = try await self.fsspClient.submit(
                     code: code, for: presentation.challenge, document: presentation.document)
+                guard self.fsspCaptcha?.id == presentation.id,
+                      self.openedKey == presentation.caseKey else { return }
                 switch step {
                 case .captchaRequired(let replacement):
                     guard self.fsspCaptcha?.id == presentation.id else { return }
@@ -285,14 +289,21 @@ final class AppRouter: ObservableObject {
                                      document: CourtEnforcementDocument,
                                      caseKey: String,
                                      requestID: UUID) {
+        guard Self.acceptsFreshFSSPStep(
+            activeRequestID: fsspCaptchaRequestID, requestID: requestID,
+            openedKey: openedKey, caseKey: caseKey) else { return }
         switch step {
         case .captchaRequired(let challenge):
-            guard fsspCaptchaRequestID == requestID, openedKey == caseKey else { return }
             presentFSSPCaptcha(for: document, caseKey: caseKey,
                                requestID: requestID, challenge: challenge)
         case .found, .notFound, .ambiguous, .error:
             applyFSSPStep(step, document: document, caseKey: caseKey)
         }
+    }
+
+    static func acceptsFreshFSSPStep(activeRequestID: UUID?, requestID: UUID,
+                                     openedKey: String?, caseKey: String) -> Bool {
+        activeRequestID == requestID && openedKey == caseKey
     }
 
     @discardableResult
@@ -728,11 +739,16 @@ final class AppRouter: ObservableObject {
         guard let record = store.record(forLocator: recordKey) else { return }
         do {
             try store.remove(key: record.key)
+            refreshCenter.cancelTracking(for: record.key)
             if openedKey == record.key { closeCase() }
             reload(spotlightScope: .cases([record.key]))
         } catch {
             reportPersistenceFailure(error)
         }
+    }
+    func untrackOpenCase() {
+        guard let openedKey else { return }
+        untrack(recordKey: openedKey)
     }
     func isTracked(_ ctx: MovementContext) -> Bool { store.isTracked(context: ctx) }
     func isTracked(number: String, displayDomain: String, courtCode: String? = nil) -> Bool {

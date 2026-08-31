@@ -69,7 +69,7 @@ public enum CartotekaRegistry {
             cartoteki = tier.level.map(sets(for:)) ?? []
         }
         return CourtSearchDimensions(
-            usesRegion: branch == .general && (tier == .district || tier == .magistrate),
+            usesRegion: branch == .general && tier != .supreme,
             supportsUID: tier.level != nil && tier != .magistrate,
             cartoteki: cartoteki)
     }

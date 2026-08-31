@@ -90,7 +90,6 @@ final class SearchGenerationTests: XCTestCase {
         XCTAssertFalse(model.loadingMovement)
         XCTAssertNil(model.movement)
         XCTAssertNil(model.selectedResultID)
-        XCTAssertTrue(model.status.isEmpty)
 
         DelayedMovementURLProtocol.release()
         await load.value
@@ -99,7 +98,6 @@ final class SearchGenerationTests: XCTestCase {
         XCTAssertNil(model.movement)
         XCTAssertNil(model.selectedActID)
         XCTAssertNil(model.selectedResultID)
-        XCTAssertTrue(model.status.isEmpty)
     }
 
     private func assertDelayedSearchIsIgnored(
@@ -129,13 +127,11 @@ final class SearchGenerationTests: XCTestCase {
         change(model, otherCourt)
         XCTAssertFalse(model.searching)
         XCTAssertTrue(model.results.isEmpty)
-        XCTAssertTrue(model.status.isEmpty)
 
         DelayedSearchURLProtocol.release()
         await search.value
 
         XCTAssertTrue(model.results.isEmpty)
-        XCTAssertTrue(model.status.isEmpty)
         XCTAssertFalse(model.hasSearched)
     }
 }

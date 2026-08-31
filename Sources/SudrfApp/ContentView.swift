@@ -198,15 +198,6 @@ private struct FilterPane: View {
                 .foregroundStyle(.tertiary)
                 .padding(EdgeInsets(top: 10, leading: 16, bottom: 14, trailing: 16))
         }
-        .onChange(of: model.region) {
-            model.regionChanged()
-        }
-        .onChange(of: model.branch) {
-            model.courtScopeChanged()
-        }
-        .onChange(of: model.tier) {
-            model.courtScopeChanged()
-        }
     }
 
     private var statusText: String {

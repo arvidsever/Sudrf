@@ -15,6 +15,29 @@ enum CaptchaSubmissionState: Equatable {
     }
 }
 
+/// Выбор транспорта ручной CAPTCHA. У мировых судей challenge и ответ должны
+/// остаться в той же URLSession, поэтому WebKit для них не создаётся.
+enum CaptchaAssistPresentationPath: Equatable {
+    case webView
+    case nativeMagistrate
+
+    static func forKind(_ kind: SearchModel.CaptchaContext.Kind) -> Self {
+        switch kind {
+        case .sudrfToken: return .webView
+        case .kcaptcha: return .nativeMagistrate
+        }
+    }
+}
+
+enum MagistrateCaptchaLoadDecision: Equatable {
+    case showChallenge
+    case retryLoad
+
+    static func decide(imageData: Data) -> Self {
+        imageData.isEmpty ? .retryLoad : .showChallenge
+    }
+}
+
 enum CaptchaImagePayload {
     static func data(fromDataURL value: String) -> Data? {
         CaptchaImageExtractor.data(fromDataURL: value)

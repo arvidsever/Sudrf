@@ -1423,6 +1423,16 @@ final class AppRouter: ObservableObject {
         retryRepairAfterCaptchaIfNeeded(host: host)
     }
 
+    func loadMagistrateCaptcha(formURL: URL) async throws -> MagistrateCaptchaChallenge {
+        try await client.loadMagistrateCaptcha(formURL: formURL)
+    }
+
+    func submitMagistrateCaptcha(code: String,
+                                 challenge: MagistrateCaptchaChallenge) async throws
+        -> MagistrateCaptchaSubmission {
+        try await client.submitMagistrateCaptcha(code: code, challenge: challenge)
+    }
+
     /// После ручной captcha снова запускаем именно repair: RefreshCenter
     /// обновляет кэш, но не восстанавливает первую инстанцию/цепочку импорта.
     private func retryRepairAfterCaptchaIfNeeded(host rawHost: String) {

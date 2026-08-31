@@ -2,43 +2,51 @@ import AppKit
 import SwiftUI
 import SudrfKit
 
-/// Ручной fallback поверх скрытой web-сессии суда.
+/// Ручной fallback: токеновая CAPTCHA идёт через скрытый WebView, а KCaptcha
+/// мировых судей — через исходную URLSession суда.
 struct CaptchaAssistSheet: View {
     let context: SearchModel.CaptchaContext
     var onCardHTML: (String) -> Void
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
     var onSessionUnlocked: ((String) -> Void)? = nil
+    let onLoadMagistrateCaptcha: () async throws -> MagistrateCaptchaChallenge
+    let onSubmitMagistrateCaptcha: (String, MagistrateCaptchaChallenge) async throws
+        -> MagistrateCaptchaSubmission
     var onCancel: () -> Void
 
     @State private var captchaCode = ""
     @State private var captchaImageData: Data? = nil
+    @State private var magistrateChallenge: MagistrateCaptchaChallenge? = nil
     @State private var assistStatus = "Загружаю форму суда…"
     @State private var highContrast = false
     @State private var submitRequestID = 0
     @State private var submissionState: CaptchaSubmissionState = .loading
+    @State private var nativeOperationGeneration = 0
     @FocusState private var codeFocused: Bool
 
     var body: some View {
         ZStack {
-            CaptchaWebView(url: context.formURL,
-                           uid: context.uid,
-                           caseNumber: context.caseNumber,
-                           kind: context.kind,
-                           captchaImageData: $captchaImageData,
-                           captchaCode: captchaCode,
-                           submitRequestID: $submitRequestID,
-                           onCaptchaReady: {
-                               submissionState = .ready
-                               codeFocused = true
-                           },
-                           onSubmissionState: updateSubmissionState(_:),
-                           onCardHTML: onCardHTML,
-                           onCaptchaPair: onCaptchaPair,
-                           onSessionUnlocked: onSessionUnlocked)
-                .frame(width: 1, height: 1)
-                .clipped()
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            if presentationPath == .webView {
+                CaptchaWebView(url: context.formURL,
+                               uid: context.uid,
+                               caseNumber: context.caseNumber,
+                               kind: context.kind,
+                               captchaImageData: $captchaImageData,
+                               captchaCode: captchaCode,
+                               submitRequestID: $submitRequestID,
+                               onCaptchaReady: {
+                                   submissionState = .ready
+                                   codeFocused = true
+                               },
+                               onSubmissionState: updateSubmissionState(_:),
+                               onCardHTML: onCardHTML,
+                               onCaptchaPair: onCaptchaPair,
+                               onSessionUnlocked: onSessionUnlocked)
+                    .frame(width: 1, height: 1)
+                    .clipped()
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
 
             VStack(spacing: 0) {
                 header
@@ -47,6 +55,11 @@ struct CaptchaAssistSheet: View {
             }
         }
         .frame(width: 460, height: 540)
+        .task(id: context.id) {
+            guard presentationPath == .nativeMagistrate else { return }
+            await loadMagistrateChallenge()
+        }
+        .onDisappear { nativeOperationGeneration &+= 1 }
     }
 
     private var header: some View {
@@ -74,6 +87,11 @@ struct CaptchaAssistSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             captchaImageBox
+
+            if canRetryNativeLoad {
+                Button("Повторить загрузку", action: retryMagistrateLoad)
+                    .buttonStyle(.bordered)
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Код")
@@ -135,6 +153,9 @@ struct CaptchaAssistSheet: View {
                         .contrast(highContrast ? 1.9 : 1.0)
                         .saturation(highContrast ? 0 : 1)
                         .padding(22)
+                } else if canRetryNativeLoad {
+                    ContentUnavailableView("Не удалось показать CAPTCHA",
+                                           systemImage: "photo.badge.exclamationmark")
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -177,6 +198,16 @@ struct CaptchaAssistSheet: View {
         canSubmitInput && !captchaCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var presentationPath: CaptchaAssistPresentationPath {
+        CaptchaAssistPresentationPath.forKind(context.kind)
+    }
+
+    private var canRetryNativeLoad: Bool {
+        guard presentationPath == .nativeMagistrate else { return false }
+        if case .failed = submissionState { return true }
+        return false
+    }
+
     private var statusColor: Color {
         switch submissionState {
         case .rejected, .failed:
@@ -202,9 +233,106 @@ struct CaptchaAssistSheet: View {
     private func submitCaptcha() {
         normalizeCaptchaCode()
         guard canSubmit else { return }
-        submissionState = .submitting
-        assistStatus = "Отправляю код…"
-        submitRequestID += 1
+        switch presentationPath {
+        case .webView:
+            submissionState = .submitting
+            assistStatus = "Отправляю код…"
+            submitRequestID += 1
+        case .nativeMagistrate:
+            submitMagistrateCaptcha()
+        }
+    }
+
+    private func retryMagistrateLoad() {
+        Task { await loadMagistrateChallenge() }
+    }
+
+    private func loadMagistrateChallenge() async {
+        guard presentationPath == .nativeMagistrate else { return }
+        nativeOperationGeneration &+= 1
+        let operation = nativeOperationGeneration
+        captchaCode = ""
+        captchaImageData = nil
+        magistrateChallenge = nil
+        updateSubmissionState(.loading)
+
+        do {
+            let challenge = try await onLoadMagistrateCaptcha()
+            guard nativeOperationGeneration == operation else { return }
+            guard !Task.isCancelled else {
+                updateSubmissionState(.failed("Загрузка CAPTCHA прервана. Повторите загрузку."))
+                return
+            }
+            guard MagistrateCaptchaLoadDecision.decide(imageData: challenge.imageData) == .showChallenge,
+                  NSImage(data: challenge.imageData) != nil else {
+                updateSubmissionState(.failed(
+                    "Суд прислал картинку CAPTCHA, но её не удалось показать. Повторите загрузку."))
+                return
+            }
+            magistrateChallenge = challenge
+            captchaImageData = challenge.imageData
+            updateSubmissionState(.ready)
+        } catch is CancellationError {
+            guard nativeOperationGeneration == operation else { return }
+            updateSubmissionState(.failed("Загрузка CAPTCHA прервана. Повторите загрузку."))
+        } catch {
+            guard nativeOperationGeneration == operation else { return }
+            updateSubmissionState(.failed(
+                "Не удалось загрузить CAPTCHA: \(error.localizedDescription). Повторите загрузку."))
+        }
+    }
+
+    private func submitMagistrateCaptcha() {
+        guard let challenge = magistrateChallenge else {
+            updateSubmissionState(.failed("Картинка CAPTCHA не загружена. Повторите загрузку."))
+            return
+        }
+        let code = captchaCode
+        nativeOperationGeneration &+= 1
+        let operation = nativeOperationGeneration
+        updateSubmissionState(.submitting)
+
+        Task {
+            do {
+                let result = try await onSubmitMagistrateCaptcha(code, challenge)
+                guard nativeOperationGeneration == operation else { return }
+                guard !Task.isCancelled else {
+                    updateSubmissionState(.failed("Отправка кода прервана. Повторите загрузку."))
+                    return
+                }
+                switch result {
+                case .accepted:
+                    guard let host = context.formURL.host, !host.isEmpty else {
+                        updateSubmissionState(.failed(
+                            "Суд принял код, но адрес сессии не определён. Повторите загрузку."))
+                        return
+                    }
+                    updateSubmissionState(.accepted)
+                    onSessionUnlocked?(host)
+                case .rejected(let replacement):
+                    guard MagistrateCaptchaLoadDecision.decide(imageData: replacement.imageData)
+                        == .showChallenge,
+                          NSImage(data: replacement.imageData) != nil else {
+                        captchaCode = ""
+                        captchaImageData = nil
+                        magistrateChallenge = nil
+                        updateSubmissionState(.failed(
+                            "Суд прислал новую картинку CAPTCHA, но её не удалось показать. Повторите загрузку."))
+                        return
+                    }
+                    magistrateChallenge = replacement
+                    captchaImageData = replacement.imageData
+                    updateSubmissionState(.rejected)
+                }
+            } catch is CancellationError {
+                guard nativeOperationGeneration == operation else { return }
+                updateSubmissionState(.failed("Отправка кода прервана. Повторите загрузку."))
+            } catch {
+                guard nativeOperationGeneration == operation else { return }
+                updateSubmissionState(.failed(
+                    "Не удалось отправить код: \(error.localizedDescription). Повторите загрузку."))
+            }
+        }
     }
 
     private func updateSubmissionState(_ state: CaptchaSubmissionState) {

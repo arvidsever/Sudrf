@@ -1078,6 +1078,16 @@ final class SearchModel: ObservableObject {
         }
     }
 
+    func loadMagistrateCaptcha(formURL: URL) async throws -> MagistrateCaptchaChallenge {
+        try await client.loadMagistrateCaptcha(formURL: formURL)
+    }
+
+    func submitMagistrateCaptcha(code: String,
+                                 challenge: MagistrateCaptchaChallenge) async throws
+        -> MagistrateCaptchaSubmission {
+        try await client.submitMagistrateCaptcha(code: code, challenge: challenge)
+    }
+
     private struct CaptchaResumeState {
         let rerunSearch: Bool
         let movementResult: CaseSearchResult?

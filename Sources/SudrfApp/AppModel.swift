@@ -367,11 +367,18 @@ final class AppRouter: ObservableObject {
                                        fsspClient: fsspClient)
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
-            let outcome = try await self.repairCoordinator.repairIfNeeded(key: key)
-            if outcome.summary.hasProjectionChanges {
-                self.applyRepair(outcome.summary, presentReport: false)
+            do {
+                let outcome = try await self.repairCoordinator.repairIfNeeded(key: key)
+                if outcome.summary.hasProjectionChanges {
+                    self.applyRepair(outcome.summary, presentReport: false)
+                }
+                return outcome.effectiveKey
+            } catch let partial as CaseRepairPartialError {
+                if partial.summary.hasProjectionChanges {
+                    self.applyRepair(partial.summary, presentReport: false)
+                }
+                throw partial.underlying
             }
-            return outcome.effectiveKey
         }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv, keyRemaps in
@@ -403,6 +410,8 @@ final class AppRouter: ObservableObject {
             do {
                 let summary = try await self.repairCoordinator.runAll()
                 self.applyRepair(summary)
+            } catch let partial as CaseRepairPartialError {
+                self.applyRepair(partial.summary)
             } catch {
                 // Startup repair is background work: keep the persisted state
                 // visible and leave retry to the next explicit refresh/start.
@@ -802,45 +811,105 @@ final class AppRouter: ObservableObject {
     // MARK: Импорт из CSV (Файл → «Импортировать дела из CSV…»)
 
     enum ImportState {
-        case running(done: Int, total: Int)
+        case running(done: Int, total: Int, canCancel: Bool)
         case finished(ImportSummary)
         case failed(String)
     }
     @Published var importState: ImportState? = nil
     private var importTask: Task<Void, Never>? = nil
     private var importGeneration = 0
+    /// CAPTCHA repairs are queued rather than allowed to race. Each retry
+    /// reads the latest finished summary after the previous network pass, so
+    /// a later host cannot write a snapshot that predates an earlier repair.
+    private var importRepairTask: Task<Void, Never>? = nil
+    private var importRepairTaskGeneration = 0
+    @Published private(set) var importReportFinalizing = false
+    private var importKeys = Set<String>()
+    private var importRowsByKey: [String: [ImportedRow]] = [:]
+
+    /// The report remains the active modal while post-CAPTCHA repair is
+    /// awaited. RootView uses this to disable both swipe dismissal and Done.
+    var isImportFinalizing: Bool {
+        if importReportFinalizing { return true }
+        if case .running(_, _, let canCancel) = importState { return !canCancel }
+        return false
+    }
 
     /// Запуск импорта. Сетевой этап (карточка каждого дела — прямой GET без
     /// капчи) идёт с троттлингом клиента ~1.5 с/запрос; записи создаются одним
     /// батчем в конце, поэтому отмена ничего не оставляет за собой.
     func beginImport(csvText: String) {
+        beginImport(input: CaseImporter.parseCSV(csvText),
+                    parsed: CSVParser.parseDetailed(csvText))
+    }
+
+    /// Data entry point keeps invalid UTF-8 visible instead of silently
+    /// dismissing the open panel before an import state exists.
+    func beginImport(csvData: Data) {
+        beginImport(input: CaseImporter.parseCSV(csvData),
+                    parsed: CSVParser.parseDetailed(csvData))
+    }
+
+    private func beginImport(input: ImportInput, parsed: CSVParser.ParseResult) {
         guard importTask == nil else { return }
-        importGeneration &+= 1
-        let generation = importGeneration
-        let rows = CaseImporter.rows(fromCSV: csvText)
-        guard !rows.isEmpty else {
-            var s = ImportSummary()
-            s.skipped = [(CaseImporter.reasonBadURL, 0)]
-            importState = .finished(s)
+        if let message = Self.blockingImportMessage(input: input, parsed: parsed) {
+            importState = .failed(message)
             return
         }
+        importGeneration &+= 1
+        let generation = importGeneration
+        repairSummary = nil
+        importKeys = []
+        importRowsByKey = [:]
         importTask = Task { [weak self] in
-            await self?.runImport(rows: rows, generation: generation)
+            await self?.runImport(input: input, generation: generation)
             guard self?.importGeneration == generation else { return }
             self?.importTask = nil
         }
     }
 
+    private static func blockingImportMessage(input: ImportInput,
+                                              parsed: CSVParser.ParseResult) -> String? {
+        if !parsed.isValidUTF8 { return "CSV-файл не является корректным UTF-8." }
+        // Empty/header failures are more useful than a generic "no cases"
+        // message (and take precedence over row diagnostics).
+        if parsed.rows.isEmpty { return "CSV-файл пуст: отсутствует заголовок." }
+        let header = Set(input.header.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        var blocking: [String] = []
+        if !header.contains("url") {
+            blocking.append("В заголовке CSV отсутствует обязательная колонка «url».")
+        }
+        if !header.contains("court") {
+            blocking.append("В заголовке CSV отсутствует обязательная колонка «court».")
+        }
+        blocking.append(contentsOf: parsed.diagnostics.map {
+            "Строки \($0.sourceLines): \($0.message)"
+        })
+        if !blocking.isEmpty { return blocking.joined(separator: "\n") }
+        if input.rows.isEmpty { return "CSV-файл не содержит строк с делами." }
+        return nil
+    }
+
     func cancelImport() {
+        guard case .running(_, _, canCancel: true) = importState else { return }
         importTask?.cancel()
         importGeneration &+= 1
         importTask = nil
         importState = nil
+        importKeys = []
+        importRowsByKey = [:]
     }
 
     func dismissImportSummary() {
+        guard !isImportFinalizing else { return }
         if case .finished = importState { importState = nil }
         if case .failed = importState { importState = nil }
+        if importState == nil {
+            importKeys = []
+            importRowsByKey = [:]
+        }
     }
 
     func dismissRepairSummary() { repairSummary = nil }
@@ -869,7 +938,7 @@ final class AppRouter: ObservableObject {
     private func applyRepair(_ summary: CaseRepairSummary, presentReport: Bool = true) {
         guard summary.hasReport else { reload(); return }
         applyKeyRemaps(summary.keyRemaps)
-        if presentReport { repairSummary = summary }
+        if presentReport, importState == nil { repairSummary = summary }
         let affectedKeys = summary.affectedCaseKeys
             .union(summary.keyRemaps.keys)
             .union(summary.keyRemaps.values)
@@ -913,17 +982,26 @@ final class AppRouter: ObservableObject {
         }
     }
 
-    private func runImport(rows: [ImportedRow], generation: Int) async {
+    private func runImport(input: ImportInput, generation: Int) async {
         guard generation == importGeneration, !Task.isCancelled else { return }
+        let rows = input.rows
         var skipped: [String: Int] = [:]
         var seeds: [ImportSeed] = []
+        var report = input.report
         for row in rows {
+            if row.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                report.append(ImportIssue(
+                    sourceRow: row, category: .courtNotFound,
+                    reason: "В исходной строке не указано название суда.", severity: .warning))
+            }
             switch CaseImporter.classify(row) {
             case .seed(let s):          seeds.append(s)
-            case .skipped(let reason):  skipped[reason, default: 0] += 1
+            case .skipped(let reason):
+                skipped[reason, default: 0] += 1
+                report.append(CaseImporter.issue(for: row, skippedReason: reason))
             }
         }
-        importState = .running(done: 0, total: seeds.count)
+        importState = .running(done: 0, total: seeds.count, canCancel: true)
 
         var fetched: [CaseImporter.Fetched] = []
         var transient = 0
@@ -936,18 +1014,29 @@ final class AppRouter: ObservableObject {
                 card = try await client.fetchCard(court: court, caseID: seed.caseID,
                                                   caseUID: seed.caseUID,
                                                   deloID: seed.deloID, new: seed.new)
-                if card?.uid?.isEmpty != false { withoutUID += 1 }
+                if card?.uid?.isEmpty != false {
+                    withoutUID += 1
+                    report.append(CaseImporter.missingUIDIssue(
+                        for: seed.row,
+                        reason: "Карточка импортирована, но суд не опубликовал УИД."))
+                }
             } catch let error as SudrfError {
                 card = nil
-                if case .transientNetworkError = error { transient += 1 }
-                else { parsing += 1 }
+                var issue = CaseImporter.issue(for: seed.row, error: error)
+                issue.severity = .warning
+                if issue.category == .transientSource { transient += 1 }
+                else if issue.category != .captcha { parsing += 1 }
+                report.append(issue)
             } catch {
                 card = nil
                 parsing += 1
+                var issue = CaseImporter.issue(for: seed.row, error: error)
+                issue.severity = .warning
+                report.append(issue)
             }
             guard generation == importGeneration, !Task.isCancelled else { return }
             fetched.append(CaseImporter.Fetched(seed: seed, card: card))
-            importState = .running(done: i + 1, total: seeds.count)
+            importState = .running(done: i + 1, total: seeds.count, canCancel: true)
         }
 
         guard generation == importGeneration, !Task.isCancelled else { return }
@@ -956,61 +1045,127 @@ final class AppRouter: ObservableObject {
         df.dateFormat = "dd.MM.yyyy"
         let collection = "Импорт " + df.string(from: Date())
         do {
-            try commitImport(records: plan.records, collection: collection)
+            let committed = try await repairCoordinator.performWhenIdle {
+                () throws -> [String: [ImportedRow]]? in
+                guard generation == self.importGeneration, !Task.isCancelled else { return nil }
+                // The idle barrier can wait on startup repair. Cancellation
+                // remains available until this exact, synchronous commit point.
+                self.importState = .running(
+                    done: seeds.count, total: seeds.count, canCancel: false)
+                return try self.commitImport(records: plan.records, collection: collection)
+            }
+            guard let committed else { return }
+            importRowsByKey = committed
+            importKeys = Set(importRowsByKey.keys)
         } catch {
             reload()
-            guard generation == importGeneration, !Task.isCancelled else { return }
+            guard generation == importGeneration else { return }
             importState = .failed(
                 "Не удалось сохранить импорт в локальной базе. Ни одна запись не сохранена; повторите попытку.")
             return
         }
-        let repaired: CaseRepairSummary
-        do {
-            repaired = try await repairCoordinator.runAll()
-        } catch {
-            reload()
-            guard generation == importGeneration, !Task.isCancelled else { return }
-            importState = .failed(
-                "Дела импортированы, но не удалось сохранить последующее исправление связей. Повторите обновление позже.")
-            return
-        }
-        let importedKeys = Set(plan.records.map { $0.context.key })
-            .union(repaired.keyRemaps.keys)
-            .union(repaired.keyRemaps.values)
-            .union(repaired.affectedCaseKeys)
-        reload(spotlightScope: .cases(importedKeys))
-
         var summary = ImportSummary()
         summary.total = rows.count
         summary.cases = plan.records.filter { !$0.isMaterial }.count
         summary.materials = plan.records.filter { $0.isMaterial }.count
         summary.stitched = plan.stitched
         summary.cold = plan.cold
-        summary.stitchedExisting = repaired.merged
-        // Восстановление нижестоящей цепочки централизовано в repairCoordinator:
-        // импорт больше не выполняет тот же сетевой поиск второй раз.
-        summary.recoveredDown = repaired.reanchored
-        summary.rerouted = repaired.rerouted
-        summary.transient = transient + repaired.transient
+        summary.transient = transient
         summary.parsing = parsing
         summary.withoutUID = withoutUID
-        summary.ambiguous = repaired.unresolved.count
-        summary.unresolvedNumbers = repaired.unresolved
         summary.skipped = skipped.sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
-        guard generation == importGeneration, !Task.isCancelled else { return }
+        summary.report = report
+
+        var repaired = CaseRepairSummary()
+        var repairWarning: ImportIssue?
+        do {
+            repaired = try await repairCoordinator.run(keys: importKeys)
+            mergeImportRepair(repaired, into: &summary)
+        } catch let partial as CaseRepairPartialError {
+            repaired = partial.summary
+            mergeImportRepair(repaired, into: &summary)
+            repairWarning = ImportIssue(
+                category: .transientSource,
+                reason: "Дела сохранены, но последующее исправление связей не завершено: \(partial.underlying.localizedDescription)",
+                sourceRows: uniqueImportRows(importRowsByKey.values.flatMap { $0 }),
+                severity: .warning)
+        } catch {
+            repairWarning = ImportIssue(
+                category: .transientSource,
+                reason: "Дела сохранены, но последующее исправление связей не завершено: \(error.localizedDescription)",
+                sourceRows: uniqueImportRows(importRowsByKey.values.flatMap { $0 }),
+                severity: .warning)
+        }
+        let importedKeys = importKeys
+            .union(repaired.keyRemaps.keys)
+            .union(repaired.keyRemaps.values)
+            .union(repaired.affectedCaseKeys)
+        reload(spotlightScope: .cases(importedKeys))
+        if let repairWarning { summary.report.append(repairWarning) }
+        guard generation == importGeneration else { return }
         importState = .finished(summary)
     }
 
     /// Stages the whole import graph and commits it together with its rebuilt
     /// court-act projection. A failed projection or context save rolls back
     /// every planned record and any identity merge performed by the batch.
-    func commitImport(records: [CaseImporter.PlannedRecord], collection: String) throws {
+    @discardableResult
+    func commitImport(records: [CaseImporter.PlannedRecord], collection: String) throws
+        -> [String: [ImportedRow]] {
+        var rowsByKey: [String: [ImportedRow]] = [:]
         for record in records {
-            _ = try store.reconcileAndUpsert(
+            let saved = try store.reconcileAndUpsert(
                 context: record.context, snapshot: nil, movement: nil,
                 collections: [collection], saveChanges: false)
+            rowsByKey[saved.key, default: []].append(contentsOf: record.sourceRows)
         }
         try store.save(projection: .full)
+        return rowsByKey.mapValues(uniqueImportRows)
+    }
+
+    private func mergeImportRepair(_ repaired: CaseRepairSummary,
+                                   into summary: inout ImportSummary) {
+        summary.stitchedExisting += repaired.merged
+        summary.recoveredDown += repaired.reanchored
+        summary.rerouted += repaired.rerouted
+        summary.transient += repaired.transient
+        summary.ambiguous = repaired.unresolved.count
+        summary.unresolvedNumbers = repaired.unresolved
+        for event in repaired.events where !summary.report.repairEvents.contains(event) {
+            summary.report.append(event, sourceRows: importRows(for: event))
+        }
+        applyKeyRemaps(repaired.keyRemaps)
+        // Resolve every source key against the final locator before rebuilding
+        // the dictionary. A one-pass dictionary walk is order-dependent and
+        // can strand A's provenance at B for a transitive A -> B -> C remap.
+        importRowsByKey = Self.remapImportedRows(importRowsByKey, using: repaired)
+        importKeys = Set(importKeys.map(repaired.effectiveKey(for:)))
+    }
+
+    /// Pure seam for the import provenance invariant: every source row follows
+    /// the final locator, including transitive old -> intermediate -> final
+    /// mappings, regardless of dictionary iteration order.
+    static func remapImportedRows(_ rowsByKey: [String: [ImportedRow]],
+                                  using repaired: CaseRepairSummary)
+        -> [String: [ImportedRow]] {
+        let remapped = rowsByKey.reduce(into: [String: [ImportedRow]]()) { result, entry in
+            let destination = repaired.effectiveKey(for: entry.key)
+            result[destination, default: []].append(contentsOf: entry.value)
+        }
+        return remapped.mapValues { rows in
+            var seen = Set<String>()
+            return rows.filter { seen.insert($0.sourceIdentity).inserted }
+        }
+    }
+
+    private func importRows(for event: CaseRepairEvent) -> [ImportedRow] {
+        let keys = [event.caseKey, event.oldKey, event.newKey].compactMap { $0 }
+        return uniqueImportRows(keys.flatMap { importRowsByKey[$0] ?? [] })
+    }
+
+    private func uniqueImportRows(_ rows: [ImportedRow]) -> [ImportedRow] {
+        var seen = Set<String>()
+        return rows.filter { seen.insert($0.sourceIdentity).inserted }
     }
 
     // MARK: Живая карточка
@@ -1273,18 +1428,95 @@ final class AppRouter: ObservableObject {
     private func retryRepairAfterCaptchaIfNeeded(host rawHost: String) {
         let host = SudrfHost.moduleHost(rawHost)
         guard repairCaptchaHosts.remove(host) != nil else { return }
-        Task { [weak self] in
+        importRepairTaskGeneration &+= 1
+        let taskGeneration = importRepairTaskGeneration
+        let importGeneration = self.importGeneration
+        let previousTask = importRepairTask
+        importReportFinalizing = true
+        importRepairTask = Task { [weak self] in
+            // Different court captcha submissions can arrive almost together.
+            // Serialize them so each pass merges into the report produced by
+            // the previous pass instead of writing an older snapshot over it.
+            _ = await previousTask?.value
+            defer {
+                if let self, self.importRepairTaskGeneration == taskGeneration {
+                    self.importRepairTask = nil
+                    self.importReportFinalizing = false
+                }
+            }
             guard let self else { return }
+            guard self.importGeneration == importGeneration else { return }
             do {
+                if !self.importKeys.isEmpty,
+                   case .finished = self.importState {
+                    // Snapshot keys only for this network call. The summary is
+                    // read after await, when an earlier queued host may have
+                    // already remapped keys or appended repair details.
+                    let keys = self.importKeys
+                    let repaired = try await self.repairCoordinator.run(keys: keys)
+                    guard self.importGeneration == importGeneration,
+                          case .finished(var importSummary) = self.importState else { return }
+                    importSummary.report.repairEvents.removeAll {
+                        $0.kind == .captcha && self.importKeys.contains($0.caseKey)
+                    }
+                    importSummary.report.issues.removeAll {
+                        $0.category == .captcha
+                            && $0.key.map(self.importKeys.contains) == true
+                    }
+                    self.mergeImportRepair(repaired, into: &importSummary)
+                    let changed = self.importKeys
+                        .union(repaired.keyRemaps.keys)
+                        .union(repaired.keyRemaps.values)
+                        .union(repaired.affectedCaseKeys)
+                    self.reload(spotlightScope: .cases(changed))
+                    self.importState = .finished(importSummary)
+                    return
+                }
                 let summary = try await self.repairCoordinator.runAll()
+                guard self.importGeneration == importGeneration else { return }
                 if summary.hasReport {
                     self.applyRepair(summary)
                 } else {
                     self.repairSummary = nil
                     self.reload()
                 }
+            } catch let partial as CaseRepairPartialError {
+                guard self.importGeneration == importGeneration else { return }
+                if case .finished(var importSummary) = self.importState {
+                    importSummary.report.repairEvents.removeAll {
+                        $0.kind == .captcha && self.importKeys.contains($0.caseKey)
+                    }
+                    importSummary.report.issues.removeAll {
+                        $0.category == .captcha
+                            && $0.key.map(self.importKeys.contains) == true
+                    }
+                    self.mergeImportRepair(partial.summary, into: &importSummary)
+                    let changed = self.importKeys
+                        .union(partial.summary.keyRemaps.keys)
+                        .union(partial.summary.keyRemaps.values)
+                        .union(partial.summary.affectedCaseKeys)
+                    self.reload(spotlightScope: .cases(changed))
+                    importSummary.report.append(ImportIssue(
+                        category: .transientSource,
+                        reason: "Дела сохранены, но исправление связей отложено: \(partial.underlying.localizedDescription)",
+                        sourceRows: self.uniqueImportRows(self.importRowsByKey.values.flatMap { $0 }),
+                        severity: .warning))
+                    self.importState = .finished(importSummary)
+                } else {
+                    self.reportPersistenceFailure(partial.underlying)
+                }
             } catch {
-                self.reportPersistenceFailure(error)
+                guard self.importGeneration == importGeneration else { return }
+                if case .finished(var importSummary) = self.importState {
+                    importSummary.report.append(ImportIssue(
+                        category: .transientSource,
+                        reason: "Дела сохранены, но исправление связей отложено: \(error.localizedDescription)",
+                        sourceRows: self.uniqueImportRows(self.importRowsByKey.values.flatMap { $0 }),
+                        severity: .warning))
+                    self.importState = .finished(importSummary)
+                } else {
+                    self.reportPersistenceFailure(error)
+                }
             }
         }
     }

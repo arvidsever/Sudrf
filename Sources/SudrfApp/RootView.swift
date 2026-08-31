@@ -237,7 +237,10 @@ private struct OperationalRootView: View {
             get: { router.importState != nil || router.repairSummary != nil },
             set: { shown in
                 if !shown {
-                    if case .running = router.importState { router.cancelImport() }
+                    guard !router.isImportFinalizing else { return }
+                    if case .running(_, _, let canCancel) = router.importState, canCancel {
+                        router.cancelImport()
+                    }
                     else if router.importState != nil { router.dismissImportSummary() }
                     else { router.dismissRepairSummary() }
                 }
@@ -282,8 +285,8 @@ private struct OperationalRootView: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url,
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        router.beginImport(csvText: text)
+              let data = try? Data(contentsOf: url) else { return }
+        router.beginImport(csvData: data)
     }
 }
 
@@ -434,32 +437,61 @@ private struct StorageQuarantinedView: View {
 
 private struct ImportSheet: View {
     @EnvironmentObject var router: AppRouter
+    @State private var exportError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             switch router.importState {
-            case .running(let done, let total):
+            case .running(let done, let total, let canCancel):
                 Text("Импорт дел").font(.system(size: 15, weight: .bold))
-                Text("Карточка \(min(done + 1, max(total, 1))) из \(total) — открываю прямые ссылки, чтобы сшить инстанции и материалы по УИД.")
+                Text(canCancel
+                     ? "Карточка \(min(done + 1, max(total, 1))) из \(total) — открываю прямые ссылки, чтобы сшить инстанции и материалы по УИД."
+                     : "Дела сохранены. Проверяю связи и формирую итоговый отчёт…")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
-                ProgressView(value: Double(done), total: Double(max(total, 1)))
-                HStack {
-                    Spacer()
-                    Button("Отменить импорт") { router.cancelImport() }
-                        .controlSize(.regular)
+                if canCancel {
+                    ProgressView(value: Double(done), total: Double(max(total, 1)))
+                    HStack {
+                        Spacer()
+                        Button("Отменить импорт") { router.cancelImport() }
+                            .controlSize(.regular)
+                    }
+                } else {
+                    ProgressView()
                 }
             case .finished(let summary):
                 Text("Импорт завершён").font(.system(size: 15, weight: .bold))
-                Text(summary.text)
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        importedSection(summary)
+                        let fixed = fixedEvents(summary)
+                        if !fixed.isEmpty { repairedSection(fixed) }
+                        attentionSection(summary)
+                        let groups = captchaGroups(summary)
+                        if !groups.isEmpty { captchaSection(groups) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 480)
                 Text("Движение дел загрузится фоном (обход каждые 10 минут); открытие дела подтягивает его сразу.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+                if router.isImportFinalizing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Проверяю связи после ввода кода…")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
+                    if summary.report.problemCount > 0 {
+                        Button("Сохранить проблемные строки…") { save(summary.report) }
+                            .controlSize(.regular)
+                            .disabled(router.isImportFinalizing)
+                    }
                     Spacer()
                     Button("Готово") { router.dismissImportSummary() }
                         .buttonStyle(.borderedProminent).controlSize(.regular)
+                        .disabled(router.isImportFinalizing)
                         .keyboardShortcut(.defaultAction)
                 }
             case .failed(let message):
@@ -511,7 +543,16 @@ private struct ImportSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 620)
+        .interactiveDismissDisabled(router.isImportFinalizing)
+        .alert("Не удалось сохранить отчёт", isPresented: Binding(
+            get: { exportError != nil },
+            set: { shown in if !shown { exportError = nil } }
+        )) {
+            Button("Понятно", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
         // Вложенный лист нужен именно поверх отчёта ремонта: верхний RootView
         // уже показывает этот отчёт как sheet.
         .sheet(item: $router.captcha) { ctx in
@@ -520,6 +561,141 @@ private struct ImportSheet: View {
                                onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
                                onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
                                onCancel: { router.cancelCaptcha() })
+        }
+    }
+
+    @ViewBuilder
+    private func importedSection(_ summary: ImportSummary) -> some View {
+        GroupBox("Импортировано") {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Дел: \(summary.cases), отдельных материалов: \(summary.materials) · строк в файле: \(summary.total)")
+                if summary.stitched > 0 {
+                    Text("Сшито карточек вышестоящих инстанций и материалов: \(summary.stitched)")
+                }
+                if summary.cold > 0 {
+                    Text("Импортировано без сшивания: \(summary.cold)")
+                }
+            }
+            .font(.system(size: 12))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func repairedSection(_ events: [CaseRepairEvent]) -> some View {
+        GroupBox("Исправлено автоматически") {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(events) { event in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(repairTitle(event)).font(.system(size: 12, weight: .semibold))
+                        Text([event.newCaseNumber ?? event.oldCaseNumber,
+                              event.newCourtTitle ?? event.oldCourtTitle]
+                            .filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func attentionSection(_ summary: ImportSummary) -> some View {
+        GroupBox("Требует внимания") {
+            if summary.report.issues.isEmpty {
+                Label("Проблемных строк нет", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12)).foregroundStyle(.green)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(summary.report.issues) { issue in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issueHeading(issue)).font(.system(size: 12, weight: .semibold))
+                            if !issue.caseNumber.isEmpty || !issue.court.isEmpty {
+                                Text([issue.caseNumber, issue.court]
+                                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            Text(issue.reason).font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func captchaSection(_ groups: [RepairCaptchaGroup]) -> some View {
+        GroupBox("Код с картинки") {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(groups) { group in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.courtTitle).font(.system(size: 12, weight: .medium))
+                            Text("\(group.count) \(group.count == 1 ? "карточка" : "карточки") · \(group.caseNumbers.prefix(3).joined(separator: ", "))")
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Button("Ввести код") { router.beginRepairCaptcha(group) }
+                            .controlSize(.small)
+                            .disabled(router.isImportFinalizing)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func fixedEvents(_ summary: ImportSummary) -> [CaseRepairEvent] {
+        summary.report.repairEvents.filter {
+            $0.kind == .merged || $0.kind == .reanchored
+                || $0.kind == .restoredMaterial || $0.kind == .rerouted
+        }
+    }
+
+    private func repairTitle(_ event: CaseRepairEvent) -> String {
+        switch event.kind {
+        case .merged: return "Объединены дублирующие карточки"
+        case .reanchored: return "Восстановлена первая инстанция"
+        case .restoredMaterial: return "Восстановлена карточка материала"
+        case .rerouted: return "Исправлен маршрут КоАП"
+        case .firstInstanceNotFound, .firstInstanceAmbiguous, .transient,
+             .captcha, .unsupportedCourt, .cardParsing:
+            return "Требует внимания"
+        }
+    }
+
+    private func issueHeading(_ issue: ImportIssue) -> String {
+        let label = issue.sourceLines.contains(",") ? "Строки" : "Строка"
+        let line = issue.sourceLines.isEmpty ? "" : "\(label) \(issue.sourceLines) · "
+        return line + issue.category.displayName
+    }
+
+    private func captchaGroups(_ summary: ImportSummary) -> [RepairCaptchaGroup] {
+        let requests = summary.report.repairEvents.compactMap { event -> RepairCaptchaRequest? in
+            guard event.kind == .captcha, let formURL = event.formURL else { return nil }
+            return RepairCaptchaRequest(
+                key: event.caseKey,
+                caseNumber: event.newCaseNumber ?? event.oldCaseNumber,
+                courtTitle: event.newCourtTitle ?? event.oldCourtTitle,
+                formURL: formURL)
+        }
+        return Dictionary(grouping: requests, by: \.host)
+            .map { RepairCaptchaGroup(host: $0.key, requests: $0.value) }
+            .sorted { $0.host < $1.host }
+    }
+
+    private func save(_ report: ImportReport) {
+        let panel = NSSavePanel()
+        panel.title = "Сохранить проблемные строки CSV"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "sudrf-import-errors.csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try report.csvData.write(to: url, options: .atomic)
+        } catch {
+            exportError = error.localizedDescription
         }
     }
 }

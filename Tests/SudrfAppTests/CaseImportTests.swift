@@ -33,6 +33,158 @@ final class CaseImportTests: XCTestCase {
         XCTAssertEqual(rows[0].urlString, "https://s--r.sudrf.ru/x")
     }
 
+    func testDetailedCSVKeepsPhysicalLineRangeAndOriginalFields() {
+        let csv = "number,court,kind,parties,url\r\n"
+            + "2-1/2026,Суд,дело,\"Иванов\r\nИ.И.\",https://x.sudrf.ru/?a=1\r\n"
+            + "2-2/2026,Суд2,дело,Петров,https://y.sudrf.ru/?a=2\r\n"
+        let parsed = CSVParser.parseDetailed(csv)
+        XCTAssertEqual(parsed.diagnostics, [])
+        XCTAssertEqual(parsed.rows.map(\.lineRange), [1...1, 2...3, 4...4])
+
+        let input = CaseImporter.parseCSV(csv)
+        XCTAssertEqual(input.rows.count, 2)
+        XCTAssertEqual(input.rows[0].sourceLineRange, 2...3)
+        XCTAssertEqual(input.rows[0].sourceLines, "2–3")
+        XCTAssertEqual(input.rows[0].originalHeader, ["number", "court", "kind", "parties", "url"])
+        XCTAssertEqual(input.rows[0].originalFields[3], "Иванов\r\nИ.И.")
+    }
+
+    func testDetailedCSVReportsMalformedAndSchemaRows() {
+        let malformed = CSVParser.parseDetailed("number,court,url\n1,Суд,\"https://x.sudrf.ru/\n")
+        XCTAssertTrue(malformed.diagnostics.contains { $0.kind == .unterminatedQuote })
+        XCTAssertEqual(malformed.rows.last?.lineRange, 2...3)
+
+        let short = CaseImporter.parseCSV("number,court,url\n1,Суд\n")
+        XCTAssertTrue(short.issues.contains { $0.category == .csvFormat && $0.sourceLineRange == 2...2 })
+        XCTAssertTrue(short.issues.contains { $0.reason.contains("отсутствует обязательный URL") })
+
+        let missingURL = CaseImporter.parseCSV("number,court\n1,Суд\n")
+        XCTAssertTrue(missingURL.issues.contains { $0.reason.contains("отсутствует обязательная колонка") })
+        XCTAssertEqual(missingURL.rows.first?.number, "1")
+    }
+
+    func testDetailedCSVReportsEmptyFileAndInvalidUTF8() {
+        let empty = CaseImporter.parseCSV(Data())
+        XCTAssertTrue(empty.rows.isEmpty)
+        XCTAssertEqual(empty.issues.first?.category, .csvFormat)
+        XCTAssertTrue(empty.issues.first?.reason.contains("пуст") == true)
+
+        let invalid = CaseImporter.parseCSV(Data([0x66, 0x80, 0x6f]))
+        XCTAssertTrue(invalid.rows.isEmpty)
+        XCTAssertEqual(invalid.issues.first?.category, .csvFormat)
+        XCTAssertTrue(invalid.issues.first?.reason.contains("UTF-8") == true)
+        let parsed = CSVParser.parseDetailed(Data([0x66, 0x80, 0x6f]))
+        XCTAssertFalse(parsed.isValidUTF8)
+        XCTAssertEqual(parsed.diagnostics.first?.kind, .invalidUTF8)
+    }
+
+    func testImportReportExportsOnlyProblemRowsAndCanBeReimported() throws {
+        let csv = "number,court,kind,parties,updated,url\r\n"
+            + "1-1/2026,Суд,дело,\"А, Б\",01.01.2026,https://x.sudrf.ru/?a=1\r\n"
+            + "1-2/2026,Суд,дело,В,01.01.2026,https://x.sudrf.ru/?a=2\r\n"
+        let input = CaseImporter.parseCSV(csv)
+        let first = try XCTUnwrap(input.rows.first)
+        var report = input.report
+        report.append(ImportIssue(sourceRow: first, category: .transientSource,
+                                  reason: "Суд временно недоступен."))
+        report.append(ImportIssue(sourceRow: first, category: .cardParsing,
+                                  reason: "Сбой разбора."))
+
+        let exported = report.exportCSV()
+        XCTAssertTrue(exported.hasPrefix("source_lines,error_category,error_reason,number,court,kind,parties,updated,url\r\n"))
+        XCTAssertEqual(CSVParser.parse(exported).count, 2, "заголовок и только одна проблемная строка")
+        XCTAssertTrue(exported.contains("transient_source;card_parsing"))
+        XCTAssertTrue(exported.contains("\"А, Б\""))
+
+        let reimported = CaseImporter.parseCSV(Data(exported.utf8))
+        XCTAssertEqual(reimported.rows.count, 1)
+        XCTAssertEqual(reimported.rows[0].number, "1-1/2026")
+        XCTAssertEqual(reimported.rows[0].urlString, "https://x.sudrf.ru/?a=1")
+        XCTAssertEqual(reimported.rows[0].originalFields.count, 9)
+    }
+
+    func testReportReexportNeverStripsSourceDiagnosticNamedColumns() throws {
+        let csv = "source_lines,error_category,error_reason,number,court,url\r\n"
+            + "метка,card_parsing,исходная причина,1,Суд,https://x.sudrf.ru/?a=1\r\n"
+        let input = CaseImporter.parseCSV(csv)
+        let row = try XCTUnwrap(input.rows.first)
+        var report = input.report
+        report.append(ImportIssue(sourceRow: row, category: .cardParsing,
+                                  reason: "Ошибка карточки."))
+
+        let firstExport = report.exportCSV()
+        XCTAssertTrue(firstExport.hasPrefix(
+            "source_lines,error_category,error_reason,source_lines,error_category,error_reason,number,court,url\r\n"))
+
+        let reimported = CaseImporter.parseCSV(firstExport)
+        let reimportedRow = try XCTUnwrap(reimported.rows.first)
+        var secondReport = reimported.report
+        secondReport.append(ImportIssue(sourceRow: reimportedRow,
+                                        category: .transientSource,
+                                        reason: "Повторить позже."))
+        let secondExport = secondReport.exportCSV()
+        XCTAssertTrue(secondExport.hasPrefix(
+            "source_lines,error_category,error_reason,source_lines,error_category,error_reason,source_lines,error_category,error_reason,number,court,url\r\n"))
+        XCTAssertTrue(secondExport.contains("исходная причина"))
+        XCTAssertTrue(secondExport.contains("метка"))
+        XCTAssertTrue(secondExport.contains("card_parsing"))
+    }
+
+    func testIssueMappingsAndMissingUIDWarning() {
+        let source = ImportedRow(number: "1", court: "Суд", parties: "", urlString: "x",
+                                sourceLineRange: 2...2,
+                                originalHeader: ["number", "court", "parties", "url"],
+                                originalFields: ["1", "Суд", "", "x"])
+        XCTAssertEqual(CaseImporter.issue(for: source, skippedReason: CaseImporter.reasonPlatform).category,
+                       .unsupportedSource)
+        XCTAssertEqual(CaseImporter.issue(for: source, skippedReason: CaseImporter.reasonBadURL).category,
+                       .csvFormat)
+        XCTAssertEqual(CaseImporter.missingUIDIssue(for: source).severity, .warning)
+        XCTAssertEqual(CaseImporter.missingUIDIssue(for: source).category, .missingUID)
+    }
+
+    func testGroupedIssueShowsEverySourceLineRange() {
+        let first = ImportedRow(number: "1", court: "Суд", parties: "", urlString: "a",
+                                sourceLineRange: 7...9)
+        let second = ImportedRow(number: "1", court: "Суд", parties: "", urlString: "b",
+                                 sourceLineRange: 12...12)
+        let issue = ImportIssue(category: .captcha, reason: "Нужен код.",
+                                sourceRows: [second, first, first])
+
+        XCTAssertEqual(issue.sourceLines, "7–9, 12")
+    }
+
+    @MainActor
+    func testImportProvenanceFollowsTransitiveKeyRemap() {
+        let oldRow = ImportedRow(number: "1", court: "Суд", parties: "", urlString: "x",
+                                 sourceLineRange: 2...2)
+        var repaired = CaseRepairSummary()
+        repaired.keyRemaps = ["old": "intermediate", "intermediate": "canonical"]
+
+        let remapped = AppRouter.remapImportedRows(["old": [oldRow]], using: repaired)
+        XCTAssertEqual(remapped["canonical"], [oldRow])
+        XCTAssertNil(remapped["old"])
+        XCTAssertNil(remapped["intermediate"])
+    }
+
+    @MainActor
+    func testBlockingImportMessageKeepsHeaderAndMalformedLineContext() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+
+        router.beginImport(csvText: "")
+        guard case .failed(let emptyMessage) = router.importState else {
+            return XCTFail("пустой файл должен завершаться диагностикой")
+        }
+        XCTAssertTrue(emptyMessage.contains("отсутствует заголовок"))
+
+        router.beginImport(csvText: "number,court,url\n1,Суд,\"https://x.sudrf.ru/\n")
+        guard case .failed(let malformedMessage) = router.importState else {
+            return XCTFail("незакрытая кавычка должна завершаться диагностикой")
+        }
+        XCTAssertTrue(malformedMessage.contains("Строки 2–3"))
+    }
+
     // MARK: Классификация строк
 
     private func row(_ number: String, _ court: String, _ url: String,
@@ -148,6 +300,13 @@ final class CaseImportTests: XCTestCase {
         // sudrf без параметров карточки — тоже пропуск, а не падение.
         XCTAssertEqual(reason("https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo"),
                        CaseImporter.reasonBadURL)
+
+        let unknownCourt = row(
+            "2-1/2026", "Новый районный суд",
+            "https://new-court--region.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=1&case_uid=u&delo_id=1540005")
+        guard case .seed = CaseImporter.classify(unknownCourt) else {
+            return XCTFail("корректный неизвестный sudrf.ru host нельзя отклонять автоматически")
+        }
     }
 
     // MARK: Сшивание по УИД

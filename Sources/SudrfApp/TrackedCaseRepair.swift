@@ -25,6 +25,41 @@ struct RepairCaptchaGroup: Equatable, Identifiable {
     var courtTitle: String { requests.first?.courtTitle ?? host }
 }
 
+/// Конкретный результат ремонта одной сохранённой карточки. `caseKey` остаётся
+/// ключом карточки, с которой начался ремонт: импорт может сопоставить событие
+/// со своей исходной строкой даже после merge в другой persistent key.
+struct CaseRepairEvent: Equatable, Identifiable {
+    enum Kind: String, Equatable {
+        case rerouted
+        case reanchored
+        case restoredMaterial
+        case merged
+        case firstInstanceNotFound
+        case firstInstanceAmbiguous
+        case transient
+        case captcha
+        case unsupportedCourt
+        case cardParsing
+    }
+
+    let kind: Kind
+    let caseKey: String
+    let oldKey: String
+    let newKey: String?
+    let oldLocator: String
+    let newLocator: String?
+    let oldCaseNumber: String
+    let newCaseNumber: String?
+    let oldCourtTitle: String
+    let newCourtTitle: String?
+    let formURL: URL?
+
+    var id: String {
+        [kind.rawValue, caseKey, oldKey, newKey ?? "", oldLocator,
+         newLocator ?? "", formURL?.absoluteString ?? ""].joined(separator: "|")
+    }
+}
+
 struct CaseRepairSummary: Equatable {
     var merged = 0
     /// Восстановлена каноническая карточка дела первой инстанции.
@@ -43,6 +78,18 @@ struct CaseRepairSummary: Equatable {
     /// Отдельно от `unresolved`: captcha — действие пользователя, а не
     /// невозможность сопоставления карточки.
     var captchaRequests: [RepairCaptchaRequest] = []
+    /// Детали нужны batch-потребителям; legacy `text` и `hasReport` сохраняют
+    /// прежнюю семантику фонового глобального repair.
+    var events: [CaseRepairEvent] = []
+
+    var unresolvedEvents: [CaseRepairEvent] {
+        events.filter {
+            $0.kind == .firstInstanceNotFound
+                || $0.kind == .firstInstanceAmbiguous
+                || $0.kind == .unsupportedCourt
+                || $0.kind == .cardParsing
+        }
+    }
 
     var captchaGroups: [RepairCaptchaGroup] {
         Dictionary(grouping: captchaRequests, by: \.host)
@@ -61,6 +108,12 @@ struct CaseRepairSummary: Equatable {
         !affectedCaseKeys.isEmpty || !keyRemaps.isEmpty
     }
 
+    /// Отличает фактически сохранённую/показываемую часть прохода от ошибки,
+    /// произошедшей до первого результата.
+    var hasAnyResult: Bool {
+        hasReport || hasProjectionChanges || !events.isEmpty
+    }
+
     /// Слияние дублей и последующее переякоривание могут дать цепочку
     /// `старый -> промежуточный -> канонический`. Потребители всегда должны
     /// получать конечный ключ, независимо от порядка операций repair.
@@ -71,6 +124,77 @@ struct CaseRepairSummary: Equatable {
             current = next
         }
         return current
+    }
+
+    /// Keeps an import report tied to its own persistent-key graph when it
+    /// waits behind a global repair pass.
+    func filtered(for keys: Set<String>) -> CaseRepairSummary {
+        let related = Self.relatedKeys(startingWith: keys, remaps: keyRemaps)
+        var filtered = CaseRepairSummary()
+        filtered.keyRemaps = keyRemaps.filter {
+            related.contains($0.key) || related.contains($0.value)
+        }
+        filtered.affectedCaseKeys = affectedCaseKeys.intersection(related)
+        filtered.captchaRequests = captchaRequests.filter { related.contains($0.key) }
+        filtered.events = events.filter { event in
+            related.contains(event.caseKey) || related.contains(event.oldKey)
+                || event.newKey.map { related.contains($0) } == true
+        }
+        for event in filtered.events {
+            switch event.kind {
+            case .merged:
+                filtered.merged += 1
+            case .reanchored:
+                filtered.reanchored += 1
+            case .restoredMaterial:
+                filtered.restoredMaterials += 1
+            case .rerouted:
+                filtered.rerouted += 1
+            case .firstInstanceNotFound, .unsupportedCourt, .cardParsing:
+                filtered.notFound.append(event.newCaseNumber ?? event.oldCaseNumber)
+            case .firstInstanceAmbiguous:
+                filtered.ambiguous.append(event.newCaseNumber ?? event.oldCaseNumber)
+            case .transient:
+                filtered.transient += 1
+            case .captcha:
+                break
+            }
+        }
+        filtered.merged = max(filtered.merged, filtered.keyRemaps.count)
+        filtered.notFound = Self.unique(filtered.notFound)
+        filtered.ambiguous = Self.unique(filtered.ambiguous)
+        return filtered
+    }
+
+    var relatedCaseKeys: Set<String> {
+        var keys = affectedCaseKeys
+        keys.formUnion(keyRemaps.keys)
+        keys.formUnion(keyRemaps.values)
+        keys.formUnion(captchaRequests.map(\.key))
+        for event in events {
+            keys.insert(event.caseKey)
+            keys.insert(event.oldKey)
+            if let key = event.newKey { keys.insert(key) }
+        }
+        return keys
+    }
+
+    mutating func merge(_ other: CaseRepairSummary) {
+        merged += other.merged
+        reanchored += other.reanchored
+        restoredMaterials += other.restoredMaterials
+        rerouted += other.rerouted
+        transient += other.transient
+        notFound = Self.unique(notFound + other.notFound)
+        ambiguous = Self.unique(ambiguous + other.ambiguous)
+        keyRemaps.merge(other.keyRemaps) { _, new in new }
+        affectedCaseKeys.formUnion(other.affectedCaseKeys)
+        for request in other.captchaRequests where !captchaRequests.contains(request) {
+            captchaRequests.append(request)
+        }
+        for event in other.events where !events.contains(event) {
+            events.append(event)
+        }
     }
 
     var text: String {
@@ -101,6 +225,31 @@ struct CaseRepairSummary: Equatable {
         var seen = Set<String>()
         return values.filter { seen.insert($0).inserted }
     }
+
+    private static func relatedKeys(startingWith keys: Set<String>, remaps: [String: String])
+        -> Set<String> {
+        var related = keys
+        var changed = true
+        while changed {
+            changed = false
+            for (old, new) in remaps where related.contains(old) || related.contains(new) {
+                let count = related.count
+                related.insert(old)
+                related.insert(new)
+                changed = changed || related.count != count
+            }
+        }
+        return related
+    }
+}
+
+/// Сохранённая часть repair не должна исчезать из импортного отчёта, если
+/// следующая карточка того же batch не смогла завершить свой commit.
+struct CaseRepairPartialError: Error, LocalizedError {
+    let summary: CaseRepairSummary
+    let underlying: Error
+
+    var errorDescription: String? { underlying.localizedDescription }
 }
 
 /// Идемпотентный ремонт сохранённых цепочек. Все удаления выполняются только
@@ -110,6 +259,12 @@ final class TrackedCaseRepairCoordinator {
     struct Outcome {
         var effectiveKey: String
         var summary: CaseRepairSummary
+    }
+
+    private struct ReconciledOrigin {
+        let survivor: TrackedCaseRecord
+        let remaps: [String: String]
+        let previousContexts: [String: MovementContext]
     }
 
     private let store: TrackedStore
@@ -130,6 +285,7 @@ final class TrackedCaseRepairCoordinator {
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
     private var completedKey: String { "\(Self.migrationID).completed" }
     private var runningTask: Task<CaseRepairSummary, Error>?
+    private var scopedTask: Task<CaseRepairSummary, Error>?
 
     init(store: TrackedStore, client: SudrfClient, originResolver: any CaseOriginResolving,
          defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init,
@@ -160,60 +316,174 @@ final class TrackedCaseRepairCoordinator {
 
     func runAll() async throws -> CaseRepairSummary {
         if let runningTask { return try await runningTask.value }
-        let task = Task { @MainActor [self] in try await runAllPass() }
+        if let scopedTask {
+            _ = try await scopedTask.value
+            return try await runAll()
+        }
+        let task = Task { @MainActor [self] in
+            defer { runningTask = nil }
+            return try await runAllPass()
+        }
         runningTask = task
-        defer { runningTask = nil }
         return try await task.value
+    }
+
+    /// Импортный batch не должен получить хвост общего startup repair: сначала
+    /// завершаем уже идущий проход, затем ремонтируем только его persistent keys.
+    func run(keys: Set<String>) async throws -> CaseRepairSummary {
+        guard !keys.isEmpty else { return CaseRepairSummary() }
+        var scopedKeys = keys
+        var preceding = CaseRepairSummary()
+        while true {
+            if let runningTask {
+                do {
+                    let summary = try await runningTask.value.filtered(for: scopedKeys)
+                    preceding.merge(summary)
+                    scopedKeys.formUnion(summary.relatedCaseKeys)
+                } catch let partial as CaseRepairPartialError {
+                    preceding.merge(partial.summary.filtered(for: scopedKeys))
+                    throw Self.partialError(partial.underlying, summary: preceding)
+                } catch {
+                    throw Self.partialError(error, summary: preceding)
+                }
+                continue
+            }
+            if let scopedTask {
+                do {
+                    let summary = try await scopedTask.value.filtered(for: scopedKeys)
+                    preceding.merge(summary)
+                    scopedKeys.formUnion(summary.relatedCaseKeys)
+                } catch let partial as CaseRepairPartialError {
+                    preceding.merge(partial.summary.filtered(for: scopedKeys))
+                    throw Self.partialError(partial.underlying, summary: preceding)
+                } catch {
+                    throw Self.partialError(error, summary: preceding)
+                }
+                continue
+            }
+            break
+        }
+        let keysForPass = scopedKeys
+        let task = Task { @MainActor [self] in
+            defer { scopedTask = nil }
+            return try await runScopedPass(keys: keysForPass)
+        }
+        scopedTask = task
+        do {
+            preceding.merge(try await task.value)
+            return preceding
+        } catch let partial as CaseRepairPartialError {
+            preceding.merge(partial.summary)
+            throw Self.partialError(partial.underlying, summary: preceding)
+        } catch {
+            throw Self.partialError(error, summary: preceding)
+        }
+    }
+
+    /// Выполняет синхронную запись сразу после последней проверки простоя.
+    /// Между этой проверкой и `operation` нет suspension point, поэтому новый
+    /// repair не успеет начать запись в тот же `ModelContext`.
+    func performWhenIdle<T>(_ operation: () throws -> T) async throws -> T {
+        while true {
+            if let runningTask {
+                _ = try? await runningTask.value
+                continue
+            }
+            if let scopedTask {
+                _ = try? await scopedTask.value
+                continue
+            }
+            return try operation()
+        }
+    }
+
+    /// Ожидает текущие repair-задачи. Для записи используйте
+    /// `performWhenIdle`, чтобы idle-проверка и commit оставались одним ходом.
+    func waitUntilIdle() async {
+        _ = try? await performWhenIdle {}
     }
 
     private func runAllPass() async throws -> CaseRepairSummary {
         var summary = CaseRepairSummary()
-        let normalized = try normalizeStoredKoAPRoutes()
-        summary.rerouted += normalized.count
-        summary.affectedCaseKeys.formUnion(normalized.keys)
+        do {
+            let normalized = try normalizeStoredKoAPRoutes()
+            summary.rerouted += normalized.count
+            summary.affectedCaseKeys.formUnion(normalized.keys)
+            summary.events.append(contentsOf: normalized.events)
 
-        // Снимок ключей после локального слияния: сеть не должна работать с уже
-        // удалёнными managed objects.
-        let keys = try store.allForMutation().compactMap { rec -> String? in
-            guard let ctx = rec.context, shouldRepair(ctx) else { return nil }
-            return rec.key
+            // Снимок ключей после локального слияния: сеть не должна работать с уже
+            // удалёнными managed objects.
+            let keys = try store.allForMutation().compactMap { rec -> String? in
+                guard let ctx = rec.context, shouldRepair(ctx) else { return nil }
+                return rec.key
+            }
+            for key in keys {
+                guard !Task.isCancelled else { break }
+                guard shouldAttempt(key: key) else { continue }
+                try await repairHigherAnchor(key: key, summary: &summary)
+            }
+            summary.notFound = Self.unique(summary.notFound)
+            summary.ambiguous = Self.unique(summary.ambiguous)
+            return summary
+        } catch {
+            summary.notFound = Self.unique(summary.notFound)
+            summary.ambiguous = Self.unique(summary.ambiguous)
+            throw Self.partialError(error, summary: summary)
         }
-        for key in keys {
-            guard !Task.isCancelled else { break }
-            guard shouldAttempt(key: key) else { continue }
-            try await repairHigherAnchor(key: key, summary: &summary)
+    }
+
+    private func runScopedPass(keys: Set<String>) async throws -> CaseRepairSummary {
+        var summary = CaseRepairSummary()
+        do {
+            let normalized = try normalizeStoredKoAPRoutes(keys: keys)
+            summary.rerouted += normalized.count
+            summary.affectedCaseKeys.formUnion(normalized.keys)
+            summary.events.append(contentsOf: normalized.events)
+
+            // A preceding repair may merge and delete another requested record.
+            // Keep only persistent keys here and let `repairHigherAnchor` refetch.
+            let repairKeys = try store.allForMutation().compactMap { record -> String? in
+                guard (keys.contains(record.key) || !Set(record.legacyKeyAliases).isDisjoint(with: keys)),
+                      let context = record.context,
+                      shouldRepair(context) else { return nil }
+                return record.key
+            }
+            for key in repairKeys {
+                guard !Task.isCancelled,
+                      try store.recordForMutation(forKey: key) != nil,
+                      shouldAttempt(key: key) else { continue }
+                try await repairHigherAnchor(key: key, caseKey: key, summary: &summary)
+            }
+            summary.notFound = Self.unique(summary.notFound)
+            summary.ambiguous = Self.unique(summary.ambiguous)
+            return summary
+        } catch {
+            summary.notFound = Self.unique(summary.notFound)
+            summary.ambiguous = Self.unique(summary.ambiguous)
+            throw Self.partialError(error, summary: summary)
         }
-        summary.notFound = Self.unique(summary.notFound)
-        summary.ambiguous = Self.unique(summary.ambiguous)
-        return summary
+    }
+
+    private static func partialError(_ error: Error, summary: CaseRepairSummary) -> Error {
+        guard summary.hasAnyResult else { return error }
+        return CaseRepairPartialError(summary: summary,
+                                      underlying: (error as? CaseRepairPartialError)?.underlying ?? error)
     }
 
     /// Точечный preflight для RefreshCenter. Общий reconciler гарантирует,
     /// что refresh продолжится уже по каноническому persistent locator.
     func repairIfNeeded(key: String) async throws -> Outcome {
-        if let runningTask {
-            let summary = try await runningTask.value
-            return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
-        }
-        var summary = CaseRepairSummary()
-        let normalized = try normalizeStoredKoAPRoutes()
-        summary.rerouted += normalized.count
-        summary.affectedCaseKeys.formUnion(normalized.keys)
-        let localKey = summary.effectiveKey(for: key)
-        guard let rec = try store.recordForMutation(forLocator: localKey),
-              let ctx = rec.context,
-              shouldRepair(ctx),
-              shouldAttempt(key: localKey) else {
-            return Outcome(effectiveKey: localKey, summary: summary)
-        }
-        try await repairHigherAnchor(key: localKey, summary: &summary)
+        let summary = try await run(keys: [key])
         return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
     }
 
-    private func repairHigherAnchor(key: String, summary: inout CaseRepairSummary,
+    private func repairHigherAnchor(key: String, caseKey: String? = nil,
+                                    summary: inout CaseRepairSummary,
                                     allowAutoSolve: Bool = true) async throws {
         guard let rec = try store.recordForMutation(forLocator: key),
               let anchorContext = rec.context else { return }
+        let anchorKey = rec.key
+        let eventKey = caseKey ?? anchorKey
         // Самостоятельный материал уже является корректным базовым якорем:
         // он участвует в локальном UID-слиянии, но не требует даже загрузки
         // карточки. Сетевой поиск нужен только 13/13а с проверяемым родителем.
@@ -234,10 +504,13 @@ final class TrackedCaseRepairCoordinator {
                     rec.judicialUID = TrackedStore.normalizedUID(uid)
                 }
                 rec.movementFetchedAt = nil
-                try store.synchronizeCourtActMetadata(caseKey: rec.key)
+                try store.synchronizeCourtActMetadata(caseKey: anchorKey)
                 try store.save()
                 summary.rerouted += 1
-                summary.affectedCaseKeys.insert(rec.key)
+                summary.affectedCaseKeys.insert(anchorKey)
+                appendEvent(.rerouted, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, newKey: anchorKey, new: effectiveContext,
+                            summary: &summary)
             }
             if Self.mayBecomeMainCase(effectiveContext) {
                 let origin = try await originResolver.resolveMainCase(
@@ -251,6 +524,8 @@ final class TrackedCaseRepairCoordinator {
                     canonicalCard: origin.card) else {
                     summary.transient += 1
                     recordTransient(key: key)
+                    appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                                old: effectiveContext, summary: &summary)
                     return
                 }
                 clearRetry(key: key)
@@ -260,6 +535,9 @@ final class TrackedCaseRepairCoordinator {
                 summary.affectedCaseKeys.insert(result.survivor.key)
                 summary.reanchored += 1
                 summary.merged += result.remaps.count
+                appendResolvedEvents(result, kind: .reanchored, caseKey: eventKey,
+                                     oldKey: anchorKey, old: effectiveContext,
+                                     canonical: canonical, summary: &summary)
                 return
             }
             if normalized.role == .authorityJudicialReview
@@ -272,6 +550,8 @@ final class TrackedCaseRepairCoordinator {
                     || effectiveContext.baseInstanceLevel == .material else {
                 summary.notFound.append(effectiveContext.caseNumber)
                 recordUnsupported(key: key)
+                appendEvent(.unsupportedCourt, caseKey: eventKey, oldKey: anchorKey,
+                            old: effectiveContext, summary: &summary)
                 return
             }
             let origin = try await originResolver.resolve(anchorContext: effectiveContext,
@@ -283,6 +563,8 @@ final class TrackedCaseRepairCoordinator {
                 canonicalCard: origin.card) else {
                 summary.transient += 1
                 recordTransient(key: key)
+                appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                            old: effectiveContext, summary: &summary)
                 return
             }
             clearRetry(key: key)
@@ -296,6 +578,11 @@ final class TrackedCaseRepairCoordinator {
                 summary.reanchored += 1
             }
             summary.merged += result.remaps.count
+            appendResolvedEvents(result,
+                                 kind: canonical.baseInstanceLevel == .material
+                                    ? .restoredMaterial : .reanchored,
+                                 caseKey: eventKey, oldKey: anchorKey, old: effectiveContext,
+                                 canonical: canonical, summary: &summary)
         } catch let error as TrackedStoreCommitError {
             // Rollback leaves both the record and retry/defaults state untouched.
             throw error
@@ -313,14 +600,20 @@ final class TrackedCaseRepairCoordinator {
             case .ambiguous:
                 summary.ambiguous.append(anchorContext.caseNumber)
                 if Self.mayBecomeMainCase(anchorContext) { recordTransient(key: key) }
+                appendEvent(.firstInstanceAmbiguous, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             case .notFound:
                 // Официальная ссылка может вести на карточку, которую сам
                 // нижестоящий суд не опубликовал в открытой картотеке. После
                 // исчерпывающего поиска по УИД и точному номеру это не ошибка
                 // сопоставления: молча отложим новый поиск на потом.
                 recordTransient(key: key)
+                appendEvent(.firstInstanceNotFound, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             case .unsupportedCourt:
                 summary.notFound.append(anchorContext.caseNumber)
+                appendEvent(.unsupportedCourt, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             }
         } catch let error as SudrfError {
             if case .captchaRequired(let formURL) = error {
@@ -343,16 +636,20 @@ final class TrackedCaseRepairCoordinator {
                         await CaptchaTokenStore.shared.store(
                             token, domain: formURL.host ?? anchorContext.searchDomain)
                         try await repairHigherAnchor(
-                            key: key, summary: &summary, allowAutoSolve: false)
+                            key: key, caseKey: eventKey, summary: &summary, allowAutoSolve: false)
                         return
                     }
                 }
                 summary.captchaRequests.append(RepairCaptchaRequest(
                     key: key, caseNumber: anchorContext.caseNumber,
                     courtTitle: anchorContext.courtTitle, formURL: formURL))
-            } else if case .transientNetworkError = error {
+                appendEvent(.captcha, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, formURL: formURL, summary: &summary)
+            } else if Self.isTransientSourceError(error) {
                 summary.transient += 1
                 recordTransient(key: key)
+                appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             } else {
                 if Self.isPublishedKoAPReview(anchorContext),
                    Self.isTerminalCardReadError(error) {
@@ -367,10 +664,18 @@ final class TrackedCaseRepairCoordinator {
                 summary.notFound.append(anchorContext.caseNumber)
                 if case .parsing = error { recordUnsupported(key: key) }
                 if case .searchModuleUnavailable = error { recordUnsupported(key: key) }
+                let kind: CaseRepairEvent.Kind
+                if case .parsing = error { kind = .cardParsing }
+                else if case .searchModuleUnavailable = error { kind = .unsupportedCourt }
+                else { kind = .firstInstanceNotFound }
+                appendEvent(kind, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             }
         } catch {
             summary.transient += 1
             recordTransient(key: key)
+            appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                        old: anchorContext, summary: &summary)
         }
     }
 
@@ -392,12 +697,46 @@ final class TrackedCaseRepairCoordinator {
                                     branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
     }
 
+    private func appendEvent(_ kind: CaseRepairEvent.Kind, caseKey: String,
+                             oldKey: String, old: MovementContext,
+                             newKey: String? = nil, new: MovementContext? = nil,
+                             formURL: URL? = nil,
+                             summary: inout CaseRepairSummary) {
+        let new = new ?? old
+        summary.events.append(CaseRepairEvent(
+            kind: kind, caseKey: caseKey, oldKey: oldKey, newKey: newKey ?? oldKey,
+            oldLocator: old.key, newLocator: new.key,
+            oldCaseNumber: old.caseNumber, newCaseNumber: new.caseNumber,
+            oldCourtTitle: old.courtTitle, newCourtTitle: new.courtTitle,
+            formURL: formURL))
+    }
+
+    private func appendResolvedEvents(_ result: ReconciledOrigin,
+                                      kind: CaseRepairEvent.Kind, caseKey: String,
+                                      oldKey: String, old: MovementContext,
+                                      canonical: MovementContext,
+                                      summary: inout CaseRepairSummary) {
+        let resolved = result.survivor.context ?? canonical
+        appendEvent(kind, caseKey: caseKey, oldKey: oldKey, old: old,
+                    newKey: result.survivor.key, new: resolved, summary: &summary)
+        for (mergedKey, survivorKey) in result.remaps {
+            guard let merged = result.previousContexts[mergedKey] else { continue }
+            appendEvent(.merged, caseKey: caseKey, oldKey: mergedKey, old: merged,
+                        newKey: survivorKey, new: resolved, summary: &summary)
+        }
+    }
+
     /// Исправляет сохранённые уровни и точные цели без сети. Записи admj без
     /// УИД остаются кандидатами сетевого прохода, где роль уточняется по карточке.
-    private func normalizeStoredKoAPRoutes() throws -> (count: Int, keys: Set<String>) {
-        var changedCount = 0
+    private func normalizeStoredKoAPRoutes(keys: Set<String>? = nil)
+        throws -> (count: Int, keys: Set<String>, events: [CaseRepairEvent]) {
         var changedKeys = Set<String>()
-        for rec in try store.allForMutation() {
+        var events: [CaseRepairEvent] = []
+        let records = try store.allForMutation().filter { record in
+            guard let keys else { return true }
+            return keys.contains(record.key) || !Set(record.legacyKeyAliases).isDisjoint(with: keys)
+        }
+        for rec in records {
             guard let context = rec.context, context.cartotekaId.hasPrefix("adm") else { continue }
             let normalized = normalizedKoAPContext(context, card: nil)
             guard normalized.changed else { continue }
@@ -407,11 +746,16 @@ final class TrackedCaseRepairCoordinator {
             }
             rec.movementFetchedAt = nil
             try store.synchronizeCourtActMetadata(caseKey: rec.key)
-            changedCount += 1
             changedKeys.insert(rec.key)
+            events.append(CaseRepairEvent(
+                kind: .rerouted, caseKey: rec.key, oldKey: rec.key, newKey: rec.key,
+                oldLocator: context.key, newLocator: normalized.context.key,
+                oldCaseNumber: context.caseNumber, newCaseNumber: normalized.context.caseNumber,
+                oldCourtTitle: context.courtTitle, newCourtTitle: normalized.context.courtTitle,
+                formURL: nil))
         }
-        if changedCount > 0 { try store.save() }
-        return (changedCount, changedKeys)
+        if !changedKeys.isEmpty { try store.save() }
+        return (changedKeys.count, changedKeys, events)
     }
 
     private func normalizedKoAPContext(_ original: MovementContext, card: CaseCard?)
@@ -501,7 +845,7 @@ final class TrackedCaseRepairCoordinator {
         anchor: TrackedCaseRecord,
         canonicalContext: MovementContext,
         canonicalCard: CaseCard
-    ) throws -> (survivor: TrackedCaseRecord, remaps: [String: String])? {
+    ) throws -> ReconciledOrigin? {
         let movement = Self.movement(from: canonicalCard, context: canonicalContext)
         guard let base = TrackedCaseIdentity.observation(
             context: canonicalContext, movement: movement, observedAt: now()) else {
@@ -521,7 +865,12 @@ final class TrackedCaseRepairCoordinator {
             outcome: base.outcome,
             provenance: base.provenance)
 
-        let before = Set(try store.allForMutation().map(\.key))
+        let recordsBefore = try store.allForMutation()
+        let before = Set(recordsBefore.map(\.key))
+        var previousContexts: [String: MovementContext] = [:]
+        for record in recordsBefore {
+            if let context = record.context { previousContexts[record.key] = context }
+        }
         let survivor = try store.reconcileAndUpsert(
             context: canonicalContext,
             snapshot: MovementDerivation.snapshot(from: movement, context: canonicalContext),
@@ -538,7 +887,8 @@ final class TrackedCaseRepairCoordinator {
             .contains(card: observation.cardIdentity) else { return nil }
         let removed = before.subtracting(Set(try store.allForMutation().map(\.key)))
         let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, survivor.key) })
-        return (survivor, remaps)
+        return ReconciledOrigin(survivor: survivor, remaps: remaps,
+                                previousContexts: previousContexts)
     }
 
     /// Единственное атомарное слияние persistent records. Его используют и
@@ -692,6 +1042,17 @@ final class TrackedCaseRepairCoordinator {
         if case .parsing = error { return true }
         if case .searchModuleUnavailable = error { return true }
         return false
+    }
+
+    private static func isTransientSourceError(_ error: SudrfError) -> Bool {
+        switch error {
+        case .transientNetworkError, .sourceMaintenance, .caseCardTemporarilyUnavailable:
+            return true
+        case .http(let status):
+            return (500..<600).contains(status)
+        default:
+            return false
+        }
     }
 
     private static func normalizedMovement(_ movement: CaseMovement?, context: MovementContext?) -> CaseMovement? {

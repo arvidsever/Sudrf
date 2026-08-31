@@ -37,6 +37,31 @@ private actor PromotionOriginResolver: CaseOriginResolving {
 }
 
 @MainActor
+private final class SuspendedCardFetch {
+    private var started: CheckedContinuation<Void, Never>?
+    private var pending: CheckedContinuation<CaseCard, Never>?
+
+    func fetch() async -> CaseCard {
+        await withCheckedContinuation { continuation in
+            pending = continuation
+            started?.resume()
+            started = nil
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard pending == nil else { return }
+        await withCheckedContinuation { started = $0 }
+    }
+
+    func resume(with card: CaseCard) {
+        let continuation = pending
+        pending = nil
+        continuation?.resume(returning: card)
+    }
+}
+
+@MainActor
 final class TrackedCaseRepairTests: XCTestCase {
     private let uid = "11RS0001-01-2025-011255-03"
 
@@ -588,6 +613,8 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(summary.captchaGroups.count, 1)
         XCTAssertEqual(summary.captchaGroups.first?.host, "vs--komi.sudrf.ru")
         XCTAssertEqual(summary.captchaGroups.first?.caseNumbers, ["33-10/2026", "33-9/2026"])
+        XCTAssertEqual(Set(summary.events.filter { $0.kind == .captcha }.map(\.caseKey)),
+                       Set([first.key, second.key]))
         XCTAssertTrue(summary.hasReport)
     }
 
@@ -727,6 +754,8 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertTrue(first.unresolved.isEmpty)
         XCTAssertTrue(first.notFound.isEmpty)
         XCTAssertTrue(first.ambiguous.isEmpty)
+        XCTAssertTrue(first.unresolvedEvents.isEmpty,
+                      "noReference остаётся неошибочным результатом")
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(calls, 1, "завершённый v5-проход не должен повторяться на каждом запуске")
         XCTAssertNotNil(store.record(forKey: appeal.key))
@@ -756,6 +785,8 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         XCTAssertFalse(first.hasReport)
         XCTAssertTrue(first.notFound.isEmpty)
+        XCTAssertEqual(first.events.filter { $0.kind == .firstInstanceNotFound }.map(\.caseKey),
+                       [appeal.key])
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(calls, 1, "повторный поиск должен ждать backoff, а не запускаться сразу")
         XCTAssertNotNil(store.record(forKey: appeal.key))
@@ -891,9 +922,415 @@ final class TrackedCaseRepairTests: XCTestCase {
         let calls = await resolver.calls
 
         XCTAssertEqual(first.transient, 1)
+        let event = try XCTUnwrap(first.events.first { $0.kind == .transient })
+        XCTAssertEqual(event.caseKey, appeal.key)
+        XCTAssertEqual(event.oldKey, appeal.key)
+        XCTAssertEqual(event.newKey, appeal.key)
+        XCTAssertEqual(event.oldCaseNumber, appeal.caseNumber)
+        XCTAssertEqual(event.oldCourtTitle, appeal.courtTitle)
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(calls, 1)
         XCTAssertNotNil(store.record(forKey: appeal.key))
+    }
+
+    func testTemporarySourceFailuresUseTransientBackoffAndEvents() async throws {
+        func assertTransient(_ error: SudrfError) async throws {
+            let store = TrackedStore(inMemory: true)
+            let appeal = context(level: .appeal, number: "33-10/2026",
+                                 domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                                 courtLevel: .subject)
+            _ = try store.upsert(context: appeal, snapshot: nil, collections: [])
+            let suite = defaults()
+            let coordinator = TrackedCaseRepairCoordinator(
+                store: store, client: SudrfClient(), originResolver: unusedResolver(),
+                defaults: suite, now: { Date(timeIntervalSince1970: 1_000) },
+                anchorCardFetcher: { _ in throw error })
+
+            let summary = try await coordinator.runAll()
+
+            XCTAssertEqual(summary.transient, 1)
+            XCTAssertTrue(summary.notFound.isEmpty)
+            XCTAssertEqual(summary.events.filter { $0.kind == .transient }.map(\.caseKey),
+                           [appeal.key])
+            XCTAssertFalse(summary.events.contains { $0.kind == .firstInstanceNotFound })
+            XCTAssertEqual((suite.dictionary(forKey: "importChainRepair.v6.attempts")
+                as? [String: Int])?[appeal.key], 1)
+        }
+
+        try await assertTransient(.sourceMaintenance(domain: "vs--komi.sudrf.ru"))
+        try await assertTransient(.caseCardTemporarilyUnavailable)
+        try await assertTransient(.http(status: 503))
+    }
+
+    func testScopedRunExcludesUnrelatedRecords() async throws {
+        let store = TrackedStore(inMemory: true)
+        var target = context(level: .appeal, number: "33-10/2026",
+                             domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                             courtLevel: .subject)
+        target.judicialUID = "11RS0001-01-2026-000010-10"
+        var unrelated = context(level: .appeal, number: "33-11/2026",
+                                domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                                courtLevel: .subject)
+        unrelated.judicialUID = "11RS0001-01-2026-000011-11"
+        let targetRecord = try store.upsert(context: target, snapshot: nil, collections: [])
+        let unrelatedRecord = try store.upsert(context: unrelated, snapshot: nil, collections: [])
+        var fetched: [String] = []
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.transient),
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetched.append(context.caseNumber)
+                return CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                                caseNumber: context.caseNumber)
+            })
+
+        let summary = try await coordinator.run(keys: [targetRecord.key])
+
+        XCTAssertEqual(fetched, [target.caseNumber])
+        XCTAssertEqual(summary.events.filter { $0.kind == .transient }.map(\.caseKey),
+                       [targetRecord.key])
+        XCTAssertNotNil(store.record(forKey: unrelatedRecord.key))
+    }
+
+    func testScopedRunUsesPersistentKeyWhenCaseNumbersMatchAcrossCourts() async throws {
+        let store = TrackedStore(inMemory: true)
+        var komi = context(level: .appeal, number: "33-10/2026",
+                           domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                           courtLevel: .subject)
+        komi.judicialUID = "11RS0001-01-2026-000010-10"
+        var petersburg = context(level: .appeal, number: "33-10/2026",
+                                domain: "oblsud--spb.sudrf.ru", cartoteka: "g2",
+                                courtLevel: .subject)
+        petersburg.judicialUID = "78RS0001-01-2026-000010-10"
+        petersburg.courtTitle = "Санкт-Петербургский городской суд"
+        petersburg.courtCode = "78RS0001"
+        petersburg.region = "Санкт-Петербург"
+        let komiRecord = try store.upsert(context: komi, snapshot: nil, collections: [])
+        let petersburgRecord = try store.upsert(context: petersburg, snapshot: nil, collections: [])
+        var fetchedDomains: [String] = []
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.transient),
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetchedDomains.append(context.searchDomain)
+                return CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                                caseNumber: context.caseNumber)
+            })
+
+        let summary = try await coordinator.run(keys: [komiRecord.key])
+
+        XCTAssertEqual(fetchedDomains, [komi.searchDomain])
+        XCTAssertTrue(summary.events.allSatisfy { $0.caseKey == komiRecord.key })
+        XCTAssertNotNil(store.record(forKey: petersburgRecord.key))
+    }
+
+    func testScopedRunKeepsRelatedGlobalRemapAfterAwaiting() async throws {
+        let store = TrackedStore(inMemory: true)
+        var imported = context(level: .appeal, number: "33-10/2026",
+                               domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                               courtLevel: .subject)
+        imported.judicialUID = uid
+        let replacementUID = "11RS0001-01-2026-009999-11"
+        var canonical = context(level: .first, number: "2-7212/2026",
+                                domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                                courtLevel: .district)
+        canonical.judicialUID = replacementUID
+        var unrelated = context(level: .appeal, number: "33-11/2026",
+                                domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                                courtLevel: .subject)
+        unrelated.judicialUID = "11RS0001-01-2026-000011-11"
+        let canonicalRecord = try store.upsert(context: canonical, snapshot: nil, collections: [])
+        let unrelatedRecord = try store.upsert(context: unrelated, snapshot: nil, collections: [])
+        let importedRecord = try store.upsert(context: imported, snapshot: nil, collections: [])
+        canonicalRecord.addedAt = Date(timeIntervalSince1970: 50)
+        unrelatedRecord.addedAt = Date(timeIntervalSince1970: 100)
+        importedRecord.addedAt = Date(timeIntervalSince1970: 200)
+        try store.save()
+        let importedKey = importedRecord.key
+        let canonicalKey = canonicalRecord.key
+        let unrelatedKey = unrelatedRecord.key
+
+        let lowerCard = CaseCard(rawText: "", actText: nil, uid: replacementUID,
+                                 caseNumber: canonical.caseNumber)
+        let origin = ResolvedCaseOrigin(
+            court: canonical.searchCourt, branch: .general,
+            region: canonical.region, courtCode: canonical.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: canonical.caseNumber,
+                                     caseID: "lower-id", caseUID: "lower-guid"),
+            card: lowerCard)
+        let paused = SuspendedCardFetch()
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.resolved(origin)),
+            defaults: defaults(), anchorCardFetcher: { context in
+                if context.caseNumber == imported.caseNumber { return await paused.fetch() }
+                throw SudrfError.transientNetworkError(
+                    domain: context.searchDomain, code: .timedOut, attempt: 3)
+            })
+
+        let global = Task { @MainActor in try await coordinator.runAll() }
+        await paused.waitUntilStarted()
+        let scoped = Task { @MainActor in try await coordinator.run(keys: [importedKey]) }
+        await Task.yield()
+        paused.resume(with: CaseCard(
+            rawText: "", actText: nil, uid: imported.judicialUID,
+            caseNumber: imported.caseNumber,
+            lowerCourt: LowerCourtReference(courtTitle: canonical.courtTitle,
+                                            caseNumber: canonical.caseNumber)))
+
+        let globalSummary = try await global.value
+        let scopedSummary = try await scoped.value
+
+        XCTAssertEqual(globalSummary.keyRemaps[importedKey], canonicalKey)
+        XCTAssertEqual(scopedSummary.keyRemaps[importedKey], canonicalKey)
+        XCTAssertTrue(scopedSummary.events.contains {
+            $0.caseKey == importedKey && $0.kind == .reanchored
+        })
+        XCTAssertFalse(scopedSummary.events.contains { $0.caseKey == unrelatedKey })
+        XCTAssertEqual(scopedSummary.transient, 0)
+    }
+
+    func testScopedRunCarriesPersistedPartialSummaryAfterLaterSaveFailure() async throws {
+        let store = TrackedStore(inMemory: true)
+        var first = context(level: .appeal, number: "33-10/2026",
+                            domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                            courtLevel: .subject)
+        first.judicialUID = uid
+        var second = context(level: .appeal, number: "33-11/2026",
+                             domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                             courtLevel: .subject)
+        second.judicialUID = "11RS0001-01-2026-000011-11"
+        let replacementUID = "11RS0001-01-2026-009999-11"
+        var canonical = context(level: .first, number: "2-7212/2026",
+                                domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                                courtLevel: .district)
+        canonical.judicialUID = replacementUID
+        let canonicalRecord = try store.upsert(context: canonical, snapshot: nil, collections: [])
+        let secondRecord = try store.upsert(context: second, snapshot: nil, collections: [])
+        let firstRecord = try store.upsert(context: first, snapshot: nil, collections: [])
+        canonicalRecord.addedAt = Date(timeIntervalSince1970: 50)
+        secondRecord.addedAt = Date(timeIntervalSince1970: 100)
+        firstRecord.addedAt = Date(timeIntervalSince1970: 200)
+        try store.save()
+        let firstKey = firstRecord.key
+        let secondKey = secondRecord.key
+        let canonicalKey = canonicalRecord.key
+
+        let origin = ResolvedCaseOrigin(
+            court: canonical.searchCourt, branch: .general,
+            region: canonical.region, courtCode: canonical.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: canonical.caseNumber,
+                                     caseID: "lower-id", caseUID: "lower-guid"),
+            card: CaseCard(rawText: "", actText: nil, uid: replacementUID,
+                           caseNumber: canonical.caseNumber))
+        var fetched: [String] = []
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.resolved(origin)),
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetched.append(context.caseNumber)
+                if context.caseNumber == second.caseNumber { store.failNextSaveForTesting = true }
+                return CaseCard(
+                    rawText: "", actText: nil, uid: context.judicialUID,
+                    caseNumber: context.caseNumber,
+                    lowerCourt: LowerCourtReference(courtTitle: canonical.courtTitle,
+                                                    caseNumber: canonical.caseNumber))
+            })
+
+        do {
+            _ = try await coordinator.run(keys: [firstKey, secondKey])
+            XCTFail("late commit failure must carry the prior persisted repair")
+        } catch let partial as CaseRepairPartialError {
+            guard case .contextSave = partial.underlying as? TrackedStoreCommitError else {
+                return XCTFail("Expected context-save failure, got \(partial.underlying)")
+            }
+            XCTAssertEqual(partial.summary.keyRemaps[firstKey], canonicalKey)
+            XCTAssertEqual(partial.summary.reanchored, 1)
+            XCTAssertTrue(partial.summary.events.contains {
+                $0.caseKey == firstKey && $0.kind == .reanchored
+            })
+        }
+
+        XCTAssertEqual(fetched, [first.caseNumber, second.caseNumber])
+        XCTAssertNil(store.record(forKey: firstKey))
+        XCTAssertNotNil(store.record(forKey: canonicalKey))
+        XCTAssertNotNil(store.record(forKey: secondKey))
+    }
+
+    func testScopedRunFiltersGlobalPartialSummaryAfterAwaiting() async throws {
+        let store = TrackedStore(inMemory: true)
+        var imported = context(level: .appeal, number: "33-10/2026",
+                               domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                               courtLevel: .subject)
+        imported.judicialUID = uid
+        var unrelated = context(level: .appeal, number: "33-11/2026",
+                                domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                                courtLevel: .subject)
+        unrelated.judicialUID = "11RS0001-01-2026-000011-11"
+        let replacementUID = "11RS0001-01-2026-009999-11"
+        var canonical = context(level: .first, number: "2-7212/2026",
+                                domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                                courtLevel: .district)
+        canonical.judicialUID = replacementUID
+        let canonicalRecord = try store.upsert(context: canonical, snapshot: nil, collections: [])
+        let unrelatedRecord = try store.upsert(context: unrelated, snapshot: nil, collections: [])
+        let importedRecord = try store.upsert(context: imported, snapshot: nil, collections: [])
+        canonicalRecord.addedAt = Date(timeIntervalSince1970: 50)
+        unrelatedRecord.addedAt = Date(timeIntervalSince1970: 100)
+        importedRecord.addedAt = Date(timeIntervalSince1970: 200)
+        try store.save()
+        let importedKey = importedRecord.key
+        let unrelatedKey = unrelatedRecord.key
+        let canonicalKey = canonicalRecord.key
+
+        let origin = ResolvedCaseOrigin(
+            court: canonical.searchCourt, branch: .general,
+            region: canonical.region, courtCode: canonical.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: canonical.caseNumber,
+                                     caseID: "lower-id", caseUID: "lower-guid"),
+            card: CaseCard(rawText: "", actText: nil, uid: replacementUID,
+                           caseNumber: canonical.caseNumber))
+        let paused = SuspendedCardFetch()
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.resolved(origin)),
+            defaults: defaults(), anchorCardFetcher: { context in
+                if context.caseNumber == imported.caseNumber { return await paused.fetch() }
+                if context.caseNumber == unrelated.caseNumber { store.failNextSaveForTesting = true }
+                return CaseCard(
+                    rawText: "", actText: nil, uid: context.judicialUID,
+                    caseNumber: context.caseNumber,
+                    lowerCourt: LowerCourtReference(courtTitle: canonical.courtTitle,
+                                                    caseNumber: canonical.caseNumber))
+            })
+
+        let global = Task { @MainActor in try await coordinator.runAll() }
+        await paused.waitUntilStarted()
+        let scoped = Task { @MainActor in try await coordinator.run(keys: [importedKey]) }
+        await Task.yield()
+        paused.resume(with: CaseCard(
+            rawText: "", actText: nil, uid: imported.judicialUID,
+            caseNumber: imported.caseNumber,
+            lowerCourt: LowerCourtReference(courtTitle: canonical.courtTitle,
+                                            caseNumber: canonical.caseNumber)))
+
+        do {
+            _ = try await global.value
+            XCTFail("late global commit failure must surface its persisted repair")
+        } catch let partial as CaseRepairPartialError {
+            XCTAssertEqual(partial.summary.keyRemaps[importedKey], canonicalKey)
+        }
+        do {
+            _ = try await scoped.value
+            XCTFail("scoped waiter must receive the relevant global partial result")
+        } catch let partial as CaseRepairPartialError {
+            XCTAssertEqual(partial.summary.keyRemaps[importedKey], canonicalKey)
+            XCTAssertTrue(partial.summary.events.contains {
+                $0.caseKey == importedKey && $0.kind == .reanchored
+            })
+            XCTAssertFalse(partial.summary.events.contains { $0.caseKey == unrelatedKey })
+        }
+
+        XCTAssertNil(store.record(forKey: importedKey))
+        XCTAssertNotNil(store.record(forKey: canonicalKey))
+        XCTAssertNotNil(store.record(forKey: unrelatedKey))
+    }
+
+    func testRepairIfNeededIsSerializedWithScopedRun() async throws {
+        let store = TrackedStore(inMemory: true)
+        var first = context(level: .appeal, number: "33-10/2026",
+                            domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                            courtLevel: .subject)
+        first.judicialUID = "11RS0001-01-2026-000010-10"
+        var second = context(level: .appeal, number: "33-11/2026",
+                             domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                             courtLevel: .subject)
+        second.judicialUID = "11RS0001-01-2026-000011-11"
+        let firstRecord = try store.upsert(context: first, snapshot: nil, collections: [])
+        let secondRecord = try store.upsert(context: second, snapshot: nil, collections: [])
+        let firstKey = firstRecord.key
+        let secondKey = secondRecord.key
+        let paused = SuspendedCardFetch()
+        var fetched: [String] = []
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.transient),
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetched.append(context.caseNumber)
+                if context.caseNumber == first.caseNumber { return await paused.fetch() }
+                return CaseCard(rawText: "", actText: nil, uid: context.judicialUID,
+                                caseNumber: context.caseNumber)
+            })
+
+        let preflight = Task { @MainActor in
+            try await coordinator.repairIfNeeded(key: firstKey)
+        }
+        await paused.waitUntilStarted()
+        let scoped = Task { @MainActor in try await coordinator.run(keys: [secondKey]) }
+        await Task.yield()
+        XCTAssertEqual(fetched, [first.caseNumber])
+        paused.resume(with: CaseCard(rawText: "", actText: nil, uid: first.judicialUID,
+                                     caseNumber: first.caseNumber))
+
+        let outcome = try await preflight.value
+        let summary = try await scoped.value
+
+        XCTAssertEqual(outcome.effectiveKey, firstKey)
+        XCTAssertEqual(outcome.summary.events.filter { $0.kind == .transient }.map(\.caseKey),
+                       [firstKey])
+        XCTAssertEqual(summary.events.filter { $0.kind == .transient }.map(\.caseKey),
+                       [secondKey])
+        XCTAssertEqual(fetched, [first.caseNumber, second.caseNumber])
+    }
+
+    func testScopedRunSkipsLaterKeyDeletedByEarlierMerge() async throws {
+        let store = TrackedStore(inMemory: true)
+        var first = context(level: .material, number: "13-2/2026",
+                            domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                            courtLevel: .subject)
+        first.judicialUID = uid
+        var later = context(level: .appeal, number: "33-10/2026",
+                            domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                            courtLevel: .subject)
+        let replacementUID = "11RS0001-01-2026-009999-11"
+        later.judicialUID = replacementUID
+        let laterRecord = try insertLegacy(
+            into: store, context: later, snapshot: nil, collections: [])
+        let firstRecord = try insertLegacy(
+            into: store, context: first, snapshot: nil, collections: [])
+        laterRecord.addedAt = Date(timeIntervalSince1970: 100)
+        firstRecord.addedAt = Date(timeIntervalSince1970: 200)
+        try store.save()
+
+        let lowerCard = CaseCard(rawText: "", actText: nil, uid: replacementUID,
+                                 caseNumber: "2-7212/2026")
+        let origin = ResolvedCaseOrigin(
+            court: Court(domain: "syktsud--komi.sudrf.ru",
+                         title: "Сыктывкарский городской суд", level: .district),
+            branch: .general, region: "Республика Коми", courtCode: "11RS0001",
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: "2-7212/2026",
+                                     caseID: "lower-id", caseUID: "lower-guid"),
+            card: lowerCard)
+        var fetched: [String] = []
+        let resolver = StubOriginResolver(.resolved(origin))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetched.append(context.caseNumber)
+                return CaseCard(
+                    rawText: "", actText: nil, uid: self.uid,
+                    caseNumber: context.caseNumber,
+                    lowerCourt: LowerCourtReference(
+                        courtTitle: "Сыктывкарский городской суд",
+                        caseNumber: "2-7212/2026"))
+            })
+
+        let summary = try await coordinator.run(keys: [firstRecord.key, laterRecord.key])
+        let calls = await resolver.calls
+
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(fetched, [first.caseNumber])
+        XCTAssertEqual(calls, 1)
+        XCTAssertNil(store.record(forKey: laterRecord.key))
+        XCTAssertNotNil(store.record(forKey: firstRecord.key))
     }
 
     func testMovementMergeDeduplicatesDashDotActsByHostAndCaseNumber() throws {

@@ -2,6 +2,34 @@ import XCTest
 @testable import SudrfApp
 
 final class CaptchaAssistTests: XCTestCase {
+    func testTokenCaptchaKeepsWebViewPath() {
+        XCTAssertEqual(
+            CaptchaAssistPresentationPath.forKind(.sudrfToken),
+            .webView
+        )
+    }
+
+    func testMagistrateCaptchaUsesNativePath() {
+        XCTAssertEqual(
+            CaptchaAssistPresentationPath.forKind(.kcaptcha),
+            .nativeMagistrate
+        )
+    }
+
+    func testEmptyMagistrateImageOffersRetry() {
+        XCTAssertEqual(
+            MagistrateCaptchaLoadDecision.decide(imageData: Data()),
+            .retryLoad
+        )
+    }
+
+    func testNonemptyMagistrateImageStartsPresentation() {
+        XCTAssertEqual(
+            MagistrateCaptchaLoadDecision.decide(imageData: Data([0x89])),
+            .showChallenge
+        )
+    }
+
     func testPostSubmitAcceptsPendingTokenWhenCaptchaIsGone() {
         XCTAssertEqual(
             CaptchaAssistPostSubmitDecision.decide(hasCaptchaMarkers: false, hasPendingToken: true),

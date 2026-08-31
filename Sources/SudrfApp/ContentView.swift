@@ -262,6 +262,12 @@ private struct ResultsPane: View {
                 onCardHTML: { html in Task { await model.ingestCaptchaCard(html: html) } },
                 onCaptchaPair: { host, token in model.storeCaptchaPair(host: host, token: token) },
                 onSessionUnlocked: { host in model.captchaSessionUnlocked(host: host) },
+                onLoadMagistrateCaptcha: {
+                    try await model.loadMagistrateCaptcha(formURL: ctx.formURL)
+                },
+                onSubmitMagistrateCaptcha: { code, challenge in
+                    try await model.submitMagistrateCaptcha(code: code, challenge: challenge)
+                },
                 onCancel: { model.captcha = nil })
         }
         .onDisappear { singleClickTask?.cancel() }

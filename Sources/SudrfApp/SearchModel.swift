@@ -16,19 +16,29 @@ final class SearchModel: ObservableObject {
     // Ввод
     @Published var branch: CourtBranch = .general {
         didSet {
-            if branch != oldValue { searchScopeChanged() }
+            if branch != oldValue {
+                regionRepresentsCourtSeat = false
+                courtScopeChanged()
+            }
         }
     }
     @Published var tier: CourtTier = .district {
         didSet {
-            if tier != oldValue { searchScopeChanged() }
+            if tier != oldValue {
+                regionRepresentsCourtSeat = false
+                courtScopeChanged()
+            }
         }
     }
     // Регион идентифицируется КОДОМ субъекта (под капотом), пользователь в
     // пикере по-прежнему выбирает словесное имя. «11» — Республика Коми.
     @Published var region = "11" {
         didSet {
-            if region != oldValue && usesRegion { searchScopeChanged() }
+            if region != oldValue && usesRegion {
+                if synchronizingRegionAndCourt { return }
+                regionRepresentsCourtSeat = false
+                courtScopeChanged()
+            }
         }
     }
 
@@ -38,7 +48,14 @@ final class SearchModel: ObservableObject {
     @Published var courts: [CourtOption] = []
     @Published var selectedCourtID = "" {
         didSet {
-            if selectedCourtID != oldValue { searchScopeChanged() }
+            if selectedCourtID != oldValue {
+                if synchronizesRegionAndCourt, !synchronizingRegionAndCourt,
+                   let seatRegionCode = selectedCourt?.seatRegionCode {
+                    setRegion(seatRegionCode,
+                              isCourtSeat: tier == .appeal || tier == .cassation)
+                }
+                searchScopeChanged()
+            }
         }
     }
     @Published var cartotekaId = "adm" {
@@ -69,6 +86,9 @@ final class SearchModel: ObservableObject {
         /// а не по алфавиту, где «Восьмой» встаёт перед «Вторым». У остальных
         /// звеньев номера нет — они сортируются по названию, как раньше.
         var number: Int? = nil
+        /// Код субъекта места нахождения суда. Для АСОЮ/КСОЮ он задан
+        /// справочником явно и не выводится из территории подсудности.
+        var seatRegionCode: String? = nil
         // Идентичность — по домену + коду: у судов Москвы домен один
         // (mos-gorsud.ru), различает их только код-алиас (tverskoj, …).
         var id: String { code.map { "\(domain)#\($0)" } ?? domain }
@@ -212,6 +232,11 @@ final class SearchModel: ObservableObject {
     private var searchGeneration = 0
     private var cardLoadGeneration = 0
     private var movementLoadGeneration = 0
+    private var synchronizingRegionAndCourt = false
+    /// Регион в picker-е может означать место нахождения вручную выбранного
+    /// суда, а не регион происхождения дела. В таком состоянии маршрут строим
+    /// только по известному УИД, иначе не подставляем место нахождения как факт.
+    private var regionRepresentsCourtSeat = false
 
     init(captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
@@ -243,7 +268,7 @@ final class SearchModel: ObservableObject {
                                higherCourtDomains: MovementContext.expandedHigherDomains(
                                 branch: branch, courtLevel: court.level,
                                 courtTitle: court.title, courtCode: court.code,
-                                region: regionName, displayDomain: court.domain),
+                                region: routingRegionName(), displayDomain: court.domain),
                                higherCourtTargets: movementTargets(for: court, base: base),
                                vsrf: vsrfClient,
                                mosgorsud: mosGorSudClient)
@@ -271,12 +296,50 @@ final class SearchModel: ObservableObject {
     var usesRegion: Bool { searchDimensions.usesRegion }
     var uidSearchEnabled: Bool { searchDimensions.supportsUID }
 
-    /// Изменение региона не может менять состав военных судов: их список
-    /// формируется по общероссийскому справочнику соответствующего звена.
-    func regionChanged() {
-        guard usesRegion else { return }
-        courtScopeChanged()
+    private var synchronizesRegionAndCourt: Bool {
+        branch == .general && [.subject, .appeal, .cassation].contains(tier)
     }
+
+    private func setRegion(_ code: String, isCourtSeat: Bool = false) {
+        guard region != code else {
+            regionRepresentsCourtSeat = isCourtSeat
+            return
+        }
+        synchronizingRegionAndCourt = true
+        region = code
+        synchronizingRegionAndCourt = false
+        regionRepresentsCourtSeat = isCourtSeat
+    }
+
+    private func setSelectedCourtID(_ id: String) {
+        guard selectedCourtID != id else { return }
+        synchronizingRegionAndCourt = true
+        selectedCourtID = id
+        synchronizingRegionAndCourt = false
+    }
+
+    private func jurisdictionDomain(forSubjectCode code: String) -> String? {
+        switch tier {
+        case .subject: return CourtDirectory.subjectCourt(forSubjectCode: code)?.domain
+        case .appeal: return CourtDirectory.appealCourt(forSubjectCode: code)?.domain
+        case .cassation: return CourtDirectory.cassationCourt(forSubjectCode: code)?.domain
+        default: return nil
+        }
+    }
+
+    private func routingRegionName() -> String {
+        guard !regionRepresentsCourtSeat else {
+            guard let classification = KoAPProceduralRole.classificationCode(
+                from: movement?.uid ?? queryUID) else { return "" }
+            let code = CourtDirectory.normalizedSubjectCode(classification)
+            return CourtDirectory.subjectName(forSubjectCode: code) ?? ""
+        }
+        return regionName
+    }
+
+    /// Совместимость с прежним UI-вызовом: обновление региона теперь полностью
+    /// принадлежит `didSet`, поэтому повторный вызов не запускает второй resolve.
+    func regionChanged() {}
 
     /// Запрещает уже начатому поиску менять экран после изменения входных
     /// параметров. Отмена сетевого запроса здесь не нужна: ответ просто
@@ -315,7 +378,17 @@ final class SearchModel: ObservableObject {
     func courtScopeChanged() {
         searchScopeChanged()
         let tierWillChange = branch == .military && tier == .magistrate
-        if tierWillChange { tier = .district }
+        if tierWillChange {
+            tier = .district
+            return
+        }
+        if tier == .supreme {
+            setRegion("")
+            regionRepresentsCourtSeat = false
+        } else if usesRegion && region.isEmpty {
+            setRegion("11")
+            regionRepresentsCourtSeat = false
+        }
         if cartoteka == nil { cartotekaId = cartoteki.first?.id ?? "" }
         courtResolutionGeneration &+= 1
         let generation = courtResolutionGeneration
@@ -324,9 +397,6 @@ final class SearchModel: ObservableObject {
         magistrateDistrictCourts = []
         resolving = true
         status = "Загружаю суды…"
-        // Изменение tier вызовет этот же обработчик повторно. Первый вызов
-        // только инвалидирует старое состояние, чтобы не запускать два GV-запроса.
-        guard !tierWillChange else { return }
         Task { await resolveCourts(generation: generation) }
     }
     var selectedResult: CaseSearchResult? {
@@ -347,7 +417,6 @@ final class SearchModel: ObservableObject {
         guard courtResolutionGeneration == generation else { return }
         let requestedBranch = branch
         let requestedTier = tier
-        let requestedRegion = region
 
         guard requestedTier != .supreme else {
             courts = []; selectedCourtID = ""; magistrateDistrictCourts = []
@@ -356,6 +425,11 @@ final class SearchModel: ObservableObject {
             resolving = false
             return
         }
+        if usesRegion && region.isEmpty {
+            setRegion("11")
+            regionRepresentsCourtSeat = false
+        }
+        let requestedRegion = usesRegion ? region : ""
         resolving = true; status = "Загружаю суды…"
         defer {
             if courtResolutionGeneration == generation { resolving = false }
@@ -409,16 +483,19 @@ final class SearchModel: ObservableObject {
                     // code оставляем пустым — он классификационный, не алиас.
                     return CourtOption(domain: $0.domain, title: $0.title + suffix,
                                        level: .subject,
-                                       mosGorSudAlias: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil)
+                                       mosGorSudAlias: isMGS ? MosGorSudCourtDirectory.mgsAlias : nil,
+                                       supportsSearch: supported,
+                                       unsupportedReason: supported ? nil : "Поиск по этому сайту пока не подключён.",
+                                       seatRegionCode: CourtDirectory.subjectCode(forDomain: $0.domain))
                 }
             case (.general, .appeal):
                 list = CourtDirectory.appealCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .appeal,
-                                       number: $0.number) }
+                                       number: $0.number, seatRegionCode: $0.seatRegionCode) }
             case (.general, .cassation):
                 list = CourtDirectory.cassationCourts
                     .map { CourtOption(domain: $0.domain, title: $0.title, level: .cassation,
-                                       number: $0.number) }
+                                       number: $0.number, seatRegionCode: $0.seatRegionCode) }
             case (.military, .district):
                 // Все гарнизонные суды страны (включая зарубежные, код 95) —
                 // один типовой запрос портала (court_type=GV&court_subj=0).
@@ -446,8 +523,12 @@ final class SearchModel: ObservableObject {
 
             // Прежний выбор сохраняем, если он остался в списке; список из
             // одного суда выбираем сразу, иначе оставляем «— выберите —».
-            if !orderedCourts.contains(where: { $0.id == selectedCourtID }) {
-                selectedCourtID = orderedCourts.count == 1 ? orderedCourts[0].id : ""
+            if synchronizesRegionAndCourt,
+               let domain = jurisdictionDomain(forSubjectCode: requestedRegion),
+               let court = orderedCourts.first(where: { $0.domain == domain }) {
+                setSelectedCourtID(court.id)
+            } else if !orderedCourts.contains(where: { $0.id == selectedCourtID }) {
+                setSelectedCourtID(orderedCourts.count == 1 ? orderedCourts[0].id : "")
             }
 
             switch (orderedCourts.isEmpty, requestedBranch) {
@@ -1070,7 +1151,7 @@ final class SearchModel: ObservableObject {
             branch: branch, courtLevel: option.level,
             baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,
             judicialUID: nil, courtTitle: option.title, courtCode: option.code,
-            region: regionName, displayDomain: option.domain,
+            region: routingRegionName(), displayDomain: option.domain,
             districtCourts: option.level == .magistrate
                 ? magistrateDistrictCourts.map { ($0.domain, $0.title) } : [])
     }
@@ -1085,7 +1166,7 @@ final class SearchModel: ObservableObject {
               let level = tier.level, let base = selectedResult else { return nil }
         var ctx = MovementContext(
             branchRaw: branch.rawValue,
-            region: regionName,
+            region: routingRegionName(),
             searchDomain: option.searchCourt.domain,
             displayDomain: option.domain,
             courtTitle: option.title,

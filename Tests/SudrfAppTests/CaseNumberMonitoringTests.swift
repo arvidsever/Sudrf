@@ -20,6 +20,25 @@ final class CaseNumberMonitoringTests: XCTestCase {
         XCTAssertNil(MovementDerivation.reviewNumber(for: instance(.material, number: "13-1/2026")))
     }
 
+    func testReviewNumberUsesAcceptedKSOYUProductionNumberWithoutChangingRawValue() {
+        let raw = "7У-1077/2024 [77-762/2024]"
+        let sourceURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        let accepted = CaseInstance(
+            level: .cassation, court: "3 КСОЮ", caseNumber: raw, judge: nil,
+            domain: "3kas.sudrf.ru", foundByUID: true, result: nil, sessions: [],
+            sourceURL: sourceURL)
+
+        XCTAssertEqual(MovementDerivation.reviewNumber(for: accepted), "77-762/2024")
+        XCTAssertEqual(accepted.caseNumber, raw)
+        XCTAssertEqual(accepted.id, "3kas.sudrf.ru/\(raw)")
+        XCTAssertEqual(accepted.sourceURL, sourceURL)
+    }
+
+    func testReviewNumberKeepsNonKSOYUCompositeNumber() {
+        let instance = instance(.cassation, number: "8Г-41/2026 [88-12/2026]")
+        XCTAssertEqual(MovementDerivation.reviewNumber(for: instance), "8Г-41/2026")
+    }
+
     func testReviewNumberIgnoresStubsAndTransientInstances() {
         XCTAssertNil(MovementDerivation.reviewNumber(for: instance(.cassation, number: "—")))
         XCTAssertNil(MovementDerivation.reviewNumber(for: instance(.cassation, number: "33-1/2026", captcha: true)))

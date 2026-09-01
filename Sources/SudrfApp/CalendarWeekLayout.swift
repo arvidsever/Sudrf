@@ -3,6 +3,8 @@ import Foundation
 struct CalendarWeekHearingLayoutInput: Identifiable, Equatable {
     var id: String
     var caseNumber: String
+    /// Номер для интерфейса; `caseNumber` остаётся сырым ключом навигации.
+    var displayCaseNumber: String? = nil
     var parties: String
     var court: String
     var room: String

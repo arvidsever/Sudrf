@@ -21,6 +21,82 @@ final class CaseNumberPresentationTests: XCTestCase {
         XCTAssertEqual(CaseNumberPresentation.primary("2-1/2026"), "2-1/2026")
     }
 
+    func testDisplayedNumberUsesAcceptedKSOYUProductionNumber() {
+        func instance(_ number: String) -> CaseInstance {
+            CaseInstance(level: .cassation, court: "3 КСОЮ", caseNumber: number,
+                          judge: nil, domain: "3kas.sudrf.ru", foundByUID: true,
+                          result: nil, sessions: [])
+        }
+
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("8Г-2430/2026 [88-4097/2026]")),
+            "88-4097/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("8а-2430/2026 [88а-4097/2026]")),
+            "88а-4097/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("7У-1077/2024 [77-762/2024]")),
+            "77-762/2024")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("7у-1077/2024 [77У-762/2024]")),
+            "77У-762/2024")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("7У-1077/2024 [77у-762/2024]")),
+            "77у-762/2024")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("8-2430/2026 [88-4097/2026]")),
+            "88-4097/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(
+                for: instance("7-1077/2024 [77-762/2024]")),
+            "77-762/2024")
+    }
+
+    func testDisplayedNumberKeepsIncomingNumberBeforeAcceptanceAndOutsideKSOYU() {
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-2430/2026",
+                judge: nil, domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [])),
+            "8Г-2430/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .cassation, court: "Суд", caseNumber: "7у-1077/2024 [77-762/2024]",
+                judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [])),
+            "7у-1077/2024")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-2430/2026 [33-4097/2026]",
+                judge: nil, domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [])),
+            "8Г-2430/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-2430/2026 [88а-4097/2026]",
+                judge: nil, domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [])),
+            "8Г-2430/2026")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .cassation, court: "Кассационный военный суд",
+                caseNumber: "7У-1077/2024 [77У-762/2024]", judge: nil,
+                domain: "vkas.sudrf.ru", foundByUID: true, result: nil, sessions: [])),
+            "7У-1077/2024")
+        XCTAssertEqual(
+            CaseNumberPresentation.displayedNumber(for: CaseInstance(
+                level: .appeal, court: "3 КСОЮ", caseNumber: "8Г-2430/2026 [88-4097/2026]",
+                judge: nil, domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [])),
+            "8Г-2430/2026")
+    }
+
     func testSecondaryShowsOnlyDistinctKnownInstanceNumber() {
         XCTAssertEqual(
             CaseNumberPresentation.secondary(" № 33-2267/2026", distinctFrom: "2-8236/2025"),

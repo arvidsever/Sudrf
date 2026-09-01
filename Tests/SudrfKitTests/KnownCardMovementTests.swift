@@ -7,7 +7,7 @@ import XCTest
 ///  • УИД базовой карточки пуст (сквозной поиск невозможен) — known cards
 ///    подтягиваются добором;
 ///  • материалы домашнего суда находятся по УИД в картотеке «m» и встают
-///    инстанциями .material в конец; капча в m-поиске глушится молча;
+///    инстанциями .material в конец; капча в m-поиске оставляет source partial;
 ///  • дубли не плодятся: карточка, уже найденная поиском, добором не повторяется.
 final class KnownCardMovementTests: XCTestCase {
 
@@ -113,7 +113,11 @@ final class KnownCardMovementTests: XCTestCase {
         let searched = await mock.searchCalls
         XCTAssertTrue(searched.isEmpty)
         XCTAssertTrue(mv.instances.contains { $0.level == .cassation && $0.caseNumber == "8Г-10837/2026" })
-        XCTAssertTrue(mv.instances.contains { $0.level == .material && $0.caseNumber == "13-2472/2026" })
+        let material = try XCTUnwrap(mv.instances.first {
+            $0.level == .material && $0.caseNumber == "13-2472/2026"
+        })
+        XCTAssertEqual(material.sessions, materialCard().sessions,
+                       "сессии известной карточки должны попасть в движение")
     }
 
     // MARK: Материалы по УИД в картотеке «m» домашнего суда
@@ -131,6 +135,7 @@ final class KnownCardMovementTests: XCTestCase {
         let materials = mv.instances.filter { $0.level == .material }
         XCTAssertEqual(materials.map(\.caseNumber), ["13-2472/2026"])
         XCTAssertTrue(materials.allSatisfy(\.foundByUID))
+        XCTAssertEqual(materials.first?.sessions, materialCard().sessions)
         // Материал — в конце списка инстанций (после 1-й инстанции).
         XCTAssertEqual(mv.instances.last?.level, .material)
         // Акт материала: «Определение» (13-…).
@@ -138,7 +143,7 @@ final class KnownCardMovementTests: XCTestCase {
         XCTAssertEqual(act.title, "Определение")
     }
 
-    /// Капча в m-поиске глушится молча: ни материалов, ни заглушки, движение целое.
+    /// CAPTCHA до выдачи m не выдумывает материал, но делает источник partial.
     func testMaterialSearchCaptchaSilentlyIgnored() async throws {
         let mock = ScriptedClient(cards: ["30636693": firstCard()],
                                   captchaCartotekas: ["m"])
@@ -150,6 +155,74 @@ final class KnownCardMovementTests: XCTestCase {
         XCTAssertFalse(mv.instances.contains { $0.level == .material })
         XCTAssertFalse(mv.instances.contains { $0.captchaFormURL != nil })
         XCTAssertEqual(mv.instances.map(\.level), [.first])
+        XCTAssertEqual(mv.incompleteHigherCourtDomains, [districtCourt().domain])
+    }
+
+    func testPublishedMaterialWithoutSessionsStaysAnHonestEmptyHeader() async throws {
+        let row = CaseSearchResult(caseNumber: "13-1000/2026", caseID: "m-empty",
+                                   caseUID: "guid-empty")
+        let emptyCard = CaseCard(rawText: "", actText: nil, sessions: [],
+                                 uid: Self.uid, caseNumber: row.caseNumber)
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(), "m-empty": emptyCard],
+            searchResults: ["syktsud--komi.sudrf.ru/m": [row]])
+        let service = MovementService(client: mock)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+        let material = try XCTUnwrap(mv.instances.first { $0.level == .material })
+        XCTAssertTrue(material.sessions.isEmpty)
+        XCTAssertNil(material.note)
+        XCTAssertNil(material.actID)
+        XCTAssertNil(mv.incompleteHigherCourtDomains)
+    }
+
+    func testUnavailableMaterialRowKeepsHeaderWithoutCache() async throws {
+        let sourceURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php"
+            + "?name=sud_delo&name_op=case&case_id=m-missing&case_uid=guid-m"
+            + "&delo_id=1610001&new=0")!
+        let row = CaseSearchResult(caseNumber: "13-999/2026", judge: "Петров П. П.",
+                                   result: "Заявление принято", caseID: "m-missing",
+                                   caseUID: "guid-m", cardURL: sourceURL)
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard()],
+            searchResults: ["syktsud--komi.sudrf.ru/m": [row]])
+        let service = MovementService(client: mock)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+        let material = try XCTUnwrap(mv.instances.first { $0.level == .material })
+        XCTAssertEqual(material.caseNumber, row.caseNumber)
+        XCTAssertEqual(material.judge, row.judge)
+        XCTAssertEqual(material.result, row.result)
+        XCTAssertTrue(material.sessions.isEmpty)
+        XCTAssertEqual(material.note, "Движение временно недоступно")
+        XCTAssertEqual(material.sourceURL, sourceURL)
+        XCTAssertFalse(material.foundByUID,
+                       "без карточки УИД строки выдачи ещё не подтверждён")
+        XCTAssertEqual(mv.incompleteHigherCourtDomains, [districtCourt().domain])
+    }
+
+    func testUnavailableKnownMaterialKeepsHeaderWithoutCache() async throws {
+        let known = materialKnownCard()
+        let mock = ScriptedClient(cards: ["30636693": firstCard()])
+        let service = MovementService(client: mock, knownCards: [known])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+        let material = try XCTUnwrap(mv.instances.first {
+            $0.level == .material && $0.caseNumber == known.caseNumber
+        })
+        XCTAssertNil(material.judge)
+        XCTAssertNil(material.result)
+        XCTAssertTrue(material.sessions.isEmpty)
+        XCTAssertEqual(material.note, "Движение временно недоступно")
+        XCTAssertEqual(material.sourceURL, MovementService.sourceURL(for: known))
+        XCTAssertFalse(material.foundByUID)
+        XCTAssertEqual(mv.incompleteHigherCourtDomains, [districtCourt().domain])
     }
 
     /// Материал, найденный m-поиском, не дублируется добором по известной ссылке.
@@ -164,6 +237,28 @@ final class KnownCardMovementTests: XCTestCase {
         let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
 
         XCTAssertEqual(mv.instances.filter { $0.level == .material }.count, 1)
+    }
+
+    func testKnownCardRescuesMaterialAfterRowCardFailure() async throws {
+        let brokenURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php"
+            + "?name=sud_delo&name_op=case&case_id=broken&case_uid=broken"
+            + "&delo_id=1610001&new=0")!
+        let row = CaseSearchResult(caseNumber: "13-2472/2026", caseID: "broken",
+                                   caseUID: "broken", cardURL: brokenURL)
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(), "m1": materialCard()],
+            searchResults: ["syktsud--komi.sudrf.ru/m": [row]])
+        let service = MovementService(client: mock, knownCards: [materialKnownCard()])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+        let materials = mv.instances.filter { $0.level == .material }
+        XCTAssertEqual(materials.count, 1)
+        XCTAssertEqual(materials.first?.sessions, materialCard().sessions)
+        XCTAssertNil(materials.first?.note)
+        let act = try XCTUnwrap(mv.acts.first { $0.instanceLevel == .material })
+        XCTAssertEqual(mv.actBodies[act.id], materialCard().actText)
     }
 
     /// Сортировка: материал с ранними заседаниями всё равно в конце

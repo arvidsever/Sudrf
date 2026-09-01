@@ -342,6 +342,69 @@ final class MovementCachePolicyTests: XCTestCase {
                       "свежая вышестоящая инстанция должна сохраниться")
     }
 
+    func testPartialUnavailableMaterialPreservesCachedSessionsAndActs() {
+        let domain = "home--komi.sudrf.ru"
+        let number = "13-2472/2026"
+        let sourceURL = URL(string: "https://home--komi.sudrf.ru/material")!
+        let actID = "act_\(domain)#\(number)"
+        let cachedMaterial = CaseInstance(
+            level: .material, court: "Домашний суд", caseNumber: number,
+            judge: "Судья Иванова", domain: domain, foundByUID: true,
+            result: "Заявление удовлетворено",
+            sessions: [CaseSession(date: "01.09.2026", event: "Рассмотрение")],
+            actID: actID, sourceURL: sourceURL)
+        let cachedAct = CaseAct(id: actID, title: "Определение", date: "01.09.2026",
+                                courtShort: "Материал", instanceLevel: .material)
+        let cached = movement([cachedMaterial], acts: [cachedAct],
+                              bodies: [actID: "Сохранённый текст материала"])
+
+        let fallbackMaterial = CaseInstance(
+            level: .material, court: "Домашний суд", caseNumber: number,
+            judge: "Судья из строки", domain: domain, foundByUID: true,
+            result: "Заявление принято", sessions: [],
+            note: "Движение временно недоступно", sourceURL: sourceURL)
+        var fresh = movement([fallbackMaterial])
+        fresh.incompleteHigherCourtDomains = [domain]
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let material = try! XCTUnwrap(merged.instances.first {
+            $0.level == .material && $0.caseNumber == number
+        })
+
+        XCTAssertEqual(material.sessions, cachedMaterial.sessions)
+        XCTAssertEqual(material.actID, actID)
+        XCTAssertEqual(merged.acts.map(\.id), [actID])
+        XCTAssertEqual(merged.actBodies[actID], "Сохранённый текст материала")
+        XCTAssertNil(merged.incompleteHigherCourtDomains)
+    }
+
+    func testSuccessfulMaterialRefreshReplacesCachedHistoryAndAct() {
+        let domain = "home--komi.sudrf.ru"
+        let number = "13-2472/2026"
+        let oldActID = "old-material-act"
+        let cachedMaterial = CaseInstance(
+            level: .material, court: "Домашний суд", caseNumber: number,
+            judge: nil, domain: domain, foundByUID: true, result: "Старый результат",
+            sessions: [CaseSession(date: "01.08.2026", event: "Старое событие")],
+            actID: oldActID)
+        let cached = movement(
+            [cachedMaterial],
+            acts: [CaseAct(id: oldActID, title: "Старый акт", date: "01.08.2026",
+                           courtShort: "Материал", instanceLevel: .material)],
+            bodies: [oldActID: "Старый текст"])
+        let freshMaterial = CaseInstance(
+            level: .material, court: "Домашний суд", caseNumber: number,
+            judge: nil, domain: domain, foundByUID: true, result: "Новый результат",
+            sessions: [CaseSession(date: "02.09.2026", event: "Новое событие")])
+
+        let merged = MovementCachePolicy.merge(
+            fresh: movement([freshMaterial]), cached: cached)
+
+        XCTAssertEqual(merged.instances, [freshMaterial])
+        XCTAssertTrue(merged.acts.isEmpty)
+        XCTAssertTrue(merged.actBodies.isEmpty)
+    }
+
     func testCompleteFreshBaseDoesNotInheritCachedMetadata() {
         let cachedParties = CaseParties(plaintiffs: ["Старый истец"])
         let cached = movement([instance(domain: "home--komi.sudrf.ru")],

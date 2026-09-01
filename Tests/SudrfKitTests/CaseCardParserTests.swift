@@ -59,6 +59,57 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.caseNumber, "8Г-2430/2026 [88-4097/2026]")
     }
 
+    func testMaterialCardParsesHeaderAndMovementInDateOrder() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("material_card"))
+
+        XCTAssertEqual(card.caseNumber, "13-42/2026")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "18.08.2026", time: "10:15", room: "Кабинет № 12",
+                        event: "Передача материалов судье", result: "Передано судье"),
+            CaseSession(date: "20.08.2026", time: "14:30", room: "Кабинет № 12",
+                        event: "Рассмотрение материала", result: "Удовлетворено"),
+            CaseSession(date: "21.08.2026", time: "09:05", room: "Кабинет № 12",
+                        event: "Изготовлено определение в окончательной форме",
+                        result: "Определение изготовлено")
+        ])
+    }
+
+    func testOnlyMaterialMovementHeaderIsAcceptedForMaterialCard() throws {
+        let html = """
+        <html><body>
+          <div class="casenumber">МАТЕРИАЛ № 13-99/2026</div>
+          <table>
+            <tr><th colspan="5">ДВИЖЕНИЕ ДОКУМЕНТОВ</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Время</td>
+                <td>Место проведения</td><td>Результат события</td></tr>
+            <tr><td>Не должно быть событием материала</td><td>18.08.2026</td>
+                <td>10:15</td><td>Кабинет № 12</td><td>Нет</td></tr>
+          </table>
+        </body></html>
+        """
+
+        let card = try CaseCardParser.parse(html: html)
+        XCTAssertTrue(card.sessions.isEmpty)
+    }
+
+    func testMaterialComplaintMovementIsNotAcceptedAsMaterialMovement() throws {
+        let html = """
+        <html><body>
+          <div class="casenumber">МАТЕРИАЛ № 13-100/2026</div>
+          <table>
+            <tr><th colspan="5">ДВИЖЕНИЕ МАТЕРИАЛА ЖАЛОБЫ</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Время</td>
+                <td>Место проведения</td><td>Результат события</td></tr>
+            <tr><td>Не должно быть событием материала</td><td>18.08.2026</td>
+                <td>10:15</td><td>Кабинет № 12</td><td>Нет</td></tr>
+          </table>
+        </body></html>
+        """
+
+        let card = try CaseCardParser.parse(html: html)
+        XCTAssertTrue(card.sessions.isEmpty)
+    }
+
     private func loadFixture(_ name: String) throws -> String {
         guard let url = Bundle.module.url(forResource: name, withExtension: "html",
                                           subdirectory: "Fixtures") else {

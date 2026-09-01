@@ -78,7 +78,7 @@ struct CaseMovementView: View {
                                   expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
                                   onRefresh: onRefresh)
                 }
-                let materials = movement.instances.filter { $0.level == .material }
+                let materials = Self.materialInstances(in: movement)
                 if !materials.isEmpty {
                     Text("Материалы")
                         .font(.system(size: 12.5, weight: .bold))
@@ -127,6 +127,13 @@ struct CaseMovementView: View {
         } message: {
             Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
         }
+    }
+
+    /// Материалы остаются обычными `CaseInstance`: общий `InstanceBlock`
+    /// рисует их шапку, состояние источника и опубликованные события без
+    /// отдельной UI-модели или механики раскрытия.
+    static func materialInstances(in movement: CaseMovement) -> [CaseInstance] {
+        movement.instances.filter { $0.level == .material }
     }
 
     private var header: some View {

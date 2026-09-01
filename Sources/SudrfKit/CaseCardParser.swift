@@ -16,7 +16,8 @@
 //     ищутся по содержимому, а не по номеру:
 //       – метаданные  → контейнер с «Уникальный идентификатор дела»
 //                        (вкладка «ДЕЛО» / «ПРОИЗВОДСТВО»);
-//       – движение     → таблица с заголовком «ДВИЖЕНИЕ ДЕЛА» или «СЛУШАНИЯ»;
+//       – движение     → таблица с заголовком «ДВИЖЕНИЕ ДЕЛА»,
+//                        «ДВИЖЕНИЕ МАТЕРИАЛА» или «СЛУШАНИЯ»;
 //       – акты         → блоки `<div id="cont_doc{N}">` под ярлыками
 //                        `<li id="tab_doc{N}">` («Судебный акт #N (тип)»).
 //   • Таблица движения — «событие первое»: колонки
@@ -627,14 +628,15 @@ public enum CaseCardParser {
         row.children().array().filter { tags.contains($0.tagName().lowercased()) }
     }
 
-    /// Номер дела из заголовка карточки: «ДЕЛО № …» / «ПРОИЗВОДСТВО № …».
+    /// Номер из заголовка карточки: «ДЕЛО № …», «ПРОИЗВОДСТВО № …»
+    /// или «МАТЕРИАЛ № …».
     /// Для КСОЮ это, например, «8Г-2430/2026 [88-4097/2026]».
     private static func parseCaseNumber(doc: Document) -> String? {
         let headers = (try? doc.select(".casenumber, .case-num").array()) ?? []
         for header in headers {
             let text = ((try? header.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard let match = text.wholeMatch(
-                of: /^(?i:ДЕЛО|ПРОИЗВОДСТВО)\s*№\s*(.{1,60})$/
+                of: /^(?i:ДЕЛО|ПРОИЗВОДСТВО|МАТЕРИАЛ)\s*№\s*(.{1,60})$/
             ) else { continue }
             let trimmed = String(match.1).trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
@@ -882,12 +884,15 @@ public enum CaseCardParser {
         return sessions
     }
 
-    /// Таблица, заголовок (`<th>`) которой содержит «ДВИЖЕНИЕ ДЕЛА» или «СЛУШАНИЯ».
+    /// Таблица, заголовок (`<th>`) которой содержит «ДВИЖЕНИЕ ДЕЛА»,
+    /// «ДВИЖЕНИЕ МАТЕРИАЛА» или «СЛУШАНИЯ».
     private static func movementTable(_ doc: Document) -> Element? {
         for table in (try? doc.select("table").array()) ?? [] {
             for th in (try? table.select("th").array()) ?? [] {
-                let t = ((try? th.text()) ?? "").uppercased()
-                if t.contains("ДВИЖЕНИЕ ДЕЛА") || t.contains("СЛУШАНИЯ") { return table }
+                let t = ((try? th.text()) ?? "").trimmingCharacters(
+                    in: .whitespacesAndNewlines).uppercased()
+                if t.contains("ДВИЖЕНИЕ ДЕЛА") || t == "ДВИЖЕНИЕ МАТЕРИАЛА"
+                    || t.contains("СЛУШАНИЯ") { return table }
             }
         }
         return nil

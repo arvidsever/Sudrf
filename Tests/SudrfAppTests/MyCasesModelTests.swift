@@ -2,11 +2,34 @@ import XCTest
 import Foundation
 import SudrfKit
 import SwiftData
+import CaptchaSolver
 @testable import SudrfApp
 
 /// Модель редизайна «Моих дел» (v20): вид производства по номеру дела,
 /// разделитель сторон «⚔», сортировка и живой фильтр таблицы «Списком».
 final class MyCasesModelTests: XCTestCase {
+
+    @MainActor
+    func testRouterStoresAcceptedMagistrateCaptchaInInjectedCorpus() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("AppRouterKCaptchaCorpusTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let corpus = CorpusStore(baseDir: dir)
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(
+            modelContainer: container,
+            modelContainerIsPrepared: true,
+            captchaCorpus: corpus)
+
+        _ = await router.storeAcceptedMagistrateCaptcha(
+            png: Data([0x89, 0x50, 0x4e, 0x47]),
+            code: "дягше",
+            host: "pushkinsky.komi.msudrf.ru")
+
+        let textCount = await corpus.currentCount(kind: .kcaptcha)
+        XCTAssertEqual(textCount, 1)
+    }
 
     @MainActor
     func testTrackUntrackReloadAndTrackAgainUpdatesEveryProjection() throws {

@@ -73,6 +73,16 @@ enum AutoCaptchaSolver {
         let kind = kindFromURL(formURL)
         let host = formURL.host
         let log = solver.log
+        // `msudrf.ru` is a cookie-session challenge, not a `(captcha,
+        // captchaid)` token. Vision has no proven accuracy on its KCAPTCHA
+        // images, and this token-only helper cannot submit the required POST
+        // in the originating session. Keep it entirely on the native manual
+        // path until an eligible dedicated CoreML session flow exists (#164).
+        guard kind != .kcaptcha else {
+            log.logSkip(host: host ?? "?", kind: kind,
+                        reason: "session CAPTCHA requires manual entry")
+            return SolveResult(token: nil, png: nil)
+        }
         var lastPNG: Data? = nil
         for attempt in 0..<settings.maxAttempts {
             do {

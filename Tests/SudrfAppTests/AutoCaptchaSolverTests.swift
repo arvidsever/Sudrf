@@ -107,6 +107,24 @@ final class AutoCaptchaSolverTests: XCTestCase {
         ), .sudrfToken)
     }
 
+    func testKcaptchaNeverEntersTokenSolverOrNetwork() async {
+        let solver = CaptchaSolver(provider: StubProvider(results: [
+            CaptchaAttempt(value: "неважно", confidence: 1, duration: 0)
+        ]), log: log)
+        let client = SudrfClient(session: session, minInterval: 0)
+
+        let result = await AutoCaptchaSolver.solve(
+            formURL: URL(string: "https://court.msudrf.ru/search")!,
+            client: client,
+            solver: solver,
+            settings: .init(maxAttempts: 3, minConfidence: 0)
+        )
+
+        XCTAssertNil(result.token)
+        XCTAssertNil(result.png)
+        XCTAssertEqual(AutoCaptchaFormStub.requestCount, 0)
+    }
+
     func testSettingsDefault() {
         XCTAssertEqual(AutoCaptchaSolver.Settings.default.maxAttempts, 3)
         XCTAssertEqual(AutoCaptchaSolver.Settings.default.minConfidence, 0.55, accuracy: 0.001)
@@ -164,8 +182,10 @@ final class AutoCaptchaSolverTests: XCTestCase {
 
 private final class AutoCaptchaFormStub: URLProtocol {
     nonisolated(unsafe) static var responseBody = ""
+    nonisolated(unsafe) static var requestCount = 0
 
     static func reset() {
+        requestCount = 0
         responseBody = """
         <html><body>
         <input name="captchaid" value="test-captcha-id">
@@ -178,6 +198,7 @@ private final class AutoCaptchaFormStub: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.requestCount += 1
         let data = Self.responseBody.data(using: .utf8) ?? Data()
         let response = HTTPURLResponse(
             url: request.url!,

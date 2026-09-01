@@ -448,6 +448,9 @@ final class SearchResultSelectionTests: XCTestCase {
             domain: "example.msudrf.ru", title: "Судебный участок № 2", level: .magistrate
         )
         model.tier = .magistrate
+        // Finish the tier-triggered resolver before injecting the test court;
+        // otherwise its late result can replace this fixture nondeterministically.
+        await model.resolveCourts()
         model.courts = [court]
         model.selectedCourtID = court.id
         model.cartotekaId = "adm"
@@ -455,7 +458,7 @@ final class SearchResultSelectionTests: XCTestCase {
 
         await model.runSearch()
 
-        let listed = try XCTUnwrap(model.results.first)
+        let listed = try XCTUnwrap(model.results.first, model.status)
         XCTAssertEqual(listed.caseNumber, "5-10/2026")
         XCTAssertEqual(model.status, "Найдено: 1 (ФИО)")
 
@@ -576,6 +579,27 @@ final class SearchResultSelectionTests: XCTestCase {
         let count = await corpus.currentCount(kind: .sudrfToken)
         XCTAssertEqual(count, 0)
         XCTAssertNotNil(model.lastSubmittedCaptcha)
+    }
+
+    @MainActor
+    func testAcceptedMagistrateCaptchaUsesInjectedTextCorpus() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("SearchModelKCaptchaCorpusTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let corpus = CorpusStore(baseDir: dir)
+        let model = SearchModel(corpusStore: corpus)
+
+        _ = await model.storeAcceptedMagistrateCaptcha(
+            png: Data([0x89, 0x50, 0x4e, 0x47]),
+            code: "дягше",
+            host: "pushkinsky.komi.msudrf.ru"
+        )
+
+        let textCount = await corpus.currentCount(kind: .kcaptcha)
+        let numericCount = await corpus.currentCount(kind: .sudrfToken)
+        XCTAssertEqual(textCount, 1)
+        XCTAssertEqual(numericCount, 0)
     }
 
     private static func publishedAct(text: String, url: URL) -> PublishedActFile {

@@ -130,7 +130,7 @@ final class AppRouter: ObservableObject {
     /// Это отличает успешный ввод от обычной заглушки движения дела.
     private var repairCaptchaHosts = Set<String>()
     private let fsspClient: FSSPClient
-    private let fsspCaptchaCorpus = CorpusStore.shared
+    private let captchaCorpus: CorpusStore
     private var fsspCaptchaRequestID: UUID?
     private let summaryConfigurationProvider: @MainActor @Sendable () throws
         -> ConfiguredActSummarizer
@@ -263,7 +263,7 @@ final class AppRouter: ObservableObject {
                     self.updateFSSPCaptcha(
                         replacement, message: "Код не принят. Введите цифры с новой картинки.")
                 case .found, .notFound, .ambiguous:
-                    _ = await self.fsspCaptchaCorpus.add(
+                    _ = await self.captchaCorpus.add(
                         png: presentation.challenge.imagePNG,
                         code: code,
                         host: presentation.challenge.requestURL.host ?? "fssp.gov.ru",
@@ -327,6 +327,7 @@ final class AppRouter: ObservableObject {
     init(captchaSettings suppliedCaptchaSettings: CaptchaSettings? = nil,
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
+         captchaCorpus: CorpusStore = .shared,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
          trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil) throws {
@@ -345,6 +346,7 @@ final class AppRouter: ObservableObject {
         self.caseCatalog = CaseCatalog(container: store.container)
         self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
         self.summaryConfigurationProvider = summaryConfigurationProvider
+        self.captchaCorpus = captchaCorpus
         let savedSpotlightEnabled = UserDefaults.standard.object(
             forKey: SpotlightPreferenceStore.key).map { _ in
                 UserDefaults.standard.bool(forKey: SpotlightPreferenceStore.key)
@@ -1431,6 +1433,23 @@ final class AppRouter: ObservableObject {
                                  challenge: MagistrateCaptchaChallenge) async throws
         -> MagistrateCaptchaSubmission {
         try await client.submitMagistrateCaptcha(code: code, challenge: challenge)
+    }
+
+    func storeAcceptedMagistrateCaptcha(png: Data, code: String, host: String) async
+        -> CorpusStore.AddResult {
+        let result = await captchaCorpus.addVerifiedKCaptcha(
+            png: png, code: code, host: host)
+        switch result {
+        case .conflict:
+            CaptchaSolverLog.shared.logSkip(
+                host: host, kind: .kcaptcha, reason: "verified corpus label conflict")
+        case .invalid:
+            CaptchaSolverLog.shared.logSkip(
+                host: host, kind: .kcaptcha, reason: "verified corpus write rejected")
+        case .stored, .duplicate:
+            break
+        }
+        return result
     }
 
     /// После ручной captcha снова запускаем именно repair: RefreshCenter

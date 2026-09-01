@@ -38,6 +38,31 @@ enum MagistrateCaptchaLoadDecision: Equatable {
     }
 }
 
+/// Ground truth exists only after the court accepted this exact challenge.
+/// Keeping this decision outside the view makes the corpus boundary testable.
+struct VerifiedMagistrateCaptchaSample: Equatable {
+    let imageData: Data
+    let code: String
+    let host: String
+
+    enum Outcome: Equatable {
+        case accepted
+        case notAccepted
+    }
+
+    static func make(
+        outcome: Outcome,
+        imageData: Data,
+        code: String,
+        formURL: URL
+    ) -> Self? {
+        guard outcome == .accepted,
+              let host = formURL.host,
+              !host.isEmpty else { return nil }
+        return Self(imageData: imageData, code: code, host: host)
+    }
+}
+
 enum CaptchaImagePayload {
     static func data(fromDataURL value: String) -> Data? {
         CaptchaImageExtractor.data(fromDataURL: value)

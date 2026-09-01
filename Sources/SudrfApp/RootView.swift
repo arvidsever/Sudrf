@@ -560,6 +560,10 @@ private struct ImportSheet: View {
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
                                onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
                                onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
+                               onMagistrateCaptchaAccepted: { png, code, host in
+                                   _ = await router.storeAcceptedMagistrateCaptcha(
+                                       png: png, code: code, host: host)
+                               },
                                onLoadMagistrateCaptcha: {
                                    try await router.loadMagistrateCaptcha(formURL: ctx.formURL)
                                },
@@ -912,6 +916,10 @@ private struct CaseCardHost: View {
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
                                onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
                                onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
+                               onMagistrateCaptchaAccepted: { png, code, host in
+                                   _ = await router.storeAcceptedMagistrateCaptcha(
+                                       png: png, code: code, host: host)
+                               },
                                onLoadMagistrateCaptcha: {
                                    try await router.loadMagistrateCaptcha(formURL: ctx.formURL)
                                },

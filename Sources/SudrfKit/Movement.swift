@@ -498,6 +498,7 @@ public actor MovementService: MovementProviding {
             actID: baseActID,
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
             previousRegistration: baseCard.previousRegistration)]
+        var unavailableMaterialFallbacks: [CaseInstance] = []
         var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
             ? [court.domain] : []
         var honestZeroDomains: [String] = []
@@ -764,6 +765,17 @@ public actor MovementService: MovementProviding {
                     throw error
                 } catch {
                     markHigherCourtIncomplete(court.domain)
+                    // Строка m-поиска уже подтверждает существование материала.
+                    // Карточка может быть временно недоступна, но не следует
+                    // терять его номер/ссылку/метаданные и ранее сохранённое
+                    // движение. `incompleteHigherCourtDomains` переводит
+                    // snapshot в partial, а cache merge восстановит историю.
+                    unavailableMaterialFallbacks.append(Self.unavailableMaterialInstance(
+                        court: court.title, domain: court.domain,
+                        caseNumber: r.caseNumber, judge: r.judge,
+                        result: r.result, foundByUID: false,
+                        sourceURL: Self.sourceURL(for: r, court: court,
+                                                  cartoteka: mCart)))
                     continue
                 }
                 guard Self.normalizedJudicialUID(card.uid)
@@ -988,11 +1000,33 @@ public actor MovementService: MovementProviding {
                 throw error
             } catch {
                 markHigherCourtIncomplete(kc.domain)
+                if kc.level == .material {
+                    // KnownCard is an independently discovered direct link.
+                    // Preserve its exact known number/link while the card is
+                    // temporarily unavailable; no sessions or act are implied.
+                    if let number = kc.caseNumber,
+                       !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       number != "—" {
+                        unavailableMaterialFallbacks.append(Self.unavailableMaterialInstance(
+                            court: kc.courtTitle, domain: kc.domain,
+                            caseNumber: number, judge: nil,
+                            result: nil, foundByUID: false,
+                            sourceURL: Self.sourceURL(for: kc)))
+                    }
+                }
                 continue
             }
             guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
                                    to: &instances, acts: &acts, actBodies: &actBodies)
             else { continue }
+        }
+
+        // A working direct KnownCard must get a chance to rescue the same
+        // material after a broken m-row URL. Publish unresolved headers only
+        // after every known card has been tried.
+        for fallback in unavailableMaterialFallbacks {
+            _ = Self.appendIfNew(fallback, act: nil, body: nil,
+                                 to: &instances, acts: &acts, actBodies: &actBodies)
         }
 
         // 3. Вторая кассация — Верховный Суд РФ (vsrf.ru, отдельная платформа).
@@ -1136,6 +1170,16 @@ public actor MovementService: MovementProviding {
                                       result: nil, sessions: [], actID: nil,
                                       captchaFormURL: captchaFormURL,
                                       transientError: transientError))
+    }
+
+    private static func unavailableMaterialInstance(
+        court: String, domain: String, caseNumber: String, judge: String?,
+        result: String?, foundByUID: Bool, sourceURL: URL?
+    ) -> CaseInstance {
+        CaseInstance(level: .material, court: court, caseNumber: caseNumber,
+                     judge: judge, domain: domain, foundByUID: foundByUID,
+                     result: result, sessions: [], note: "Движение временно недоступно",
+                     sourceURL: sourceURL)
     }
 
     private static func isSavedUIDFallbackError(_ error: SudrfError) -> Bool {

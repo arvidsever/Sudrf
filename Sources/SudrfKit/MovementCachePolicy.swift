@@ -92,33 +92,42 @@ public enum MovementCachePolicy {
                     SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(r.domain)
                         && MovementService.sameCaseNumber($0.caseNumber, r.caseNumber)
                 }) {
-                    if overlaysSparseBase,
+                    // A material row/known card can be identified by its
+                    // published header even when its card is temporarily
+                    // unavailable. Keep the cached movement for that exact
+                    // placeholder independently of the sparse-base overlay.
+                    let overlaysUnavailableMaterial =
+                        incompleteDomains.contains(canonical)
+                        && instances[freshIndex].level == .material
+                        && instances[freshIndex].note == "Движение временно недоступно"
+                    let overlaysPartialFields = overlaysSparseBase || overlaysUnavailableMaterial
+                    if overlaysPartialFields,
                        instances[freshIndex].sessions.isEmpty, !r.sessions.isEmpty {
                         instances[freshIndex].sessions = r.sessions
                         changed = true
                     }
-                    if overlaysSparseBase,
+                    if overlaysPartialFields,
                        instances[freshIndex].judge == nil, let judge = r.judge {
                         instances[freshIndex].judge = judge
                         changed = true
                     }
-                    if overlaysSparseBase,
+                    if overlaysPartialFields,
                        instances[freshIndex].result == nil, let result = r.result {
                         instances[freshIndex].result = result
                         changed = true
                     }
-                    if overlaysSparseBase,
+                    if overlaysPartialFields,
                        instances[freshIndex].sourceURL == nil, let sourceURL = r.sourceURL {
                         instances[freshIndex].sourceURL = sourceURL
                         changed = true
                     }
-                    if overlaysSparseBase,
+                    if overlaysPartialFields,
                        instances[freshIndex].previousRegistration == nil,
                        let previousRegistration = r.previousRegistration {
                         instances[freshIndex].previousRegistration = previousRegistration
                         changed = true
                     }
-                    if overlaysSparseBase,
+                    if overlaysPartialFields,
                        instances[freshIndex].note == nil, let note = r.note {
                         instances[freshIndex].note = note
                         changed = true

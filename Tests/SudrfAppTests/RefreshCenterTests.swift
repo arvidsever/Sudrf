@@ -1702,6 +1702,62 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNotNil(center.lastErrors[key])
     }
 
+    func testPartialMaterialRefreshKeepsCachedHistoryAndLastSuccess() async throws {
+        let ctx = makeContext()
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let number = "13-2472/2026"
+        let domain = ctx.searchDomain
+        let oldSourceURL = URL(string: "https://\(domain)/old-material")!
+        let freshSourceURL = URL(string: "https://\(domain)/exact-material")!
+        let actID = "act_\(domain)#\(number)"
+        let cachedMaterial = CaseInstance(
+            level: .material, court: ctx.courtTitle, caseNumber: number,
+            judge: "Старый судья", domain: domain, foundByUID: true,
+            result: "Заявление удовлетворено",
+            sessions: [CaseSession(date: "01.09.2026", event: "Рассмотрение")],
+            actID: actID, sourceURL: oldSourceURL)
+        let cachedAct = CaseAct(id: actID, title: "Определение", date: "01.09.2026",
+                                courtShort: "Материал", instanceLevel: .material)
+        var cached = successMV!
+        cached.instances.append(cachedMaterial)
+        cached.acts.append(cachedAct)
+        cached.actBodies[actID] = "Сохранённый текст материала"
+        rec.movement = cached
+        rec.snapshot = MovementDerivation.snapshot(from: cached, context: ctx)
+        rec.movementFetchedAt = savedFetchedAt
+
+        let unavailableMaterial = CaseInstance(
+            level: .material, court: ctx.courtTitle, caseNumber: number,
+            judge: "Судья из выдачи", domain: domain, foundByUID: true,
+            result: "Заявление принято", sessions: [],
+            note: "Движение временно недоступно", sourceURL: freshSourceURL)
+        var partial = successMV!
+        partial.instances.append(unavailableMaterial)
+        partial.incompleteHigherCourtDomains = [domain]
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(partial) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("недоступная карточка материала должна оставить refresh partial")
+        }
+        let persisted = try XCTUnwrap(rec.movement?.instances.first {
+            $0.level == .material && $0.caseNumber == number
+        })
+        XCTAssertEqual(persisted.sessions, cachedMaterial.sessions)
+        XCTAssertEqual(persisted.actID, actID)
+        XCTAssertEqual(persisted.sourceURL, freshSourceURL,
+                       "точная свежая ссылка строки приоритетнее старого кэша")
+        XCTAssertEqual(persisted.note, "Движение временно недоступно")
+        XCTAssertEqual(rec.movement?.acts.first { $0.id == actID }, cachedAct)
+        XCTAssertEqual(rec.movement?.actBodies[actID], "Сохранённый текст материала")
+        XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt)
+        XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
+    }
+
     func testHonestZeroSubsourceDoesNotAdvanceLastSuccess() async throws {
         let ctx = makeContext()
         let key = store.all()[0].key

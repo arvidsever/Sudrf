@@ -30,6 +30,34 @@ final class CaptchaAssistTests: XCTestCase {
         )
     }
 
+    func testAcceptedMagistrateSubmissionProducesExactVerifiedSample() throws {
+        let image = Data([0x89, 0x50, 0x4e, 0x47])
+        let formURL = try XCTUnwrap(
+            URL(string: "https://pushkinsky.komi.msudrf.ru/kcaptchaForm"))
+
+        let sample = VerifiedMagistrateCaptchaSample.make(
+            outcome: .accepted,
+            imageData: image,
+            code: "дягше",
+            formURL: formURL
+        )
+
+        XCTAssertEqual(sample?.imageData, image)
+        XCTAssertEqual(sample?.code, "дягше")
+        XCTAssertEqual(sample?.host, "pushkinsky.komi.msudrf.ru")
+    }
+
+    func testRejectedMagistrateSubmissionDoesNotProduceVerifiedSample() throws {
+        let formURL = try XCTUnwrap(URL(string: "https://example.msudrf.ru/kcaptchaForm"))
+
+        XCTAssertNil(VerifiedMagistrateCaptchaSample.make(
+            outcome: .notAccepted,
+            imageData: Data([1]),
+            code: "wrong",
+            formURL: formURL
+        ))
+    }
+
     func testPostSubmitAcceptsPendingTokenWhenCaptchaIsGone() {
         XCTAssertEqual(
             CaptchaAssistPostSubmitDecision.decide(hasCaptchaMarkers: false, hasPendingToken: true),

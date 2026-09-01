@@ -1088,6 +1088,24 @@ final class SearchModel: ObservableObject {
         try await client.submitMagistrateCaptcha(code: code, challenge: challenge)
     }
 
+    /// A server-accepted KCAPTCHA answer is ground truth for the local text
+    /// corpus even when the resumed case search later reports a court outage.
+    func storeAcceptedMagistrateCaptcha(png: Data, code: String, host: String) async
+        -> CorpusStore.AddResult {
+        let result = await corpusStore.addVerifiedKCaptcha(png: png, code: code, host: host)
+        switch result {
+        case .conflict:
+            CaptchaSolverLog.shared.logSkip(
+                host: host, kind: .kcaptcha, reason: "verified corpus label conflict")
+        case .invalid:
+            CaptchaSolverLog.shared.logSkip(
+                host: host, kind: .kcaptcha, reason: "verified corpus write rejected")
+        case .stored, .duplicate:
+            break
+        }
+        return result
+    }
+
     private struct CaptchaResumeState {
         let rerunSearch: Bool
         let movementResult: CaseSearchResult?

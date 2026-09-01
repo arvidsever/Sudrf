@@ -20,8 +20,8 @@ final class CorpusStoreTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    /// `add` пишет PNG в `solved-numeric/<code>_<host>_<ts>_<uuid>.png`
-    /// для `.sudrfToken` и в `solved-text/...` для `.kcaptcha`.
+    /// `add` пишет PNG в numeric corpus, а confirmed `.kcaptcha` — в
+    /// отдельный verified corpus.
     func testAddWritesToCorrectSubdir() async throws {
         let store = CorpusStore(baseDir: tmpDir)
         // Numeric.
@@ -42,7 +42,7 @@ final class CorpusStoreTests: XCTestCase {
             kind: .kcaptcha
         )
         let t2 = try XCTUnwrap(t)
-        XCTAssertTrue(t2.path.contains("/solved-text/"))
+        XCTAssertTrue(t2.path.contains("/solved-kcaptcha-verified/"))
     }
 
     /// FIFO-eviction: после превышения потолка самые старые файлы
@@ -110,11 +110,157 @@ final class CorpusStoreTests: XCTestCase {
     func testTextLengthDistributionTracksInManifest() async throws {
         let store = CorpusStore(baseDir: tmpDir)
         _ = await store.add(png: Data([0]), code: "abcde", host: "msudrf.ru", kind: .kcaptcha)
-        _ = await store.add(png: Data([0]), code: "abcde", host: "msudrf.ru", kind: .kcaptcha)
-        _ = await store.add(png: Data([0]), code: "abcdef", host: "msudrf.ru", kind: .kcaptcha)
+        _ = await store.add(png: Data([1]), code: "abcde", host: "msudrf.ru", kind: .kcaptcha)
+        _ = await store.add(png: Data([2]), code: "abcdef", host: "msudrf.ru", kind: .kcaptcha)
         let distribution = await store.manifest.textLengthDistribution
         XCTAssertEqual(distribution[5], 2)
         XCTAssertEqual(distribution[6], 1)
+    }
+
+    func testKcaptchaDeduplicatesBySHA256AndPreservesCodeAndHost() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([7, 8, 9])
+
+        let firstResult = await store.addVerifiedKCaptcha(
+            png: png, code: "кот9а", host: "pushkinsky.msudrf.ru")
+        let duplicateResult = await store.addVerifiedKCaptcha(
+            png: png, code: "кот9а", host: "pushkinsky.msudrf.ru")
+        guard case .stored(let first) = firstResult else {
+            return XCTFail("first confirmed sample must be stored")
+        }
+        guard case .duplicate(let duplicate) = duplicateResult else {
+            return XCTFail("same image and label must be a duplicate")
+        }
+
+        XCTAssertEqual(first, duplicate)
+        XCTAssertTrue(first.path.hasPrefix(tmpDir.path))
+        XCTAssertTrue(first.path.hasSuffix(".png"))
+        let count = await store.currentCount(kind: .kcaptcha)
+        let pending = await store.pendingSinceLastTrain(kind: .kcaptcha)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(pending, 1)
+        let manifest = await store.manifest
+        XCTAssertEqual(manifest.textLengthDistribution[5], 1)
+        let metadata = await store.verifiedKCaptchaMetadata()
+        XCTAssertEqual(metadata.count, 1)
+        XCTAssertEqual(metadata[0].code, "кот9а")
+        XCTAssertEqual(metadata[0].hosts, ["pushkinsky.msudrf.ru"])
+        XCTAssertEqual(first.lastPathComponent, "\(metadata[0].digest).png")
+    }
+
+    func testKcaptchaDuplicatePreservesEveryConfirmingHostAndReopens() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([13, 14, 15])
+
+        let first = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "pushkinsky.msudrf.ru")
+        let second = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "zheshartsky.msudrf.ru")
+        guard case .stored = first, case .duplicate = second else {
+            return XCTFail("same image and code must be stored once")
+        }
+
+        let metadata = await store.verifiedKCaptchaMetadata()
+        XCTAssertEqual(metadata.first?.hosts,
+                       ["pushkinsky.msudrf.ru", "zheshartsky.msudrf.ru"])
+
+        let reopened = CorpusStore(baseDir: tmpDir)
+        let reopenedMetadata = await reopened.verifiedKCaptchaMetadata()
+        XCTAssertEqual(reopenedMetadata, metadata)
+    }
+
+    func testKcaptchaCanonicalizesHostCaseBeforeDeduplication() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([21, 22, 23])
+
+        _ = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "Pushkinsky.Komi.MSUDRF.RU")
+        _ = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "pushkinsky.komi.msudrf.ru")
+
+        let metadata = await store.verifiedKCaptchaMetadata()
+        XCTAssertEqual(metadata.first?.hosts, ["pushkinsky.komi.msudrf.ru"])
+    }
+
+    func testKcaptchaMetadataOmitsMissingOrTamperedImage() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([31, 32, 33])
+        let result = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "pushkinsky.komi.msudrf.ru")
+        guard case .stored(let imageURL) = result else {
+            return XCTFail("confirmed sample must be stored")
+        }
+
+        try Data([99]).write(to: imageURL, options: .atomic)
+
+        let metadata = await store.verifiedKCaptchaMetadata()
+        XCTAssertTrue(metadata.isEmpty,
+                      "an index entry is not training evidence without its exact hash-keyed PNG")
+    }
+
+    func testKcaptchaRejectsConflictingLabelForSameImage() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+        let png = Data([10, 11, 12])
+
+        let first = await store.addVerifiedKCaptcha(
+            png: png, code: "абв12", host: "pushkinsky.msudrf.ru")
+        let conflicting = await store.addVerifiedKCaptcha(
+            png: png, code: "где34", host: "pushkinsky.msudrf.ru")
+
+        guard case .stored(let firstURL) = first else {
+            return XCTFail("first confirmed sample must be stored")
+        }
+        guard case .conflict = conflicting else {
+            return XCTFail("same image with another label must be rejected")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstURL.path))
+        let count = await store.currentCount(kind: .kcaptcha)
+        let pending = await store.pendingSinceLastTrain(kind: .kcaptcha)
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(pending, 1)
+    }
+
+    func testKcaptchaRejectsEmptyOrInvalidInput() async throws {
+        let store = CorpusStore(baseDir: tmpDir)
+
+        let emptyPNG = await store.addVerifiedKCaptcha(
+            png: Data(), code: "абв12", host: "pushkinsky.msudrf.ru")
+        let emptyCode = await store.addVerifiedKCaptcha(
+            png: Data([1]), code: "", host: "pushkinsky.msudrf.ru")
+        let emptyHost = await store.addVerifiedKCaptcha(
+            png: Data([2]), code: "абв12", host: "")
+        let invalidCode = await store.addVerifiedKCaptcha(
+            png: Data([3]), code: "абв-12", host: "pushkinsky.msudrf.ru")
+        guard case .invalid = emptyPNG,
+              case .invalid = emptyCode,
+              case .invalid = emptyHost,
+              case .invalid = invalidCode else {
+            return XCTFail("empty and malformed samples must be rejected")
+        }
+        let count = await store.currentCount(kind: .kcaptcha)
+        let pending = await store.pendingSinceLastTrain(kind: .kcaptcha)
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testKcaptchaVerifiedCorpusDoesNotCountLegacySolvedText() async throws {
+        let legacy = tmpDir.appendingPathComponent("solved-text", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let legacyPNG = legacy.appendingPathComponent("legacy.png")
+        try Data([99]).write(to: legacyPNG)
+
+        let store = CorpusStore(baseDir: tmpDir)
+        let result = await store.addVerifiedKCaptcha(
+            png: Data([100]), code: "абв12", host: "pushkinsky.msudrf.ru")
+        guard case .stored = result else {
+            return XCTFail("confirmed sample must be stored")
+        }
+
+        let count = await store.currentCount(kind: .kcaptcha)
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyPNG.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(
+            at: legacy, includingPropertiesForKeys: nil).count, 1)
     }
 
     /// `currentCount` возвращает точное число PNG в `solved-<kind>/`.

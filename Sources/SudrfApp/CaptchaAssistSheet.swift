@@ -9,6 +9,7 @@ struct CaptchaAssistSheet: View {
     var onCardHTML: (String) -> Void
     var onCaptchaPair: ((String, CaptchaToken) -> Void)? = nil
     var onSessionUnlocked: ((String) -> Void)? = nil
+    var onMagistrateCaptchaAccepted: ((Data, String, String) async -> Void)? = nil
     let onLoadMagistrateCaptcha: () async throws -> MagistrateCaptchaChallenge
     let onSubmitMagistrateCaptcha: (String, MagistrateCaptchaChallenge) async throws
         -> MagistrateCaptchaSubmission
@@ -302,13 +303,23 @@ struct CaptchaAssistSheet: View {
                 }
                 switch result {
                 case .accepted:
-                    guard let host = context.formURL.host, !host.isEmpty else {
+                    guard let sample = VerifiedMagistrateCaptchaSample.make(
+                        outcome: .accepted,
+                        imageData: challenge.imageData,
+                        code: code,
+                        formURL: context.formURL
+                    ) else {
                         updateSubmissionState(.failed(
                             "Суд принял код, но адрес сессии не определён. Повторите загрузку."))
                         return
                     }
+                    if let onMagistrateCaptchaAccepted {
+                        await onMagistrateCaptchaAccepted(
+                            sample.imageData, sample.code, sample.host)
+                        guard nativeOperationGeneration == operation else { return }
+                    }
                     updateSubmissionState(.accepted)
-                    onSessionUnlocked?(host)
+                    onSessionUnlocked?(sample.host)
                 case .rejected(let replacement):
                     guard MagistrateCaptchaLoadDecision.decide(imageData: replacement.imageData)
                         == .showChallenge,

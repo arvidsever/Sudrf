@@ -22,6 +22,8 @@ private struct CalEvent: Identifiable {
     var title: String
     var sub: String
     var caseNumber: String?
+    /// Подпись номера для UI; `caseNumber` остаётся сырым значением для открытия дела.
+    var displayCaseNumber: String?
     var deadlineId: String?
     var parties: String = ""
     var court: String = ""
@@ -68,12 +70,14 @@ struct CalendarScreen: View {
             return seen == 0 ? base : "\(base)#\(seen + 1)"
         }
         for h in router.calendarHearings {
+            let displayCaseNumber = h.reviewNumber ?? CaseNumberPresentation.primary(h.caseNumber)
             out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
                 date: h.date, sortTime: h.time, kind: .hearing,
-                chip: "\(h.time) заседание · \(CaseNumberPresentation.primary(h.caseNumber))", time: h.time, heading: "ЗАСЕДАНИЕ",
-                title: "№ \(CaseNumberPresentation.primary(h.caseNumber)) — \(h.parties)",
+                chip: "\(h.time) заседание · \(displayCaseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
+                title: "№ \(displayCaseNumber) — \(h.parties)",
                 sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
-                caseNumber: h.caseNumber, deadlineId: nil,
+                caseNumber: h.caseNumber, displayCaseNumber: displayCaseNumber,
+                deadlineId: nil,
                 parties: h.parties, court: h.court, room: h.room, judge: h.judge))
         }
         for d in router.deadlines {
@@ -84,7 +88,8 @@ struct CalendarScreen: View {
                 chip: (confirmed ? "срок · " : "срок? ") + d.calLabel,
                 time: "срок", heading: confirmed ? "ДЕДЛАЙН · ПОДТВЕРЖДЁН" : "ДЕДЛАЙН · РАСЧЁТНЫЙ",
                 title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
-                caseNumber: d.caseNumber, deadlineId: d.id))
+                caseNumber: d.caseNumber, displayCaseNumber: CaseNumberPresentation.primary(d.caseNumber),
+                deadlineId: d.id))
         }
         return out
     }
@@ -534,6 +539,7 @@ struct CalendarScreen: View {
             $0.kind == .hearing && CalendarWeekLayout.isWithinWindow($0.time)
         }.map { ev in
             CalendarWeekHearingLayoutInput(id: ev.id, caseNumber: ev.caseNumber ?? "",
+                                           displayCaseNumber: ev.displayCaseNumber,
                                            parties: ev.parties, court: ev.court,
                                            room: ev.room, judge: ev.judge, time: ev.time)
         }
@@ -556,8 +562,9 @@ struct CalendarScreen: View {
     private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
                                 conflict: Bool,
                                 height: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("№ \(CaseNumberPresentation.primary(item.caseNumber))")
+        let displayCaseNumber = item.displayCaseNumber ?? CaseNumberPresentation.primary(item.caseNumber)
+        return VStack(alignment: .leading, spacing: 5) {
+            Text("№ \(displayCaseNumber)")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -600,9 +607,11 @@ struct CalendarScreen: View {
             ForEach(block.hearings) { item in
                 Button { router.openCase(item.caseNumber) } label: {
                     VStack(alignment: .leading, spacing: 2) {
+                        let displayCaseNumber = item.displayCaseNumber
+                            ?? CaseNumberPresentation.primary(item.caseNumber)
                         let judge = CalendarWeekLayout.itemJudge(item, conflict: conflict)
                         let judgePart = judge.isEmpty ? "" : " · \(judge)"
-                        Text("\(item.time) · № \(CaseNumberPresentation.primary(item.caseNumber))\(judgePart) · \(item.parties)")
+                        Text("\(item.time) · № \(displayCaseNumber)\(judgePart) · \(item.parties)")
                             .font(.system(size: 10.2, weight: .semibold))
                             .foregroundStyle(conflict ? Palette.confirmed : .primary)
                             .lineLimit(2)
@@ -705,10 +714,12 @@ struct CalendarScreen: View {
 
     private func weekNoTimeHearingChip(_ ev: CalEvent) -> some View {
         let timePrefix = CalendarWeekLayout.parseTime(ev.time) == nil ? "" : "\(ev.time) · "
+        let displayCaseNumber = ev.displayCaseNumber
+            ?? CaseNumberPresentation.primary(ev.caseNumber ?? "")
         return Button {
             if let num = ev.caseNumber { router.openCase(num) }
         } label: {
-            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))")
+            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(displayCaseNumber)")
                 .font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(Color.accentColor)
                 .lineLimit(1)

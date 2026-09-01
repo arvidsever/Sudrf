@@ -752,7 +752,8 @@ private struct InstanceBlock: View {
                 Circle().fill(instance.level.tint).frame(width: 8, height: 8)
                     .shadow(color: instance.level.tint.opacity(0.55), radius: 3)
                 Text(instance.court).font(.system(size: 12.5, weight: .bold)).lineLimit(1)
-                Text("№ \(instance.caseNumber)").font(.caption).foregroundStyle(.secondary)
+                let number = CaseNumberPresentation.displayedNumber(for: instance)
+                Text("№ \(number)").font(.caption).foregroundStyle(.secondary)
                 if let sourceURL = instance.sourceURL {
                     Link(destination: sourceURL) {
                         Image(systemName: "arrow.up.right.square")

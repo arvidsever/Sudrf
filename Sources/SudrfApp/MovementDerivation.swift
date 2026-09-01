@@ -318,7 +318,8 @@ enum MovementDerivation {
               [.appeal, .cassation, .vsCassation, .supervisory].contains(instance.level),
               instance.captchaFormURL == nil,
               instance.transientError != true else { return nil }
-        return CaseNumberPresentation.secondary(instance.caseNumber, distinctFrom: "")
+        let number = CaseNumberPresentation.displayedNumber(for: instance)
+        return CaseNumberPresentation.secondary(number, distinctFrom: "")
     }
 
     static func reviewNumber(for instance: CaseInstance?,

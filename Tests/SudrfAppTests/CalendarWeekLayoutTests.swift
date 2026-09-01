@@ -6,11 +6,23 @@ final class CalendarWeekLayoutTests: XCTestCase {
                          time: String,
                          court: String = "Сыктывкарский городской суд",
                          room: String = "каб. 605",
-                         judge: String = "Колосова Н. Е.") -> CalendarWeekHearingLayoutInput {
+                         judge: String = "Колосова Н. Е.",
+                         displayNumber: String? = nil) -> CalendarWeekHearingLayoutInput {
         CalendarWeekHearingLayoutInput(id: number, caseNumber: number,
+                                       displayCaseNumber: displayNumber,
                                        parties: "Иванов А. А. ⚔ ООО «Ромашка»",
                                        court: court, room: room, judge: judge,
                                        time: time)
+    }
+
+    func testDisplayCaseNumberPreservesRawNumberForNavigation() {
+        let raw = "7У-1077/2024 [77-762/2024]"
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing(raw, time: "09:30", displayNumber: "77-762/2024")
+        ])
+
+        XCTAssertEqual(blocks.first?.hearings.first?.caseNumber, raw)
+        XCTAssertEqual(blocks.first?.hearings.first?.displayCaseNumber, "77-762/2024")
     }
 
     func testSingleHearingUsesGridPositionAndMinimumHeight() {

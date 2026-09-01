@@ -28,7 +28,9 @@ import SwiftSoup
 
 public enum CaseCardParser {
 
-    public static func parse(html: String) throws -> CaseCard {
+    /// `cardURL` must be the effective response URL, not a reconstructed card
+    /// URL: a published predecessor link can be relative to a redirected host.
+    public static func parse(html: String, cardURL: URL? = nil) throws -> CaseCard {
         let doc: Document
         do { doc = try SwiftSoup.parse(html) }
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать карточку") }
@@ -53,8 +55,11 @@ public enum CaseCardParser {
 
         // «Винтажная» версия модуля (VNKOD-суды: Воронеж, Ульяновск, Амур и др.)
         // рисует карточку совсем иначе: вкладки tab_content_* вместо cont{N}.
+        let previousRegistration = parsePreviousRegistration(doc, cardURL: cardURL)
+
         if isVintage(doc) {
-            return try parseVintage(doc, html: html, rawText: rawText)
+            return try parseVintage(doc, html: html, rawText: rawText,
+                                    previousRegistration: previousRegistration)
         }
 
         let meta = parseMeta(doc)
@@ -102,6 +107,7 @@ public enum CaseCardParser {
                         appeals: appeals,
                         parties: parties,
                         lowerCourt: lowerCourt,
+                        previousRegistration: previousRegistration,
                         executionDocuments: executionDocuments)
     }
 
@@ -124,7 +130,8 @@ public enum CaseCardParser {
         return !(((try? doc.select("div[id^=tab_content_]").array()) ?? []).isEmpty)
     }
 
-    private static func parseVintage(_ doc: Document, html _: String, rawText: String) throws -> CaseCard {
+    private static func parseVintage(_ doc: Document, html _: String, rawText: String,
+                                     previousRegistration: PreviousRegistrationReference?) throws -> CaseCard {
         // Метаданные: вкладка «Дело». УИД может лежать внутри <a class="dashed">.
         var meta: [String: String] = [:]
         if let cont = vintageTab(doc, "Case") {
@@ -169,6 +176,7 @@ public enum CaseCardParser {
                         appeals: [],   // вкладки «Обжалование» в винтажной карточке нет
                         parties: parties,
                         lowerCourt: lowerCourt,
+                        previousRegistration: previousRegistration,
                         executionDocuments: executionDocuments)
     }
 
@@ -469,6 +477,34 @@ public enum CaseCardParser {
             if map[k] == nil { map[k] = val }
         }
         return map
+    }
+
+    /// Ссылка в строке «Номер по предыдущей регистрации» — официальное
+    /// доказательство continuity. Номер и адрес берутся из одной опубликованной
+    /// строки; адрес не реконструируется из `case_id`/картотеки.
+    private static func parsePreviousRegistration(
+        _ doc: Document,
+        cardURL: URL?
+    ) -> PreviousRegistrationReference? {
+        guard let cardURL else { return nil }
+        for row in (try? doc.select("tr").array()) ?? [] {
+            let cells = directCells(row, tags: ["td", "th"])
+            guard cells.count >= 2,
+                  normalizeHeader((try? cells[0].text()) ?? "")
+                    == "номер по предыдущей регистрации",
+                  let link = (try? cells[1].select("a[href]").first()) ?? nil else {
+                continue
+            }
+            let caseNumber = ((try? link.text()) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let href = (try? link.attr("href")) ?? ""
+            guard !caseNumber.isEmpty, !href.isEmpty,
+                  let url = URL(string: href, relativeTo: cardURL)?.absoluteURL else {
+                continue
+            }
+            return PreviousRegistrationReference(caseNumber: caseNumber, url: url)
+        }
+        return nil
     }
 
     /// Вкладка апелляционной/кассационной карточки с реквизитами исходного

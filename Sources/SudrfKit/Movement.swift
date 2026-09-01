@@ -66,7 +66,7 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     public var caseNumber: String
     public var judge: String?
     public var domain: String
-    /// true, если карточка найдена по УИД в вышестоящем суде.
+    /// true, если карточка найдена по УИД в этом же или вышестоящем суде.
     public var foundByUID: Bool
     public var result: String?
     public var sessions: [CaseSession]
@@ -105,6 +105,9 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
     /// главной страницей суда; nil означает, что надёжная ссылка неизвестна.
     /// Опционал сохраняет декодирование старых кэшей без миграции.
     public var sourceURL: URL?
+    /// Опубликованная текущей карточкой ссылка на предыдущую регистрацию.
+    /// Optional сохраняет декодирование старых movement-кэшей без миграции.
+    public var previousRegistration: PreviousRegistrationReference?
 
     public init(level: Level, court: String, caseNumber: String, judge: String?,
                 domain: String, foundByUID: Bool, result: String?,
@@ -112,6 +115,7 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
                 actIDs: [String]? = nil,
                 captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil,
                 actURLs: [URL]? = nil, actFileError: String? = nil, sourceURL: URL? = nil,
+                previousRegistration: PreviousRegistrationReference? = nil,
                 transientError: Bool? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
@@ -121,6 +125,7 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
         self.actURLs = actURLs
         self.actFileError = actFileError
         self.sourceURL = sourceURL
+        self.previousRegistration = previousRegistration
         self.transientError = transientError
     }
 
@@ -312,6 +317,17 @@ public struct MovementSearchTarget: Sendable, Equatable, Codable {
 
 public actor MovementService: MovementProviding {
 
+    /// One same-court registration loaded during discovery.  Keeping the
+    /// source cartoteka beside the card is important for paired g1/p1 (and
+    /// g2/p2, g33/p33) searches: the card URL remains the source of truth.
+    private struct LoadedRegistration: Sendable {
+        let row: CaseSearchResult
+        let card: CaseCard
+        let cartoteka: Cartoteka
+        let foundByUID: Bool
+        let sourceURL: URL?
+    }
+
     // internal (не private): московская ветка движения живёт в расширении
     // в MosGorSudMovement.swift и пользуется теми же зависимостями.
     let client: any CaseProviding
@@ -452,7 +468,7 @@ public actor MovementService: MovementProviding {
         }
         // Вкладка «Обжалование» 1-й инстанции — авторитетный классификатор жалоб
         // (вид + даты). Парсится из уже загруженной карточки, без доп. запросов.
-        let appeals = baseCard.appeals
+        var appeals = baseCard.appeals
         var acts: [CaseAct] = []
         var actBodies: [String: String] = [:]
         var baseActID: String? = nil
@@ -480,7 +496,8 @@ public actor MovementService: MovementProviding {
             result: base.result ?? baseCard.result,
             sessions: baseCard.sessions,
             actID: baseActID,
-            sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))]
+            sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
+            previousRegistration: baseCard.previousRegistration)]
         var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
             ? [court.domain] : []
         var honestZeroDomains: [String] = []
@@ -499,41 +516,85 @@ public actor MovementService: MovementProviding {
             honestZeroDomains.append(domain)
         }
 
-        // 1b. Тот же суд: другие круги под этим же УИД. После отмены вышестоящим
-        //     судом и возврата на новое рассмотрение в том же суде заводится НОВАЯ
-        //     карточка (новый № дела) под тем же УИД. Прежде искались только
-        //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
-        //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
+        // 1b. Тот же суд: другие регистрации под тем же УИД. После отмены
+        // вышестоящим судом и возврата на новое рассмотрение в том же суде
+        // заводится новая карточка (новый № дела) под тем же УИД. Ищем как в
+        // выбранной картотеке, так и в парной GPK/KAS-картотеке того же звена.
+        // Материалы намеренно остаются отдельным поиском ниже.
         if !usedSavedUIDFallback,
            let uid, court.level != .magistrate, effectiveBaseLevel != .material {
-            let sameCourtRows: [CaseSearchResult]
-            do {
-                sameCourtRows = try await discoveryRows(court: court, cartoteka: cartoteka,
-                                                        field: .uid, value: uid)
-                if sameCourtRows.isEmpty { markHonestZero(court.domain) }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
-                throw error
-            } catch {
-                markHigherCourtIncomplete(court.domain)
-                sameCourtRows = []
-            }
-            for r in sameCourtRows {
-                guard Self.hasCardAccess(r) else { continue }
-                if baseIsMainCase,
-                   CaseIndexClassifier.classify(caseNumber: r.caseNumber,
-                                                courtLevel: court.level)?.materialLinkPolicy == .mayBecomeMainCase {
-                    continue
+            var registrations: [LoadedRegistration] = [LoadedRegistration(
+                row: base, card: baseCard, cartoteka: cartoteka, foundByUID: false,
+                sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))]
+            var seenSourceKeys = Self.cardSourceKeys(
+                row: base, court: court, cartoteka: cartoteka)
+            var seenPredecessorURLs = Set<String>()
+            var registrationQueriesWereEmpty = true
+
+            @discardableResult
+            func appendRegistration(_ loaded: LoadedRegistration) -> Bool {
+                let number = loaded.card.caseNumber ?? loaded.row.caseNumber
+                guard !Self.containsInstance(instances, domain: court.domain,
+                                              caseNumber: number,
+                                              usingCanonicalHost: false) else { return false }
+
+                let cardActs: [CaseActText]
+                if !loaded.card.acts.isEmpty {
+                    cardActs = loaded.card.acts
+                } else if let body = loaded.card.actText, !body.isEmpty {
+                    cardActs = [CaseActText(id: "doc1", kind: "",
+                                             label: "Судебный акт", body: body)]
+                } else {
+                    cardActs = []
                 }
-                // Базовый круг и уже добавленные — пропускаем (№ может идти с
-                // дописками «… ~ М-…», поэтому сравнение префиксом).
-                if Self.sameCaseNumber(r.caseNumber, base.caseNumber) { continue }
-                if Self.containsInstance(instances, domain: court.domain, caseNumber: r.caseNumber,
-                                         usingCanonicalHost: false) { continue }
-                let card: CaseCard
+
+                var linkedActIDs: [String] = []
+                for (index, cardAct) in cardActs.enumerated() {
+                    let baseID = "act_\(court.domain)#\(number)"
+                    var actID = index == 0 ? baseID : "\(baseID)#\(index + 1)"
+                    var suffix = 2
+                    while acts.contains(where: { $0.id == actID }) {
+                        actID = "\(baseID)#\(suffix)"
+                        suffix += 1
+                    }
+                    let date = loaded.row.decisionDate ?? loaded.row.receiptDate
+                        ?? loaded.card.decisionDate ?? loaded.card.receiptDate ?? "—"
+                    acts.append(CaseAct(id: actID,
+                                        title: Self.actTitle(cartotekaID: loaded.cartoteka.id,
+                                                             level: effectiveBaseLevel),
+                                        date: date,
+                                        courtShort: Self.levelLabel(effectiveBaseLevel),
+                                        instanceLevel: effectiveBaseLevel))
+                    actBodies[actID] = cardAct.body
+                    linkedActIDs.append(actID)
+                }
+
+                instances.append(CaseInstance(
+                    level: effectiveBaseLevel,
+                    court: court.title,
+                    caseNumber: number,
+                    judge: loaded.row.judge ?? loaded.card.judge,
+                    domain: court.domain,
+                    foundByUID: loaded.foundByUID,
+                    result: loaded.row.result ?? loaded.card.result,
+                    sessions: loaded.card.sessions,
+                    actID: linkedActIDs.first,
+                    actIDs: linkedActIDs.isEmpty ? nil : linkedActIDs,
+                    note: "Предыдущая регистрация",
+                    sourceURL: loaded.sourceURL,
+                    previousRegistration: loaded.card.previousRegistration))
+                let newAppeals = loaded.card.appeals.filter { !appeals.contains($0) }
+                appeals.append(contentsOf: newAppeals)
+                registrations.append(loaded)
+                return true
+            }
+
+            for sameCart in Self.sameCourtCartotekas(court: court, cartoteka: cartoteka) {
+                let rows: [CaseSearchResult]
                 do {
-                    card = try await fetchCard(row: r, court: court, cartoteka: cartoteka)
+                    rows = try await discoveryRows(court: court, cartoteka: sameCart,
+                                                   field: .uid, value: uid)
+                    if !rows.isEmpty { registrationQueriesWereEmpty = false }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
@@ -542,30 +603,127 @@ public actor MovementService: MovementProviding {
                     markHigherCourtIncomplete(court.domain)
                     continue
                 }
-                var roundActID: String? = nil
-                if let actText = card.actText {
-                    let actID = "act_\(court.domain)#\(r.caseNumber)"
-                    let date = r.decisionDate ?? r.receiptDate ?? card.decisionDate ?? "—"
-                    acts.append(CaseAct(id: actID,
-                                        title: Self.actTitle(cartotekaID: cartoteka.id,
-                                                             level: effectiveBaseLevel),
-                                        date: date,
-                                        courtShort: Self.levelLabel(effectiveBaseLevel),
-                                        instanceLevel: effectiveBaseLevel))
-                    actBodies[actID] = actText
-                    roundActID = actID
+
+                for row in rows {
+                    guard registrations.count < Self.maxRegistrationCards else { break }
+                    guard Self.hasCardAccess(row) else { continue }
+                    // A display alias in the base row is the same registration,
+                    // not a new historical round.
+                    if Self.sameDisplayedCaseNumber(row.caseNumber, base.caseNumber)
+                        || Self.containsInstance(instances, domain: court.domain,
+                                                 caseNumber: row.caseNumber,
+                                                 usingCanonicalHost: false) {
+                        continue
+                    }
+                    let rowKeys = Self.cardSourceKeys(row: row, court: court,
+                                                      cartoteka: sameCart)
+                    guard seenSourceKeys.isDisjoint(with: rowKeys) else { continue }
+
+                    let card: CaseCard
+                    do {
+                        card = try await fetchCard(row: row, court: court, cartoteka: sameCart)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                        throw error
+                    } catch {
+                        markHigherCourtIncomplete(court.domain)
+                        continue
+                    }
+                    // Search rows are an untrusted transport result.  Only a
+                    // card which confirms the searched judicial UID is a
+                    // registration round; a different or missing UID is ignored.
+                    guard Self.normalizedJudicialUID(card.uid)
+                            == Self.normalizedJudicialUID(uid) else { continue }
+
+                    seenSourceKeys.formUnion(rowKeys)
+                    _ = appendRegistration(LoadedRegistration(
+                        row: row, card: card, cartoteka: sameCart, foundByUID: true,
+                        sourceURL: Self.sourceURL(for: row, court: court, cartoteka: sameCart)))
                 }
-                instances.append(CaseInstance(
-                    level: effectiveBaseLevel,
-                    court: court.title,
-                    caseNumber: r.caseNumber,
-                    judge: r.judge ?? card.judge,
-                    domain: court.domain,
-                    foundByUID: true,
-                    result: r.result ?? card.result,
-                    sessions: card.sessions,
-                    actID: roundActID,
-                    sourceURL: Self.sourceURL(for: r, court: court, cartoteka: cartoteka)))
+            }
+            if registrationQueriesWereEmpty { markHonestZero(court.domain) }
+
+            // Explicit predecessor links are a second, authoritative source.
+            // A UID result wins over the link: if the card is already loaded,
+            // this pass only establishes ordering and never fetches it again.
+            var queue: [(index: Int, depth: Int)] = registrations.indices.map {
+                (index: $0, depth: 0)
+            }
+            var queueIndex = 0
+            while queueIndex < queue.count {
+                let item = queue[queueIndex]
+                queueIndex += 1
+                guard item.index < registrations.count,
+                      let reference = registrations[item.index].card.previousRegistration,
+                      item.depth < Self.maxRegistrationLinkDepth,
+                      registrations.count < Self.maxRegistrationCards else { continue }
+                guard Self.isSafeCardURL(reference.url, for: court) else { continue }
+
+                let canonicalURL = Self.canonicalCardURL(reference.url)
+                guard seenPredecessorURLs.insert(canonicalURL).inserted else { continue }
+
+                let linkedCart = Self.cartoteka(from: reference.url, court: court,
+                                                caseNumber: reference.caseNumber) ?? cartoteka
+                let linkedRow = CaseSearchResult(
+                    caseNumber: reference.caseNumber,
+                    caseID: Self.queryValue(["case_id", "_id"], in: reference.url),
+                    caseUID: Self.queryValue(["case_uid", "_uid"], in: reference.url),
+                    cardURL: reference.url)
+                let linkedKeys = Self.cardSourceKeys(row: linkedRow, court: court,
+                                                     cartoteka: linkedCart)
+
+                // Exact published number and source identity both count as an
+                // already discovered card.  In particular this prevents the
+                // common UID+predecessor double fetch.
+                if registrations.contains(where: {
+                    Self.samePublishedCaseNumber($0.card.caseNumber ?? $0.row.caseNumber,
+                                                 reference.caseNumber)
+                        || Self.sameDisplayedCaseNumber(
+                            $0.card.caseNumber ?? $0.row.caseNumber, reference.caseNumber)
+                        || Self.cardSourceKeys(row: $0.row, court: court,
+                                               cartoteka: $0.cartoteka).contains("url:\(canonicalURL)")
+                }) || !seenSourceKeys.isDisjoint(with: linkedKeys) { continue }
+
+                let previousCard: CaseCard
+                do {
+                    previousCard = try await client.fetchCard(url: reference.url)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                    throw error
+                } catch {
+                    markHigherCourtIncomplete(court.domain)
+                    continue
+                }
+                guard let publishedNumber = previousCard.caseNumber,
+                      (Self.samePublishedCaseNumber(publishedNumber, reference.caseNumber)
+                       || Self.sameDisplayedCaseNumber(publishedNumber,
+                                                       reference.caseNumber)) else {
+                    continue
+                }
+
+                let previousCart = Self.cartoteka(from: reference.url, court: court,
+                                                  caseNumber: publishedNumber) ?? linkedCart
+                let previousRow = CaseSearchResult(
+                    caseNumber: publishedNumber,
+                    receiptDate: previousCard.receiptDate,
+                    judge: previousCard.judge,
+                    decisionDate: previousCard.decisionDate,
+                    result: previousCard.result,
+                    legalForceDate: previousCard.legalForceDate,
+                    caseID: Self.queryValue(["case_id", "_id"], in: reference.url),
+                    caseUID: Self.queryValue(["case_uid", "_uid"], in: reference.url),
+                    cardURL: reference.url)
+                let previousKeys = Self.cardSourceKeys(row: previousRow, court: court,
+                                                       cartoteka: previousCart)
+                guard seenSourceKeys.isDisjoint(with: previousKeys) else { continue }
+                seenSourceKeys.formUnion(previousKeys)
+                if appendRegistration(LoadedRegistration(
+                    row: previousRow, card: previousCard, cartoteka: previousCart,
+                    foundByUID: false, sourceURL: reference.url)) {
+                    queue.append((index: registrations.count - 1, depth: item.depth + 1))
+                }
             }
         }
 
@@ -608,6 +766,8 @@ public actor MovementService: MovementProviding {
                     markHigherCourtIncomplete(court.domain)
                     continue
                 }
+                guard Self.normalizedJudicialUID(card.uid)
+                        == Self.normalizedJudicialUID(uid) else { continue }
                 var matActID: String? = nil
                 if let actText = card.actText {
                     let actID = "act_\(court.domain)#\(r.caseNumber)"
@@ -697,7 +857,8 @@ public actor MovementService: MovementProviding {
                             sessions: higherCard.sessions,
                             actID: higherCard.actText != nil ? actID : nil,
                             sourceURL: Self.sourceURL(for: r, court: higherCourt,
-                                                      cartoteka: higherCart))
+                                                      cartoteka: higherCart),
+                            previousRegistration: higherCard.previousRegistration)
                         rounds.append((inst, act, body,
                                        Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
                     }
@@ -854,8 +1015,26 @@ public actor MovementService: MovementProviding {
             }
         }
 
-        let sortedInst = instances.sorted { Self.instanceOrderKey($0) < Self.instanceOrderKey($1) }
-        let sortedActs = acts.sorted { Self.actOrderKey($0) < Self.actOrderKey($1) }
+        var sortedInst = Self.registrationOrder(instances)
+        // The tracked anchor can itself be an old registration.  UID discovery
+        // then finds a newer round in the same court, so label by chronology
+        // rather than assuming that the input row is always current.
+        sortedInst = Self.labelRegistrationRounds(
+            sortedInst, domain: court.domain, level: effectiveBaseLevel)
+        var actRanks: [String: Int] = [:]
+        for (index, instance) in sortedInst.enumerated() {
+            for actID in instance.linkedActIDs where actRanks[actID] == nil {
+                actRanks[actID] = index
+            }
+        }
+        let sortedActs = acts.enumerated().sorted { lhs, rhs in
+            let leftRank = actRanks[lhs.element.id] ?? Int.max
+            let rightRank = actRanks[rhs.element.id] ?? Int.max
+            if leftRank != rightRank { return leftRank < rightRank }
+            let leftKey = Self.actOrderKey(lhs.element)
+            let rightKey = Self.actOrderKey(rhs.element)
+            return leftKey == rightKey ? lhs.offset < rhs.offset : leftKey < rightKey
+        }.map(\.element)
 
         // Стороны: вкладка «СТОРОНЫ ПО ДЕЛУ» карточки — авторитетный источник;
         // если её нет/пуста — фолбэк к разбору колонки выдачи («ИСТЕЦ: …»).
@@ -906,7 +1085,8 @@ public actor MovementService: MovementProviding {
                                 judge: card.judge, domain: kc.domain, foundByUID: false,
                                 result: card.result, sessions: card.sessions,
                                 actID: act?.id,
-                                sourceURL: Self.sourceURL(for: kc))
+                                sourceURL: Self.sourceURL(for: kc),
+                                previousRegistration: card.previousRegistration)
         return (inst, act, body)
     }
 
@@ -972,6 +1152,197 @@ public actor MovementService: MovementProviding {
 // MARK: - Вспомогательные методы
 
 extension MovementService {
+
+    /// Maximum number of same-court registration cards followed through the
+    /// published predecessor chain, including the current card.  The bound is
+    /// deliberately small: a malformed/cyclic source must not turn a refresh
+    /// into an unbounded crawl.
+    static let maxRegistrationCards = 8
+    static let maxRegistrationLinkDepth = maxRegistrationCards - 1
+
+    /// UID comparison used by discovery.  Search fixtures and a few old
+    /// modules omit the canonical separators, so compare the source-neutral
+    /// alphanumeric spelling rather than the display spelling.
+    static func normalizedJudicialUID(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty, value != "—" else { return nil }
+        let normalized = JudicialUIDObservation.normalize(value)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// Published case-number equality is stricter than `sameCaseNumber`: a
+    /// predecessor link is proof for one exact published registration, not for
+    /// an arbitrary number sharing a prefix.
+    static func samePublishedCaseNumber(_ lhs: String?, _ rhs: String?) -> Bool {
+        func normalize(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value.replacingOccurrences(of: "ё", with: "е")
+                .replacingOccurrences(of: "Ё", with: "Е")
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ")
+                .lowercased()
+        }
+        guard let lhs = normalize(lhs), let rhs = normalize(rhs) else { return false }
+        return lhs == rhs
+    }
+
+    /// A row can contain a display alias (`2-… ~ М-…`).  Compare every
+    /// published token so the UID lookup does not turn that alias into a
+    /// second registration round.
+    static func sameDisplayedCaseNumber(_ lhs: String, _ rhs: String) -> Bool {
+        func parts(_ value: String) -> [String] {
+            value.components(separatedBy: "~")
+                .compactMap { token in
+                    let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+        }
+        return parts(lhs).contains { left in
+            parts(rhs).contains { right in samePublishedCaseNumber(left, right) }
+        }
+    }
+
+    /// Stable key set for source-native/card-URL de-duplication.  The cartoteka
+    /// is part of source-native identity because the same numeric `case_id` may
+    /// occur in paired GPK/KAS registers.
+    static func cardSourceKeys(row: CaseSearchResult, court: Court,
+                               cartoteka: Cartoteka) -> Set<String> {
+        var keys = Set<String>()
+        if let caseID = row.caseID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !caseID.isEmpty {
+            keys.insert("source:sudrf|\(SudrfHost.moduleHost(court.domain))|\(cartoteka.id)|\(caseID)")
+        }
+        if let url = row.cardURL ?? sourceURL(for: row, court: court, cartoteka: cartoteka) {
+            keys.insert("url:\(canonicalCardURL(url))")
+        }
+        return keys
+    }
+
+    /// Canonical URL used only for de-duplication.  It does not alter the URL
+    /// passed to `fetchCard(url:)`; published query parameters remain exact.
+    static func canonicalCardURL(_ url: URL) -> String {
+        guard var components = URLComponents(url: url.absoluteURL, resolvingAgainstBaseURL: true)
+        else { return url.absoluteString }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        if let items = components.queryItems, !items.isEmpty {
+            components.queryItems = items.sorted {
+                if $0.name != $1.name { return $0.name < $1.name }
+                return ($0.value ?? "") < ($1.value ?? "")
+            }
+        }
+        return components.string ?? url.absoluteString
+    }
+
+    /// Sorts registrations chronologically while honoring an explicit
+    /// predecessor edge even when one of the cards has no dated events.  A
+    /// malformed cycle is broken deterministically by the ordinary source
+    /// order key; the fetch walk is independently bounded above.
+    static func registrationOrder(_ instances: [CaseInstance]) -> [CaseInstance] {
+        var pending = instances.enumerated().map { (offset: $0.offset, instance: $0.element) }
+        var ordered: [(offset: Int, instance: CaseInstance)] = []
+
+        while !pending.isEmpty {
+            let ready = pending.indices.filter { index in
+                guard let reference = pending[index].instance.previousRegistration?.caseNumber else {
+                    return true
+                }
+                return !pending.contains(where: {
+                    $0.offset != pending[index].offset
+                        && $0.instance.level == pending[index].instance.level
+                        && $0.instance.domain == pending[index].instance.domain
+                        && sameDisplayedCaseNumber($0.instance.caseNumber, reference)
+                })
+            }
+            let candidates = ready.isEmpty ? Array(pending.indices) : ready
+            guard let selected = candidates.min(by: { lhs, rhs in
+                let left = pending[lhs], right = pending[rhs]
+                let leftKey = instanceOrderKey(left.instance)
+                let rightKey = instanceOrderKey(right.instance)
+                return leftKey == rightKey ? left.offset < right.offset : leftKey < rightKey
+            }) else { break }
+            ordered.append(pending.remove(at: selected))
+        }
+        return ordered.map(\.instance)
+    }
+
+    static func queryValue(_ name: String, in url: URL) -> String? {
+        queryValue([name], in: url)
+    }
+
+    static func queryValue(_ names: [String], in url: URL) -> String? {
+        let values = (URLComponents(url: url.absoluteURL, resolvingAgainstBaseURL: true)?
+            .queryItems ?? []).compactMap { item -> String? in
+                guard names.contains(where: {
+                    item.name.caseInsensitiveCompare($0) == .orderedSame
+                }), let value = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty else { return nil }
+                return value
+            }
+        guard let first = values.first, values.allSatisfy({ $0 == first }) else { return nil }
+        return first
+    }
+
+    static func isSafeCardURL(_ url: URL, for court: Court) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+            && url.user == nil && url.password == nil
+            && SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(court.domain)
+    }
+
+    /// Pair only the civil/administrative registers at the same technical
+    /// level.  `g3/p3` are the KSOYU ids while `g33/p33` are the subject-court
+    /// ids; both spellings are retained for callers that start at either tier.
+    static func pairedCartotekaID(_ id: String) -> String? {
+        switch id.lowercased() {
+        case "g1": return "p1"
+        case "p1": return "g1"
+        case "g2": return "p2"
+        case "p2": return "g2"
+        case "g3": return "p3"
+        case "p3": return "g3"
+        case "g33": return "p33"
+        case "p33": return "g33"
+        default: return nil
+        }
+    }
+
+    static func sameCourtCartotekas(court: Court, cartoteka: Cartoteka) -> [Cartoteka] {
+        guard court.level != .magistrate, cartoteka.id != "m" else { return [] }
+        var ids = [cartoteka.id]
+        if let pair = pairedCartotekaID(cartoteka.id) { ids.append(pair) }
+        var result: [Cartoteka] = []
+        for id in ids {
+            guard let found = CartotekaRegistry.find(level: court.level, id: id),
+                  !result.contains(where: { $0.id == found.id }) else { continue }
+            result.append(found)
+        }
+        return result
+    }
+
+    /// Resolve a cartoteka from a published URL for display/act metadata only.
+    /// The URL itself is still sent unchanged to the client.
+    static func cartoteka(from url: URL, court: Court,
+                          caseNumber: String) -> Cartoteka? {
+        guard let deloID = queryValue(["delo_id", "_deloId"], in: url) else { return nil }
+        return CartotekaRegistry.resolve(level: court.level, deloID: deloID,
+                                         new: queryValue(["new", "_new"], in: url),
+                                         caseNumber: caseNumber)
+    }
+
+    static func labelRegistrationRounds(_ instances: [CaseInstance], domain: String,
+                                        level: CaseInstance.Level) -> [CaseInstance] {
+        var result = instances
+        let indices = result.indices.filter {
+            result[$0].level == level && result[$0].domain == domain
+        }
+        guard let current = indices.last else { return result }
+        for index in indices {
+            result[index].note = index == current ? nil : "Предыдущая регистрация"
+        }
+        return result
+    }
 
     static func levelLabel(_ level: CaseInstance.Level) -> String {
         switch level {

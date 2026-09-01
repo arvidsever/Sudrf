@@ -1200,7 +1200,8 @@ final class TrackedCaseRepairCoordinator {
                                 caseNumber: context.caseNumber, judge: card.judge,
                                 domain: context.searchDomain, foundByUID: false,
                                 result: card.result, sessions: card.sessions, actID: actID,
-                                sourceURL: context.cardURLString.flatMap(URL.init(string:)))
+                                sourceURL: context.cardURLString.flatMap(URL.init(string:)),
+                                previousRegistration: card.previousRegistration)
         return CaseMovement(uid: card.uid ?? context.judicialUID ?? "",
                             caseNumber: context.caseNumber,
                             inForce: card.legalForceDate != nil,

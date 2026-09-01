@@ -596,6 +596,19 @@ public struct LogicalCaseReconciler: Sendable {
                 matchingIndices.insert(index)
                 relationMatchIndices.insert(index)
             }
+            // Official links are directional in their source presentation
+            // (for example, a current card names its predecessor), but they
+            // establish one logical case whichever card reaches the store
+            // first. The display number never takes part in this match.
+            if state.officialRelations.contains(where: { relation in
+                relation.isUsable
+                    && (relation.relatedCard == observation.cardIdentity
+                        || relation.relatedUID?.isMatchable == true
+                        && relation.relatedUID?.normalizedValue == normalizedUID)
+            }) {
+                matchingIndices.insert(index)
+                relationMatchIndices.insert(index)
+            }
         }
 
         if matchingIndices.isEmpty {

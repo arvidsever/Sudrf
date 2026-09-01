@@ -23,16 +23,40 @@ final class TrackedStoreIdentityTests: XCTestCase {
         return value
     }
 
-    private func movement(for context: MovementContext, actID: String = "act-1") -> CaseMovement {
+    private func movement(for context: MovementContext, actID: String = "act-1",
+                          sourceURL: URL? = nil,
+                          previousRegistration: PreviousRegistrationReference? = nil)
+        -> CaseMovement {
         let instance = CaseInstance(
             level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
             judge: nil, domain: context.searchDomain, foundByUID: false,
-            result: "Решение", sessions: [], actID: actID)
+            result: "Решение", sessions: [], actID: actID,
+            sourceURL: sourceURL, previousRegistration: previousRegistration)
         let act = CaseAct(id: actID, title: "Решение", date: "01.08.2026",
                           courtShort: context.courtTitle, instanceLevel: .first)
         return CaseMovement(uid: context.judicialUID ?? "", caseNumber: context.caseNumber,
                             inForce: false, instances: [instance], complaints: [:], acts: [act],
                             actBodies: [actID: "Текст акта"])
+    }
+
+    private func sourceURL(for context: MovementContext) -> URL {
+        let cartoteka = CartotekaRegistry.find(
+            level: context.cartotekaLevel, id: context.cartotekaId)!
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = context.searchDomain
+        components.path = "/modules.php"
+        components.queryItems = [
+            URLQueryItem(name: "name", value: "sud_delo"),
+            URLQueryItem(name: "name_op", value: "case"),
+            URLQueryItem(name: "vnkod", value: context.courtCode),
+            URLQueryItem(name: "srv_num", value: "2"),
+            URLQueryItem(name: "delo_id", value: cartoteka.deloID),
+            URLQueryItem(name: "new", value: cartoteka.new),
+            URLQueryItem(name: "case_id", value: context.caseID),
+            URLQueryItem(name: "case_uid", value: context.caseUID)
+        ]
+        return components.url!
     }
 
     func testSameSourceCardRenumberingKeepsPersistentKeyActsCollectionsAndDeepLinks() async throws {
@@ -117,6 +141,141 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(store.all().count, 1)
         XCTAssertEqual(Set(TrackedCaseIdentity.state(for: linked).judicialUIDs),
                        Set([TrackedStore.normalizedUID(oldUID), TrackedStore.normalizedUID(newUID)]))
+    }
+
+    func testMovementPredecessorLinksSequentialUIDsRegardlessOfTrackingOrder() throws {
+        let previous = context(number: "2-100/2025", cardID: "previous-card",
+                               caseUID: "previous-link", judicialUID: oldUID)
+        let replacement = context(number: "2-101/2026", cardID: "replacement-card",
+                                  caseUID: "replacement-link", judicialUID: newUID)
+        let previousURL = sourceURL(for: previous)
+        let replacementURL = sourceURL(for: replacement)
+        let replacementMovement = movement(
+            for: replacement, sourceURL: replacementURL,
+            previousRegistration: PreviousRegistrationReference(
+                caseNumber: previous.caseNumber, url: previousURL))
+        var validatedReplacementMovement = replacementMovement
+        validatedReplacementMovement.instances.append(CaseInstance(
+            level: .first, court: previous.courtTitle, caseNumber: previous.caseNumber,
+            judge: nil, domain: previous.searchDomain, foundByUID: true,
+            result: "Решение", sessions: [], sourceURL: previousURL))
+        let attempt = SourceAttempt(
+            kind: .usableSnapshot,
+            provenance: SourceProvenance(
+                operation: .movement, sourceFamily: "sudrf",
+                host: replacement.searchDomain,
+                observedAt: Date(timeIntervalSince1970: 1_700_000_000)))
+        let replacementObservation = try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: replacement, movement: validatedReplacementMovement, attempt: attempt))
+        let previousObservation = try XCTUnwrap(TrackedCaseIdentity.observation(context: previous))
+        let relation = try XCTUnwrap(replacementObservation.officialRelations.first)
+
+        XCTAssertEqual(relation.kind, .predecessor)
+        XCTAssertEqual(relation.relatedCard, previousObservation.cardIdentity)
+        XCTAssertEqual(relation.provenance, attempt.provenance)
+
+        for previousFirst in [true, false] {
+            let store = TrackedStore(inMemory: true)
+            if previousFirst {
+                _ = try store.reconcileAndUpsert(
+                    context: previous, snapshot: nil,
+                    movement: movement(for: previous, sourceURL: previousURL), collections: [])
+                _ = try store.reconcileAndUpsert(
+                    context: replacement, snapshot: nil, movement: replacementMovement,
+                    collections: [], identityObservation: replacementObservation)
+            } else {
+                _ = try store.reconcileAndUpsert(
+                    context: replacement, snapshot: nil, movement: replacementMovement,
+                    collections: [], identityObservation: replacementObservation)
+                _ = try store.reconcileAndUpsert(
+                    context: previous, snapshot: nil,
+                    movement: movement(for: previous, sourceURL: previousURL), collections: [])
+            }
+
+            let oldRecord = try XCTUnwrap(store.record(forLocator: previous.key))
+            let newRecord = try XCTUnwrap(store.record(forLocator: replacement.key))
+            XCTAssertTrue(oldRecord === newRecord, "tracking order: \(previousFirst)")
+            XCTAssertEqual(store.all().count, 1, "tracking order: \(previousFirst)")
+            XCTAssertEqual(TrackedCaseIdentity.state(for: oldRecord).cards.count, 2)
+            XCTAssertEqual(Set(TrackedCaseIdentity.state(for: oldRecord).judicialUIDs),
+                           Set([TrackedStore.normalizedUID(oldUID),
+                                TrackedStore.normalizedUID(newUID)]))
+        }
+    }
+
+    func testMovementPredecessorMustBelongToRefreshedSourceCard() throws {
+        let previous = context(number: "2-100/2025", cardID: "previous-card",
+                               caseUID: "previous-link", judicialUID: oldUID)
+        let replacement = context(number: "2-101/2026", cardID: "replacement-card",
+                                  caseUID: "replacement-link", judicialUID: newUID)
+        let unrelated = context(number: "2-102/2026", cardID: "unrelated-card",
+                                caseUID: "unrelated-link", judicialUID: newUID)
+        var currentMovement = movement(for: replacement, sourceURL: sourceURL(for: replacement))
+        currentMovement.instances.append(CaseInstance(
+            level: .first, court: unrelated.courtTitle, caseNumber: unrelated.caseNumber,
+            judge: nil, domain: unrelated.searchDomain, foundByUID: true,
+            result: nil, sessions: [], sourceURL: sourceURL(for: unrelated),
+            previousRegistration: PreviousRegistrationReference(
+                caseNumber: previous.caseNumber, url: sourceURL(for: previous))))
+
+        let observation = try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: replacement, movement: currentMovement))
+
+        XCTAssertTrue(observation.officialRelations.isEmpty)
+    }
+
+    func testUnloadedOrMismatchedPredecessorNeverCreatesIdentityRelation() throws {
+        let previous = context(number: "2-100/2025", cardID: "previous-card",
+                               caseUID: "previous-link", judicialUID: oldUID)
+        let replacement = context(number: "2-101/2026", cardID: "replacement-card",
+                                  caseUID: "replacement-link", judicialUID: newUID)
+        let reference = PreviousRegistrationReference(
+            caseNumber: previous.caseNumber, url: sourceURL(for: previous))
+        let unvalidated = movement(
+            for: replacement, sourceURL: sourceURL(for: replacement),
+            previousRegistration: reference)
+        XCTAssertTrue(try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: replacement, movement: unvalidated)).officialRelations.isEmpty)
+
+        var mismatched = unvalidated
+        mismatched.instances.append(CaseInstance(
+            level: .first, court: previous.courtTitle, caseNumber: "2-999/2025",
+            judge: nil, domain: previous.searchDomain, foundByUID: true,
+            result: nil, sessions: [], sourceURL: sourceURL(for: previous)))
+        XCTAssertTrue(try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: replacement, movement: mismatched)).officialRelations.isEmpty)
+    }
+
+    func testStartupReconciliationUsesValidatedPredecessorFromStoredMovement() throws {
+        let store = TrackedStore(inMemory: true)
+        let previous = context(number: "2-100/2025", cardID: "previous-card",
+                               caseUID: "previous-link", judicialUID: oldUID)
+        let replacement = context(number: "2-101/2026", cardID: "replacement-card",
+                                  caseUID: "replacement-link", judicialUID: newUID)
+        let previousURL = sourceURL(for: previous)
+        let replacementURL = sourceURL(for: replacement)
+        _ = try store.reconcileAndUpsert(
+            context: previous, snapshot: nil,
+            movement: movement(for: previous, sourceURL: previousURL), collections: [])
+        let replacementRecord = try store.reconcileAndUpsert(
+            context: replacement, snapshot: nil,
+            movement: movement(for: replacement, sourceURL: replacementURL), collections: [])
+        XCTAssertEqual(store.all().count, 2)
+
+        var linkedMovement = movement(
+            for: replacement, sourceURL: replacementURL,
+            previousRegistration: PreviousRegistrationReference(
+                caseNumber: previous.caseNumber, url: previousURL))
+        linkedMovement.instances.append(CaseInstance(
+            level: .first, court: previous.courtTitle, caseNumber: previous.caseNumber,
+            judge: nil, domain: previous.searchDomain, foundByUID: true,
+            result: "Решение", sessions: [], sourceURL: previousURL))
+        replacementRecord.movement = linkedMovement
+
+        let summary = try store.reconcileStoredIdentity()
+
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(store.all().count, 1)
     }
 
     func testPartialUIDAndCaseUIDNeverLinkDistinctCards() throws {

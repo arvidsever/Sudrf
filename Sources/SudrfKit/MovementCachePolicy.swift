@@ -112,6 +112,17 @@ public enum MovementCachePolicy {
                         instances[freshIndex].sourceURL = sourceURL
                         changed = true
                     }
+                    if overlaysSparseBase,
+                       instances[freshIndex].previousRegistration == nil,
+                       let previousRegistration = r.previousRegistration {
+                        instances[freshIndex].previousRegistration = previousRegistration
+                        changed = true
+                    }
+                    if overlaysSparseBase,
+                       instances[freshIndex].note == nil, let note = r.note {
+                        instances[freshIndex].note = note
+                        changed = true
+                    }
                     if instances[freshIndex].actID == nil {
                         instances[freshIndex].actID = r.actID
                     }
@@ -193,7 +204,19 @@ public enum MovementCachePolicy {
         }
         guard changed else { return fresh }
 
-        instances.sort { MovementService.instanceOrderKey($0) < MovementService.instanceOrderKey($1) }
+        instances = MovementService.registrationOrder(instances)
+        let registrationGroups = Set(instances.compactMap { instance -> String? in
+            guard instance.previousRegistration != nil
+                    || instance.note == "Предыдущая регистрация" else { return nil }
+            return "\(SudrfHost.moduleHost(instance.domain))|\(instance.level.rawValue)"
+        })
+        for group in registrationGroups {
+            guard let sample = instances.first(where: {
+                "\(SudrfHost.moduleHost($0.domain))|\($0.level.rawValue)" == group
+            }) else { continue }
+            instances = MovementService.labelRegistrationRounds(
+                instances, domain: sample.domain, level: sample.level)
+        }
         acts.sort { MovementService.actOrderKey($0) < MovementService.actOrderKey($1) }
         var out = fresh
         out.instances = instances

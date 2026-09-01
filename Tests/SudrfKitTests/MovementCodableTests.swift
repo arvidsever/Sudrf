@@ -52,6 +52,28 @@ final class MovementCodableTests: XCTestCase {
         XCTAssertEqual(back.level, .appeal)
     }
 
+    func testPreviousRegistrationRoundTripAndOldCacheStillDecodes() throws {
+        let previous = PreviousRegistrationReference(
+            caseNumber: "5-78/2026",
+            url: try XCTUnwrap(URL(string:
+                "https://court.example/modules.php?name=sud_delo&name_op=case&case_id=1")))
+        let instance = CaseInstance(
+            level: .first, court: "Районный суд", caseNumber: "5-174/2026",
+            judge: nil, domain: "court.example", foundByUID: false, result: nil,
+            sessions: [], previousRegistration: previous)
+        let encoded = try JSONEncoder().encode(instance)
+
+        XCTAssertEqual(try JSONDecoder().decode(CaseInstance.self, from: encoded)
+            .previousRegistration, previous)
+
+        var oldObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded)
+            as? [String: Any])
+        oldObject.removeValue(forKey: "previousRegistration")
+        let oldData = try JSONSerialization.data(withJSONObject: oldObject)
+        XCTAssertNil(try JSONDecoder().decode(CaseInstance.self, from: oldData)
+            .previousRegistration)
+    }
+
     func testOldMovementWithoutExecutionDocumentsStillDecodes() throws {
         let movement = MovementService.demoMovement(uid: "uid", caseNumber: "2-1/2026")
         let encoded = try JSONEncoder().encode(movement)

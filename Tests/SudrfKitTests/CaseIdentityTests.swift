@@ -143,6 +143,45 @@ final class CaseIdentityTests: XCTestCase {
         XCTAssertEqual(states.first { $0.contains(card: oldIdentity) }?.uidBindings.count, 2)
     }
 
+    func testPredecessorRelationAlsoLinksWhenReplacementArrivesFirst() {
+        let previousIdentity = identity("previous")
+        let relation = OfficialCardRelation(
+            kind: .predecessor, relatedCard: previousIdentity,
+            provenance: provenance(firstDate.addingTimeInterval(10)))
+        let replacement = observation(
+            "replacement", number: "2-101/2026",
+            uid: "11RS0001-01-2026-000002-11", relations: [relation],
+            date: firstDate.addingTimeInterval(10))
+        let previous = observation(
+            "previous", number: "2-100/2025",
+            uid: "11RS0001-01-2025-000001-10")
+
+        var states: [LogicalCaseState] = []
+        _ = LogicalCaseReconciler.reconcileAndUpsert(replacement, in: &states)
+        let result = LogicalCaseReconciler.reconcileAndUpsert(previous, in: &states)
+
+        XCTAssertEqual(result.decision.kind, .linkedExistingCase)
+        XCTAssertEqual(result.decision.evidence, .officialRelation)
+        XCTAssertEqual(states.count, 1)
+        XCTAssertEqual(states[0].cards.count, 2)
+        XCTAssertEqual(states[0].judicialUIDs, [
+            "11RS000101202500000110", "11RS000101202600000211"
+        ])
+    }
+
+    func testMatchingCaseNumberWithoutOfficialEvidenceDoesNotLinkCards() {
+        var states: [LogicalCaseState] = []
+        _ = LogicalCaseReconciler.reconcileAndUpsert(
+            observation("old", number: "2-100/2026",
+                        uid: "11RS0001-01-2025-000001-10"), in: &states)
+        let result = LogicalCaseReconciler.reconcileAndUpsert(
+            observation("new", number: "2-100/2026",
+                        uid: "11RS0001-01-2026-000002-11"), in: &states)
+
+        XCTAssertEqual(result.decision.kind, .newCase)
+        XCTAssertEqual(states.count, 2)
+    }
+
     func testRegistryRelationCanUseKnownUIDAndInvalidUIDCannotMatch() {
         var states: [LogicalCaseState] = []
         _ = LogicalCaseReconciler.reconcileAndUpsert(

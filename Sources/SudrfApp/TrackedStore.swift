@@ -713,8 +713,13 @@ final class TrackedStore {
                 JudicialUIDObservation.validity(of: $0.normalizedValue) == .valid
                     && uidOwners[$0.normalizedValue]?.contains(where: { $0 != key }) == true
             }
+            let hasMovementPredecessor = records.first(where: { $0.key == key })?
+                .movement?.instances.contains {
+                $0.previousRegistration != nil
+            } == true
             let needsPersistence = !persistedKeys.contains(key)
-            guard needsPersistence || hasCrossRecordCard || hasCrossRecordUID,
+            guard needsPersistence || hasCrossRecordCard || hasCrossRecordUID
+                    || hasMovementPredecessor,
                   let record = try recordForMutation(forKey: key),
                   let movementContext = record.context else {
                 continue

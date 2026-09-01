@@ -1486,4 +1486,21 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertNil(saved.actBodies[firstOrphanID])
         XCTAssertNil(saved.actBodies[secondOrphanID])
     }
+
+    func testRepairMovementPreservesPublishedPredecessorReference() throws {
+        let ctx = context(level: .first, number: "2-1/2026",
+                          domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                          courtLevel: .district)
+        let predecessor = PreviousRegistrationReference(
+            caseNumber: "9-1/2025",
+            url: URL(string: "https://syktsud--komi.sudrf.ru/modules.php"
+                + "?name=sud_delo&name_op=case&case_id=old&delo_id=1540005&new=0")!)
+        let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                            caseNumber: ctx.caseNumber,
+                            previousRegistration: predecessor)
+
+        let repaired = TrackedCaseRepairCoordinator.movement(from: card, context: ctx)
+
+        XCTAssertEqual(repaired.instances.first?.previousRegistration, predecessor)
+    }
 }

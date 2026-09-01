@@ -77,6 +77,38 @@ final class MovementCachePolicyTests: XCTestCase {
         XCTAssertNil(merged.honestZeroDomains)
     }
 
+    func testPartialHomeMergePreservesPredecessorAndRegistrationLabels() {
+        let domain = "home--komi.sudrf.ru"
+        let predecessorURL = URL(string: "https://home--komi.sudrf.ru/modules.php"
+            + "?name=sud_delo&name_op=case&case_id=old&delo_id=1540005&new=0")!
+        let previous = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "9-1/2025",
+            judge: nil, domain: domain, foundByUID: true, result: "Решение",
+            sessions: [CaseSession(date: "01.01.2025", event: "Решение")],
+            note: "Предыдущая регистрация")
+        let cachedCurrent = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+            judge: nil, domain: domain, foundByUID: false, result: nil,
+            sessions: [CaseSession(date: "01.01.2026", event: "Регистрация")],
+            previousRegistration: PreviousRegistrationReference(
+                caseNumber: previous.caseNumber, url: predecessorURL))
+        let freshCurrent = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+            judge: nil, domain: domain, foundByUID: false, result: nil,
+            sessions: [])
+        var fresh = movement([freshCurrent])
+        fresh.incompleteHigherCourtDomains = [domain]
+
+        let merged = MovementCachePolicy.merge(
+            fresh: fresh, cached: movement([previous, cachedCurrent]))
+
+        let rounds = merged.instances.filter { $0.domain == domain && $0.level == .first }
+        XCTAssertEqual(rounds.map(\.caseNumber), ["9-1/2025", "2-1/2026"])
+        XCTAssertEqual(rounds.first?.note, "Предыдущая регистрация")
+        XCTAssertNil(rounds.last?.note)
+        XCTAssertEqual(rounds.last?.previousRegistration, cachedCurrent.previousRegistration)
+    }
+
     func testMergeWithoutCacheReturnsFresh() {
         let fresh = movement([instance(domain: "vs.komi.sudrf.ru", captcha: true)])
         let merged = MovementCachePolicy.merge(fresh: fresh, cached: nil)

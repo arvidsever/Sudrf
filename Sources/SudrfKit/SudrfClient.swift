@@ -756,8 +756,8 @@ public actor SudrfClient {
         try await withHostFallback(court) { c in
             let builder = SudrfURLBuilder(court: c)
             let url = try builder.cardURL(caseID: caseID, caseUID: caseUID, deloID: deloID, new: new)
-            let html = try await self.fetchHTML(url)
-            return try CaseCardParser.parse(html: html)
+            let fetched = try await self.fetchHTMLData(url, allowHTTPFallback: true)
+            return try CaseCardParser.parse(html: fetched.html, cardURL: fetched.responseURL)
         }
     }
 
@@ -766,8 +766,8 @@ public actor SudrfClient {
     /// `_uid`) — ссылка выдачи всегда «родного» формата и самодостаточна.
     /// Без host-фолбэка: URL пришёл с уже отвечавшего хоста.
     public func fetchCard(url: URL) async throws -> CaseCard {
-        let html = try await fetchHTML(url)
-        return try CaseCardParser.parse(html: html)
+        let fetched = try await fetchHTMLData(url, allowHTTPFallback: true)
+        return try CaseCardParser.parse(html: fetched.html, cardURL: fetched.responseURL)
     }
 
     /// Выполняет запрос на дефисной форме хоста; при сетевой/HTTP-ошибке повторяет

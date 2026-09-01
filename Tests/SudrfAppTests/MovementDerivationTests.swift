@@ -1007,6 +1007,30 @@ final class MovementDerivationTests: XCTestCase {
 
     // MARK: Стадии
 
+    func testCompletedPreviousRegistrationDoesNotOverrideLaterActiveRound() {
+        let previous = CaseInstance(
+            level: .first, court: "СГС", caseNumber: "9-1693/2025", judge: nil,
+            domain: "syktsud.komi.sudrf.ru", foundByUID: true,
+            result: "Иск удовлетворён",
+            sessions: [CaseSession(date: "10.01.2025", event: "Решение",
+                                   result: "Иск удовлетворён")],
+            note: "Предыдущая регистрация")
+        let current = CaseInstance(
+            level: .first, court: "СГС", caseNumber: "2-4461/2026", judge: nil,
+            domain: "syktsud.komi.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "10.04.2026", event: "Регистрация дела")])
+        let movement = CaseMovement(
+            uid: "11RS0001-01-2025-000100-11", caseNumber: "2-4461/2026",
+            inForce: false, instances: [previous, current], complaints: [:], acts: [])
+
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: movement, deadlines: [], today: today)
+
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "2-4461/2026")
+        XCTAssertNil(resolution.completionReason)
+    }
+
     func testStageAndStepsForAppealInProgress() {
         let appeal = CaseInstance(level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
                                   judge: nil, domain: "vs.komi.sudrf.ru", foundByUID: true,

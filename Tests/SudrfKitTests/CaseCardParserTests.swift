@@ -330,6 +330,51 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertTrue(prosecution.members.contains { $0.name.contains("Перова") })
     }
 
+    func testKoAPCardKeepsPublishedPreviousRegistrationURL() throws {
+        let responseURL = try XCTUnwrap(URL(string:
+            "https://leninsky--kir.sudrf.ru/modules.php?name=sud_delo&srv_num=9&name_op=case"))
+        let card = try CaseCardParser.parse(html: try loadFixture("kirov_koap"),
+                                            cardURL: responseURL)
+
+        let previous = try XCTUnwrap(card.previousRegistration)
+        XCTAssertEqual(previous.caseNumber, "5-78/2026")
+        XCTAssertEqual(previous.url.absoluteString,
+                       "https://leninsky--kir.sudrf.ru/modules.php?name=sud_delo&name_op=case&vnkod=43RS0001&srv_num=1&delo_id=1500001&case_type=0&case_id=20398142&case_uid=72B519EB-31BB-46D4-9BF4-FED8F8E1A887&delo_id=1500001&new=")
+    }
+
+    func testIssue94KhimkiFixtureKeepsPublishedRegistrationChain() throws {
+        let responseURL = try XCTUnwrap(URL(string:
+            "https://himki--mo.sudrf.ru/modules.php?name=sud_delo&name_op=case&srv_num=1"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("khimki_registration_history"), cardURL: responseURL)
+
+        XCTAssertEqual(card.caseNumber, "2-4461/2026 ~ М-2633/2026")
+        XCTAssertEqual(card.uid, "50RS0048-01-2025-013535-76")
+        XCTAssertEqual(card.previousRegistration?.caseNumber,
+                       "9-1693/2025 ~ М-9111/2025")
+        XCTAssertEqual(card.previousRegistration?.url.absoluteString,
+                       "https://himki--mo.sudrf.ru/modules.php?name=sud_delo&name_op=case&srv_num=1&delo_id=1540005&new=0&case_id=previous-94&case_uid=previous-link-94")
+    }
+
+    func testPreviousRegistrationURLResolvesRelativeToEffectiveCardURL() throws {
+        let html = """
+        <div class="casenumber">ДЕЛО № 5-174/2026</div>
+        <table><tr>
+          <td>Номер по предыдущей регистрации</td>
+          <td><a href="cards/5-78?case_uid=previous">5-78/2026</a></td>
+        </tr></table>
+        """
+        let responseURL = try XCTUnwrap(URL(string:
+            "https://effective.example/sud_delo/current/card.html?redirected=1"))
+        let card = try CaseCardParser.parse(html: html, cardURL: responseURL)
+        let expected = PreviousRegistrationReference(
+            caseNumber: "5-78/2026",
+            url: try XCTUnwrap(URL(string:
+                "https://effective.example/sud_delo/current/cards/5-78?case_uid=previous")))
+
+        XCTAssertEqual(card.previousRegistration, expected)
+    }
+
     /// Роль «Представитель учреждения (компетентного органа)» в УПК — отдельная
     /// третья колонка «Иные лица» со значком лица (как у третьих лиц ГПК/КАС).
     func testUpkInstitutionRepGoesToOther() {

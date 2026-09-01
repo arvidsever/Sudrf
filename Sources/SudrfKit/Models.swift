@@ -148,6 +148,19 @@ public struct LowerCourtReference: Sendable, Equatable, Codable {
     }
 }
 
+/// Опубликованная карточкой ссылка на номер предыдущей регистрации дела.
+/// URL сохраняется именно в виде, разрешённом относительно фактического
+/// адреса загруженной карточки, а не строится из предположений о картотеке.
+public struct PreviousRegistrationReference: Sendable, Equatable, Codable {
+    public var caseNumber: String
+    public var url: URL
+
+    public init(caseNumber: String, url: URL) {
+        self.caseNumber = caseNumber
+        self.url = url
+    }
+}
+
 /// Реквизиты одного исполнительного листа из вкладки «Исполнительные листы».
 ///
 /// Судебная карточка публикует бумажные и электронные документы в одной
@@ -242,6 +255,8 @@ public struct CaseCard: Sendable {
     public var appeals: [AppealRecord]  // вкладка «Обжалование» (в карточке 1-й инстанции)
     public var parties: CaseParties     // вкладка «СТОРОНЫ ПО ДЕЛУ» (истцы/ответчики/третьи)
     public var lowerCourt: LowerCourtReference? // «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ»
+    /// Опубликованная ссылка на предыдущую регистрацию этого же дела.
+    public var previousRegistration: PreviousRegistrationReference?
     /// Исполнительные листы из таблицы «ИСПОЛНИТЕЛЬНЫЕ ЛИСТЫ».
     public var executionDocuments: [CourtEnforcementDocument]
 
@@ -253,6 +268,7 @@ public struct CaseCard: Sendable {
                 acts: [CaseActText] = [], appeals: [AppealRecord] = [],
                 parties: CaseParties = CaseParties(),
                 lowerCourt: LowerCourtReference? = nil,
+                previousRegistration: PreviousRegistrationReference? = nil,
                 executionDocuments: [CourtEnforcementDocument] = []) {
         self.rawText = rawText
         self.actText = actText
@@ -269,6 +285,7 @@ public struct CaseCard: Sendable {
         self.appeals = appeals
         self.parties = parties
         self.lowerCourt = lowerCourt
+        self.previousRegistration = previousRegistration
         self.executionDocuments = executionDocuments
     }
 }

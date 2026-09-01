@@ -466,7 +466,7 @@ final class SearchResultSelectionTests: XCTestCase {
 
         XCTAssertEqual(model.results.map(\.caseNumber), ["5-10/2026"])
         XCTAssertEqual(model.selectedResult?.caseNumber, "5-10/2026")
-        XCTAssertTrue(model.status.contains("Карточка дела временно недоступна"))
+        XCTAssertTrue(model.status.contains("Источник example.msudrf.ru временно недоступен"))
         XCTAssertTrue(model.actText.isEmpty)
     }
 

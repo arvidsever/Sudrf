@@ -25,7 +25,11 @@ private enum Layout {
 }
 
 struct ContentView: View {
-    @StateObject private var model = SearchModel()
+    @StateObject private var model: SearchModel
+
+    init(client: SudrfClient = SudrfClient()) {
+        _model = StateObject(wrappedValue: SearchModel(client: client))
+    }
 
     private var inspectorVisible: Bool { model.selectedResultIndex != nil }
     // В режиме «движение дела» (провал в карточку) панель поиска скрывается,

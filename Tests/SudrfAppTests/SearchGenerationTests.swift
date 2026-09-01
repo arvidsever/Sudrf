@@ -242,6 +242,13 @@ private final class DelayedSearchURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        // Scope changes now resolve court lists through the same production
+        // SudrfClient. Those portal-directory requests are not the delayed
+        // case search this test controls and must finish immediately.
+        if request.url?.host == "sudrf.ru" {
+            respond(with: "<html><body></body></html>")
+            return
+        }
         let operation = URLComponents(url: request.url ?? URL(string: "https://sudrf.ru")!,
                                       resolvingAgainstBaseURL: false)?.queryItems?
             .first { $0.name == "name_op" }?.value

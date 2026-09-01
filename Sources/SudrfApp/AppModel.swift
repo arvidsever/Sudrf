@@ -122,7 +122,10 @@ final class AppRouter: ObservableObject {
     let caseCatalog: CaseCatalog
     let spotlightIndexer: SpotlightIndexer
     private let spotlightSearch = SpotlightSearchSession()
-    private let client = SudrfClient()
+    /// Один транспорт SUDRF на всё приложение: фоновые обновления, ремонт
+    /// контекста и экран поиска делят одну FIFO-очередь и одну активную
+    /// origin-scoped URLSession.
+    let client = SudrfClient()
     let refreshCenter: RefreshCenter
     private let repairCoordinator: TrackedCaseRepairCoordinator
     @Published var repairSummary: CaseRepairSummary? = nil

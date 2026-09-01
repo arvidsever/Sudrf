@@ -19,10 +19,14 @@ final class MovementCachePolicyTests: XCTestCase {
 
     private func movement(_ instances: [CaseInstance],
                           acts: [CaseAct] = [], bodies: [String: String] = [:],
-                          executionDocuments: [CourtEnforcementDocument]? = nil) -> CaseMovement {
-        CaseMovement(uid: "11RS0001-01-2026-000001-11", caseNumber: "2-1/2026",
-                     inForce: false, instances: instances, complaints: [:],
-                     acts: acts, actBodies: bodies,
+                          executionDocuments: [CourtEnforcementDocument]? = nil,
+                          uid: String = "11RS0001-01-2026-000001-11",
+                          inForce: Bool = false,
+                          category: String? = nil,
+                          parties: CaseParties = CaseParties()) -> CaseMovement {
+        CaseMovement(uid: uid, caseNumber: "2-1/2026", inForce: inForce,
+                     instances: instances, complaints: [:], acts: acts,
+                     actBodies: bodies, category: category, parties: parties,
                      executionDocuments: executionDocuments)
     }
 
@@ -259,5 +263,97 @@ final class MovementCachePolicyTests: XCTestCase {
         XCTAssertEqual(merged.actBodies[firstID], "Новый текст определения")
         XCTAssertEqual(merged.actBodies[secondID], "Старый текст решения")
         XCTAssertEqual(Set(merged.acts.map(\.id)), [firstID, secondID])
+    }
+
+    func testSparseBaseFallbackPreservesCachedBaseDataAndFreshHigherRounds() {
+        let baseActID = "act_home#2-1/2026"
+        let cachedBase = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+            judge: "Судья Иванов", domain: "home--komi.sudrf.ru", foundByUID: false,
+            result: "Решение принято", sessions: [
+                CaseSession(date: "01.02.2026", event: "Заседание")
+            ], actID: baseActID)
+        let cachedHigher = instance(domain: "vs.komi.sudrf.ru", act: "act_vs")
+        let cachedDocuments = [CourtEnforcementDocument(date: "21.08.2025",
+                                                         blankNumber: "ФС № 049373812",
+                                                         courtStatus: "Выдан")]
+        let cachedParties = CaseParties(plaintiffs: ["Истец"], defendants: ["Ответчик"])
+        let cached = movement(
+            [cachedBase, cachedHigher],
+            acts: [CaseAct(id: baseActID, title: "Решение", date: "02.02.2026",
+                           courtShort: "1-я инстанция", instanceLevel: .first)],
+            bodies: [baseActID: "Текст решения"],
+            executionDocuments: cachedDocuments, inForce: true,
+            category: "Гражданское дело", parties: cachedParties)
+
+        let sparseBase = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+            judge: nil, domain: "home--komi.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [])
+        let freshHigher = instance(domain: "vs--komi.sudrf.ru", act: nil)
+        var fresh = movement([sparseBase, freshHigher], uid: cached.uid)
+        fresh.incompleteHigherCourtDomains = ["home--komi.sudrf.ru"]
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let mergedBase = merged.instances.first { $0.domain == "home--komi.sudrf.ru" }
+
+        XCTAssertEqual(mergedBase?.sessions.count, 1)
+        XCTAssertEqual(mergedBase?.judge, "Судья Иванов")
+        XCTAssertEqual(mergedBase?.result, "Решение принято")
+        XCTAssertEqual(mergedBase?.actID, baseActID)
+        XCTAssertEqual(merged.acts.map(\.id), [baseActID])
+        XCTAssertEqual(merged.actBodies[baseActID], "Текст решения")
+        XCTAssertEqual(merged.category, "Гражданское дело")
+        XCTAssertEqual(merged.parties, cachedParties)
+        XCTAssertEqual(merged.executionDocuments, cachedDocuments)
+        XCTAssertTrue(merged.instances.contains { $0.domain == "vs--komi.sudrf.ru" },
+                      "свежая вышестоящая инстанция должна сохраниться")
+    }
+
+    func testCompleteFreshBaseDoesNotInheritCachedMetadata() {
+        let cachedParties = CaseParties(plaintiffs: ["Старый истец"])
+        let cached = movement([instance(domain: "home--komi.sudrf.ru")],
+                              uid: "11RS0001-01-2026-000001-11", inForce: true,
+                              category: "Старая категория", parties: cachedParties)
+        let fresh = movement([
+            CaseInstance(level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+                         judge: nil, domain: "home--komi.sudrf.ru", foundByUID: false,
+                         result: nil, sessions: [])
+        ], uid: "", inForce: false)
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertNil(merged.category)
+        XCTAssertTrue(merged.parties.isEmpty)
+        XCTAssertFalse(merged.inForce)
+        XCTAssertEqual(merged.uid, "")
+    }
+
+    func testIncompleteHigherCourtDoesNotOverlayStaleFieldsOnFreshRound() {
+        let base = CaseInstance(
+            level: .first, court: "Домашний суд", caseNumber: "2-1/2026",
+            judge: "Свежий судья", domain: "home--komi.sudrf.ru", foundByUID: false,
+            result: "Свежий результат", sessions: [])
+        let cachedHigher = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
+            judge: "Устаревший судья", domain: "vs.komi.sudrf.ru", foundByUID: true,
+            result: "Устаревший результат",
+            sessions: [CaseSession(date: "01.01.2025", event: "Старое заседание")],
+            sourceURL: URL(string: "https://vs.komi.sudrf.ru/stale"))
+        let freshHigher = CaseInstance(
+            level: .appeal, court: "ВС Коми", caseNumber: "33-1/2026",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: true,
+            result: nil, sessions: [])
+        let cached = movement([base, cachedHigher])
+        var fresh = movement([base, freshHigher])
+        fresh.incompleteHigherCourtDomains = ["vs--komi.sudrf.ru"]
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let higher = merged.instances.first { $0.caseNumber == "33-1/2026" }
+
+        XCTAssertTrue(higher?.sessions.isEmpty == true)
+        XCTAssertNil(higher?.judge)
+        XCTAssertNil(higher?.result)
+        XCTAssertNil(higher?.sourceURL)
     }
 }

@@ -67,6 +67,66 @@ final class CaseCardParserTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    func testEarlyKSOYuComplaintCardTurnsPublishedReceiptIntoSession() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_early_complaint_card"))
+
+        XCTAssertEqual(card.caseNumber, "16-5133/2026")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "03.08.2026", event: "Поступление жалобы в суд")
+        ])
+    }
+
+    func testGenericReceiptMetadataDoesNotBecomeComplaintSession() throws {
+        let card = try CaseCardParser.parse(html: """
+        <html><body>
+          <div class="casenumber">ДЕЛО № 2-1/2026</div>
+          <ul class="tabs"><li id="tab1"><a href="#">ПРОИЗВОДСТВО</a></li></ul>
+          <div id="cont1"><table>
+            <tr><td>Уникальный идентификатор дела</td><td>uid</td></tr>
+            <tr><td>Дата поступления</td><td>03.08.2026</td></tr>
+          </table></div>
+        </body></html>
+        """)
+
+        XCTAssertTrue(card.sessions.isEmpty)
+    }
+
+    func testKSOYuComplaintTableAddsMilestonesWithoutHearing() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_complaint_movement"))
+
+        XCTAssertEqual(card.sessions.map(\.date), [
+            "03.02.2026", "03.02.2026", "10.02.2026", "20.02.2026", "25.02.2026"
+        ])
+        XCTAssertEqual(card.sessions.map(\.event), [
+            "Поступление жалобы (представления) в суд",
+            "Передача жалобы (представления) на изучение",
+            "Оставление жалобы (представления) без движения",
+            "Поступление исправленной жалобы (представления) в суд",
+            "Определение по итогам изучения жалобы (представления)"
+        ])
+        XCTAssertEqual(card.sessions[1].result, "С истребованием дела")
+        XCTAssertEqual(card.sessions[2].result,
+                       "Срок для устранения недостатков: до 24.02.2026")
+        XCTAssertEqual(card.sessions[4].result, "ВОЗБУЖДЕНО КАССАЦИОННОЕ ПРОИЗВОДСТВО")
+    }
+
+    func testKSOYuSevenColumnVariantPreservesRowsAndStableSameDateOrder() throws {
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("ksoyu_complaint_movement_7_columns"))
+        XCTAssertEqual(card.sessions.count, 5)
+        XCTAssertEqual(card.sessions[0].event,
+                       "Поступление жалобы (представления) в суд")
+        XCTAssertNil(card.sessions[0].result)
+        XCTAssertEqual(card.sessions[1].event,
+                       "Поступление жалобы (представления) в суд")
+        XCTAssertNil(card.sessions[1].result)
+        XCTAssertEqual(card.sessions[2].event,
+                       "Передача жалобы (представления) на изучение")
+        XCTAssertEqual(card.sessions[2].result, "С истребованием дела")
+        XCTAssertEqual(card.sessions[3].result, "РЕЗУЛЬТАТ 1")
+        XCTAssertEqual(card.sessions[4].result, "РЕЗУЛЬТАТ 2; С истребованием дела")
+    }
+
     // MARK: - Винтажная карточка (VNKOD-суды)
 
     /// Живая карточка Заволжского районного суда г. Ульяновска (винтажный
@@ -309,7 +369,10 @@ final class CaseCardParserTests: XCTestCase {
         // У КСОЮ заголовок: «ДЕЛО № 8Г-2430/2026 [88-4097/2026]».
         XCTAssertEqual(card.caseNumber, "8Г-2430/2026 [88-4097/2026]")
         XCTAssertTrue((card.result ?? "").contains("АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ОТМЕНЕНО"))
-        XCTAssertEqual(card.sessions.count, 1)                   // вкладка «СЛУШАНИЯ»
+        XCTAssertEqual(card.sessions.count, 4)                   // слушание + три этапа жалобы
+        XCTAssertEqual(card.sessions.map(\.date),
+                       ["03.02.2026", "03.02.2026", "03.02.2026", "02.03.2026"])
+        XCTAssertEqual(card.sessions.last?.event, "Судебное заседание")
         let act = try XCTUnwrap(card.acts.first)
         XCTAssertEqual(act.kind, "Постановления")
         XCTAssertTrue(act.body.contains("ТРЕТИЙ КАССАЦИОННЫЙ СУД ОБЩЕЙ ЮРИСДИКЦИИ"))

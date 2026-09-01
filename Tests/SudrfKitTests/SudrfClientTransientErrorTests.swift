@@ -153,6 +153,34 @@ final class SudrfClientTransientErrorTests: XCTestCase {
         }
     }
 
+    func testMaintenanceRetriesSameURLBeforeReturningHTML() async throws {
+        MaintenanceThenResultsStub.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MaintenanceThenResultsStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+
+        let url = URL(string: "https://court--test.sudrf.ru/modules.php?name=sud_delo&name_op=r")!
+        let html = try await client.fetchHTML(url)
+
+        XCTAssertTrue(html.contains("2-1/2026"), "последний пригодный ответ должен вернуться")
+        XCTAssertEqual(MaintenanceThenResultsStub.requestURLs, [url, url, url],
+                       "maintenance должен повторять тот же URL в той же сессии")
+    }
+
+    func testCardMaintenanceRetriesBeforeParsingCard() async throws {
+        MaintenanceThenResultsStub.reset(finalBody:
+            "<div class='casenumber'>ДЕЛО № 7У-1077/2024 [77-762/2024]</div>")
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [MaintenanceThenResultsStub.self]
+        let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
+        let url = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case")!
+
+        let card = try await client.fetchCard(url: url)
+
+        XCTAssertEqual(card.caseNumber, "7У-1077/2024 [77-762/2024]")
+        XCTAssertEqual(MaintenanceThenResultsStub.requestURLs, [url, url, url])
+    }
+
     func testEmptyVariantMixedWithFailureIsNotHonestZero() async throws {
         EmptyThenFailureStub.reset()
         let cfg = URLSessionConfiguration.ephemeral
@@ -309,6 +337,40 @@ private final class MaintenanceStub: URLProtocol {
                                        headerFields: ["Content-Type": "text/html; charset=utf-8"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(html.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class MaintenanceThenResultsStub: URLProtocol {
+    nonisolated(unsafe) static private(set) var requestURLs: [URL] = []
+    nonisolated(unsafe) static private var finalBody =
+        "<table><tr><td><a href='modules.php?name=sud_delo&name_op=case&case_id=1&case_uid=u'>2-1/2026</a></td></tr></table>"
+
+    static func reset(finalBody: String? = nil) {
+        requestURLs = []
+        self.finalBody = finalBody
+            ?? "<table><tr><td><a href='modules.php?name=sud_delo&name_op=case&case_id=1&case_uid=u'>2-1/2026</a></td></tr></table>"
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let requestURL = request.url!
+        Self.requestURLs.append(requestURL)
+        let body: String
+        if Self.requestURLs.count < 3 {
+            body = "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
+        } else {
+            body = Self.finalBody
+        }
+        let response = HTTPURLResponse(url: requestURL, statusCode: 200,
+                                       httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

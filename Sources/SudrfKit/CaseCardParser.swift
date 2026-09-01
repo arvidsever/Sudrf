@@ -58,7 +58,9 @@ public enum CaseCardParser {
         }
 
         let meta = parseMeta(doc)
-        let sessions = parseMovement(doc)
+        let sessions = sortSessions(parseMovement(doc)
+                                  + parseComplaintMovement(doc)
+                                  + parseEarlyComplaintMovement(doc))
         let acts = parseActs(doc)
 
         let uid = meta["уникальный идентификатор дела"]
@@ -605,6 +607,197 @@ public enum CaseCardParser {
     }
 
     // MARK: - Движение дела
+
+    /// Раннее производство по жалобе на КСОЮ имеет отдельную вкладку
+    /// «ЖАЛОБА», где пока опубликована только дата поступления. Это не та же
+    /// таблица, что зрелая вкладка «ЖАЛОБЫ»: сохраняем единственный факт без
+    /// догадки о стадии или результате.
+    private static func parseEarlyComplaintMovement(_ doc: Document) -> [CaseSession] {
+        guard let tab = ((try? doc.select("ul.tabs li").array()) ?? []).first(where: {
+            normalizeHeader((try? $0.text()) ?? "") == "жалоба"
+        }),
+        let tabNumber = number(in: (try? tab.attr("id")) ?? ""),
+        let container = (try? doc.select("#cont\(tabNumber)").first()) ?? nil else {
+            return []
+        }
+
+        for table in (try? container.select("table").array()) ?? [] {
+            for row in directRows(table) {
+                let cells = directCells(row, tags: ["td", "th"])
+                guard cells.count >= 2 else { continue }
+                let key = normalizeHeader((try? cells[0].text()) ?? "")
+                guard key == "дата поступления" else { continue }
+                let date = ((try? cells[1].text()) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !date.isEmpty else { continue }
+                return [CaseSession(date: date, event: "Поступление жалобы в суд")]
+            }
+        }
+        return []
+    }
+
+    /// КСОЮ публикуют ранние этапы кассационного производства отдельной
+    /// таблицей «ЖАЛОБЫ». В разных картотеках в ней семь или десять колонок;
+    /// индексы не закреплены, поэтому читаем только опубликованные даты по
+    /// заголовкам. Одна строка таблицы — одна жалоба.
+    private static func parseComplaintMovement(_ doc: Document) -> [CaseSession] {
+        guard let table = complaintTable(doc) else { return [] }
+        let rows = directRows(table)
+
+        var columns: [String: Int] = [:]
+        var headerIndex: Int?
+        for (index, row) in rows.enumerated() {
+            let cells = directCells(row, tags: ["td", "th"])
+            let headers = cells.map { normalizeHeader((try? $0.text()) ?? "") }
+            guard headers.contains(where: { $0.contains("дата поступления")
+                                            && !$0.contains("исправленной") }) else { continue }
+
+            for (column, header) in headers.enumerated() {
+                if header.contains("поступления исправленной") {
+                    columns["corrected"] = column
+                } else if header.contains("дата поступления") {
+                    columns["received"] = column
+                } else if header.contains("дата передачи") && header.contains("изучен") {
+                    columns["study"] = column
+                } else if header.contains("истребованием дела") {
+                    columns["requested"] = column
+                } else if header.contains("оставл") && header.contains("без движения") {
+                    columns["withoutMovement"] = column
+                } else if header.contains("срок") && header.contains("устранения") {
+                    columns["deadline"] = column
+                } else if header.contains("вынесения определения")
+                            && header.contains("итогам изучения") {
+                    // Some courts have a typo in this heading («Дта»), so do
+                    // not require a literal «дата» prefix here.
+                    columns["studied"] = column
+                } else if header.contains("результат изучения") {
+                    columns["studyResult"] = column
+                }
+            }
+            guard columns["received"] != nil,
+                  columns["study"] != nil || columns["studied"] != nil else { continue }
+            headerIndex = index
+            break
+        }
+        guard let headerIndex else { return [] }
+
+        var sessions: [CaseSession] = []
+        for row in rows.dropFirst(headerIndex + 1) {
+            let values = directCells(row, tags: ["td"]).map {
+                ((try? $0.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard !values.isEmpty else { continue }
+            func value(_ key: String) -> String? {
+                guard let column = columns[key], column < values.count else { return nil }
+                let value = values[column]
+                return value.isEmpty ? nil : value
+            }
+
+            var rowSessions: [CaseSession] = []
+            var datedActions: [(session: Int, column: Int)] = []
+            if let date = value("received") {
+                rowSessions.append(CaseSession(
+                    date: date, event: "Поступление жалобы (представления) в суд"))
+                if let column = columns["received"] {
+                    datedActions.append((rowSessions.count - 1, column))
+                }
+            }
+
+            let requested = value("requested").map { raw in
+                let normalized = raw.lowercased()
+                return normalized == "да" || normalized.contains("с истребованием")
+            } ?? false
+            if let date = value("study") {
+                rowSessions.append(CaseSession(
+                    date: date,
+                    event: "Передача жалобы (представления) на изучение",
+                    result: requested ? "С истребованием дела" : nil))
+                if let column = columns["study"] {
+                    datedActions.append((rowSessions.count - 1, column))
+                }
+            }
+
+            if let date = value("withoutMovement") {
+                let deadline = value("deadline").map {
+                    "Срок для устранения недостатков: \($0)"
+                }
+                rowSessions.append(CaseSession(
+                    date: date, event: "Оставление жалобы (представления) без движения",
+                    result: deadline))
+                if let column = columns["withoutMovement"] {
+                    datedActions.append((rowSessions.count - 1, column))
+                }
+            }
+
+            if let date = value("corrected") {
+                rowSessions.append(CaseSession(
+                    date: date,
+                    event: "Поступление исправленной жалобы (представления) в суд"))
+                if let column = columns["corrected"] {
+                    datedActions.append((rowSessions.count - 1, column))
+                }
+            }
+
+            if let date = value("studied") {
+                rowSessions.append(CaseSession(
+                    date: date,
+                    event: "Определение по итогам изучения жалобы (представления)",
+                    result: value("studyResult")))
+                if let column = columns["studied"] {
+                    datedActions.append((rowSessions.count - 1, column))
+                }
+            }
+
+            // «С истребованием дела» не является самостоятельным событием.
+            // Если дата передачи не опубликована, сохраняем пометку на
+            // ближайшем датированном действии этой же строки, не создавая дату.
+            if requested, value("study") == nil, let requestedColumn = columns["requested"],
+               let index = datedActions.min(by: {
+                   abs($0.column - requestedColumn) < abs($1.column - requestedColumn)
+               })?.session {
+                let current = rowSessions[index].result
+                rowSessions[index].result = [current, "С истребованием дела"]
+                    .compactMap { $0?.isEmpty == false ? $0 : nil }
+                    .joined(separator: "; ")
+            }
+
+            sessions.append(contentsOf: rowSessions)
+        }
+        return sessions
+    }
+
+    /// Находит именно таблицу с построчными сведениями о жалобах. Проверка по
+    /// заголовкам не зависит от номера контейнера и от вложенных таблиц актов.
+    private static func complaintTable(_ doc: Document) -> Element? {
+        for table in (try? doc.select("table").array()) ?? [] {
+            let rows = directRows(table)
+            for row in rows {
+                let headers = directCells(row, tags: ["td", "th"])
+                    .map { normalizeHeader((try? $0.text()) ?? "") }
+                let hasReceived = headers.contains {
+                    $0.contains("дата поступления") && !$0.contains("исправленной")
+                }
+                let hasComplaintAction = headers.contains {
+                    ($0.contains("дата передачи") && $0.contains("изучен"))
+                        || ($0.contains("вынесения определения")
+                            && $0.contains("итогам изучения"))
+                }
+                if hasReceived && hasComplaintAction { return table }
+            }
+        }
+        return nil
+    }
+
+    /// Сортировка сессий по опубликованной дате. `sorted` в Swift не обещает
+    /// стабильность, поэтому исходный индекс используется явным tie-breaker:
+    /// строки жалоб и события с одинаковой датой не теряют порядок суда.
+    private static func sortSessions(_ sessions: [CaseSession]) -> [CaseSession] {
+        sessions.enumerated().sorted { left, right in
+            let leftKey = MovementService.dateSortKey(left.element.date)
+            let rightKey = MovementService.dateSortKey(right.element.date)
+            return leftKey == rightKey ? left.offset < right.offset : leftKey < rightKey
+        }.map { $0.element }
+    }
 
     private static func parseMovement(_ doc: Document) -> [CaseSession] {
         guard let table = movementTable(doc) else { return [] }

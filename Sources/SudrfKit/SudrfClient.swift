@@ -8,6 +8,8 @@ import SwiftSoup
 /// `*.sudrf.ru` проходят напрямую — браузер не нужен.
 public actor SudrfClient {
 
+    static let requestTimeout: TimeInterval = 90
+
     private struct FetchedHTML {
         let data: Data
         let html: String
@@ -20,13 +22,55 @@ public actor SudrfClient {
         let responseURL: URL
     }
 
-    private let session: URLSession
+    private struct Origin: Equatable {
+        let scheme: String
+        let host: String
+        let port: Int
+
+        init?(_ url: URL) {
+            guard let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  let host = url.host?.lowercased(), !host.isEmpty else {
+                return nil
+            }
+            self.scheme = scheme
+            self.host = host
+            port = url.port ?? (scheme == "http" ? 80 : 443)
+        }
+    }
+
+    private struct OriginSession {
+        let origin: Origin
+        let session: URLSession
+        let delegate: OriginSessionDelegate
+    }
+
+    private typealias SessionFactory = @Sendable (URLSessionDelegate) -> URLSession
+
+    /// Tests inject a fixed URLSession with URLProtocol. Production creates one
+    /// session per active origin, so unrelated court hosts cannot retain pooled
+    /// connections at the same time.
+    private let fixedSession: URLSession?
+    private let sessionFactory: SessionFactory?
+    private let trustCourtCertificates: Bool
+    private let sessionInvalidationObserver: (@Sendable () -> Void)?
+    private var originSession: OriginSession?
     private let userAgent: String
     private let minInterval: TimeInterval
-    /// Троттл пер-хост: у каждого суда СОЮ свой сервер, поэтому пауза `minInterval`
-    /// держится ОТДЕЛЬНО для каждого хоста. Значение — момент, начиная с которого
-    /// хосту можно слать следующий запрос (см. `throttle(host:)`).
-    private var nextAllowedAt: [String: Date] = [:]
+    /// Все вызовы `URLSession.data` проходят через один actor-owned FIFO. Actor
+    /// reentrancy сама по себе не ограничивает работу после `await`, поэтому без
+    /// этого gate несколько судов могли одновременно открыть TLS-соединения к
+    /// одному backend.
+    private struct RequestWaiter {
+        let id: UInt64
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private var requestWaiters: [RequestWaiter] = []
+    private var requestActive = false
+    private var nextRequestWaiterID: UInt64 = 0
+    /// Момент фактического старта последнего запроса. Не резервируется при
+    /// постановке в очередь: отменённый waiter не должен оставлять «дырку».
+    private var lastRequestStartAt: Date?
 
     private let variantStore: WorkingVariantStore
     private let captchaStore: CaptchaTokenStore
@@ -36,21 +80,27 @@ public actor SudrfClient {
                 trustCourtCertificates: Bool = true,
                 variantStore: WorkingVariantStore = .shared,
                 captchaStore: CaptchaTokenStore = .shared) {
+        fixedSession = nil
+        sessionFactory = { delegate in
+            URLSession(configuration: Self.productionConfiguration(),
+                       delegate: delegate, delegateQueue: nil)
+        }
+        self.trustCourtCertificates = trustCourtCertificates
+        sessionInvalidationObserver = nil
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+        self.variantStore = variantStore
+        self.captchaStore = captchaStore
+    }
+
+    static func productionConfiguration() -> URLSessionConfiguration {
         let cfg = URLSessionConfiguration.default
         cfg.httpCookieStorage = HTTPCookieStorage.shared
         cfg.httpShouldSetCookies = true
         cfg.httpCookieAcceptPolicy = .always
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
-        cfg.timeoutIntervalForRequest = 30
-        // Сайты судов используют российские корневые сертификаты (Минцифры),
-        // которых нет в доверенном хранилище Apple. Делегат принимает сертификат
-        // ТОЛЬКО для доменов судов; для прочих хостов — обычная проверка.
-        let delegate: (any URLSessionDelegate)? = trustCourtCertificates ? SudrfTLSDelegate() : nil
-        self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        self.userAgent = userAgent
-        self.minInterval = minInterval
-        self.variantStore = variantStore
-        self.captchaStore = captchaStore
+        cfg.timeoutIntervalForRequest = Self.requestTimeout
+        return cfg
     }
 
     /// Внутренний init для тестов: позволяет подсунуть свой `URLSession`,
@@ -62,7 +112,29 @@ public actor SudrfClient {
                    userAgent: String = "SudrfKitTests",
                    variantStore: WorkingVariantStore = .shared,
                    captchaStore: CaptchaTokenStore = .shared) {
-        self.session = session
+        fixedSession = session
+        sessionFactory = nil
+        trustCourtCertificates = false
+        sessionInvalidationObserver = nil
+        self.userAgent = userAgent
+        self.minInterval = minInterval
+        self.variantStore = variantStore
+        self.captchaStore = captchaStore
+    }
+
+    /// Test-only rotating transport. The factory receives the client's
+    /// invalidation/TLS delegate and must install it on every returned session.
+    internal init(sessionFactory: @escaping @Sendable (URLSessionDelegate) -> URLSession,
+                  minInterval: TimeInterval = 1.5,
+                  userAgent: String = "SudrfKitTests",
+                  trustCourtCertificates: Bool = false,
+                  sessionInvalidationObserver: (@Sendable () -> Void)? = nil,
+                  variantStore: WorkingVariantStore = .shared,
+                  captchaStore: CaptchaTokenStore = .shared) {
+        fixedSession = nil
+        self.sessionFactory = sessionFactory
+        self.trustCourtCertificates = trustCourtCertificates
+        self.sessionInvalidationObserver = sessionInvalidationObserver
         self.userAgent = userAgent
         self.minInterval = minInterval
         self.variantStore = variantStore
@@ -157,7 +229,6 @@ public actor SudrfClient {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
-            try await throttle(host: url.host?.lowercased() ?? "")
             var req = URLRequest(url: url)
             req.httpShouldHandleCookies = true
             req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -165,7 +236,7 @@ public actor SudrfClient {
             req.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
             do {
-                let (data, response) = try await session.data(for: req)
+                let (data, response) = try await performSessionData(for: req)
                 let http = response as? HTTPURLResponse
                 if let http, (500..<600).contains(http.statusCode) {
                     // Сервер суда периодически отдаёт 502/503 — повторяем.
@@ -180,16 +251,31 @@ public actor SudrfClient {
                 let responseURL = response.url ?? url
                 // Суды отдают windows-1251, единый портал — тоже cp1251; UTF-8 как запасной.
                 let ctype = (http?.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                let html: String
                 if ctype.contains("utf-8"), let s = String(data: data, encoding: .utf8) {
-                    return FetchedHTML(data: data, html: s, responseURL: responseURL)
+                    html = s
+                } else if let s = Cyrillic1251.decode(data) {
+                    html = s
+                } else if let s = String(data: data, encoding: .utf8) {
+                    html = s
+                } else {
+                    throw SudrfError.decodingFailed
                 }
-                if let s = Cyrillic1251.decode(data) {
-                    return FetchedHTML(data: data, html: s, responseURL: responseURL)
+
+                let fetched = FetchedHTML(data: data, html: html, responseURL: responseURL)
+                if SearchPageClassifier.classify(html: html) == .maintenance {
+                    let host = responseURL.host?.lowercased() ?? url.host ?? ""
+                    lastError = SudrfError.sourceMaintenance(domain: host)
+                    guard attempt + 1 < attempts else {
+                        // Keep the same raw response diagnostics as the search
+                        // classifier's existing final maintenance path.
+                        SearchDiagnostics.dumpVariant(data: data, host: host)
+                        break
+                    }
+                    try await backoff(attempt)
+                    continue
                 }
-                if let s = String(data: data, encoding: .utf8) {
-                    return FetchedHTML(data: data, html: s, responseURL: responseURL)
-                }
-                throw SudrfError.decodingFailed
+                return fetched
             } catch let e as URLError {
                 if allowHTTPFallback, e.isTLSError,
                    let httpURL = url.msudrfHTTPFallbackURL {
@@ -237,11 +323,10 @@ public actor SudrfClient {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
-            try await throttle(host: url.host?.lowercased() ?? "")
             do {
-                let (data, response) = try await session.data(
+                let (data, response) = try await performSessionData(
                     for: request,
-                    delegate: MagistrateCaptchaRedirectDelegate()
+                    protectsMagistrateCaptchaRedirects: true
                 )
                 let http = response as? HTTPURLResponse
                 if let http, (500..<600).contains(http.statusCode) {
@@ -475,8 +560,12 @@ public actor SudrfClient {
             && bytes[8..<12].elementsEqual(Array("WEBP".utf8))
     }
 
+    static func retryDelay(after attempt: Int) -> TimeInterval {
+        pow(2, Double(attempt + 1))
+    }
+
     private func backoff(_ attempt: Int) async throws {
-        try await Task.sleep(nanoseconds: UInt64(Double(attempt + 1) * 0.8 * 1_000_000_000))
+        try await Task.sleep(for: .seconds(Self.retryDelay(after: attempt)))
     }
 
     /// Высокоуровневый поиск. Если на форме или выдаче есть капча — бросает
@@ -702,37 +791,211 @@ public actor SudrfClient {
         }
     }
 
-    // MARK: - throttle
+    // MARK: - serialized transport
 
-    /// Пер-хост троттл: держит паузу не короче `minInterval` между запросами К ОДНОМУ
-    /// хосту, не мешая запросам к другим судам идти параллельно. Слот бронируется
-    /// АТОМАРНО (до `await` — внутри actor между чтением и записью словаря нет точки
-    /// приостановки), поэтому параллельные вызовы к одному хосту честно встают в очередь
-    /// с шагом `minInterval`, а не читают одно и то же «последнее время» и не проходят
-    /// вместе.
-    private func throttle(host: String) async throws {
-        let now = Date()
-        let previousTail = nextAllowedAt[host]
-        let slot = max(now, previousTail ?? now)
-        let reservation = slot.addingTimeInterval(minInterval)
-        nextAllowedAt[host] = reservation
-        let wait = slot.timeIntervalSince(now)
-        if wait > 0 {
-            do {
-                try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-            } catch {
-                // Освобождаем только собственный хвост очереди. Если после нас
-                // уже забронирован новый слот, его расписание не трогаем.
-                if nextAllowedAt[host] == reservation {
-                    if let previousTail, previousTail > now {
-                        nextAllowedAt[host] = previousTail
-                    } else {
-                        nextAllowedAt[host] = nil
-                    }
+    /// Регистрирует waiter в FIFO и выдаёт слот только одному запросу. При
+    /// отмене ожидающий continuation удаляется из очереди, поэтому отменённая
+    /// задача не может оставить очередь навсегда заблокированной.
+    private func acquireRequestSlot() async throws {
+        nextRequestWaiterID &+= 1
+        let id = nextRequestWaiterID
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
                 }
-                throw error
+                requestWaiters.append(RequestWaiter(id: id, continuation: continuation))
+                grantNextRequestSlot()
+            }
+        }, onCancel: {
+            Task { [weak self] in
+                await self?.cancelRequestWaiter(id: id)
+            }
+        })
+    }
+
+    private func grantNextRequestSlot() {
+        guard !requestActive, !requestWaiters.isEmpty else { return }
+        requestActive = true
+        let waiter = requestWaiters.removeFirst()
+        waiter.continuation.resume()
+    }
+
+    private func cancelRequestWaiter(id: UInt64) {
+        guard let index = requestWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = requestWaiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func releaseRequestSlot() {
+        requestActive = false
+        grantNextRequestSlot()
+    }
+
+    /// Выполняет redirect chain. Каждый следующий hop заново встаёт в FIFO,
+    /// поэтому не обходит уже ожидающий ручной или фоновый запрос.
+    private func performSessionData(
+        for request: URLRequest,
+        protectsMagistrateCaptchaRedirects: Bool = false
+    ) async throws -> (Data, URLResponse) {
+        var currentRequest = request
+        for _ in 0..<20 {
+            let result = try await performPhysicalSessionData(
+                for: currentRequest,
+                protectsMagistrateCaptchaRedirects: protectsMagistrateCaptchaRedirects)
+            if let redirect = result.redirect {
+                currentRequest = redirect
+                continue
+            }
+            return (result.data, result.response)
+        }
+        throw URLError(.httpTooManyRedirects)
+    }
+
+    private func performPhysicalSessionData(
+        for request: URLRequest,
+        protectsMagistrateCaptchaRedirects: Bool
+    ) async throws -> (data: Data, response: URLResponse, redirect: URLRequest?) {
+        try await acquireRequestSlot()
+        defer { releaseRequestSlot() }
+
+        if let lastRequestStartAt {
+            let wait = minInterval - Date().timeIntervalSince(lastRequestStartAt)
+            if wait > 0 {
+                try await Task.sleep(for: .seconds(wait))
             }
         }
+        try Task.checkCancellation()
+        let session = try await session(for: request)
+        let delegate = RedirectCaptureDelegate(
+            protectsMagistrateCaptcha: protectsMagistrateCaptchaRedirects)
+        lastRequestStartAt = Date()
+        let result = try await session.data(for: request, delegate: delegate)
+        return (result.0, result.1, delegate.takeRedirect())
+    }
+
+    private func session(for request: URLRequest) async throws -> URLSession {
+        if let fixedSession { return fixedSession }
+        guard let origin = request.url.flatMap(Origin.init), let sessionFactory else {
+            throw URLError(.badURL)
+        }
+        if let current = originSession, current.origin == origin,
+           !current.delegate.isInvalidated {
+            return current.session
+        }
+        if let current = originSession {
+            current.session.finishTasksAndInvalidate()
+            await current.delegate.waitForInvalidation()
+            originSession = nil
+        }
+        // The old session must be invalidated even when its successor was
+        // cancelled while waiting for didBecomeInvalid.
+        try Task.checkCancellation()
+        let delegate = OriginSessionDelegate(
+            trustCourtCertificates: trustCourtCertificates,
+            onInvalidated: sessionInvalidationObserver ?? {})
+        let session = sessionFactory(delegate)
+        originSession = OriginSession(origin: origin, session: session, delegate: delegate)
+        return session
+    }
+}
+
+/// Session-level state for one production origin. It forwards the existing
+/// court TLS policy and provides a non-cancellable invalidation wait so a
+/// cancelled caller cannot create the next origin session too early.
+private final class OriginSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+    private let tlsDelegate: SudrfTLSDelegate?
+    private let onInvalidated: @Sendable () -> Void
+    private let lock = NSLock()
+    private var invalidated = false
+    private var invalidationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(trustCourtCertificates: Bool,
+         onInvalidated: @escaping @Sendable () -> Void = {}) {
+        tlsDelegate = trustCourtCertificates ? SudrfTLSDelegate() : nil
+        self.onInvalidated = onInvalidated
+    }
+
+    var isInvalidated: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return invalidated
+    }
+
+    func waitForInvalidation() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if invalidated {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            invalidationWaiters.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func urlSession(_ session: URLSession,
+                    didBecomeInvalidWithError error: Error?) {
+        onInvalidated()
+        lock.lock()
+        invalidated = true
+        let waiters = invalidationWaiters
+        invalidationWaiters = []
+        lock.unlock()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let tlsDelegate else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        tlsDelegate.urlSession(session, didReceive: challenge,
+                               completionHandler: completionHandler)
+    }
+}
+
+/// Captures redirects instead of letting URLSession open a second connection
+/// behind the actor's back. The caller replays the supplied request through
+/// `SudrfClient.performSessionData`, which can then rotate the origin session.
+private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let protectsMagistrateCaptcha: Bool
+    private let lock = NSLock()
+    private var redirect: URLRequest?
+
+    init(protectsMagistrateCaptcha: Bool) {
+        self.protectsMagistrateCaptcha = protectsMagistrateCaptcha
+    }
+
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let source = response.url ?? task.originalRequest?.url,
+              let target = request.url else {
+            completionHandler(nil)
+            return
+        }
+        if protectsMagistrateCaptcha,
+           !MagistrateCaptchaRedirectDelegate.allows(source: source, target: target) {
+            completionHandler(nil)
+            return
+        }
+        lock.lock()
+        redirect = request
+        lock.unlock()
+        completionHandler(nil)
+    }
+
+    func takeRedirect() -> URLRequest? {
+        lock.lock(); defer { lock.unlock() }
+        defer { redirect = nil }
+        return redirect
     }
 }
 
@@ -756,7 +1019,7 @@ final class MagistrateCaptchaRedirectDelegate: NSObject, URLSessionTaskDelegate,
         completionHandler(request)
     }
 
-    private static func allows(source: URL, target: URL) -> Bool {
+    static func allows(source: URL, target: URL) -> Bool {
         guard let sourceHost = source.host?.lowercased(),
               sourceHost == target.host?.lowercased(),
               source.user == nil, source.password == nil,

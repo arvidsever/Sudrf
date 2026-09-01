@@ -82,6 +82,23 @@ final class MagistrateCaptchaTransportTests: XCTestCase {
         XCTAssertNil(forwarded, "the CAPTCHA body must never be replayed to another host")
     }
 
+    func testLiveTransportDoesNotReplayCaptchaPOSTAcrossOriginRedirect() async throws {
+        MagistrateCaptchaURLProtocol.mode = .postCrossOriginRedirect
+        let client = SudrfClient(session: session, minInterval: 0)
+        let challenge = try await client.loadMagistrateCaptcha(formURL: formURL)
+
+        do {
+            _ = try await client.submitMagistrateCaptcha(code: "secret", challenge: challenge)
+            XCTFail("cross-origin redirect must not unlock or replay CAPTCHA POST")
+        } catch SudrfError.http(let status) {
+            XCTAssertEqual(status, 307)
+        }
+
+        XCTAssertFalse(MagistrateCaptchaURLProtocol.requests().contains {
+            $0.url?.host == "attacker.example"
+        }, "the CAPTCHA POST body must never reach the redirect target")
+    }
+
     func testRejectedSubmissionFetchesFreshImageFromReturnedForm() async throws {
         MagistrateCaptchaURLProtocol.mode = .rejected
         let client = SudrfClient(session: session, minInterval: 0)
@@ -213,6 +230,7 @@ private final class MagistrateCaptchaURLProtocol: URLProtocol {
         case htmlImage
         case oversizedImage
         case tlsFallback
+        case postCrossOriginRedirect
     }
 
     nonisolated(unsafe) static var mode: Mode = .accepted
@@ -251,6 +269,19 @@ private final class MagistrateCaptchaURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
+        if mode == .postCrossOriginRedirect, request.httpMethod == "POST" {
+            let target = URL(string: "https://attacker.example/stolen")!
+            var redirectedRequest = request
+            redirectedRequest.url = target
+            let response = HTTPURLResponse(
+                url: url, statusCode: 307, httpVersion: "HTTP/1.1",
+                headerFields: ["Location": target.absoluteString])!
+            client?.urlProtocol(self, wasRedirectedTo: redirectedRequest,
+                                redirectResponse: response)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let isImage = url.path == "/captcha.php"
         let body: Data
         let headers: [String: String]
@@ -273,7 +304,8 @@ private final class MagistrateCaptchaURLProtocol: URLProtocol {
         case (.crossHostImage, 0, false):
             body = Data(Self.form(image: "https://attacker.example/captcha.php").utf8)
             headers = Self.htmlHeaders(withCookie: true)
-        case (.htmlImage, 0, false), (.accepted, 0, false), (.rejected, 0, false):
+        case (.htmlImage, 0, false), (.accepted, 0, false), (.rejected, 0, false),
+             (.postCrossOriginRedirect, 0, false):
             body = Data(Self.form().utf8)
             headers = Self.htmlHeaders(withCookie: true)
         case (.rejected, 2, false):
@@ -288,7 +320,8 @@ private final class MagistrateCaptchaURLProtocol: URLProtocol {
         case (.rejected, _, true):
             body = index == 1 ? Data([1, 2, 3]) : Data([4, 5, 6])
             headers = ["Content-Type": "image/png"]
-        case (.accepted, _, true), (.crossHostAction, _, true), (.crossHostImage, _, true):
+        case (.accepted, _, true), (.crossHostAction, _, true), (.crossHostImage, _, true),
+             (.postCrossOriginRedirect, _, true):
             body = Data([0x89, 0x50, 0x4E, 0x47])
             headers = ["Content-Type": "image/png"]
         default:

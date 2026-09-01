@@ -146,7 +146,8 @@ struct MovementContext: Codable, Equatable, Sendable {
                                higherCourtTargets: exactTargets,
                                knownCards: knownCards ?? [],
                                baseInstanceLevel: baseInstanceLevel,
-                               vsrf: vsrf, mosgorsud: mosgorsud)
+                               vsrf: vsrf, mosgorsud: mosgorsud,
+                               judicialUID: judicialUID)
     }
 
     /// Домены вышестоящих судов с разворотом в оба синонима («vs--X» и «vs.X»):

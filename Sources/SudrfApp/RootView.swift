@@ -174,7 +174,7 @@ private struct OperationalRootView: View {
         ZStack(alignment: .top) {
             Color(nsColor: .sudrfContent).ignoresSafeArea()
 
-            ContentView()
+            ContentView(client: router.client)
                 .environmentObject(router)
                 .opacity(router.section == .search ? 1 : 0)
                 .allowsHitTesting(router.section == .search)

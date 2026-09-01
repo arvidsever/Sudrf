@@ -187,10 +187,12 @@ final class MilitaryCourtPickerTests: XCTestCase {
         model.branch = .general
         model.region = "11"
         model.courtScopeChanged()
-        try await MilitaryPickerURLProtocol.waitForRegionalRequest()
 
+        // Новый regional request стоит за уже активным garrison request в
+        // общей FIFO-очереди SudrfClient и стартует после освобождения слота.
         MilitaryPickerURLProtocol.releaseGarrison()
         await oldResolution.value
+        try await MilitaryPickerURLProtocol.waitForRegionalRequest()
         XCTAssertTrue(model.resolving)
         XCTAssertTrue(model.courts.isEmpty)
         XCTAssertEqual(model.status, "Загружаю суды…")
@@ -252,6 +254,7 @@ private final class MilitaryPickerURLProtocol: URLProtocol {
         condition.lock()
         let pending = pendingGarrisons
         pendingGarrisons = []
+        garrisonIsDelayed = false
         let fails = garrisonFails
         condition.broadcast()
         condition.unlock()
@@ -269,6 +272,7 @@ private final class MilitaryPickerURLProtocol: URLProtocol {
         condition.lock()
         let pending = pendingRegionals
         pendingRegionals = []
+        regionalIsDelayed = false
         condition.broadcast()
         condition.unlock()
         for request in pending { request.respond(with: Self.regionalBody) }

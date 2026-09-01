@@ -210,7 +210,7 @@ final class SearchModel: ObservableObject {
     }
 
     private let resolver: DistrictCourtResolver
-    private let magistrateResolver = MagistrateCourtResolver()
+    private let magistrateResolver: MagistrateCourtResolver
     private let client: SudrfClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
@@ -242,7 +242,8 @@ final class SearchModel: ObservableObject {
          captchaSettings: CaptchaSettings? = nil,
          corpusStore: CorpusStore = .shared,
          client: SudrfClient = SudrfClient(),
-         resolver: DistrictCourtResolver = DistrictCourtResolver(),
+         resolver: DistrictCourtResolver? = nil,
+         magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient()) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
         // сконфигурированный этой же настройкой. Так гарантируется,
@@ -254,7 +255,9 @@ final class SearchModel: ObservableObject {
         self.captchaSettings = settings
         self.corpusStore = corpusStore
         self.client = client
-        self.resolver = resolver
+        self.resolver = resolver ?? DistrictCourtResolver(client: client)
+        self.magistrateResolver = magistrateResolver
+            ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
         self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }

@@ -449,6 +449,92 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(execution?.outcome, .refreshed)
     }
 
+    func testRefreshRecoversBlankContextUIDFromCachedMovement() async throws {
+        let key = store.all()[0].key
+        let record = try XCTUnwrap(store.record(forKey: key))
+        let cachedUID = "11RS0001-01-2023-007662-80"
+        var cachedMovement = successMV!
+        cachedMovement.uid = cachedUID
+        cachedMovement.category = "Уголовное дело"
+        cachedMovement.parties = CaseParties(defendants: ["Болобан Илья Сергеевич"])
+        cachedMovement.instances[0].judge = "Костюнина Н. Н."
+        cachedMovement.instances[0].sessions = [
+            CaseSession(date: "10.08.2023", event: "Судебное заседание",
+                        result: "Постановление приговора")
+        ]
+        cachedMovement.instances[0].sourceURL = URL(
+            string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case")
+        let cachedAct = CaseAct(
+            id: "cached-verdict", title: "Приговор", date: "10.08.2023",
+            courtShort: "Сыктывкарский городской суд", instanceLevel: .first)
+        cachedMovement.instances[0].actID = cachedAct.id
+        cachedMovement.acts = [cachedAct]
+        cachedMovement.actBodies = [cachedAct.id: "Сохранённый текст приговора"]
+        record.movement = cachedMovement
+        try store.save(projection: .cases([key]))
+        XCTAssertNil(record.context?.judicialUID)
+
+        let sparseBase = CaseInstance(
+            level: .first, court: "Сыктывкарский городской суд",
+            caseNumber: cachedMovement.caseNumber, judge: nil,
+            domain: "syktsud--komi.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [])
+        let freshCassation = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд",
+            caseNumber: "7У-1077/2024 [77-762/2024]", judge: "Курбатова М. В.",
+            domain: "3kas.sudrf.ru", foundByUID: true,
+            result: "ВЫНЕСЕНО РЕШЕНИЕ ПО СУЩЕСТВУ ДЕЛА", sessions: [])
+        let partialMovement = CaseMovement(
+            uid: cachedUID, caseNumber: cachedMovement.caseNumber, inForce: false,
+            instances: [sparseBase, freshCassation], complaints: [:], acts: [],
+            incompleteHigherCourtDomains: ["syktsud--komi.sudrf.ru"])
+        let service = FixedMovement(partialMovement)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { context in
+            XCTAssertEqual(context.judicialUID, cachedUID)
+            return service
+        })
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("недоступная базовая карточка должна дать partial refresh")
+        }
+        let saved = try XCTUnwrap(store.record(forKey: key)?.movement)
+        let savedBase = try XCTUnwrap(saved.instances.first {
+            $0.domain == "syktsud--komi.sudrf.ru"
+        })
+        XCTAssertEqual(savedBase.judge, cachedMovement.instances[0].judge)
+        XCTAssertEqual(savedBase.sessions, cachedMovement.instances[0].sessions)
+        XCTAssertEqual(savedBase.result, cachedMovement.instances[0].result)
+        XCTAssertEqual(savedBase.sourceURL, cachedMovement.instances[0].sourceURL)
+        XCTAssertEqual(saved.category, cachedMovement.category)
+        XCTAssertEqual(saved.parties, cachedMovement.parties)
+        XCTAssertEqual(saved.acts, cachedMovement.acts)
+        XCTAssertEqual(saved.actBodies, cachedMovement.actBodies)
+        XCTAssertEqual(saved.instances.first { $0.domain == "3kas.sudrf.ru" }?.caseNumber,
+                       "7У-1077/2024 [77-762/2024]")
+    }
+
+    func testRefreshRejectsMalformedCachedMovementUID() async throws {
+        let key = store.all()[0].key
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var cachedMovement = successMV!
+        cachedMovement.uid = "uid-A1"
+        record.movement = cachedMovement
+
+        let service = FixedMovement(successMV)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { context in
+            XCTAssertNil(context.judicialUID)
+            return service
+        })
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+    }
+
     func testUIDMergePublishesPersistedCombinedMovementAndKeyRemap() async throws {
         for key in store.all().map(\.key) { try store.remove(key: key) }
         let judicialUID = "11RS0001-01-2025-011255-03"
@@ -1013,7 +1099,7 @@ final class RefreshCenterTests: XCTestCase {
         let execution = await center.refresh(key: key)?.value
 
         XCTAssertEqual(execution?.outcome, .partial(
-            "Один источник временно не обновился; сохранены последние успешные данные."))
+            "Не обновился источник 3kas.sudrf.ru; сохранены последние успешные данные."))
         let calls = await movement.calls
         XCTAssertEqual(calls, 1, "без токена полный retry не выполняется")
         XCTAssertEqual(published.count, 1)
@@ -1652,7 +1738,8 @@ final class RefreshCenterTests: XCTestCase {
 
         let execution = await center.refresh(key: key)?.value
 
-        let expected = "Один источник временно не обновился; сохранены последние успешные данные."
+        let expected = "Не обновился источник 3kas.sudrf.ru; "
+            + "сохранены последние успешные данные."
         XCTAssertEqual(execution?.outcome, .partial(expected))
         XCTAssertEqual(center.lastErrors[key], expected,
                        "honest-zero sources must not inflate the incomplete count")

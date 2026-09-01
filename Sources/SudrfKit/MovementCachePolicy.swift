@@ -29,6 +29,45 @@ public enum MovementCachePolicy {
         var actBodies = fresh.actBodies
         var changed = false
 
+        let incompleteDomains = Set(
+            (fresh.incompleteHigherCourtDomains ?? []).map(SudrfHost.moduleHost))
+        let freshBaseDomain = fresh.instances.first {
+            MovementService.sameCaseNumber($0.caseNumber, fresh.caseNumber)
+        }?.domain
+        let freshBaseCanonicalDomain = freshBaseDomain.map(SudrfHost.moduleHost)
+        let baseIsIncomplete = freshBaseDomain.map {
+            incompleteDomains.contains(SudrfHost.moduleHost($0))
+        } ?? false
+
+        // A saved-UID fallback deliberately returns a sparse base movement.
+        // Keep authoritative fields from the last complete base card while
+        // retaining any fresh higher-court instances.
+        var category = fresh.category
+        if baseIsIncomplete,
+           (category?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+           let cachedCategory = cached.category,
+           !cachedCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            category = cachedCategory
+            changed = true
+        }
+        var parties = fresh.parties
+        if baseIsIncomplete, parties.isEmpty, !cached.parties.isEmpty {
+            parties = cached.parties
+            changed = true
+        }
+        var uid = fresh.uid
+        if baseIsIncomplete,
+           uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !cached.uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            uid = cached.uid
+            changed = true
+        }
+        var inForce = fresh.inForce
+        if baseIsIncomplete, !inForce, cached.inForce {
+            inForce = true
+            changed = true
+        }
+
         // A partial refresh can return a valid movement while its base card
         // temporarily omits the execution table. Preserve the last successful
         // documents just like cached real higher-court instances.
@@ -41,6 +80,7 @@ public enum MovementCachePolicy {
         }
 
         func restoreCachedRealInstances(for canonical: String) -> Bool {
+            let overlaysSparseBase = baseIsIncomplete && canonical == freshBaseCanonicalDomain
             let realInstances = cached.instances.filter {
                 SudrfHost.moduleHost($0.domain) == canonical
                     && $0.captchaFormURL == nil
@@ -52,6 +92,26 @@ public enum MovementCachePolicy {
                     SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(r.domain)
                         && MovementService.sameCaseNumber($0.caseNumber, r.caseNumber)
                 }) {
+                    if overlaysSparseBase,
+                       instances[freshIndex].sessions.isEmpty, !r.sessions.isEmpty {
+                        instances[freshIndex].sessions = r.sessions
+                        changed = true
+                    }
+                    if overlaysSparseBase,
+                       instances[freshIndex].judge == nil, let judge = r.judge {
+                        instances[freshIndex].judge = judge
+                        changed = true
+                    }
+                    if overlaysSparseBase,
+                       instances[freshIndex].result == nil, let result = r.result {
+                        instances[freshIndex].result = result
+                        changed = true
+                    }
+                    if overlaysSparseBase,
+                       instances[freshIndex].sourceURL == nil, let sourceURL = r.sourceURL {
+                        instances[freshIndex].sourceURL = sourceURL
+                        changed = true
+                    }
                     if instances[freshIndex].actID == nil {
                         instances[freshIndex].actID = r.actID
                     }
@@ -70,13 +130,15 @@ public enum MovementCachePolicy {
                     instances.append(r)
                 }
                 for actID in r.linkedActIDs where !acts.contains(where: { $0.id == actID }) {
-                    guard let body = cached.actBodies[actID],
-                          !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                          let act = cached.acts.first(where: { $0.id == actID }) else {
-                        continue
-                    }
+                    guard let act = cached.acts.first(where: { $0.id == actID }) else { continue }
+                    let body = cached.actBodies[actID]?.trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    guard overlaysSparseBase || !(body?.isEmpty ?? true) else { continue }
                     acts.append(act)
-                    actBodies[actID] = body
+                    if let body, !body.isEmpty {
+                        actBodies[actID] = body
+                    }
+                    changed = true
                 }
             }
             return true
@@ -121,7 +183,7 @@ public enum MovementCachePolicy {
         // свежем движении суд исчезал, а merge не видел причины восстановить
         // кэш. Метка действует и когда часть кругов этого же суда пришла —
         // тогда свежие данные сохраняются, а недостающие добираются из кэша.
-        for canonical in Set((fresh.incompleteHigherCourtDomains ?? []).map(SudrfHost.moduleHost)) {
+        for canonical in incompleteDomains {
             if restoreCachedRealInstances(for: canonical) { changed = true }
         }
         // A recognized empty listing is not proof that a previously tracked
@@ -137,6 +199,10 @@ public enum MovementCachePolicy {
         out.instances = instances
         out.acts = acts
         out.actBodies = actBodies
+        out.uid = uid
+        out.inForce = inForce
+        out.category = category
+        out.parties = parties
         out.executionDocuments = executionDocuments
         out.incompleteHigherCourtDomains = nil
         out.honestZeroDomains = nil

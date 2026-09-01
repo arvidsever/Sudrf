@@ -69,6 +69,52 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(movement.instances.first { $0.level == .appeal }?.sourceURL, appealURL)
     }
 
+    func testUIDLookupFetchesKSOYuCardAndCarriesComplaintSessions() async throws {
+        let firstCard = CaseCard(rawText: "", actText: nil,
+                                 uid: Self.uid, caseNumber: "2-7212/2025")
+        let ksoyuCard = try CaseCardParser.parse(html: try fixture("ksoyu_complaint_movement"))
+        let exactKSOYuURL = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=16228455&case_uid=91b0e933-7bdf-4b92-87ad-efa4409b99a9"
+            + "&delo_id=2450001&case_type=0&new=2450001&srv_num=1"))
+        let ksoyuRow = CaseSearchResult(
+            caseNumber: "7У-1077/2024 [77-762/2024]", receiptDate: "03.02.2024",
+            decisionDate: "25.02.2024", result: "ВЫНЕСЕНО РЕШЕНИЕ ПО СУЩЕСТВУ ДЕЛА",
+            caseID: "16228455", caseUID: "91b0e933-7bdf-4b92-87ad-efa4409b99a9",
+            cardURL: exactKSOYuURL)
+        let mock = MockClient(firstCardID: "30636693", firstCard: firstCard,
+                              higherResults: [ksoyuRow],
+                              higherCards: ["16228455": ksoyuCard])
+        let ksoyuTarget = MovementSearchTarget(
+            domain: "3kas.sudrf.ru",
+            courtTitle: "Третий кассационный суд общей юрисдикции",
+            courtLevel: .cassation,
+            instanceLevel: .cassation,
+            cartotekaIDs: ["g3"])
+        let service = MovementService(client: mock, higherCourtTargets: [ksoyuTarget])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+
+        let searched = await mock.searchedValues
+        XCTAssertTrue(searched.contains(Self.uid), "поиск КСОЮ должен идти по УИД карточки")
+        let searchLocators = await mock.searchLocators
+        XCTAssertTrue(searchLocators.contains("3kas.sudrf.ru/g3"))
+        let instance: CaseInstance = try XCTUnwrap(movement.instances.first {
+            $0.level == .cassation && $0.caseNumber == "7У-1077/2024 [77-762/2024]"
+        })
+        let fetchedURLs = await mock.fetchedURLs
+        let fetchedLocators = await mock.fetchedLocators
+        XCTAssertEqual(fetchedURLs, [exactKSOYuURL])
+        XCTAssertFalse(fetchedLocators.contains { $0.contains("/16228455/") })
+        XCTAssertEqual(instance.sourceURL, exactKSOYuURL)
+        XCTAssertEqual(instance.sessions.first?.event,
+                       "Поступление жалобы (представления) в суд")
+        XCTAssertTrue(instance.sessions.contains {
+            $0.result == "С истребованием дела"
+        })
+    }
+
     /// Два круга апелляции (исходный + новый после возврата из кассации) — оба видны,
     /// в хронологическом порядке, с РАЗНЫМИ actID (акты не схлопываются в один).
     func testBothAppealRoundsShown() async throws {
@@ -573,6 +619,9 @@ private actor MockClient: CaseProviding {
     private let homeDomain: String
     private let expectedUID: String
     private(set) var searchedValues: [String] = []
+    private(set) var searchLocators: [String] = []
+    private(set) var fetchedLocators: [String] = []
+    private(set) var fetchedURLs: [URL] = []
 
     init(firstCardID: String, firstCard: CaseCard,
          higherResults: [CaseSearchResult], higherCards: [String: CaseCard],
@@ -591,16 +640,25 @@ private actor MockClient: CaseProviding {
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult] {
         searchedValues.append(value)
+        searchLocators.append(court.domain + "/" + cartoteka.id)
         guard field == .uid, value == expectedUID else { return [] }
         return court.domain == homeDomain ? sameCourtResults : higherResults
     }
 
     func fetchCard(url: URL) async throws -> CaseCard {
-        throw SudrfError.http(status: 404)   // в этих сценариях путь по ссылке не используется
+        fetchedURLs.append(url)
+        guard let row = (higherResults + sameCourtResults).first(where: { $0.cardURL == url }),
+              let caseID = row.caseID,
+              let card = higherCards[caseID] else {
+            throw SudrfError.http(status: 404)
+        }
+        return card
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard {
+        fetchedLocators.append(court.domain + "/" + caseID + "/" + caseUID
+                               + "/" + deloID + "/" + new)
         if caseID == firstCardID { return firstCard }
         return higherCards[caseID] ?? firstCard
     }
@@ -904,6 +962,132 @@ final class MovementServiceTransientStubTests: XCTestCase {
             XCTFail("отмена не должна превращаться в partial movement")
         } catch let error as URLError {
             XCTAssertEqual(error.code, .cancelled)
+        }
+    }
+}
+
+// MARK: - Saved-UID base-card fallback
+
+private actor SavedUIDFallbackClient: CaseProviding {
+    let baseCardID: String
+    let higherDomain: String
+    let higherRow: CaseSearchResult
+    let higherCard: CaseCard
+    let baseError: SudrfError
+    private(set) var searchLocators: [String] = []
+
+    init(baseCardID: String, higherDomain: String, higherRow: CaseSearchResult,
+         higherCard: CaseCard, baseError: SudrfError) {
+        self.baseCardID = baseCardID
+        self.higherDomain = higherDomain
+        self.higherRow = higherRow
+        self.higherCard = higherCard
+        self.baseError = baseError
+    }
+
+    func search(court: Court, cartoteka: Cartoteka,
+                field: SearchField, value: String) async throws -> [CaseSearchResult] {
+        searchLocators.append(court.domain + "/" + cartoteka.id)
+        return court.domain == higherDomain ? [higherRow] : []
+    }
+
+    func fetchCard(url: URL) async throws -> CaseCard {
+        throw SudrfError.http(status: 404)
+    }
+
+    func fetchCard(court: Court, caseID: String, caseUID: String,
+                   deloID: String, new: String) async throws -> CaseCard {
+        if caseID == baseCardID { throw baseError }
+        return higherCard
+    }
+}
+
+final class MovementServiceSavedUIDFallbackTests: XCTestCase {
+
+    private let baseID = "base-card"
+    private let savedUID = "11RS0001-01-2026-000001-11"
+    private let higherDomain = "vs--komi.sudrf.ru"
+
+    private func districtCourt() -> Court {
+        Court(domain: "syktsud--komi.sudrf.ru",
+              title: "Сыктывкарский городской суд", level: .district)
+    }
+
+    private func base() -> CaseSearchResult {
+        CaseSearchResult(caseNumber: "2-1/2026", caseID: baseID,
+                         caseUID: "base-link-guid")
+    }
+
+    private func target() -> MovementSearchTarget {
+        MovementSearchTarget(domain: higherDomain, courtTitle: "ВС Коми",
+                              courtLevel: .subject, instanceLevel: .appeal,
+                              cartotekaIDs: ["g2"])
+    }
+
+    func testTransientBaseFallbackSkipsSameCourtRoundsAndMaterials() async throws {
+        let higherRow = CaseSearchResult(caseNumber: "33-1/2026", result: "оставлено без изменения",
+                                         caseID: "higher-card", caseUID: "higher-link-guid")
+        let higherCard = CaseCard(rawText: "", actText: nil, result: higherRow.result,
+                                  caseNumber: higherRow.caseNumber)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let errors: [SudrfError] = [
+            .caseCardTemporarilyUnavailable,
+            .sourceMaintenance(domain: districtCourt().domain),
+            .transientNetworkError(domain: districtCourt().domain, code: .timedOut, attempt: 3)
+        ]
+        for error in errors {
+            let client = SavedUIDFallbackClient(
+                baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+                higherCard: higherCard, baseError: error)
+            let service = MovementService(client: client, higherCourtTargets: [target()],
+                                          judicialUID: savedUID)
+
+            let movement = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+            XCTAssertEqual(movement.uid, savedUID)
+            XCTAssertEqual(movement.instances.map(\.caseNumber), ["2-1/2026", "33-1/2026"])
+            XCTAssertEqual(movement.incompleteHigherCourtDomains, [districtCourt().domain])
+            let locators = await client.searchLocators
+            XCTAssertEqual(locators, [higherDomain + "/g2"],
+                           "fallback не должен запускать same-court и material search")
+        }
+    }
+
+    func testSavedUIDFallbackDoesNotHideParserOrMissingUIDErrors() async throws {
+        let higherRow = CaseSearchResult(caseNumber: "33-1/2026", result: "оставлено без изменения",
+                                         caseID: "higher-card", caseUID: "higher-link-guid")
+        let higherCard = CaseCard(rawText: "", actText: nil, result: higherRow.result,
+                                  caseNumber: higherRow.caseNumber)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let parserClient = SavedUIDFallbackClient(
+            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+            higherCard: higherCard, baseError: .parsing("карточка"))
+        let parserService = MovementService(client: parserClient, higherCourtTargets: [target()],
+                                            judicialUID: savedUID)
+        do {
+            _ = try await parserService.movement(for: base(), court: districtCourt(), cartoteka: cart)
+            XCTFail("ошибка разбора не должна превращаться в sparse fallback")
+        } catch let error as SudrfError {
+            guard case .parsing = error else {
+                return XCTFail("ожидалась ошибка разбора, получено \(error)")
+            }
+        }
+
+        let missingUIDClient = SavedUIDFallbackClient(
+            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+            higherCard: higherCard, baseError: .sourceMaintenance(domain: districtCourt().domain))
+        let missingUIDService = MovementService(client: missingUIDClient,
+                                                 higherCourtTargets: [target()])
+        do {
+            _ = try await missingUIDService.movement(for: base(), court: districtCourt(), cartoteka: cart)
+            XCTFail("без сохранённого УИД ошибка источника должна быть проброшена")
+        } catch let error as SudrfError {
+            guard case .sourceMaintenance = error else {
+                XCTFail("ожидалась sourceMaintenance, получено \(error)")
+                return
+            }
         }
     }
 }

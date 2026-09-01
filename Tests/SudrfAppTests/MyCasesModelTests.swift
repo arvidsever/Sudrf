@@ -32,6 +32,51 @@ final class MyCasesModelTests: XCTestCase {
     }
 
     @MainActor
+    func testHigherCourtCaptchaCTAOpensManualFallback() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let formURL = try XCTUnwrap(
+            URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo"))
+        let stub = CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-10837/2026",
+            judge: nil,
+            domain: "3kas.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: formURL)
+        let movement = CaseMovement(
+            uid: "3fa48ca6-b23d-46dd-b245-91dff823e62b",
+            caseNumber: "2-100/2026",
+            inForce: false,
+            instances: [stub],
+            complaints: [:],
+            acts: [])
+        router.liveMovement = movement
+        let refreshNote = router.refreshNote
+
+        router.beginCaptcha(for: stub)
+
+        let context = try XCTUnwrap(router.captcha)
+        XCTAssertEqual(context.formURL, formURL)
+        XCTAssertEqual(context.uid, movement.uid)
+        XCTAssertEqual(context.instanceID, stub.id)
+        XCTAssertEqual(context.level.rawValue, stub.level.rawValue)
+        XCTAssertEqual(context.courtTitle, stub.court)
+        guard case .sudrfToken = context.kind else {
+            return XCTFail("КСОЮ должна открыть ручной WebView fallback")
+        }
+        XCTAssertEqual(context.pendingCaseCount, 0)
+        XCTAssertTrue(context.pendingCaseNumbers.isEmpty)
+        XCTAssertEqual(router.liveMovement, movement)
+        XCTAssertEqual(router.refreshNote, refreshNote)
+        XCTAssertTrue(router.refreshCenter.captchaPendingGroups.isEmpty)
+        XCTAssertFalse(router.isRefreshingOpenCase)
+    }
+
+    @MainActor
     func testTrackUntrackReloadAndTrackAgainUpdatesEveryProjection() throws {
         let container = try SudrfModelContainerFactory.make(inMemory: true)
         let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)

@@ -324,6 +324,10 @@ public actor MovementService: MovementProviding {
     /// Реальный уровень базовой карточки. По умолчанию `.first` для
     /// совместимости с существующими вызывающими сторонами и тестами.
     let baseInstanceLevel: CaseInstance.Level
+    /// УИД, сохранённый в фоне из ранее подтверждённой карточки. Он нужен
+    /// только как безопасный якорь для временного fallback базовой карточки:
+    /// живая интерактивная ветка этот параметр не передаёт.
+    let judicialUID: String?
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
     let vsrf: (any VSRFProviding)?
     /// Клиент портала судов Москвы (mos-gorsud.ru). nil — московская ветка
@@ -335,13 +339,16 @@ public actor MovementService: MovementProviding {
                 knownCards: [KnownCard] = [],
                 baseInstanceLevel: CaseInstance.Level = .first,
                 vsrf: (any VSRFProviding)? = nil,
-                mosgorsud: (any MosGorSudProviding)? = nil) {
+                mosgorsud: (any MosGorSudProviding)? = nil,
+                judicialUID: String? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
         self.higherCourtTargets = higherCourtTargets
             ?? higherCourtDomains.map { MovementSearchTarget(domain: $0) }
         self.knownCards = knownCards
         self.baseInstanceLevel = baseInstanceLevel
+        let normalizedUID = judicialUID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.judicialUID = normalizedUID.flatMap { $0.isEmpty || $0 == "—" ? nil : $0 }
         self.vsrf = vsrf
         self.mosgorsud = mosgorsud
     }
@@ -401,8 +408,24 @@ public actor MovementService: MovementProviding {
         }
 
         // 1. Базовая карточка: обычно 1-я инстанция, но импорт/legacy-записи
-        // могут начинаться с апелляции или кассации.
-        let baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
+        // могут начинаться с апелляции или кассации. Фоновая запись может
+        // временно потерять карточку при штатной недоступности источника;
+        // тогда сохранённый УИД позволяет продолжить только независимые
+        // вышестоящие запросы, не выдавая пустую карточку за свежую.
+        let baseCard: CaseCard
+        let usedSavedUIDFallback: Bool
+        do {
+            baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
+            usedSavedUIDFallback = false
+        } catch let error as SudrfError {
+            guard let savedUID = judicialUID,
+                  Self.isSavedUIDFallbackError(error) else {
+                throw error
+            }
+            baseCard = CaseCard(rawText: "", actText: nil, uid: savedUID,
+                                caseNumber: base.caseNumber)
+            usedSavedUIDFallback = true
+        }
 
         // УИД дела (вида 11RS0001-01-2025-011255-03) — из метаданных карточки.
         // НЕ путать с base.caseUID: это внутренний GUID ссылки на карточку
@@ -458,7 +481,8 @@ public actor MovementService: MovementProviding {
             sessions: baseCard.sessions,
             actID: baseActID,
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))]
-        var incompleteHigherCourtDomains: [String] = []
+        var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
+            ? [court.domain] : []
         var honestZeroDomains: [String] = []
         func markHigherCourtIncomplete(_ domain: String) {
             let canonical = SudrfHost.moduleHost(domain)
@@ -480,7 +504,8 @@ public actor MovementService: MovementProviding {
         //     карточка (новый № дела) под тем же УИД. Прежде искались только
         //     вышестоящие суды, поэтому второй (и последующие) круги домашнего суда
         //     терялись. Ищем по УИД в той же картотеке, базовый круг исключаем.
-        if let uid, court.level != .magistrate, effectiveBaseLevel != .material {
+        if !usedSavedUIDFallback,
+           let uid, court.level != .magistrate, effectiveBaseLevel != .material {
             let sameCourtRows: [CaseSearchResult]
             do {
                 sameCourtRows = try await discoveryRows(court: court, cartoteka: cartoteka,
@@ -547,7 +572,8 @@ public actor MovementService: MovementProviding {
         // 1c. Материалы домашнего суда (13-…, 3/…, 15-…) под тем же УИД —
         //     секция «Материалы» в конце карточки. Ошибки и капча глушатся
         //     молча: материалы — дополнение, заглушку из-за них не ставим.
-        if let uid, court.level == .district, cartoteka.id != "m",
+        if !usedSavedUIDFallback,
+           let uid, court.level == .district, cartoteka.id != "m",
            let mCart = CartotekaRegistry.find(level: .district, id: "m") {
             let rows: [CaseSearchResult]
             do {
@@ -931,6 +957,16 @@ public actor MovementService: MovementProviding {
                                       captchaFormURL: captchaFormURL,
                                       transientError: transientError))
     }
+
+    private static func isSavedUIDFallbackError(_ error: SudrfError) -> Bool {
+        switch error {
+        case .caseCardTemporarilyUnavailable, .sourceMaintenance,
+             .transientNetworkError:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Вспомогательные методы
@@ -976,9 +1012,16 @@ extension MovementService {
             deloID: knownCard.deloID, new: knownCard.new)
     }
 
-    /// Карточка по строке выдачи: пара ID → канонический URL через билдер
-    /// (переживает смену формы хоста); иначе — готовая ссылка выдачи.
+    /// Точная ссылка строки сохраняет фактические `delo_id` / `new` / `srv_num`.
+    /// Принимаем её с приоритетом только с того же суда; иначе безопасно
+    /// откатываемся к каноническому URL по идентификаторам.
     func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka) async throws -> CaseCard {
+        if let url = row.cardURL,
+           ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+           url.user == nil, url.password == nil,
+           SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(court.domain) {
+            return try await client.fetchCard(url: url)
+        }
         if let id = row.caseID, let uid = row.caseUID {
             return try await client.fetchCard(court: court, caseID: id, caseUID: uid,
                                               deloID: cartoteka.deloID, new: cartoteka.new)

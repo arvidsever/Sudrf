@@ -7,8 +7,8 @@ import Foundation
 /// здесь, чтобы следующие запросы начинались сразу с рабочего. Записи устаревают
 /// (суд могут переустановить на другую версию модуля), поэтому хранится дата.
 ///
-/// Синглтон: клиентов SudrfClient в приложении два (поиск и фоновое обновление),
-/// кэш у них общий. Персистентность — JSON в Caches, по образцу DistrictCourtResolver.
+/// Синглтон сохраняет рабочий вариант между всеми entry points приложения.
+/// Персистентность — JSON в Caches, по образцу DistrictCourtResolver.
 public actor WorkingVariantStore {
 
     public static let shared = WorkingVariantStore()

@@ -8,9 +8,9 @@
 //   • точечный: refresh(key:) — при открытии дела (SWR) и кнопка «Обновить».
 //
 //  Дедупликация по ключу: повторный refresh того же дела возвращает уже
-//  идущую задачу. Обход ПАРАЛЛЕЛЕН ПО СУДАМ (до RefreshSettings.maxConcurrentCourts
-//  одновременно): у каждого суда СОЮ свой сервер. Внутри одного суда дела идут
-//  последовательно, темп внутри суда задаёт пер-хост троттл SudrfClient (1.5 с).
+//  идущую задачу. Полный обход использует один судебный воркер: разные домены
+//  могут вести на один backend. Все запросы приложения дополнительно проходят
+//  через общую FIFO-очередь SudrfClient с интервалом стартов 1,5 с.
 //  Ошибка одного дела не прерывает обход и НИКОГДА не трогает уже сохранённый кэш.
 
 import Foundation
@@ -347,10 +347,9 @@ final class RefreshCenter: ObservableObject {
             guard let self else { return }
             self.walkProgress = WalkProgress(done: 0, total: total)
 
-            // Один последовательный воркер на суд; параллельно не более
-            // maxConcurrentCourts судов (seed N, затем добавляем следующий по мере
-            // освобождения). Дела разных судов бьют разные серверы одновременно,
-            // внутри суда пер-хост троттл держит 1.5 с.
+            // Один последовательный воркер на суд; при production-лимите 1
+            // следующая группа запускается после завершения предыдущей. Ручные
+            // запросы в это время встают в общую FIFO-очередь SudrfClient.
             let courts = Array(groups.values)
             let limit = max(1, RefreshSettings.maxConcurrentCourts)
             await withTaskGroup(of: Void.self) { group in
@@ -702,8 +701,13 @@ final class RefreshCenter: ObservableObject {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         }
         guard let rec = store.record(forKey: effectiveKey),
-              let ctx = rec.context, let cart = ctx.cartoteka else {
+              var ctx = rec.context, let cart = ctx.cartoteka else {
             return failure(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
+        }
+        if JudicialUIDObservation.validity(of: ctx.judicialUID) != .valid,
+           let cachedUID = rec.movement?.uid.trimmingCharacters(in: .whitespacesAndNewlines),
+           JudicialUIDObservation.validity(of: cachedUID) == .valid {
+            ctx.judicialUID = cachedUID
         }
         let service = serviceBuilder(ctx)
         do {
@@ -816,7 +820,8 @@ final class RefreshCenter: ObservableObject {
                 mayAutoSolve: mayAutoSolve) {
                 return retry
             }
-            let failedCount = movement.incompleteHigherCourtDomains?.count ?? 0
+            let failedSources = movement.incompleteHigherCourtDomains ?? []
+            let failedCount = failedSources.count
             let message: String
             if failedCount == 0 {
                 let zeroCount = movement.honestZeroDomains?.count ?? 0
@@ -825,7 +830,8 @@ final class RefreshCenter: ObservableObject {
                     : "Источники подтвердили пустую выдачу; сохранены ранее известные данные."
             } else {
                 message = failedCount == 1
-                    ? "Один источник временно не обновился; сохранены последние успешные данные."
+                    ? "Не обновился источник \(SudrfHost.moduleHost(failedSources[0])); "
+                        + "сохранены последние успешные данные."
                     : "Часть источников не дала полного снимка (\(failedCount)); сохранены последние успешные данные."
             }
             return try applyMovement(key: key, ctx: ctx, mv: movement,

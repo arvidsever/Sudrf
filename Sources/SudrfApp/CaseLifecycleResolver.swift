@@ -115,7 +115,8 @@ enum CaseLifecycleResolver {
         timeline(in: movement).instances
     }
 
-    static func timeline(in movement: CaseMovement) -> Timeline {
+    static func timeline(in movement: CaseMovement,
+                         production: ProductionType? = nil) -> Timeline {
         let sourceOrdered = movement.instances.enumerated()
             .filter { _, instance in
                 instance.level != .material
@@ -140,7 +141,8 @@ enum CaseLifecycleResolver {
                 continue
             }
             let targets = dated.filter {
-                $0.instance != remand.instance && stage(for: $0.instance) == target
+                $0.instance != remand.instance
+                    && stage(for: $0.instance, production: production) == target
             }
             guard !targets.isEmpty else { continue }
             let remandDate = earliestDatedSessionDate(in: remand.instance)
@@ -173,9 +175,9 @@ enum CaseLifecycleResolver {
                         currentRoundStart: currentRoundStart, currentDated: currentDated)
     }
 
-    static func resolve(movement: CaseMovement, deadlines: [StoredDeadline],
-                        today: Date = DateUtil.today) -> Resolution {
-        let timeline = timeline(in: movement)
+    static func resolve(movement: CaseMovement, production: ProductionType? = nil,
+                        deadlines: [StoredDeadline], today: Date = DateUtil.today) -> Resolution {
+        let timeline = timeline(in: movement, production: production)
         let instances = timeline.instances
         // Пустая карточка вышестоящего суда, найденная по УИД, полезна как
         // доказательство подачи жалобы (в частности, подавляет расчётный срок),
@@ -187,26 +189,41 @@ enum CaseLifecycleResolver {
         let undatedWithResult = instances.filter {
             !hasDatedSession($0) && hasAuthoritativeResult($0)
         }
+        // Карточка КСОЮ по КоАП может быть уже доступна, когда портал ещё не
+        // опубликовал таблицу движения. Валидный номер в точном домене КСОЮ —
+        // достаточное подтверждение активного надзорного производства; CAPTCHA
+        // и сетевые заглушки сюда не попадают ещё на входе в timeline.
+        let undatedActiveKSOYUReviews = instances.filter {
+            isActiveUndatedKSOYUReview($0, production: production)
+        }
         // Недатированный итог вышестоящей инстанции всё ещё надёжнее датированной
         // базовой карточки, но не вправе переписать более поздний круг того же
         // или более высокого звена.
         let latest: CaseInstance?
         if timeline.currentDatedStartsNewRound, let dated = timeline.currentDated {
             latest = dated.instance
-        } else if let undated = undatedWithResult.last, let dated = datedInstances.last,
-           stageRank(dated) >= stageRank(undated) {
-            latest = dated
         } else {
-            latest = undatedWithResult.last ?? datedInstances.last ?? instances.last
+            let undated = (undatedWithResult + undatedActiveKSOYUReviews).max {
+                let leftRank = stageRank($0, production: production)
+                let rightRank = stageRank($1, production: production)
+                if leftRank != rightRank { return leftRank < rightRank }
+                return instanceOrder($0, in: timeline) < instanceOrder($1, in: timeline)
+            }
+            if let undated, let dated = datedInstances.last,
+               stageRank(dated, production: production) >= stageRank(undated, production: production) {
+                latest = dated
+            } else {
+                latest = undated ?? datedInstances.last ?? instances.last
+            }
         }
-        let visited = Set(instances.compactMap(stage(for:)))
+        let visited = Set(instances.compactMap { stage(for: $0, production: production) })
 
         // Будущее заседание — наиболее сильный сигнал активного производства.
         // Берём ближайшее; при одинаковой дате более поздний круг выигрывает.
         if let hearingInstance = instanceWithNearestFutureHearing(instances, today: today) {
-            let active = stage(for: hearingInstance) ?? .first
+            let active = stage(for: hearingInstance, production: production) ?? .first
             return Resolution(stage: active, currentInstance: hearingInstance,
-                              steps: steps(visited: visited, active: active),
+                              steps: steps(visited: visited, active: active, production: production),
                               completionReason: nil, graceDeadline: nil)
         }
 
@@ -215,25 +232,27 @@ enum CaseLifecycleResolver {
             switch currentSignal {
             case .remand(let target):
                 return Resolution(stage: target, currentInstance: latestInstance(
-                    for: target, among: instances, excluding: latest),
-                                  steps: steps(visited: visited, active: target),
+                    for: target, among: instances, excluding: latest, production: production),
+                                  steps: steps(visited: visited, active: target, production: production),
                                   completionReason: nil, graceDeadline: nil)
             case .legalForce:
-                return completed(current: latest, visited: visited, reason: .legalForce)
+                return completed(current: latest, visited: visited, reason: .legalForce,
+                                 production: production)
             case .terminal(let result) where isReview(latest.level):
                 return completed(current: latest, visited: visited,
-                                 reason: .terminalReview(result))
+                                 reason: .terminalReview(result), production: production)
             case .terminal(let result) where latest.level == .first:
                 // Неполная карточка апелляции нового круга не доказывает
                 // повышение стадии, но исключает автоматическое закрытие
                 // первой инстанции из-за отсутствия расчётного срока.
                 if timeline.hasUnresolvedUndatedAppeal {
                     return Resolution(stage: .first, currentInstance: latest,
-                                      steps: steps(visited: visited, active: .first),
+                                      steps: steps(visited: visited, active: .first, production: production),
                                       completionReason: nil, graceDeadline: nil)
                 }
                 return resolveTerminalFirst(current: latest, result: result,
-                                            visited: visited, deadlines: deadlines, today: today)
+                                            visited: visited, deadlines: deadlines, today: today,
+                                            production: production)
             case .active, .terminal, nil:
                 break
             }
@@ -246,7 +265,8 @@ enum CaseLifecycleResolver {
         let hasReview = instances.contains { isReview($0.level) }
         let explicitlyActive = if case .active? = currentSignal { true } else { false }
         if movement.inForce && !hasReview && !explicitlyActive {
-            return completed(current: latest, visited: visited, reason: .legalForce)
+            return completed(current: latest, visited: visited, reason: .legalForce,
+                             production: production)
         }
 
         // Расчётный срок не является юридическим фактом. Автоматическое
@@ -257,30 +277,35 @@ enum CaseLifecycleResolver {
         }
         let unresolvedReview = latest.map { isReview($0.level) } ?? false
         if confirmedDeadlineExpired && !unresolvedReview && !explicitlyActive {
-            return completed(current: latest, visited: visited, reason: .confirmedDeadline)
+            return completed(current: latest, visited: visited, reason: .confirmedDeadline,
+                             production: production)
         }
 
-        let active = latest.flatMap(stage(for:)) ?? .first
-            return Resolution(stage: active, currentInstance: latest,
-                              steps: steps(visited: visited, active: active),
-                              completionReason: nil, graceDeadline: nil)
+        let active = latest.flatMap { stage(for: $0, production: production) } ?? .first
+        return Resolution(stage: active, currentInstance: latest,
+                          steps: steps(visited: visited, active: active, production: production),
+                          completionReason: nil, graceDeadline: nil)
     }
 
     private static func completed(current: CaseInstance?, visited: Set<CaseStageKind>,
-                                  reason: CompletionReason) -> Resolution {
+                                  reason: CompletionReason,
+                                  production: ProductionType?) -> Resolution {
         Resolution(stage: .done, currentInstance: current,
-                   steps: steps(visited: visited, active: nil), completionReason: reason,
+                   steps: steps(visited: visited, active: nil, production: production), completionReason: reason,
                    graceDeadline: nil)
     }
 
     private static func resolveTerminalFirst(current: CaseInstance, result: String,
                                              visited: Set<CaseStageKind>,
-                                             deadlines: [StoredDeadline], today: Date) -> Resolution {
+                                             deadlines: [StoredDeadline], today: Date,
+                                             production: ProductionType?) -> Resolution {
         guard let deadline = deadlines.first(where: { $0.kind == "appeal" }) else {
-            return completed(current: current, visited: visited, reason: .terminalFirst(result))
+            return completed(current: current, visited: visited, reason: .terminalFirst(result),
+                             production: production)
         }
         if deadline.statusRaw == DeadlineStatus.confirmed.rawValue, deadline.date < today {
-            return completed(current: current, visited: visited, reason: .confirmedDeadline)
+            return completed(current: current, visited: visited, reason: .confirmedDeadline,
+                             production: production)
         }
         // Расчётный срок — не юридический факт, но даём порталам семь полных
         // календарных дней после него на публикацию апелляции. На восьмой день
@@ -288,40 +313,61 @@ enum CaseLifecycleResolver {
         let graceEnd = DateUtil.addDays(deadline.date, 7)
         if deadline.date >= today || today <= graceEnd {
             return Resolution(stage: .first, currentInstance: current,
-                              steps: steps(visited: visited, active: .first),
+                              steps: steps(visited: visited, active: .first, production: production),
                               completionReason: nil, graceDeadline: deadline)
         }
-        return completed(current: current, visited: visited, reason: .terminalFirst(result))
+        return completed(current: current, visited: visited, reason: .terminalFirst(result),
+                         production: production)
     }
 
     private static func latestInstance(for stage: CaseStageKind, among instances: [CaseInstance],
-                                       excluding current: CaseInstance) -> CaseInstance? {
+                                       excluding current: CaseInstance,
+                                       production: ProductionType?) -> CaseInstance? {
         instances.last { candidate in
-            candidate != current && self.stage(for: candidate) == stage
+            candidate != current && self.stage(for: candidate, production: production) == stage
         }
     }
 
-    private static func stage(for instance: CaseInstance) -> CaseStageKind? {
+    private static func stage(for instance: CaseInstance,
+                              production: ProductionType?) -> CaseStageKind? {
         switch instance.level {
         case .first: return .first
         case .appeal: return .appeal
-        case .cassation, .vsCassation, .supervisory: return .cassation
+        case .cassation, .vsCassation:
+            return production == .koap ? .supervisory : .cassation
+        case .supervisory: return .supervisory
         case .material: return nil
         }
     }
 
-    private static func stageRank(_ instance: CaseInstance) -> Int {
-        switch stage(for: instance) {
+    private static func stageRank(_ instance: CaseInstance,
+                                  production: ProductionType?) -> Int {
+        switch stage(for: instance, production: production) {
         case .first: return 1
         case .appeal: return 2
         case .cassation: return 3
+        case .supervisory: return 4
         case .done, nil: return 0
         }
     }
 
+    private static func instanceOrder(_ instance: CaseInstance, in timeline: Timeline) -> Int {
+        timeline.sourceOrdered.lastIndex { $0.instance == instance } ?? -1
+    }
+
+    /// КоАП не имеет отдельной пользовательской кассации: КСОЮ и ВС РФ входят
+    /// в надзор. Для остальных производств надзор — следующий после кассации
+    /// путь Президиума ВС РФ.
+    static func stagePath(for production: ProductionType?) -> [CaseStageKind] {
+        production == .koap
+            ? [.first, .appeal, .supervisory]
+            : [.first, .appeal, .cassation, .supervisory]
+    }
+
     private static func steps(visited: Set<CaseStageKind>,
-                              active: CaseStageKind?) -> [String] {
-        let stages: [CaseStageKind] = [.first, .appeal, .cassation]
+                              active: CaseStageKind?,
+                              production: ProductionType?) -> [String] {
+        let stages = stagePath(for: production)
         return stages.map { stage in
             if active == stage { return "active" }
             return visited.contains(stage) ? "done" : "todo"
@@ -427,6 +473,26 @@ enum CaseLifecycleResolver {
 
     private static func hasDatedSession(_ instance: CaseInstance) -> Bool {
         instance.sessions.contains { DateUtil.parse($0.date) != nil }
+    }
+
+    /// Заголовок реальной карточки КСОЮ по КоАП сам по себе подтверждает
+    /// начавшийся надзорный круг: движение там часто появляется позднее. Для
+    /// этого нужны настоящий номер и точный домен КСОЮ; похожая строка или
+    /// placeholder не проходят проверку.
+    private static func isActiveUndatedKSOYUReview(_ instance: CaseInstance,
+                                                    production: ProductionType?) -> Bool {
+        guard production == .koap,
+              instance.level == .cassation,
+              instance.captchaFormURL == nil,
+              instance.transientError != true,
+              !hasDatedSession(instance),
+              !isConcludedReview(instance),
+              CaseNumberPresentation.secondary(instance.caseNumber, distinctFrom: "") != nil
+        else { return false }
+        let court = instance.court.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !court.isEmpty, !["—", "–", "-"].contains(court) else { return false }
+        let domain = SudrfHost.moduleHost(instance.domain.lowercased())
+        return CourtDirectory.cassationCourts.contains { $0.domain == domain }
     }
 
     static func earliestDatedSessionDate(in instance: CaseInstance) -> Date? {

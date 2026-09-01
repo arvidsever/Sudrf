@@ -32,6 +32,31 @@ final class MovementDerivationTests: XCTestCase {
                             complaints: [:], acts: [])
     }
 
+    /// Базовая цепочка КоАП: районный суд → суд субъекта. В тесты передаётся
+    /// только спорная вышестоящая карточка, чтобы отдельно проверять её вес.
+    private func koapMovement(caseNumber: String, appealNumber: String,
+                              reviews: [CaseInstance]) -> CaseMovement {
+        let first = CaseInstance(
+            level: .first, court: "Сыктывкарский городской суд", caseNumber: caseNumber,
+            judge: nil, domain: "syktsud.komi.sudrf.ru", foundByUID: false,
+            result: "Постановление по делу об административном правонарушении",
+            sessions: [CaseSession(
+                date: "10.04.2026", event: "Рассмотрено",
+                result: "Постановление по делу об административном правонарушении")]
+        )
+        let appeal = CaseInstance(
+            level: .appeal, court: "Верховный Суд Республики Коми",
+            caseNumber: appealNumber, judge: nil, domain: "vs.komi.sudrf.ru",
+            foundByUID: true, result: "Жалоба оставлена без удовлетворения",
+            sessions: [CaseSession(
+                date: "20.04.2026", event: "Рассмотрено",
+                result: "Жалоба оставлена без удовлетворения")]
+        )
+        return CaseMovement(uid: "11RS0001-01-2026-000470-11", caseNumber: caseNumber,
+                            inForce: true, instances: [first, appeal] + reviews,
+                            complaints: [:], acts: [])
+    }
+
     // MARK: Заседания
 
     func testFutureHearingsFilterAndOrder() {
@@ -434,7 +459,7 @@ final class MovementDerivationTests: XCTestCase {
 
             XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue, text)
             // Пройденная апелляция остаётся в истории, но не активна.
-            XCTAssertEqual(snap.steps, ["done", "done", "todo"], text)
+            XCTAssertEqual(snap.steps, ["done", "done", "todo", "todo"], text)
         }
     }
 
@@ -454,7 +479,7 @@ final class MovementDerivationTests: XCTestCase {
         ])
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
-        XCTAssertEqual(snap.steps, ["done", "done", "todo"])
+        XCTAssertEqual(snap.steps, ["done", "done", "todo", "todo"])
     }
 
     /// Формулировка с «производством» работала и до правки — закрепляем, чтобы
@@ -993,10 +1018,237 @@ final class MovementDerivationTests: XCTestCase {
                           instances: [appeal])
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         XCTAssertEqual(snap.stageRaw, "appeal")
-        XCTAssertEqual(snap.steps, ["done", "active", "todo"])
+        XCTAssertEqual(snap.steps, ["done", "active", "todo", "todo"])
         let presentation = MovementDerivation.lifecyclePresentation(
             from: mv, snapshot: snap, context: context(), today: today)
         XCTAssertEqual(presentation.currentReviewNumber, "33-1/2026")
+    }
+
+    func testStagePathsDependOnProduction() {
+        XCTAssertEqual(CaseLifecycleResolver.stagePath(for: .koap),
+                       [.first, .appeal, .supervisory])
+        for production in [ProductionType.civil, .kas, .crim] {
+            XCTAssertEqual(CaseLifecycleResolver.stagePath(for: production),
+                           [.first, .appeal, .cassation, .supervisory])
+        }
+
+        let context = context()
+        XCTAssertEqual(MovementDerivation.inferredTier(
+            stage: .supervisory, production: .koap, context: context), .cassation)
+        for production in [ProductionType.civil, .kas, .crim] {
+            XCTAssertEqual(MovementDerivation.inferredTier(
+                stage: .supervisory, production: production, context: context), .supreme)
+        }
+    }
+
+    /// Реальная карточка 3 КСОЮ по КоАП может ещё не иметь таблицы движения.
+    /// Сам номер производства и точный суд уже подтверждают надзорный круг.
+    func testUndatedConfirmedKSOYUCardStartsKoAPSupervisoryStage() {
+        let ksoyu = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "16-4990/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil, sessions: [])
+        let movement = koapMovement(caseNumber: "5-470/2026", appealNumber: "12-76/2026",
+                                    reviews: [ksoyu])
+        let context = context(cartoteka: "adm")
+
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: movement, snapshot: snapshot, context: context, today: today)
+
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.supervisory.rawValue)
+        XCTAssertEqual(snapshot.steps, ["done", "done", "active"])
+        XCTAssertEqual(presentation.stageTag, "надзор")
+        XCTAssertEqual(presentation.currentTier, .cassation)
+        XCTAssertEqual(presentation.currentReviewNumber, "16-4990/2026")
+    }
+
+    func testKoAPKSOYUStubsDoNotStartSupervisoryStage() {
+        let stubs: [(String, CaseInstance)] = [
+            ("captcha", CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "—", judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+                result: nil, sessions: [],
+                captchaFormURL: URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo"))),
+            ("transient", CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "16-5132/2026", judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+                result: nil, sessions: [], transientError: true)),
+        ]
+
+        for (label, stub) in stubs {
+            let movement = koapMovement(caseNumber: "5-469/2026", appealNumber: "12-77/2026",
+                                        reviews: [stub])
+            let snapshot = MovementDerivation.snapshot(
+                from: movement, context: context(cartoteka: "adm"), today: today)
+
+            XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue, label)
+            XCTAssertEqual(snapshot.steps, ["done", "done", "todo"], label)
+        }
+    }
+
+    func testUnconfirmedKoAPKSOYUIdentityDoesNotStartSupervisoryStage() {
+        let candidates: [(String, CaseInstance)] = [
+            ("placeholder court", CaseInstance(
+                level: .cassation, court: "—", caseNumber: "16-5132/2026", judge: nil,
+                domain: "3kas.sudrf.ru", foundByUID: false, result: nil, sessions: [])),
+            ("different court", CaseInstance(
+                level: .cassation, court: "Несуществующий кассационный суд",
+                caseNumber: "16-5132/2026", judge: nil, domain: "not-ksoyu.example",
+                foundByUID: false, result: nil, sessions: [])),
+        ]
+
+        for (label, candidate) in candidates {
+            let movement = koapMovement(caseNumber: "5-469/2026", appealNumber: "12-77/2026",
+                                        reviews: [candidate])
+            let snapshot = MovementDerivation.snapshot(
+                from: movement, context: context(cartoteka: "adm"), today: today)
+
+            XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue, label)
+        }
+    }
+
+    func testTerminalKSOYUReviewCompletesKoAPSupervisoryPath() {
+        let ksoyu = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "16-4990/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: "Жалоба оставлена без удовлетворения",
+            sessions: [CaseSession(
+                date: "25.04.2026", event: "Рассмотрено",
+                result: "Жалоба оставлена без удовлетворения")])
+        let movement = koapMovement(caseNumber: "5-470/2026", appealNumber: "12-76/2026",
+                                    reviews: [ksoyu])
+        let context = context(cartoteka: "adm")
+
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: movement, snapshot: snapshot, context: context, today: today)
+
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot.steps, ["done", "done", "done"])
+        XCTAssertEqual(snapshot.statusText, "Жалоба оставлена без удовлетворения")
+        XCTAssertNil(presentation.currentTier)
+    }
+
+    func testKoAPVSRFPathUsesSupervisoryStageAndSupremeTier() {
+        let ksoyu = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "16-3337/2022", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: "Жалоба оставлена без удовлетворения",
+            sessions: [CaseSession(
+                date: "10.04.2026", event: "Рассмотрено",
+                result: "Жалоба оставлена без удовлетворения")])
+        let activeVSRF = CaseInstance(
+            level: .vsCassation, court: "Верховный Суд Российской Федерации",
+            caseNumber: "5-АД22-3337-К2", judge: nil, domain: "vsrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "25.04.2026", event: "Поступило в Верховный Суд РФ")])
+        let context = context(cartoteka: "adm")
+        let movement = koapMovement(caseNumber: "5-3337/2022", appealNumber: "12-3337/2022",
+                                    reviews: [ksoyu, activeVSRF])
+
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: movement, snapshot: snapshot, context: context, today: today)
+
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.supervisory.rawValue)
+        XCTAssertEqual(snapshot.steps, ["done", "done", "active"])
+        XCTAssertEqual(presentation.currentTier, .supreme)
+        XCTAssertEqual(presentation.currentReviewNumber, "5-АД22-3337-К2")
+
+        var completedVSRF = activeVSRF
+        completedVSRF.result = "Жалоба оставлена без удовлетворения"
+        completedVSRF.sessions = [CaseSession(
+            date: "26.04.2026", event: "Рассмотрено",
+            result: "Жалоба оставлена без удовлетворения")]
+        let completedMovement = koapMovement(
+            caseNumber: "5-3337/2022", appealNumber: "12-3337/2022",
+            reviews: [ksoyu, completedVSRF])
+        let completedSnapshot = MovementDerivation.snapshot(
+            from: completedMovement, context: context, today: today)
+        let completedPresentation = MovementDerivation.lifecyclePresentation(
+            from: completedMovement, snapshot: completedSnapshot,
+            context: context, today: today)
+
+        XCTAssertEqual(completedSnapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(completedSnapshot.steps, ["done", "done", "done"])
+        XCTAssertEqual(completedPresentation.currentReviewNumber, "5-АД22-3337-К2")
+        XCTAssertNil(completedPresentation.currentTier)
+    }
+
+    func testNonKoAPReviewsRemainCassationUntilExplicitSupervisoryReview() {
+        for cartoteka in ["g", "p", "u"] {
+            let context = context(cartoteka: cartoteka)
+            let ksoyu = CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "8Г-1/2026", judge: nil, domain: "3kas.sudrf.ru",
+                foundByUID: true, result: nil,
+                sessions: [CaseSession(date: "20.04.2026", event: "Регистрация производства")])
+            let ksoyuMovement = movement(
+                sessions: [CaseSession(date: "10.04.2026", event: "Решение")], instances: [ksoyu])
+            let ksoyuSnapshot = MovementDerivation.snapshot(
+                from: ksoyuMovement, context: context, today: today)
+            let ksoyuPresentation = MovementDerivation.lifecyclePresentation(
+                from: ksoyuMovement, snapshot: ksoyuSnapshot, context: context, today: today)
+
+            XCTAssertEqual(ksoyuSnapshot.stageRaw, CaseStageKind.cassation.rawValue, cartoteka)
+            XCTAssertEqual(ksoyuSnapshot.steps, ["done", "todo", "active", "todo"], cartoteka)
+            XCTAssertEqual(ksoyuPresentation.currentTier, .cassation, cartoteka)
+
+            let vsrf = CaseInstance(
+                level: .vsCassation, court: "Верховный Суд Российской Федерации",
+                caseNumber: "8-КГ26-1-К2", judge: nil, domain: "vsrf.ru",
+                foundByUID: true, result: nil,
+                sessions: [CaseSession(date: "20.04.2026", event: "Поступило в Верховный Суд РФ")])
+            let vsrfMovement = movement(
+                sessions: [CaseSession(date: "10.04.2026", event: "Решение")], instances: [vsrf])
+            let vsrfSnapshot = MovementDerivation.snapshot(
+                from: vsrfMovement, context: context, today: today)
+            let vsrfPresentation = MovementDerivation.lifecyclePresentation(
+                from: vsrfMovement, snapshot: vsrfSnapshot, context: context, today: today)
+
+            XCTAssertEqual(vsrfSnapshot.stageRaw, CaseStageKind.cassation.rawValue, cartoteka)
+            XCTAssertEqual(vsrfPresentation.currentTier, .supreme, cartoteka)
+
+            let supervisory = CaseInstance(
+                level: .supervisory, court: "Президиум Верховного Суда Российской Федерации",
+                caseNumber: "4-УД26-1", judge: nil, domain: "vsrf.ru",
+                foundByUID: true, result: nil,
+                sessions: [CaseSession(date: "20.04.2026", event: "Регистрация производства")])
+            let supervisoryMovement = movement(
+                sessions: [CaseSession(date: "10.04.2026", event: "Решение")],
+                instances: [supervisory])
+            let supervisorySnapshot = MovementDerivation.snapshot(
+                from: supervisoryMovement, context: context, today: today)
+            let supervisoryPresentation = MovementDerivation.lifecyclePresentation(
+                from: supervisoryMovement, snapshot: supervisorySnapshot,
+                context: context, today: today)
+
+            XCTAssertEqual(supervisorySnapshot.stageRaw, CaseStageKind.supervisory.rawValue,
+                           cartoteka)
+            XCTAssertEqual(supervisorySnapshot.steps, ["done", "todo", "todo", "active"],
+                           cartoteka)
+            XCTAssertEqual(supervisoryPresentation.currentTier, .supreme, cartoteka)
+        }
+    }
+
+    func testCriminalReviewNumberPrefixesDoNotChangeContextProduction() {
+        for number in ["7-1019/2026", "77-1019/2026", "7У-1019/2026", "77У-1019/2026"] {
+            let review = CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: number, judge: nil, domain: "3kas.sudrf.ru",
+                foundByUID: true, result: nil,
+                sessions: [CaseSession(date: "20.04.2026", event: "Регистрация производства")])
+            let criminalMovement = movement(
+                sessions: [CaseSession(date: "10.04.2026", event: "Решение")],
+                instances: [review])
+
+            let snapshot = MovementDerivation.snapshot(
+                from: criminalMovement, context: context(cartoteka: "u"), today: today)
+
+            XCTAssertEqual(snapshot.stageRaw, CaseStageKind.cassation.rawValue, number)
+            XCTAssertEqual(snapshot.steps, ["done", "todo", "active", "todo"], number)
+        }
     }
 
     func testActiveAndCompletedReviewLevelsExposeCurrentNumber() {
@@ -1038,7 +1290,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.first.rawValue)
-        XCTAssertEqual(snap.steps, ["active", "todo", "done"])
+        XCTAssertEqual(snap.steps, ["active", "todo", "done", "todo"])
     }
 
     func testAllUndatedRealInstancesUseConservativeFallback() {
@@ -1089,7 +1341,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, "first")
-        XCTAssertEqual(snap.steps, ["active", "todo", "todo"])
+        XCTAssertEqual(snap.steps, ["active", "todo", "todo", "todo"])
         XCTAssertNotNil(snap.deadlines.first { $0.kind == "appeal" })
     }
 
@@ -1111,7 +1363,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, "appeal")
-        XCTAssertEqual(snap.steps, ["done", "active", "done"])
+        XCTAssertEqual(snap.steps, ["done", "active", "done", "todo"])
     }
 
     func testFutureHearingOverridesBaseLegalForce() {
@@ -1126,7 +1378,7 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(snap.stageRaw, "cassation")
         XCTAssertEqual(snap.statusText, "Назначено заседание")
-        XCTAssertEqual(snap.steps, ["done", "todo", "active"])
+        XCTAssertEqual(snap.steps, ["done", "todo", "active", "todo"])
     }
 
     func testTimedNonHearingDoesNotOverrideTerminalReview() {
@@ -1173,7 +1425,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, "done")
-        XCTAssertEqual(snap.steps, ["done", "todo", "done"])
+        XCTAssertEqual(snap.steps, ["done", "todo", "done", "todo"])
         XCTAssertEqual(snap.statusText, "Жалоба оставлена без удовлетворения")
     }
 
@@ -1239,7 +1491,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.first.rawValue)
-        XCTAssertEqual(snap.steps, ["active", "todo", "todo"])
+        XCTAssertEqual(snap.steps, ["active", "todo", "todo", "todo"])
         XCTAssertTrue(snap.deadlines.isEmpty,
                       "возобновление отменяет основанный на старом вступлении в силу срок")
     }
@@ -1352,7 +1604,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, "appeal")
-        XCTAssertEqual(snap.steps, ["done", "active", "done"])
+        XCTAssertEqual(snap.steps, ["done", "active", "done", "todo"])
     }
 
     func testOnlyExpiredConfirmedDeadlineCompletesCase() {
@@ -1416,7 +1668,7 @@ final class MovementDerivationTests: XCTestCase {
         let resolution = CaseLifecycleResolver.resolve(movement: mv, deadlines: [], today: today)
 
         XCTAssertEqual(resolution.stage, .first)
-        XCTAssertEqual(resolution.steps, ["active", "todo", "todo"])
+        XCTAssertEqual(resolution.steps, ["active", "todo", "todo", "todo"])
     }
 
     func testDynamicPresentationRepairsLegacyCaptchaStageWithoutMigration() {
@@ -1440,7 +1692,7 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(presentation.stage, .first)
         XCTAssertEqual(presentation.stageTag, "1-я инст.")
-        XCTAssertEqual(presentation.steps, ["active", "todo", "todo"])
+        XCTAssertEqual(presentation.steps, ["active", "todo", "todo", "todo"])
     }
 
     func testDynamicPresentationRepairsStageWithoutDecodableContext() {

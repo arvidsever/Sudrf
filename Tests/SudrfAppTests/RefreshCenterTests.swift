@@ -2165,7 +2165,7 @@ final class RefreshCenterTests: XCTestCase {
 
         let record = try XCTUnwrap(store.record(forKey: key))
         XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.first.rawValue)
-        XCTAssertEqual(record.snapshot?.steps, ["active", "todo", "todo"])
+        XCTAssertEqual(record.snapshot?.steps, ["active", "todo", "todo", "todo"])
         XCTAssertFalse(record.movement?.instances.contains {
             $0.captchaFormURL != nil
         } ?? true)

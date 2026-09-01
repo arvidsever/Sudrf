@@ -1858,7 +1858,8 @@ final class AppRouter: ObservableObject {
                 recordCourt: rec.courtTitle,
                 courtTier: presentation?.currentTier
                     ?? (stage == .done ? nil : ctx.flatMap {
-                        MovementDerivation.inferredTier(stage: stage, context: $0) }),
+                        MovementDerivation.inferredTier(
+                            stage: stage, production: production, context: $0) }),
                 production: production,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
@@ -1871,7 +1872,8 @@ final class AppRouter: ObservableObject {
                 nextChip: presentation?.nextChip
                     ?? Palette.Chip(rawValue: snap.nextChipRaw) ?? .gray,
                 isNew: isNew,
-                steps: makeSteps(presentation?.steps ?? snap.steps), newDot: isNew,
+                steps: makeSteps(presentation?.steps ?? snap.steps,
+                                 production: production), newDot: isNew,
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next)
         }
         // Снимок ещё не собран (трек до загрузки движения).
@@ -1889,13 +1891,21 @@ final class AppRouter: ObservableObject {
             statusText: "Откройте, чтобы загрузить", statusChip: .gray,
             last: "движение ещё не загружено", next: "—", nextChip: .gray,
             isNew: rec.seenAt == nil,
-            steps: makeSteps(["active", "todo", "todo"]), newDot: false,
+            steps: makeSteps(["active", "todo", "todo", "todo"],
+                             production: production), newDot: false,
             lastEventDate: rec.addedAt, nextEventDate: nil)
     }
 
-    private func makeSteps(_ raw: [String]) -> [StepState] {
-        let labels = ["1-я инст.", "Апелляция", "Кассация"]
-        return (0..<3).map { i in
+    private func makeSteps(_ raw: [String], production: ProductionType?) -> [StepState] {
+        // КоАП имеет только три отображаемых звена: первая инстанция,
+        // апелляция и надзор. Остальные производства показывают полный
+        // маршрут с кассацией и надзором. Снимки до этой раскладки содержат
+        // только три состояния: для КоАП третье уже является надзором, для
+        // остальных четвёртое добавляется как незавершённое.
+        let labels = CaseLifecycleResolver.stagePath(for: production).map {
+            $0 == .first ? "1-я инст." : $0.label
+        }
+        return labels.indices.map { i in
             let k: StepState.Kind = (raw.indices.contains(i) ? raw[i] : "todo") == "done" ? .done
                 : (raw.indices.contains(i) && raw[i] == "active" ? .active : .todo)
             return StepState(label: labels[i], kind: k)
@@ -2101,7 +2111,7 @@ final class AppRouter: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: Self.collectionsKey) }
     }
     private func buildStageCounts(_ cs: [TrackedCase]) -> [(CaseStageKind, Int)] {
-        let order: [CaseStageKind] = [.first, .appeal, .cassation, .done]
+        let order: [CaseStageKind] = [.first, .appeal, .cassation, .supervisory, .done]
         return order.compactMap { st in
             let n = cs.filter { $0.stage == st }.count
             return n > 0 ? (st, n) : nil

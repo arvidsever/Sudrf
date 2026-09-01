@@ -246,12 +246,13 @@ enum FeedTypeFilter: CaseIterable, Hashable {
     }
 }
 
-enum CaseStageKind: String { case first, appeal, cassation, done
+enum CaseStageKind: String { case first, appeal, cassation, supervisory, done
     var label: String {
         switch self {
         case .first:     return "Первая инстанция"
         case .appeal:    return "Апелляция"
         case .cassation: return "Кассация"
+        case .supervisory: return "Надзор"
         case .done:      return "Завершённые"
         }
     }
@@ -260,6 +261,7 @@ enum CaseStageKind: String { case first, appeal, cassation, done
         case .first:     return Color(red: 0.04, green: 0.48, blue: 1.0)
         case .appeal:    return Color(red: 0.37, green: 0.36, blue: 0.90)
         case .cassation: return Color(red: 0.69, green: 0.32, blue: 0.87)
+        case .supervisory: return Color(red: 0.69, green: 0.32, blue: 0.87)
         case .done:      return Color.primary.opacity(0.25)
         }
     }

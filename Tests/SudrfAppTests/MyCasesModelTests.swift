@@ -9,6 +9,50 @@ import CaptchaSolver
 /// разделитель сторон «⚔», сортировка и живой фильтр таблицы «Списком».
 final class MyCasesModelTests: XCTestCase {
 
+    private func projectionContext(number: String, cartotekaID: String,
+                                   suffix: String) -> MovementContext {
+        MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "\(suffix)--komi.sudrf.ru",
+            displayDomain: "\(suffix).komi.sudrf.ru",
+            courtTitle: "Суд \(suffix)",
+            courtLevelRaw: CourtLevel.district.rawValue, courtCode: "11RS\(suffix)",
+            cartotekaId: cartotekaID, cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: number)
+    }
+
+    private func legacySnapshot(stageRaw: String = CaseStageKind.first.rawValue,
+                                steps: [String]) -> CaseSnapshot {
+        CaseSnapshot(
+            uid: "legacy-uid", inForce: false, category: nil,
+            partiesShort: "Иванов А. А.", leadCharges: nil, secondPartyLine: nil,
+            stageRaw: stageRaw, stageTag: "legacy", statusText: "В производстве",
+            statusChipRaw: Palette.Chip.blue.rawValue, lastEvent: "—", nextEvent: "—",
+            nextChipRaw: Palette.Chip.gray.rawValue, steps: steps, sessions: [],
+            deadlines: [], actsFingerprint: nil)
+    }
+
+    private func legacyRecord(number: String, cartotekaID: String, suffix: String,
+                              stageRaw: String = CaseStageKind.first.rawValue,
+                              steps: [String]) throws -> TrackedCaseRecord {
+        let context = projectionContext(number: number, cartotekaID: cartotekaID,
+                                         suffix: suffix)
+        return TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: number,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(
+                legacySnapshot(stageRaw: stageRaw, steps: steps)))
+    }
+
+    private func stepKindRaw(_ kind: StepState.Kind) -> String {
+        switch kind {
+        case .done: return "done"
+        case .active: return "active"
+        case .todo: return "todo"
+        }
+    }
+
     @MainActor
     func testRouterStoresAcceptedMagistrateCaptchaInInjectedCorpus() async throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -124,6 +168,53 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(router.cases.map(\.recordKey), [key])
         XCTAssertEqual(router.collections.first?.1, 1)
         XCTAssertFalse(router.hearings.isEmpty)
+    }
+
+    @MainActor
+    func testLegacyThreeStepSnapshotsUseProductionSpecificLabels() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let koap = try legacyRecord(
+            number: "12-5/2026", cartotekaID: "adm1", suffix: "koap",
+            steps: ["done", "active", "todo"])
+        let civil = try legacyRecord(
+            number: "2-5/2026", cartotekaID: "g1", suffix: "civil",
+            steps: ["done", "active", "done"])
+        modelContext.insert(koap)
+        modelContext.insert(civil)
+        try modelContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let koapCase = try XCTUnwrap(router.cases.first { $0.caseNumber == "12-5/2026" })
+        let civilCase = try XCTUnwrap(router.cases.first { $0.caseNumber == "2-5/2026" })
+
+        XCTAssertEqual(koapCase.steps.map(\.label), ["1-я инст.", "Апелляция", "Надзор"])
+        XCTAssertEqual(koapCase.steps.map { stepKindRaw($0.kind) },
+                       ["done", "active", "todo"])
+        XCTAssertEqual(civilCase.steps.map(\.label),
+                       ["1-я инст.", "Апелляция", "Кассация", "Надзор"])
+        XCTAssertEqual(civilCase.steps.map { stepKindRaw($0.kind) },
+                       ["done", "active", "done", "todo"])
+    }
+
+    @MainActor
+    func testStageCountsUseFirstAppealCassationSupervisoryDoneOrder() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let stages: [CaseStageKind] = [.first, .appeal, .cassation, .supervisory, .done]
+        for (index, stage) in stages.enumerated() {
+            let record = try legacyRecord(
+                number: "2-\(index + 1)/2026", cartotekaID: "g1", suffix: "stage\(index)",
+                stageRaw: stage.rawValue, steps: ["todo", "todo", "todo"])
+            modelContext.insert(record)
+        }
+        try modelContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+
+        XCTAssertEqual(router.stageCounts.map { $0.0.rawValue },
+                       stages.map(\.rawValue))
+        XCTAssertEqual(router.stageCounts.map(\.1), [1, 1, 1, 1, 1])
     }
 
     // MARK: Вид производства по префиксу номера

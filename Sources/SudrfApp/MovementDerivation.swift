@@ -74,7 +74,7 @@ struct CaseSnapshot: Codable, Equatable {
     var lastEvent: String
     var nextEvent: String
     var nextChipRaw: String
-    var steps: [String]         // 3 элемента: «done» | «active» | «todo»
+    var steps: [String]         // процессуальная цепочка: «done» | «active» | «todo»
     var sessions: [StoredSession]
     var deadlines: [StoredDeadline]
     /// Метаданные опубликованных актов для детектора фоновых обновлений.
@@ -139,6 +139,7 @@ enum MovementDerivation {
                          today: Date = DateUtil.today) -> CaseSnapshot {
 
         let prefix = String(context.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
+        let production = production(from: context)
 
         // Сессии всех инстанций.
         var sessions: [StoredSession] = []
@@ -161,7 +162,7 @@ enum MovementDerivation {
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
         // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, prefix: prefix, today: today)
+        let deadlines = self.deadlines(from: mv, prefix: prefix, production: production, today: today)
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
                                                  deadlines: deadlines, context: context,
                                                  today: today)
@@ -208,8 +209,9 @@ enum MovementDerivation {
                                               deadlines: [StoredDeadline],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
-        let resolution = CaseLifecycleResolver.resolve(movement: mv, deadlines: deadlines,
-                                                       today: today)
+        let production = production(from: context)
+        let resolution = CaseLifecycleResolver.resolve(movement: mv, production: production,
+                                                       deadlines: deadlines, today: today)
         let prefix = context.map {
             String($0.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
         } ?? ""
@@ -298,9 +300,19 @@ enum MovementDerivation {
             steps: resolution.steps,
             currentTier: resolution.isCompleted ? nil : courtTier(
                 for: resolution.currentInstance, context: context)
-                ?? inferredTier(stage: resolution.stage, context: context),
+                ?? inferredTier(stage: resolution.stage, production: production, context: context),
             currentReviewNumber: currentReviewNumber,
             nextEventCourt: nextEventCourt)
+    }
+
+    /// Стадия определяется по исходной картотеке дела, а не по номеру
+    /// вышестоящего производства: одинаковые индексы на разных звеньях имеют
+    /// разную отраслевую семантику.
+    private static func production(from context: MovementContext?) -> ProductionType? {
+        guard let cartotekaID = context?.cartotekaId,
+              !cartotekaID.isEmpty,
+              cartotekaID != "m" else { return nil }
+        return ProductionType(cartotekaId: cartotekaID)
     }
 
     /// Название суда, пригодное для подписи. Отсеивает пустое значение и
@@ -378,7 +390,8 @@ enum MovementDerivation {
 
     /// Когда портал сообщил возврат, но карточка целевого суда ещё не найдена,
     /// дело остаётся активным и получает ожидаемое звено по процессуальному пути.
-    static func inferredTier(stage: CaseStageKind, context: MovementContext?) -> CourtTier? {
+    static func inferredTier(stage: CaseStageKind, production: ProductionType?,
+                             context: MovementContext?) -> CourtTier? {
         guard let context else { return nil }
         switch stage {
         case .done: return nil
@@ -397,7 +410,14 @@ enum MovementDerivation {
             case .cassation: return .supreme
             default: return .cassation
             }
+        case .supervisory:
+            return production == .koap ? .cassation : .supreme
         }
+    }
+
+    /// Совместимый вход для legacy fallback без рассчитанного вида производства.
+    static func inferredTier(stage: CaseStageKind, context: MovementContext?) -> CourtTier? {
+        inferredTier(stage: stage, production: nil, context: context)
     }
 
     static func tier(for level: CourtLevel) -> CourtTier {
@@ -493,15 +513,17 @@ enum MovementDerivation {
     /// расчётные сроки помечаются «proposed» и требуют подтверждения. Для КоАП и
     /// УПК единый срок кассации отсутствует — кассацию не считаем.
     private static func deadlines(from mv: CaseMovement,
-                                  prefix: String, today: Date) -> [StoredDeadline] {
+                                  prefix: String, production: ProductionType?,
+                                  today: Date) -> [StoredDeadline] {
         var out: [StoredDeadline] = []
         // Юридическая сила относится к текущему кругу. Старое вступление в
         // силу первой инстанции не должно порождать срок кассации, пока более
         // поздняя апелляция/кассация остаётся активной.
-        let current = CaseLifecycleResolver.resolve(movement: mv, deadlines: [], today: today)
+        let current = CaseLifecycleResolver.resolve(
+            movement: mv, production: production, deadlines: [], today: today)
         // После возврата на новое рассмотрение историческая апелляция относится
         // к прежнему кругу и не должна подавлять новый расчётный срок.
-        let timeline = CaseLifecycleResolver.timeline(in: mv)
+        let timeline = CaseLifecycleResolver.timeline(in: mv, production: production)
         let hasAppealInCurrentRound = timeline.hasAppealInCurrentRound
         let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
         let activeReview = current.completionReason == nil
@@ -640,6 +662,7 @@ enum MovementDerivation {
             }
         case .appeal:    return "апелляция"
         case .cassation: return "кассация"
+        case .supervisory: return "надзор"
         case .done:      return "завершено"
         }
     }

@@ -525,6 +525,7 @@ enum MovementDerivation {
         // к прежнему кругу и не должна подавлять новый расчётный срок.
         let timeline = CaseLifecycleResolver.timeline(in: mv, production: production)
         let hasAppealInCurrentRound = timeline.hasAppealInCurrentRound
+        let hasCassationInCurrentRound = timeline.hasCassationInCurrentRound
         let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
         let activeReview = current.completionReason == nil
             && current.currentInstance.map { isReviewLevel($0.level) } == true
@@ -533,7 +534,8 @@ enum MovementDerivation {
 
         // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
         // апелляцию и не вступило в силу.
-        if !legallyEffective, !currentlyReactivated, !hasAppealInCurrentRound {
+        if !legallyEffective, !currentlyReactivated,
+           !hasAppealInCurrentRound, !hasCassationInCurrentRound {
             if let firstDecision = firstInstanceDecisionDate(mv, timeline: timeline),
                let days = appealDays(prefix: prefix) {
                 let due = DateUtil.addDays(firstDecision, days)
@@ -546,7 +548,7 @@ enum MovementDerivation {
         }
 
         // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
-        if legallyEffective, !timeline.hasCassationInCurrentRound,
+        if legallyEffective, !hasCassationInCurrentRound,
            let days = cassationDays(prefix: prefix) {
             guard let base = forceState.date ?? lastAppealDate(mv) else { return out }
             let due = DateUtil.addDays(base, days)

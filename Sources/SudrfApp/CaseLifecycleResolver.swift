@@ -242,10 +242,10 @@ enum CaseLifecycleResolver {
                 return completed(current: latest, visited: visited,
                                  reason: .terminalReview(result), production: production)
             case .terminal(let result) where latest.level == .first:
-                // Неполная карточка апелляции нового круга не доказывает
+                // Неполная карточка реального пересмотра нового круга не доказывает
                 // повышение стадии, но исключает автоматическое закрытие
                 // первой инстанции из-за отсутствия расчётного срока.
-                if timeline.hasUnresolvedUndatedAppeal {
+                if timeline.hasUnresolvedUndatedAppeal || timeline.hasCassationInCurrentRound {
                     return Resolution(stage: .first, currentInstance: latest,
                                       steps: steps(visited: visited, active: .first, production: production),
                                       completionReason: nil, graceDeadline: nil)

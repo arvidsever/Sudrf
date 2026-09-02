@@ -70,7 +70,12 @@ final class AppRouter: ObservableObject {
     /// Полный семантический срез заседаний для внутреннего календаря.
     @Published var calendarHearings: [TrackedHearing] = []
     @Published var feed: [FeedEntry] = []
+    /// Только active occurrences: Overview и счётчики не должны получать
+    /// исторические/просроченные proposed deadlines.
     @Published var deadlines: [TrackedDeadline] = []
+    /// История сроков для календарной проекции. UI может отрисовать её серой,
+    /// не смешивая с actionable `deadlines`.
+    @Published private(set) var inactiveDeadlines: [TrackedDeadline] = []
     @Published var collections: [(String, Int)] = []   // «Все дела» + подборки со счётчиками
     @Published var stageCounts: [(CaseStageKind, Int)] = []
     @Published var tierCounts: [(CourtTier?, Int)] = []
@@ -1617,6 +1622,7 @@ final class AppRouter: ObservableObject {
     func deadline(_ id: String?) -> TrackedDeadline? {
         guard let id else { return nil }
         return deadlines.first { $0.id == id }
+            ?? inactiveDeadlines.first { $0.id == id }
     }
     func beginEdit(_ id: String) {
         editingDeadline = id
@@ -1636,7 +1642,7 @@ final class AppRouter: ObservableObject {
         if let nd = draftDate {
             guard mutateDeadline(id, {
                 $0.dateRef = DateUtil.startOfDay(nd).timeIntervalSinceReferenceDate
-                $0.statusRaw = DeadlineStatus.confirmed.rawValue
+                $0.statusRaw = DeadlineStatus.overridden.rawValue
             }) else { return }
         }
         editingDeadline = nil
@@ -1649,7 +1655,9 @@ final class AppRouter: ObservableObject {
         let parts = id.split(separator: "#", maxSplits: 1).map(String.init)
         guard parts.count == 2, let rec = store.record(forKey: parts[0]),
               var snap = rec.snapshot,
-              let idx = snap.deadlines.firstIndex(where: { $0.kind == parts[1] }) else { return false }
+              let idx = snap.deadlines.firstIndex(where: {
+                  ($0.occurrenceKey ?? $0.kind) == parts[1]
+              }) else { return false }
         change(&snap.deadlines[idx])
         rec.snapshot = snap
         do {
@@ -1676,6 +1684,7 @@ final class AppRouter: ObservableObject {
         var calendarHs: [TrackedHearing] = []
         var calendarHearingIDs = Set<String>()
         var dls: [TrackedDeadline] = []
+        var inactiveDls: [TrackedDeadline] = []
         var feedItems: [FeedEntry] = []
         let readIDs = readFeedIDs
 
@@ -1741,11 +1750,17 @@ final class AppRouter: ObservableObject {
                     if let hearing = trackedHearing(s) { hs.append(hearing) }
                 }
             }
-            // Сроки.
+            // Сроки: active occurrences обслуживают Overview; исторические
+            // остаются отдельной календарной проекцией.
             for dl in snap.deadlines {
-                dls.append(TrackedDeadline(id: rec.key + "#" + dl.kind, recordKey: rec.key, what: dl.what,
+                let tracked = TrackedDeadline(
+                    id: rec.key + "#" + (dl.occurrenceKey ?? dl.kind),
+                    recordKey: rec.key, what: dl.what,
                     caseNumber: rec.caseNumber, basis: dl.basis, calLabel: dl.calLabel,
-                    date: dl.date, status: DeadlineStatus(rawValue: dl.statusRaw) ?? .proposed))
+                    date: dl.date, status: dl.status, lifecycle: dl.lifecycle,
+                    provenance: dl.provenance)
+                if dl.isActive { dls.append(tracked) }
+                else { inactiveDls.append(tracked) }
             }
             // Лента: события движения за последние 45 дней.
             for s in snap.sessions {
@@ -1794,11 +1809,13 @@ final class AppRouter: ObservableObject {
                 < CaseLifecycleResolver.hearingTimeKey($1.time)
         }
         dls.sort { $0.date < $1.date }
+        inactiveDls.sort { $0.date < $1.date }
 
         cases = cs
         hearings = hs
         calendarHearings = calendarHs
         deadlines = dls
+        inactiveDeadlines = inactiveDls
         feed = buildFeed(feedItems)
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
@@ -1860,7 +1877,8 @@ final class AppRouter: ObservableObject {
             } else {
                 let nextHearing = MovementDerivation.futureHearings(snap.sessions, today: today)
                     .first.flatMap(\.date)
-                let nextDeadline = snap.deadlines.map(\.date).filter { $0 >= today }.min()
+                let nextDeadline = snap.deadlines.filter(\.isActive)
+                    .map(\.date).filter { $0 >= today }.min()
                 next = [nextHearing, nextDeadline].compactMap { $0 }.min()
             }
             return TrackedCase(
@@ -2040,6 +2058,7 @@ final class AppRouter: ObservableObject {
     /// применяется только к расчётным, неподтверждённым срокам.
     nonisolated static func isActionableDeadline(_ deadline: TrackedDeadline,
                                                  today: Date) -> Bool {
+        guard deadline.lifecycle == .active else { return false }
         guard deadline.status == .proposed else { return true }
         // daysBetween(срок, сегодня) > 0 — срок в прошлом.
         return DateUtil.daysBetween(deadline.date, today) <= deadlineGraceDays

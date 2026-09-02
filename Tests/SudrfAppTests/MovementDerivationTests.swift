@@ -539,16 +539,18 @@ final class MovementDerivationTests: XCTestCase {
     // MARK: Сроки
 
     func testAppealDeadlineProposedForCivilCase() {
-        let mv = movement(sessions: [
-            CaseSession(date: "10.04.2026", event: "Судебное заседание",
-                        result: "иск удовлетворён"),
+        var mv = movement(sessions: [
+            CaseSession(date: "02.02.2026", event: "Судебное заседание",
+                        result: "иск удовлетворён; решение принято в окончательной форме"),
         ])
+        mv.category = "Споры из договоров"
         let snap = MovementDerivation.snapshot(from: mv, context: context(cartoteka: "g"),
                                                today: today)
         let dl = snap.deadlines.first { $0.kind == "appeal" }
         XCTAssertNotNil(dl, "по ГПК должен считаться срок апелляции")
         XCTAssertEqual(dl?.statusRaw, "proposed", "расчётный срок всегда требует подтверждения")
-        XCTAssertEqual(dl?.date, DateUtil.addDays(DateUtil.parse("10.04.2026")!, 30))
+        XCTAssertEqual(dl?.date, DateUtil.parse("02.03.2026"))
+        XCTAssertEqual(dl?.provenance?.ruleID, "GPK-APPEAL-GENERAL")
     }
 
     /// Регресс #80 на реальной раскладке уголовной карточки
@@ -587,6 +589,8 @@ final class MovementDerivationTests: XCTestCase {
         let dl = snap.deadlines.first { $0.kind == "appeal" }
         // УПК — 15 суток со дня провозглашения (ст. 389.4).
         XCTAssertEqual(dl?.date, DateUtil.addDays(DateUtil.parse("06.05.2026")!, 15))
+        XCTAssertEqual(dl?.provenance?.ruleID, "UPK-APPEAL-GENERAL")
+        XCTAssertEqual(dl?.provenance?.trigger.dateRaw, "06.05.2026")
         XCTAssertNotEqual(dl?.date, DateUtil.addDays(DateUtil.parse("15.05.2026")!, 15),
                           "канцелярская строка не должна быть триггером")
         XCTAssertNotEqual(dl?.date, DateUtil.addDays(DateUtil.parse("24.04.2026")!, 15),
@@ -673,8 +677,10 @@ final class MovementDerivationTests: XCTestCase {
     }
 
     func testFirstInstanceTerminalKeepsProposedDeadlineThroughSeventhDay() {
-        let mv = movement(sessions: [CaseSession(date: "01.04.2026", event: "Решение",
-                                                 result: "Иск удовлетворён")])
+        var mv = movement(sessions: [CaseSession(
+            date: "01.04.2026", event: "Решение",
+            result: "Иск удовлетворён; решение принято в окончательной форме")])
+        mv.category = "Споры из договоров"
         let initial = MovementDerivation.snapshot(from: mv, context: context(),
                                                    today: DateUtil.parse("01.04.2026")!)
         let deadline = initial.deadlines.first { $0.kind == "appeal" }!
@@ -740,7 +746,7 @@ final class MovementDerivationTests: XCTestCase {
                                          domain: "court.sudrf.ru", foundByUID: true,
                                          result: "Иск удовлетворён", sessions: [
                                             CaseSession(date: "20.04.2026", event: "Решение",
-                                                        result: "Иск удовлетворён"),
+                                                        result: "Иск удовлетворён; решение принято в окончательной форме"),
                                          ])
         let cassation = CaseInstance(level: .cassation, court: "3 КСОЮ", caseNumber: "8Г-2", judge: nil,
                                      domain: "3kas.sudrf.ru", foundByUID: true,
@@ -752,12 +758,13 @@ final class MovementDerivationTests: XCTestCase {
                                             result: "Жалоба оставлена без удовлетворения", sessions: [
                                                 CaseSession(date: "01.03.2026", event: "Рассмотрено"),
                                             ])
-        let mv = movement(sessions: [CaseSession(date: "01.02.2026", event: "Решение",
+        var mv = movement(sessions: [CaseSession(date: "01.02.2026", event: "Решение",
                                                   result: "Иск удовлетворён")],
                           instances: [historicalAppeal, cassation, returnedFirst])
+        mv.category = "Споры из договоров"
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
-                       DateUtil.addDays(DateUtil.parse("20.04.2026")!, 30))
+                       DateUtil.parse("20.05.2026"))
         let presentation = MovementDerivation.lifecyclePresentation(
             from: mv, snapshot: snap, context: context(), today: today)
         XCTAssertNil(presentation.currentReviewNumber)
@@ -776,12 +783,14 @@ final class MovementDerivationTests: XCTestCase {
             level: .first, court: "Сыктывкарский городской суд", caseNumber: "2-новое",
             judge: nil, domain: "syktsud.komi.sudrf.ru", foundByUID: true,
             result: "Иск удовлетворён", sessions: [
-                CaseSession(date: "20.04.2026", event: "Решение", result: "Иск удовлетворён"),
+                CaseSession(date: "20.04.2026", event: "Решение",
+                            result: "Иск удовлетворён; решение принято в окончательной форме"),
             ])
-        let mv = movement(sessions: [CaseSession(date: "01.02.2026", event: "Решение")],
+        var mv = movement(sessions: [CaseSession(date: "01.02.2026", event: "Решение")],
                           // Кэш сортирует недатированные карточки в хвост:
                           // граница нового круга не должна от этого исчезать.
                           instances: [historicalAppeal, returnedFirst, remand])
+        mv.category = "Споры из договоров"
 
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         let presentation = MovementDerivation.lifecyclePresentation(
@@ -791,7 +800,7 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(presentation.currentTier, .district)
         XCTAssertNotEqual(snap.statusText, historicalAppeal.result)
         XCTAssertEqual(snap.deadlines.first { $0.kind == "appeal" }?.date,
-                       DateUtil.addDays(DateUtil.parse("20.04.2026")!, 30))
+                       DateUtil.parse("20.05.2026"))
     }
 
     func testSecondDatedAppealAfterReturnedFirstSuppressesNewDeadline() {
@@ -841,12 +850,14 @@ final class MovementDerivationTests: XCTestCase {
         let returnedFirst = CaseInstance(
             level: .first, court: "СГС", caseNumber: "2-новое", judge: nil,
             domain: "syktsud.komi.sudrf.ru", foundByUID: true, result: "Иск удовлетворён",
-            sessions: [CaseSession(date: "20.04.2026", event: "Решение", result: "Иск удовлетворён")])
+            sessions: [CaseSession(date: "20.04.2026", event: "Решение",
+                                   result: "Иск удовлетворён; решение принято в окончательной форме")])
         let returnedAppeal = CaseInstance(
             level: .appeal, court: "ВС Коми", caseNumber: "33-новое", judge: nil,
             domain: "new.vs.komi.sudrf.ru", foundByUID: true,
             result: "Жалоба оставлена без удовлетворения", sessions: [
-                CaseSession(date: "01.05.2026", event: "Рассмотрено"),
+                CaseSession(date: "04.05.2026",
+                            event: "Составлено мотивированное апелляционное определение"),
             ])
         let mv = movement(inForce: true, sessions: [
             CaseSession(date: "01.02.2026", event: "Решение"),
@@ -856,7 +867,7 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(snap.deadlines.first { $0.kind == "cassation" }?.date,
-                       DateUtil.addDays(DateUtil.parse("01.05.2026")!, 90))
+                       DateUtil.parse("04.08.2026"))
     }
 
     func testRemandToNewAppealUsesTargetRoundAndTier() {
@@ -990,8 +1001,10 @@ final class MovementDerivationTests: XCTestCase {
     }
 
     func testPreservingConfirmedDeadlines() {
-        let mv = movement(sessions: [CaseSession(date: "10.04.2026", event: "Судебное заседание",
-                                                 result: "иск удовлетворён")])
+        var mv = movement(sessions: [CaseSession(
+            date: "13.04.2026", event: "Судебное заседание",
+            result: "иск удовлетворён; решение принято в окончательной форме")])
+        mv.category = "Споры из договоров"
         var old = MovementDerivation.snapshot(from: mv, context: context(), today: today)
         // Пользователь подтвердил срок и сдвинул дату.
         let userDate = DateUtil.addDays(today, 3).timeIntervalSinceReferenceDate
@@ -1359,11 +1372,13 @@ final class MovementDerivationTests: XCTestCase {
             domain: "vs--komi.sudrf.ru", foundByUID: false, result: nil, sessions: [],
             transientError: true)
         let mv = movement(sessions: [
-            CaseSession(date: "10.04.2026", event: "Судебное заседание",
-                        result: "иск удовлетворён"),
+            CaseSession(date: "13.04.2026", event: "Судебное заседание",
+                        result: "иск удовлетворён; решение принято в окончательной форме"),
         ], instances: [captcha, transient])
+        var qualified = mv
+        qualified.category = "Споры из договоров"
 
-        let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
+        let snap = MovementDerivation.snapshot(from: qualified, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, "first")
         XCTAssertEqual(snap.steps, ["active", "todo", "todo", "todo"])
@@ -1539,7 +1554,9 @@ final class MovementDerivationTests: XCTestCase {
         let denied = snapshot(result: "Отказано в восстановлении срока обжалования")
         XCTAssertEqual(denied.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(denied.statusText, "Отказано в восстановлении срока обжалования")
-        XCTAssertNotNil(denied.deadlines.first { $0.kind == "cassation" })
+        XCTAssertEqual(denied.deadlineAssessments?.first(where: {
+            $0.ruleID == "GPK-CASSATION-CSOY"
+        })?.status, .insufficientEvidence)
         XCTAssertFalse(CaseLifecycleResolver.isReactivation(
             event: "Ходатайство о восстановлении процессуального срока", result: nil))
     }
@@ -1709,7 +1726,7 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(presentation.statusText, "Вступило в силу")
         XCTAssertTrue(presentation.nextEvent.hasPrefix("срок кассации:"))
         XCTAssertEqual(presentation.nextEventDate,
-                       DateUtil.addDays(DateUtil.parse("20.04.2026")!, 90))
+                       DateUtil.parse("20.07.2026"))
     }
 
     func testMaterialAndUndatedStubDoNotBecomeCurrentStage() {

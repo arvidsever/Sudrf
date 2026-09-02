@@ -26,6 +26,17 @@ final class PackagedResourceTests: XCTestCase {
         XCTAssertGreaterThan(try Data(contentsOf: url).count, 0)
     }
 
+    func testLoadsCompleteLegalDeadlineRegistry() throws {
+        let registry = try LegalDeadlineRegistry.load()
+        XCTAssertEqual(registry.coreRules.count, 66)
+        XCTAssertEqual(Set(registry.coreRules.map(\.ruleID)).count, 66)
+        XCTAssertEqual(registry.sources.count, 4)
+        XCTAssertEqual(registry.sources.map(\.revision), [2, 1, 1, 1])
+        XCTAssertEqual(registry.rule(id: "GPK-APPEAL-GENERAL")?.duration.kind, .months)
+        XCTAssertEqual(registry.rule(id: "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI")?.duration.kind,
+                       .calendarSutki)
+    }
+
     func testMissingResourceReturnsNilInsteadOfTrapping() {
         XCTAssertNil(PackagedResource.url("ЗаведомоНетТакогоФайла", withExtension: "json"))
     }

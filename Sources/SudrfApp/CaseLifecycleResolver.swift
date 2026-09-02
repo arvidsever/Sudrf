@@ -176,7 +176,9 @@ enum CaseLifecycleResolver {
     }
 
     static func resolve(movement: CaseMovement, production: ProductionType? = nil,
-                        deadlines: [StoredDeadline], today: Date = DateUtil.today) -> Resolution {
+                        deadlines: [StoredDeadline],
+                        deadlineAssessments: [DeadlineRuleAssessment] = [],
+                        today: Date = DateUtil.today) -> Resolution {
         let timeline = timeline(in: movement, production: production)
         let instances = timeline.instances
         // Пустая карточка вышестоящего суда, найденная по УИД, полезна как
@@ -252,7 +254,8 @@ enum CaseLifecycleResolver {
                 }
                 return resolveTerminalFirst(current: latest, result: result,
                                             visited: visited, deadlines: deadlines, today: today,
-                                            production: production)
+                                            production: production,
+                                            deadlineAssessments: deadlineAssessments)
             case .active, .terminal, nil:
                 break
             }
@@ -273,7 +276,7 @@ enum CaseLifecycleResolver {
         // завершение разрешено только после явного подтверждения пользователем
         // и только со следующего дня после указанной даты.
         let confirmedDeadlineExpired = deadlines.contains {
-            $0.statusRaw == DeadlineStatus.confirmed.rawValue && $0.date < today
+            $0.isActive && $0.isUserControlled && $0.date < today
         }
         let unresolvedReview = latest.map { isReview($0.level) } ?? false
         if confirmedDeadlineExpired && !unresolvedReview && !explicitlyActive {
@@ -298,12 +301,21 @@ enum CaseLifecycleResolver {
     private static func resolveTerminalFirst(current: CaseInstance, result: String,
                                              visited: Set<CaseStageKind>,
                                              deadlines: [StoredDeadline], today: Date,
-                                             production: ProductionType?) -> Resolution {
-        guard let deadline = deadlines.first(where: { $0.kind == "appeal" }) else {
+                                             production: ProductionType?,
+                                             deadlineAssessments: [DeadlineRuleAssessment]) -> Resolution {
+        // `notApplicable` means the old terminal classification still stands.
+        // Only a recognized appeal rule that lacks a fact/policy stays active;
+        // otherwise materials and unknown contexts would never complete.
+        if deadlineAssessments.contains(where: \.blocksTerminalFirst) {
+            return Resolution(stage: .first, currentInstance: current,
+                              steps: steps(visited: visited, active: .first, production: production),
+                              completionReason: nil, graceDeadline: nil)
+        }
+        guard let deadline = deadlines.first(where: { $0.kind == "appeal" && $0.isActive }) else {
             return completed(current: current, visited: visited, reason: .terminalFirst(result),
                              production: production)
         }
-        if deadline.statusRaw == DeadlineStatus.confirmed.rawValue, deadline.date < today {
+        if deadline.isUserControlled, deadline.date < today {
             return completed(current: current, visited: visited, reason: .confirmedDeadline,
                              production: production)
         }

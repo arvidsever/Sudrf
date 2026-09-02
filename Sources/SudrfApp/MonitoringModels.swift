@@ -267,10 +267,20 @@ enum CaseStageKind: String { case first, appeal, cassation, supervisory, done
     }
 }
 
-enum DeadlineStatus: String { case proposed, confirmed }
+/// Пользовательское решение о дате. Это отдельная ось от lifecycle: например,
+/// подтверждённый срок может стать superseded, но не превращается обратно в
+/// proposed при следующем refresh.
+enum DeadlineStatus: String, Codable { case proposed, confirmed, overridden }
+
+extension DeadlineStatus {
+    var isUserControlled: Bool { self == .confirmed || self == .overridden }
+}
+
+/// Жизненный цикл occurrence, не являющийся пользовательской правкой.
+enum DeadlineLifecycle: String, Codable { case active, expiredUnconfirmed, superseded }
 
 struct TrackedDeadline: Identifiable {
-    let id: String            // «<ключ записи>#<kind>»
+    let id: String            // «<ключ записи>#<occurrence>»
     var recordKey: String
     var what: String
     var caseNumber: String
@@ -278,6 +288,8 @@ struct TrackedDeadline: Identifiable {
     var calLabel: String
     var date: Date
     var status: DeadlineStatus
+    var lifecycle: DeadlineLifecycle = .active
+    var provenance: DeadlineProvenance? = nil
 }
 
 struct TrackedHearing: Identifiable {

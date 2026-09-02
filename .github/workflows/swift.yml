@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify generated legal-deadline registry
+        run: python3 Scripts/generate-legal-deadline-registry.py --check
+
       - name: Fetch CoreML model
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

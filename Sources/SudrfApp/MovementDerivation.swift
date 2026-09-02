@@ -654,13 +654,17 @@ enum MovementDerivation {
                                            context: MovementContext,
                                            production: ProductionType?,
                                            today: Date) -> DeadlineRuleEngine.Evaluation {
-        guard production != nil, let registry = try? LegalDeadlineRegistry.load() else {
+        let engineContext = DeadlineRuleEngine.Context(movementContext: context)
+        guard production != nil else {
             return DeadlineRuleEngine.Evaluation(deadlines: [], assessments: [])
+        }
+        guard let registry = try? LegalDeadlineRegistry.load() else {
+            return DeadlineRuleEngine.unavailable(context: engineContext)
         }
         let timeline = CaseLifecycleResolver.timeline(in: movement, production: production)
         return DeadlineRuleEngine.evaluate(
             registry: registry, movement: movement,
-            context: DeadlineRuleEngine.Context(movementContext: context),
+            context: engineContext,
             timeline: timeline, today: today)
     }
 

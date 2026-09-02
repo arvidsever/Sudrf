@@ -90,6 +90,40 @@ class LegalDeadlineRegistryScriptTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("expected 14 core rules", result.stderr)
 
+    def test_duplicate_source_rule_id_is_a_generation_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_sources = Path(directory)
+            for source in SOURCE_DIR.glob("*-appeal-deadlines.md"):
+                shutil.copy2(source, temporary_sources / source.name)
+            path = temporary_sources / "gpk-appeal-deadlines.md"
+            text = path.read_text(encoding="utf-8")
+            payload = json.loads(FENCE.search(text).group(1))
+            payload["coreRules"][1]["rule_id"] = payload["coreRules"][0]["rule_id"]
+            path.write_text(
+                FENCE.sub(
+                    "```json\n"
+                    + json.dumps(payload, ensure_ascii=False, indent=2)
+                    + "\n```",
+                    text,
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--source-dir",
+                    str(temporary_sources),
+                    "--output",
+                    str(temporary_sources / "out.json"),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("duplicate rule_id", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

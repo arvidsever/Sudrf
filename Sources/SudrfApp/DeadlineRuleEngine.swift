@@ -16,13 +16,7 @@ enum DeadlineEvidenceRequirement: String, Codable, CaseIterable, Equatable {
     case motivatedAppealDetermination
 }
 
-enum DeadlineAssessmentStatus: String, Codable, Equatable {
-    case applicable
-    case insufficientEvidence
-    case unsupportedCalculation
-    case notApplicable
-    case needsLegalReview
-}
+typealias DeadlineAssessmentStatus = DeadlineRuleSupport
 
 /// Точная строка движения, на которой основан trigger. Это не новый event ID:
 /// identity намеренно остаётся локальной provenance срока до #155.
@@ -174,6 +168,19 @@ enum DeadlineRuleEngine {
             if let deadline = result.deadline { deadlines.append(deadline) }
         }
         return Evaluation(deadlines: deadlines, assessments: assessments)
+    }
+
+    /// A missing packaged registry must not silently restore the historical
+    /// fallback or close a terminal case. The known typed candidates remain
+    /// visible as requiring review until the resource is restored.
+    static func unavailable(context: Context) -> Evaluation {
+        guard let production = production(from: context.movementContext) else {
+            return Evaluation(deadlines: [], assessments: [])
+        }
+        return Evaluation(deadlines: [], assessments: bindings
+            .filter { $0.production == production }
+            .map { assessment(ruleID: $0.ruleID, kind: $0.kind,
+                              status: .needsLegalReview) })
     }
 
     private static func evaluate(binding: Binding, rule: LegalDeadlineRule,

@@ -124,6 +124,17 @@ final class DeadlineRuleEngineTests: XCTestCase {
             DeadlineEvidenceRequirement.caseCategory.rawValue) ?? false)
     }
 
+    func testMissingPackagedRegistryFailsClosedForKnownProduction() {
+        let result = DeadlineRuleEngine.unavailable(
+            context: .init(movementContext: context("g")))
+
+        XCTAssertTrue(result.deadlines.isEmpty)
+        XCTAssertEqual(result.assessments.single(where: {
+            $0.ruleID == "GPK-APPEAL-GENERAL"
+        })?.status, .needsLegalReview)
+        XCTAssertTrue(result.assessments.contains(where: \.blocksTerminalFirst))
+    }
+
     func testKASActivatedRulesUseRegistryCalendarMonths() throws {
         let appealMovement = movement(cartoteka: "p", category: "Оспаривание решения органа",
                                       sessions: [
@@ -322,6 +333,26 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(decoded.deadlines[0].lifecycle, .active)
         XCTAssertEqual(decoded.deadlines[0].status, .confirmed)
         XCTAssertEqual(decoded.deadlines[0].date, DateUtil.parse("25.05.2026"))
+    }
+
+    func testDeadlineInfoProjectionUsesRegistryAndExposesLifecycle() throws {
+        let stored = try XCTUnwrap(snapshot(qualifiedCivilMovement()).deadlines.first)
+        let tracked = TrackedDeadline(
+            id: "record#\(stored.occurrenceKey ?? stored.kind)", recordKey: "record",
+            what: stored.what, caseNumber: "2-100/2026", basis: stored.basis,
+            calLabel: stored.calLabel, date: stored.date, status: .overridden,
+            lifecycle: .superseded, provenance: stored.provenance)
+        let projection = DeadlineInfoProjection(
+            deadline: tracked, registry: try LegalDeadlineRegistry.load())
+
+        XCTAssertTrue(projection.hasProvenance)
+        XCTAssertTrue(projection.rule.contains("GPK-APPEAL-GENERAL"))
+        XCTAssertEqual(projection.source, "ст. 321 ч. 1 ГПК РФ")
+        XCTAssertEqual(projection.formula, "1 календарный месяц")
+        XCTAssertTrue(projection.trigger.contains("Судебное заседание"))
+        XCTAssertTrue(projection.policies.contains("GPK-COUNTING-MONTH-YEAR-CALENDAR"))
+        XCTAssertEqual(projection.status, "Дата изменена пользователем")
+        XCTAssertEqual(projection.lifecycle, "Заменён новым trigger")
     }
 }
 

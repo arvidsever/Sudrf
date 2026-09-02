@@ -1622,6 +1622,7 @@ final class AppRouter: ObservableObject {
     func deadline(_ id: String?) -> TrackedDeadline? {
         guard let id else { return nil }
         return deadlines.first { $0.id == id }
+            ?? inactiveDeadlines.first { $0.id == id }
     }
     func beginEdit(_ id: String) {
         editingDeadline = id

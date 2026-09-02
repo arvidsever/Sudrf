@@ -561,11 +561,9 @@ public struct LegalDeadlineOpenQuestion: Codable, Hashable, Sendable {
 /// A rule's catalog-level support classification.  Runtime applicability is
 /// decided by the rules engine; this type keeps its result strongly typed.
 public enum DeadlineRuleSupport: String, Codable, Hashable, Sendable {
-    case supported
+    case applicable
     case insufficientEvidence
     case unsupportedCalculation
     case notApplicable
     case needsLegalReview
-    case noNumericDeadline
-    case catalogued
 }

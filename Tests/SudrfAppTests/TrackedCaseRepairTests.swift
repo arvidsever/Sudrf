@@ -167,11 +167,14 @@ final class TrackedCaseRepairTests: XCTestCase {
         var firstSnapshot = MovementDerivation.snapshot(from: firstMovement, context: first)
         var appealSnapshot = MovementDerivation.snapshot(from: appealMovement, context: appeal)
         XCTAssertFalse(firstSnapshot.deadlines.isEmpty)
-        XCTAssertFalse(appealSnapshot.deadlines.isEmpty)
+        // Merge semantics are independent of the rules engine. A bare appeal
+        // fixture no longer invents a cassation trigger, so keep an explicit
+        // legacy user deadline as the duplicate-side state under test.
+        appealSnapshot.deadlines = [StoredDeadline(
+            kind: "cassation", what: "Кассационная жалоба", basis: "legacy fixture",
+            calLabel: "касс. жалоба", dateRef: 222, statusRaw: "confirmed")]
         firstSnapshot.deadlines[0].statusRaw = "confirmed"
         firstSnapshot.deadlines[0].dateRef = 111
-        appealSnapshot.deadlines[0].statusRaw = "confirmed"
-        appealSnapshot.deadlines[0].dateRef = 222
         let survivor = try insertLegacy(
             into: store, context: first, snapshot: firstSnapshot,
             movement: firstMovement, collections: ["A"])

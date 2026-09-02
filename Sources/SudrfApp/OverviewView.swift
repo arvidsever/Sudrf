@@ -628,28 +628,27 @@ struct DeadlineActions: View {
 
     var body: some View {
         if let d = router.deadline(id) {
-            if router.editingDeadline == id {
-                editor
-            } else if !AppRouter.isActionableDeadline(d, today: DateUtil.today) {
-                // Расчётный срок, истёкший давно, задачей уже не является —
-                // предлагать «Подтвердить» на нём нечестно (#98). Остаётся как
-                // история расчёта в календаре и в списке всех сроков.
-                StatusChip(text: "расчётный · истёк", kind: .gray)
-            } else if d.status == .proposed {
-                HStack(spacing: 6) {
+            HStack(spacing: 8) {
+                if router.editingDeadline == id {
+                    editor
+                } else if d.lifecycle == .superseded {
+                    StatusChip(text: "заменён новым расчётом", kind: .gray)
+                } else if d.lifecycle == .expiredUnconfirmed {
+                    StatusChip(text: "расчётный · истёк", kind: .gray)
+                } else if d.status == .proposed {
                     Button("Подтвердить") { router.confirm(id) }
                         .buttonStyle(.glassProminent).controlSize(.small)
                     Button(compact ? "Изменить" : "Изменить дату") { router.beginEdit(id) }
                         .buttonStyle(.glass).controlSize(.small)
-                }
-            } else {
-                HStack(spacing: 8) {
-                    StatusChip(text: "✓ подтверждён вами", kind: .green)
+                } else {
+                    StatusChip(text: d.status == .overridden
+                               ? "✓ дата изменена вами" : "✓ подтверждён вами", kind: .green)
                     Button("изменить") { router.beginEdit(id) }
                         .buttonStyle(.plain)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                 }
+                DeadlineInfoButton(deadline: d)
             }
         }
     }
@@ -672,6 +671,126 @@ struct DeadlineActions: View {
                 .buttonStyle(.glassProminent).controlSize(.small)
             Button("Отмена") { router.cancelEdit() }
                 .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Одна и та же provenance-проекция используется карточками Обзора и
+/// Календаря. Нормативный текст читается из packaged registry, а snapshot
+/// хранит только точное правило, trigger и применённые policies.
+private struct DeadlineInfoButton: View {
+    let deadline: TrackedDeadline
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            Image(systemName: "info.circle")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Как рассчитан срок")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            DeadlineInfoPopover(deadline: deadline)
+        }
+    }
+}
+
+private struct DeadlineInfoPopover: View {
+    let deadline: TrackedDeadline
+    private static let registry = try? LegalDeadlineRegistry.load()
+
+    private var projection: DeadlineInfoProjection {
+        DeadlineInfoProjection(deadline: deadline, registry: Self.registry)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Расчёт процессуального срока")
+                .font(.system(size: 14, weight: .semibold))
+            if projection.hasProvenance {
+                infoRow("Правило", projection.rule)
+                infoRow("Норма", projection.source)
+                infoRow("Дата срока", projection.date)
+                infoRow("Формула", projection.formula)
+                infoRow("Trigger", projection.trigger)
+                if !projection.policies.isEmpty {
+                    infoRow("Policies", projection.policies)
+                }
+                infoRow("Registry", projection.registry)
+            } else {
+                Text("Срок создан в прежней версии приложения; нормативная provenance отсутствует.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+            }
+            infoRow("Статус", projection.status)
+            infoRow("Lifecycle", projection.lifecycle)
+        }
+        .padding(16)
+        .frame(width: 430, alignment: .leading)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.system(size: 11.5))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+}
+
+/// Тестируемая app-layer проекция общего information-popover. Она не хранит
+/// нормативные строки: каждый раз соединяет deadline provenance с packaged
+/// registry, поэтому Overview и Календарь показывают одну и ту же версию нормы.
+struct DeadlineInfoProjection: Equatable {
+    var hasProvenance: Bool
+    var rule: String
+    var source: String
+    var date: String
+    var formula: String
+    var trigger: String
+    var policies: String
+    var registry: String
+    var status: String
+    var lifecycle: String
+
+    init(deadline: TrackedDeadline, registry: LegalDeadlineRegistry?) {
+        let provenance = deadline.provenance
+        let catalogRule = provenance.flatMap { registry?.rule(id: $0.ruleID) }
+        hasProvenance = provenance != nil
+        rule = provenance.map { catalogRule.map { "\($0.ruleID) · \($0.stage)" } ?? $0.ruleID } ?? "—"
+        source = catalogRule?.source ?? provenance?.source ?? "—"
+        date = DateUtil.fmt(deadline.date)
+        formula = provenance?.formula ?? "—"
+        if let trigger = provenance?.trigger {
+            self.trigger = [trigger.event, trigger.result, trigger.dateRaw, trigger.court,
+                            trigger.levelRaw, trigger.caseNumber]
+                .compactMap { value in
+                    guard let value, !value.isEmpty else { return nil }
+                    return value
+                }
+                .joined(separator: " · ")
+        } else {
+            trigger = "—"
+        }
+        policies = provenance?.policyIDs.map { id in
+            guard let policy = registry?.policy(id: id) else { return id }
+            return "\(id): \(policy.rule)"
+        }.joined(separator: "\n") ?? ""
+        self.registry = provenance.map { "revision \($0.registryRevision)" } ?? "—"
+        switch deadline.status {
+        case .proposed: status = "Расчётный"
+        case .confirmed: status = "Подтверждён пользователем"
+        case .overridden: status = "Дата изменена пользователем"
+        }
+        switch deadline.lifecycle {
+        case .active: lifecycle = "Активен"
+        case .expiredUnconfirmed: lifecycle = "Истёк без подтверждения"
+        case .superseded: lifecycle = "Заменён новым trigger"
         }
     }
 }

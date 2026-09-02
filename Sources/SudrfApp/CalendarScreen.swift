@@ -9,7 +9,17 @@ import SudrfKit
 
 // MARK: - Событие календаря
 
-private enum CalEventKind { case hearing, deadlineProposed, deadlineConfirmed }
+private enum CalEventKind {
+    case hearing
+    case deadlineProposed
+    case deadlineConfirmed
+    case deadlineOverridden
+    case deadlineInactive
+
+    var isConfirmedStyle: Bool {
+        self == .deadlineConfirmed || self == .deadlineOverridden
+    }
+}
 
 private struct CalEvent: Identifiable {
     var id: String
@@ -35,6 +45,8 @@ private struct CalEvent: Identifiable {
         case .hearing:           return Color.accentColor
         case .deadlineProposed:  return Palette.proposed
         case .deadlineConfirmed: return Palette.confirmed
+        case .deadlineOverridden: return Palette.confirmed
+        case .deadlineInactive: return Color.secondary
         }
     }
 }
@@ -80,13 +92,32 @@ struct CalendarScreen: View {
                 deadlineId: nil,
                 parties: h.parties, court: h.court, room: h.room, judge: h.judge))
         }
-        for d in router.deadlines {
-            let confirmed = d.status == .confirmed
+        for d in router.deadlines + router.inactiveDeadlines {
+            let kind: CalEventKind
+            let chipPrefix: String
+            let heading: String
+            if d.lifecycle != .active {
+                kind = .deadlineInactive
+                chipPrefix = "срок · история · "
+                heading = d.lifecycle == .superseded
+                    ? "ДЕДЛАЙН · ЗАМЕНЁН" : "ДЕДЛАЙН · ИСТЁК БЕЗ ПОДТВЕРЖДЕНИЯ"
+            } else if d.status == .overridden {
+                kind = .deadlineOverridden
+                chipPrefix = "срок · вручную · "
+                heading = "ДЕДЛАЙН · ДАТА ИЗМЕНЕНА"
+            } else if d.status == .confirmed {
+                kind = .deadlineConfirmed
+                chipPrefix = "срок · "
+                heading = "ДЕДЛАЙН · ПОДТВЕРЖДЁН"
+            } else {
+                kind = .deadlineProposed
+                chipPrefix = "срок? "
+                heading = "ДЕДЛАЙН · РАСЧЁТНЫЙ"
+            }
             out.append(CalEvent(id: uniqueID("deadline#\(d.id)"),
                 date: d.date, sortTime: "99:99",
-                kind: confirmed ? .deadlineConfirmed : .deadlineProposed,
-                chip: (confirmed ? "срок · " : "срок? ") + d.calLabel,
-                time: "срок", heading: confirmed ? "ДЕДЛАЙН · ПОДТВЕРЖДЁН" : "ДЕДЛАЙН · РАСЧЁТНЫЙ",
+                kind: kind, chip: chipPrefix + d.calLabel,
+                time: "срок", heading: heading,
                 title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
                 caseNumber: d.caseNumber, displayCaseNumber: CaseNumberPresentation.primary(d.caseNumber),
                 deadlineId: d.id))
@@ -691,9 +722,11 @@ struct CalendarScreen: View {
 
     private func weekDeadlineChip(_ ev: CalEvent) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(ev.kind == .deadlineConfirmed
+            Text(ev.kind.isConfirmedStyle
                  ? "СРОК · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))"
-                 : "СРОК? · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))")
+                 : ev.kind == .deadlineInactive
+                    ? "СРОК · ИСТОРИЯ · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))"
+                    : "СРОК? · № \(CaseNumberPresentation.primary(ev.caseNumber ?? ""))")
                 .font(.system(size: 8, weight: .bold))
                 .foregroundStyle(ev.accent)
                 .lineLimit(1)
@@ -705,10 +738,10 @@ struct CalendarScreen: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 6).fill(ev.accent.opacity(ev.kind == .deadlineConfirmed ? 0.08 : 0.10)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(ev.accent.opacity(ev.kind.isConfirmedStyle ? 0.08 : 0.10)))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(ev.accent.opacity(ev.kind == .deadlineConfirmed ? 0.22 : 0.65),
+                .strokeBorder(ev.accent.opacity(ev.kind.isConfirmedStyle ? 0.22 : 0.65),
                               style: StrokeStyle(lineWidth: 1, dash: ev.kind == .deadlineProposed ? [3, 2] : [])))
     }
 
@@ -835,7 +868,13 @@ struct CalendarScreen: View {
         if evs.contains(where: { $0.kind == .deadlineConfirmed }) {
             out.append(Color(red: 0.839, green: 0.271, blue: 0.227))   // #d6453a
         }
-        return out
+        if evs.contains(where: { $0.kind == .deadlineOverridden }) {
+            out.append(Palette.confirmed)
+        }
+        if evs.contains(where: { $0.kind == .deadlineInactive }) {
+            out.append(.secondary)
+        }
+        return Array(out.prefix(3))
     }
 
     private var waitingCard: some View {

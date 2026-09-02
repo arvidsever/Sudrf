@@ -11,10 +11,13 @@ final class SudrfClientCardURLTests: XCTestCase {
         let expected = PreviousRegistrationReference(
             caseNumber: "5-78/2026",
             url: try XCTUnwrap(URL(string:
-                "https://effective.example/sud_delo/current/previous?case_uid=old")))
+                "https://requested--tum.sudrf.ru/previous?case_uid=old")))
 
+        // Internal published predecessor links intentionally remain permissive:
+        // unlike the user-facing direct-link contract, old courts sometimes
+        // publish a same-court path without the standard modules.php query.
         let direct = try await client.fetchCard(url: URL(string:
-            "https://requested.example/modules.php?name=sud_delo&name_op=case")!)
+            "https://requested.tum.sudrf.ru/previous?case_uid=old")!)
         XCTAssertEqual(direct.previousRegistration, expected)
 
         let court = Court(domain: "court--test.sudrf.ru", title: "Тестовый суд", level: .district)
@@ -26,7 +29,8 @@ final class SudrfClientCardURLTests: XCTestCase {
 
 private final class EffectiveCardURLStub: URLProtocol {
     private static let effectiveURL = URL(string:
-        "https://effective.example/sud_delo/current/card.html?redirected=1")!
+        "https://requested--tum.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+        + "&case_id=current&case_uid=current-uid&delo_id=1540005&redirected=1")!
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }

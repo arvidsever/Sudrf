@@ -225,7 +225,8 @@ public actor SudrfClient {
     /// `String`-перегрузка `fetchHTML` теряет исходные байты при
     /// перекодировании, а пользователю нужны именно байты — иначе
     /// файл в браузере показывает mojibake.
-    private func fetchHTMLData(_ url: URL, allowHTTPFallback: Bool) async throws -> FetchedHTML {
+    private func fetchHTMLData(_ url: URL, allowHTTPFallback: Bool,
+                               validatesSudrfRedirects: Bool = false) async throws -> FetchedHTML {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
@@ -236,7 +237,8 @@ public actor SudrfClient {
             req.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
             do {
-                let (data, response) = try await performSessionData(for: req)
+                let (data, response) = try await performSessionData(
+                    for: req, validatesSudrfRedirects: validatesSudrfRedirects)
                 let http = response as? HTTPURLResponse
                 if let http, (500..<600).contains(http.statusCode) {
                     // Сервер суда периодически отдаёт 502/503 — повторяем.
@@ -283,7 +285,9 @@ public actor SudrfClient {
                     // data in query parameters. Plain HTTP is allowed only for
                     // msudrf hosts, only after TLS fails, and only for this one
                     // retry so broken government TLS does not silently broaden.
-                    return try await fetchHTMLData(httpURL, allowHTTPFallback: false)
+                    return try await fetchHTMLData(
+                        httpURL, allowHTTPFallback: false,
+                        validatesSudrfRedirects: validatesSudrfRedirects)
                 }
                 lastError = e
                 guard attempt + 1 < attempts else { break }
@@ -770,6 +774,23 @@ public actor SudrfClient {
         return try CaseCardParser.parse(html: fetched.html, cardURL: fetched.responseURL)
     }
 
+    /// Load a direct SUDRF card and retain the effective URL after redirects.
+    /// Both the requested and effective URLs must remain direct case-card links
+    /// on supported SUDRF hosts.  Redirect hops are restricted to HTTP(S),
+    /// credential-free `*.sudrf.ru` URLs; the effective card URL is authoritative
+    /// when a source moves between SUDRF hosts.  The returned URL is sanitized
+    /// before it is persisted.
+    public func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        let requested = try SudrfCaseCardLink(url: url)
+        let fetched = try await fetchHTMLData(
+            requested.url,
+            allowHTTPFallback: true,
+            validatesSudrfRedirects: true)
+        let effective = try SudrfCaseCardLink(url: fetched.responseURL)
+        let card = try CaseCardParser.parse(html: fetched.html, cardURL: effective.url)
+        return SudrfCaseCardFetchResult(card: card, responseURL: effective.url)
+    }
+
     /// Выполняет запрос на дефисной форме хоста; при сетевой/HTTP-ошибке повторяет
     /// на альтернативной (точечной) форме. Капча — не проблема хоста, пробрасывается.
     private func withHostFallback<T>(_ court: Court,
@@ -838,13 +859,15 @@ public actor SudrfClient {
     /// поэтому не обходит уже ожидающий ручной или фоновый запрос.
     private func performSessionData(
         for request: URLRequest,
-        protectsMagistrateCaptchaRedirects: Bool = false
+        protectsMagistrateCaptchaRedirects: Bool = false,
+        validatesSudrfRedirects: Bool = false
     ) async throws -> (Data, URLResponse) {
         var currentRequest = request
         for _ in 0..<20 {
             let result = try await performPhysicalSessionData(
                 for: currentRequest,
-                protectsMagistrateCaptchaRedirects: protectsMagistrateCaptchaRedirects)
+                protectsMagistrateCaptchaRedirects: protectsMagistrateCaptchaRedirects,
+                validatesSudrfRedirects: validatesSudrfRedirects)
             if let redirect = result.redirect {
                 currentRequest = redirect
                 continue
@@ -856,7 +879,8 @@ public actor SudrfClient {
 
     private func performPhysicalSessionData(
         for request: URLRequest,
-        protectsMagistrateCaptchaRedirects: Bool
+        protectsMagistrateCaptchaRedirects: Bool,
+        validatesSudrfRedirects: Bool
     ) async throws -> (data: Data, response: URLResponse, redirect: URLRequest?) {
         try await acquireRequestSlot()
         defer { releaseRequestSlot() }
@@ -870,7 +894,8 @@ public actor SudrfClient {
         try Task.checkCancellation()
         let session = try await session(for: request)
         let delegate = RedirectCaptureDelegate(
-            protectsMagistrateCaptcha: protectsMagistrateCaptchaRedirects)
+            protectsMagistrateCaptcha: protectsMagistrateCaptchaRedirects,
+            validatesSudrfRedirects: validatesSudrfRedirects)
         lastRequestStartAt = Date()
         let result = try await session.data(for: request, delegate: delegate)
         return (result.0, result.1, delegate.takeRedirect())
@@ -964,11 +989,13 @@ private final class OriginSessionDelegate: NSObject, URLSessionDelegate, @unchec
 /// `SudrfClient.performSessionData`, which can then rotate the origin session.
 private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let protectsMagistrateCaptcha: Bool
+    private let validatesSudrfRedirects: Bool
     private let lock = NSLock()
     private var redirect: URLRequest?
 
-    init(protectsMagistrateCaptcha: Bool) {
+    init(protectsMagistrateCaptcha: Bool, validatesSudrfRedirects: Bool = false) {
         self.protectsMagistrateCaptcha = protectsMagistrateCaptcha
+        self.validatesSudrfRedirects = validatesSudrfRedirects
     }
 
     func urlSession(_ session: URLSession,
@@ -986,6 +1013,10 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
             completionHandler(nil)
             return
         }
+        if validatesSudrfRedirects && !Self.allowsSudrfRedirect(target: target) {
+            completionHandler(nil)
+            return
+        }
         lock.lock()
         redirect = request
         lock.unlock()
@@ -996,6 +1027,16 @@ private final class RedirectCaptureDelegate: NSObject, URLSessionTaskDelegate, @
         lock.lock(); defer { lock.unlock() }
         defer { redirect = nil }
         return redirect
+    }
+
+    private static func allowsSudrfRedirect(target: URL) -> Bool {
+        guard let scheme = target.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              target.user == nil, target.password == nil,
+              let host = target.host?.lowercased(),
+              host.hasSuffix(".sudrf.ru"),
+              !host.dropLast(".sudrf.ru".count).isEmpty else { return false }
+        return true
     }
 }
 

@@ -30,10 +30,11 @@
 | --- | --- | --- | --- |
 | Запуск приложения, корневые экраны и навигация | `Sources/SudrfApp/SudrfApp.swift`, `RootView.swift`, `AppModel.swift` (`AppRouter`) | `MonitoringModels.swift`, `ContentView.swift`, `OverviewView.swift`, `MyCasesView.swift`, `CalendarScreen.swift` | `CurrentEntityActivityTests`, `OverviewModelTests`, `MyCasesModelTests`, `CalendarWeekLayoutTests` |
 | Интерактивный поиск и выбор суда | `Sources/SudrfApp/SearchModel.swift` | `MovementContext.swift`, `Sources/SudrfKit/MovementTargetBuilder.swift`, `CourtDirectory.swift`, `DistrictCourtResolver.swift`, `MagistrateDirectory.swift` | `SearchResultSelectionTests`, `MoscowCourtOptionTests`, `CourtDirectoryTests`, `DistrictResolverTests`, `MagistrateTests` |
-| URL, запросы и HTML обычных судов `*.sudrf.ru` | `Sources/SudrfKit/SudrfClient.swift`, `SudrfURLBuilder.swift` | `ResultsParser.swift`, `CaseCardParser.swift`, `HTMLTextExtractor.swift`, `SearchPageClassifier.swift`, `SearchPatternDirectory.swift`, `WorkingVariantStore.swift` | `URLBuilderTests`, `ResultsParserTests`, `CaseCardParserTests`, `SearchPageClassifierTests`, `SearchPatternTests`, `WorkingVariantStoreTests` |
+| URL, запросы и HTML обычных судов `*.sudrf.ru` | `Sources/SudrfKit/SudrfClient.swift`, `SudrfURLBuilder.swift`, `SudrfCaseCardLink.swift` | `ResultsParser.swift`, `CaseCardParser.swift`, `HTMLTextExtractor.swift`, `SearchPageClassifier.swift`, `SearchPatternDirectory.swift`, `WorkingVariantStore.swift` | `URLBuilderTests`, `SudrfCaseCardLinkTests`, `SudrfClientCardURLTests`, `ResultsParserTests`, `CaseCardParserTests`, `SearchPageClassifierTests`, `SearchPatternTests`, `WorkingVariantStoreTests` |
 | Мировые судьи, ВС РФ или Мосгорсуд | `Sources/SudrfKit/MagistrateClient.swift`, `VSRFClient.swift`, `MosGorSudClient.swift` | Соответственно `MagistrateDirectory.swift`, `VSRFCard.swift`, `MosGorSud.swift`, `MosGorSudMovement.swift`, `MosGorSudParsers.swift`, `MosGorSudCourtDirectory.swift`; общий транспорт ВС РФ и Мосгорсуда — `HTMLCourtTransport.swift` | `MagistrateTests`, `VSRFCardParserTests`, `VSRFMovementTests`, `MosGorSudTests`, `HTMLCourtTransportTests` |
 | Движение дела по инстанциям | `Sources/SudrfKit/Movement.swift` (`MovementService`) | `CaseMovementCaptcha.swift`, `MovementTargetBuilder.swift`, `Sources/SudrfApp/MovementContext.swift`, `MovementDerivation.swift`, `CaseMovementView.swift` | `MovementServiceTests`, `MovementDedupTests`, `VSRFMovementTests`, `MovementContextTests`, `MovementDerivationTests`, `KoAPMovementTargetTests` |
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
+| Добавление дела по прямой ссылке | `Sources/SudrfApp/DirectCaseLinkSheet.swift`, `DirectCaseLinkResolver.swift` | `AppModel.swift` (`resolveDirectCaseLink`, `track`, `openTrackedCase`), `Sources/SudrfKit/SudrfCaseCardLink.swift`, `SudrfClient.swift`, `Cartoteka.swift`, `DistrictCourtResolver.swift`, `MovementContext.swift` | `DirectCaseLinkSheetTests`, `DirectCaseLinkResolverTests`, `SudrfCaseCardLinkTests`, `TrackedCaseRepairTests`, `RefreshCenterTests` |
 | Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift`, `Sources/SudrfKit/SourceOutcome.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests`, `SourceOutcomeTests` |
 | Исполнительные листы и Казначейство | `Sources/SudrfKit/Enforcement.swift`, `CaseCardParser.swift` | `Movement.swift`, `Sources/SudrfApp/RefreshCenter.swift`, `TrackedStore.swift`, `CaseMovementView.swift`, `AppModel.swift` | `TreasuryClientTests`, `CaseCardParserTests`, `RefreshCenterTests`, `DataCatalogTests`, `OverviewModelTests` |
 | Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
@@ -76,6 +77,14 @@ snapshot, CAPTCHA, maintenance, transport/parser failure и подтверждё
 пустоту. `sourceRefreshAttempt` обновляется при каждой попытке, а
 `movementFetchedAt` — только после полного пригодного движения; partial может
 аддитивно обновить данные через `MovementCachePolicy`, но не продлевает TTL.
+
+Прямая ссылка проходит отдельный неперсистентный вход:
+`DirectCaseLinkSheet` → `DirectCaseLinkResolver` → строгий `SudrfCaseCardLink` →
+`SudrfClient.fetchCardWithResponseURL` → preview. Только после подтверждения
+вызывается обычный `AppRouter.track`; затем тот же `repairBeforeRefresh` связывает
+вышестоящий или материальный URL-якорь с логическим делом. Фактический host после
+redirect является источником суда, но каждый redirect обязан остаться внутри
+credential-free HTTP(S) `*.sudrf.ru`.
 
 Ошибки при загрузке вышестоящего суда обрабатываются иначе: `MovementService`
 может вернуть частичный `CaseMovement` с CAPTCHA/сетевой заглушкой или с

@@ -173,7 +173,8 @@ final class SudrfClientTransientErrorTests: XCTestCase {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [MaintenanceThenResultsStub.self]
         let client = SudrfClient(session: URLSession(configuration: cfg), minInterval: 0)
-        let url = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case")!
+        let url = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=card-1&case_uid=card-uid&delo_id=2800001")!
 
         let card = try await client.fetchCard(url: url)
 

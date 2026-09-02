@@ -122,6 +122,7 @@ final class AppRouter: ObservableObject {
     let caseCatalog: CaseCatalog
     let spotlightIndexer: SpotlightIndexer
     private let spotlightSearch = SpotlightSearchSession()
+    private let directCaseLinkResolver: DirectCaseLinkResolver
     /// Один транспорт SUDRF на всё приложение: фоновые обновления, ремонт
     /// контекста и экран поиска делят одну FIFO-очередь и одну активную
     /// origin-scoped URLSession.
@@ -348,6 +349,7 @@ final class AppRouter: ObservableObject {
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
         self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
+        self.directCaseLinkResolver = DirectCaseLinkResolver(client: client)
         self.summaryConfigurationProvider = summaryConfigurationProvider
         self.captchaCorpus = captchaCorpus
         let savedSpotlightEnabled = UserDefaults.standard.object(
@@ -427,6 +429,12 @@ final class AppRouter: ObservableObject {
     }
 
     // MARK: Навигация
+
+    /// Проверяет прямую ссылку и загружает её карточку для предварительного
+    /// просмотра. Persistence начинается только после подтверждения в sheet.
+    func resolveDirectCaseLink(_ rawValue: String) async throws -> DirectCaseLinkResolution {
+        try await directCaseLinkResolver.resolve(rawValue)
+    }
 
     func go(_ s: AppSection) {
         section = s
@@ -741,7 +749,8 @@ final class AppRouter: ObservableObject {
 
     // MARK: Отслеживание
 
-    func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) {
+    @discardableResult
+    func track(context ctx: MovementContext, movement: CaseMovement?, collections: [String] = []) -> String? {
         let snap = movement.map { MovementDerivation.snapshot(from: $0, context: ctx) }
         // Движение с экрана поиска сеет кэш — первое открытие из «Моих дел» мгновенно.
         do {
@@ -750,9 +759,17 @@ final class AppRouter: ObservableObject {
                 movement: movement.map(MovementCachePolicy.stripped(forPersist:)),
                 collections: collections)
             reload(spotlightScope: .cases([record.key]))
+            return record.key
         } catch {
             reportPersistenceFailure(error)
+            return nil
         }
+    }
+
+    /// Открывает уже сохранённую запись в разделе «Мои дела».
+    func openTrackedCase(key: String) {
+        section = .cases
+        openCase(key: key)
     }
     func untrack(recordKey: String) {
         guard let record = store.record(forLocator: recordKey) else { return }

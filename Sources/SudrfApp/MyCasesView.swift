@@ -18,6 +18,7 @@ struct MyCasesView: View {
     @State private var creatingCollection = false
     @State private var newCollectionName = ""
     @State private var pendingUntrack: PendingUntrack?
+    @State private var showingDirectCaseLink = false
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -91,10 +92,22 @@ struct MyCasesView: View {
             .glassEffect(.regular, in: .capsule)
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
             Spacer()
+            Button {
+                showingDirectCaseLink = true
+            } label: {
+                Label("Добавить дело", systemImage: "plus")
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.small)
+            .help("Добавить дело по прямой ссылке на карточку суда")
             refreshButton
             sortMenu
         }
         .padding(.horizontal, 2)
+        .sheet(isPresented: $showingDirectCaseLink) {
+            DirectCaseLinkSheet()
+                .environmentObject(router)
+        }
     }
 
     /// Обновление: одно действие, без меню. Интервал фоновой проверки живёт в

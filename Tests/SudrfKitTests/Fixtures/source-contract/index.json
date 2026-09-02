@@ -1,0 +1,480 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "id": "sudrf-cp1251-captcha-form",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "sudrfPage",
+      "portalFamily": "sudrf",
+      "operation": "search",
+      "requestedHost": "sankt-peterburgsky.spb.sudrf.ru",
+      "effectiveHost": "sankt-peterburgsky--spb.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=windows-1251",
+      "charset": "windows-1251",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "diagnostic",
+      "pathologies": ["cp1251", "captcha", "alternate-canonical-host"],
+      "redaction": {
+        "status": "applied",
+        "originalSHA256": "90a38c888a9bf6976fe8181539b8c3a7f1c86e9955cb64dba4ee20c73770b2cb",
+        "committedSHA256": "f3c5eed5de1ab41b22c41fc46f61f9a5647f2f50b2ad7b841ac340b5210cb232"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../sudrf_captcha_form.html",
+          "sha256": "f3c5eed5de1ab41b22c41fc46f61f9a5647f2f50b2ad7b841ac340b5210cb232",
+          "request": {
+            "method": "GET",
+            "url": "https://sankt-peterburgsky.spb.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=sf&delo_id=5&new=5"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Санкт-Петербургский городской суд",
+        "courtLevel": "subject",
+        "cartotekaID": "g2"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/sudrf-cp1251-captcha-form.json"
+      }
+    },
+    {
+      "id": "sudrf-canonical-host-results",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "sudrfPage",
+      "portalFamily": "sudrf",
+      "operation": "search",
+      "requestedHost": "legacy--tum.sudrf.ru",
+      "effectiveHost": "leninsky--tum.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "webArchive",
+      "pathologies": ["alternate-canonical-host", "usable-results", "sanitized-archive"],
+      "redaction": {
+        "status": "applied",
+        "originalSHA256": "7c39274205d763e0818793e075a48373dd5d34e2ff7b0d98cf61faa0584a24cc",
+        "committedSHA256": "8bc0f0c85a580b5b496e4ad41d1b7e877540ef43207d06c2aa460aa2fc0766ac"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../leninsky_tyumen_results.html",
+          "sha256": "8bc0f0c85a580b5b496e4ad41d1b7e877540ef43207d06c2aa460aa2fc0766ac",
+          "request": {
+            "method": "GET",
+            "url": "https://legacy--tum.sudrf.ru/modules.php?name=sud_delo&name_op=r"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Ленинский районный суд г. Тюмени",
+        "courtLevel": "district",
+        "cartotekaID": "g1"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/sudrf-canonical-host-results.json"
+      }
+    },
+    {
+      "id": "sudrf-canonical-host-captcha",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "sudrfPage",
+      "portalFamily": "sudrf",
+      "operation": "search",
+      "requestedHost": "legacy--tum.sudrf.ru",
+      "effectiveHost": "leninsky--tum.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "webArchive",
+      "pathologies": ["alternate-canonical-host", "captcha", "sanitized-archive"],
+      "redaction": {
+        "status": "applied",
+        "originalSHA256": "d66c1325732366c0a568a440d800e687a2f08d048483b88f548dc3d52696ad33",
+        "committedSHA256": "c6dae27de35ce3f377c6b79a76e8b12e94b7b13012ccefa457c1a268b2628fde"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../leninsky_tyumen_search_form.html",
+          "sha256": "c6dae27de35ce3f377c6b79a76e8b12e94b7b13012ccefa457c1a268b2628fde",
+          "request": {
+            "method": "GET",
+            "url": "https://legacy--tum.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=sf&delo_id=1540005"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Ленинский районный суд г. Тюмени",
+        "courtLevel": "district",
+        "cartotekaID": "g1"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/sudrf-canonical-host-captcha.json"
+      }
+    },
+    {
+      "id": "msudrf-unlocked-results",
+      "contractLevel": "L1",
+      "normalization": "magistrateSearchOutcome",
+      "runner": "magistratePage",
+      "portalFamily": "msudrf",
+      "operation": "search",
+      "requestedHost": "petrozavodskoj.komi.msudrf.ru",
+      "effectiveHost": "petrozavodskoj.komi.msudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "webArchive",
+      "pathologies": ["msudrf-unlocked-listing", "missing-uid", "sanitized-archive"],
+      "redaction": {
+        "status": "applied",
+        "originalSHA256": "fb74912078e83b2cc6c4f9e0255788fb56d999e4bbe3d1c1a39f44bbaa8cf277",
+        "committedSHA256": "e83e298da45d9944a33d0789e6df56aa83c6dffd67e0e8735baa6276fdca7af3"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../magistrate_results.html",
+          "sha256": "e83e298da45d9944a33d0789e6df56aa83c6dffd67e0e8735baa6276fdca7af3",
+          "request": {
+            "method": "GET",
+            "url": "https://petrozavodskoj.komi.msudrf.ru/modules.php?name=sud_delo&op=sf"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Петрозаводский судебный участок",
+        "courtLevel": "magistrate",
+        "cartotekaID": "g1"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/msudrf-unlocked-results.json"
+      }
+    },
+    {
+      "id": "ksoyu-captcha-rejected-listing",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "sudrfPage",
+      "portalFamily": "ksoyu",
+      "operation": "search",
+      "requestedHost": "3kas.sudrf.ru",
+      "effectiveHost": "3kas.sudrf.ru",
+      "httpStatus": 200,
+      "contentType": "text/html; charset=windows-1251",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "liveResponse",
+      "pathologies": ["ksoyu", "captcha-rejected", "http-200-not-usable"],
+      "redaction": {
+        "status": "none",
+        "originalSHA256": null,
+        "committedSHA256": "02c2c1784f5e585787b44e55b751d4e46805ffb8a19a6a8ef248c76a2aab42f8"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../ksoyu_listing_captcha_gate.html",
+          "sha256": "02c2c1784f5e585787b44e55b751d4e46805ffb8a19a6a8ef248c76a2aab42f8",
+          "request": {
+            "method": "GET",
+            "url": "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=r"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Третий кассационный суд общей юрисдикции",
+        "courtLevel": "cassation",
+        "cartotekaID": "g3"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/ksoyu-captcha-rejected-listing.json"
+      }
+    },
+    {
+      "id": "ksoyu-adm3-koap-listing",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "sudrfPage",
+      "portalFamily": "ksoyu",
+      "operation": "search",
+      "requestedHost": "2kas.sudrf.ru",
+      "effectiveHost": "2kas.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=windows-1251",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "liveResponse",
+      "pathologies": ["ksoyu", "nonstandard-cartoteka", "koap"],
+      "redaction": {
+        "status": "none",
+        "originalSHA256": null,
+        "committedSHA256": "eb415b3e405a0010e3f6c5d6beb95b3da08f089dfb19b16d366c6f27733b7879"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../ksoyu_listing_adm33_koap.html",
+          "sha256": "eb415b3e405a0010e3f6c5d6beb95b3da08f089dfb19b16d366c6f27733b7879",
+          "request": {
+            "method": "GET",
+            "url": "https://2kas.sudrf.ru/modules.php?name=sud_delo&name_op=r"
+          }
+        }
+      ],
+      "input": {
+        "courtTitle": "Второй кассационный суд общей юрисдикции",
+        "courtLevel": "cassation",
+        "cartotekaID": "adm3"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/ksoyu-adm3-koap-listing.json"
+      }
+    },
+    {
+      "id": "sudrf-sanitized-card-movement",
+      "contractLevel": "L1",
+      "normalization": "cardToMovement",
+      "runner": "sudrfCard",
+      "portalFamily": "sudrf",
+      "operation": "movement",
+      "requestedHost": "leninsky--tum.sudrf.ru",
+      "effectiveHost": "leninsky--tum.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "webArchive",
+      "pathologies": ["full-case-movement", "sanitized-archive", "appeal-link"],
+      "redaction": {
+        "status": "applied",
+        "originalSHA256": "64bcbe9911ca311f433e496821c7d51bbe1550ce88948e6a1fdcda3d0b1a720c",
+        "committedSHA256": "a8ede6e6e73d1f5abde079df2efc2753474b1dcd013472485707fe7380efece1"
+      },
+      "artifacts": [
+        {
+          "role": "card",
+          "path": "../leninsky_tyumen_card.html",
+          "sha256": "a8ede6e6e73d1f5abde079df2efc2753474b1dcd013472485707fe7380efece1"
+        }
+      ],
+      "input": {
+        "courtTitle": "Ленинский районный суд г. Тюмени",
+        "courtLevel": "district",
+        "cartotekaID": "g1",
+        "caseNumber": "2-3891/2026 ~ М-1817/2026"
+      },
+      "expected": {
+        "kind": "caseMovement",
+        "path": "expected/sudrf-sanitized-card-movement.json"
+      }
+    },
+    {
+      "id": "sudrf-vintage-vnkod-card",
+      "contractLevel": "L1",
+      "normalization": "cardOutcome",
+      "runner": "sudrfCard",
+      "portalFamily": "sudrf",
+      "operation": "movement",
+      "requestedHost": "zavolgskiy--uln.sudrf.ru",
+      "effectiveHost": "zavolgskiy--uln.sudrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=windows-1251",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "liveResponse",
+      "pathologies": ["vintage-sudrf", "vnkod", "duplicate-mobile-rows"],
+      "redaction": {
+        "status": "none",
+        "originalSHA256": null,
+        "committedSHA256": "d3a6ea1536ed4666953c2c4d221b14a7bb65849a08773f4f9884f6ac5cbbf229"
+      },
+      "artifacts": [
+        {
+          "role": "card",
+          "path": "../zavolgskiy_card.html",
+          "sha256": "d3a6ea1536ed4666953c2c4d221b14a7bb65849a08773f4f9884f6ac5cbbf229"
+        }
+      ],
+      "input": {
+        "courtTitle": "Заволжский районный суд г. Ульяновска",
+        "courtLevel": "district",
+        "cartotekaID": "g1"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/sudrf-vintage-vnkod-card.json"
+      }
+    },
+    {
+      "id": "mosgorsud-participant-search",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "mosGorSudSearch",
+      "portalFamily": "mosgorsud",
+      "operation": "search",
+      "requestedHost": "mos-gorsud.ru",
+      "effectiveHost": "mos-gorsud.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "liveResponse",
+      "pathologies": ["moscow", "participant-search", "nonstandard-portal"],
+      "redaction": {
+        "status": "none",
+        "originalSHA256": null,
+        "committedSHA256": "896fe80034e273ba7bd943496c409539ea3f257c9f87e58396553bb6e8abedfb"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../mosgorsud/search-mgs-participant.html",
+          "sha256": "896fe80034e273ba7bd943496c409539ea3f257c9f87e58396553bb6e8abedfb",
+          "request": {
+            "method": "GET",
+            "url": "https://mos-gorsud.ru/search?courtAlias=&participant=%D0%92%D0%BE%D1%80%D0%BE%D0%B1%D1%8C%D1%91%D0%B2&instance=1&processType=1"
+          }
+        }
+      ],
+      "input": {
+        "courtLevel": "subject",
+        "cartotekaID": "p1",
+        "participant": "Воробьёв",
+        "instance": 1,
+        "processType": 1
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/mosgorsud-participant-search.json"
+      }
+    },
+    {
+      "id": "vsrf-search-by-uid",
+      "contractLevel": "L1",
+      "normalization": "searchOutcome",
+      "runner": "vsrfSearch",
+      "portalFamily": "vsrf",
+      "operation": "search",
+      "requestedHost": "vsrf.ru",
+      "effectiveHost": "vsrf.ru",
+      "httpStatus": null,
+      "contentType": "text/html; charset=utf-8",
+      "charset": "utf-8",
+      "capturedAt": null,
+      "relatedIssue": 181,
+      "origin": "liveResponse",
+      "pathologies": ["vsrf", "uid-search", "nonstandard-portal"],
+      "redaction": {
+        "status": "none",
+        "originalSHA256": null,
+        "committedSHA256": "ec359814e1e8bf6277e2e71dbaeff33d13214274fd76948ece16e6d25b137932"
+      },
+      "artifacts": [
+        {
+          "role": "response",
+          "path": "../vsrf_search_uid.html",
+          "sha256": "ec359814e1e8bf6277e2e71dbaeff33d13214274fd76948ece16e6d25b137932",
+          "request": {
+            "method": "GET",
+            "url": "https://vsrf.ru/lk/practice/claims?registerDateExact=off&considerationDateExact=off&numberExact=true&uniqueNumber=11RS0001-01-2021-021221-14"
+          }
+        }
+      ],
+      "input": {
+        "uniqueNumber": "11RS0001-01-2021-021221-14"
+      },
+      "expected": {
+        "kind": "sourceAttempt",
+        "path": "expected/vsrf-search-by-uid.json"
+      }
+    }
+  ],
+  "missing": [
+    {
+      "id": "sudrf-post-captcha-session",
+      "pathologies": ["post-captcha-session"],
+      "reason": "No safely redacted real challenge-and-unlocked response pair shares one session."
+    },
+    {
+      "id": "msudrf-kcaptcha-continuity",
+      "pathologies": ["msudrf", "kcaptcha", "cookie-continuity"],
+      "reason": "The corpus has an unlocked sanitized listing, not a real KCAPTCHA challenge/image/POST session pair."
+    },
+    {
+      "id": "maintenance-http-200",
+      "pathologies": ["maintenance", "http-200-not-usable"],
+      "reason": "Only synthetic unit strings exist; no real safely retained response is indexed."
+    },
+    {
+      "id": "honest-zero-results",
+      "pathologies": ["honest-zero"],
+      "reason": "The available KSOYu empty-looking response is a known malformed-request false zero and must not be counted."
+    },
+    {
+      "id": "unknown-response",
+      "pathologies": ["unknown-response"],
+      "reason": "Only synthetic unknown-byte tests exist."
+    },
+    {
+      "id": "unstable-uid-and-search-duplicates",
+      "pathologies": ["unstable-uid", "duplicate-rows"],
+      "reason": "A real missing-UID listing is indexed, but no real raw duplicate/unstable-UID pair is retained."
+    },
+    {
+      "id": "partial-ksoyu-and-stale-link",
+      "pathologies": ["partial-ksoyu", "stale-link"],
+      "reason": "Current KSOYu pages cover valid and CAPTCHA-rejected listings, not a proven partial/stale-link outcome."
+    },
+    {
+      "id": "r-juid-known-card",
+      "pathologies": ["r-juid", "known-card"],
+      "reason": "Existing cards contain r_juid links, not a captured r_juid response."
+    },
+    {
+      "id": "r-juid-new-card",
+      "pathologies": ["r-juid", "new-card"],
+      "reason": "No captured r_juid response establishes a newly discovered card."
+    },
+    {
+      "id": "r-juid-partial-or-error",
+      "pathologies": ["r-juid", "partial", "error"],
+      "reason": "No captured r_juid partial or error response is retained."
+    },
+    {
+      "id": "transport-failure-envelope",
+      "pathologies": ["transport-failure", "error-envelope"],
+      "reason": "No safely retained real URL loading failure envelope is available; a response body cannot represent this case."
+    },
+    {
+      "id": "renumbering-history",
+      "pathologies": ["renumbering"],
+      "reason": "Existing cards expose combined filing and case numbers, but no retained real before/after renumbering capture proves this transition."
+    }
+  ]
+}

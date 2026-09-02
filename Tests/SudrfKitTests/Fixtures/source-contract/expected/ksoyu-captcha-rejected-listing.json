@@ -1,0 +1,9 @@
+{
+  "kind": "captcha",
+  "provenance": {
+    "operation": "search",
+    "sourceFamily": "ksoyu",
+    "host": "3kas.sudrf.ru",
+    "observedAt": "2001-01-01T00:00:00Z"
+  }
+}

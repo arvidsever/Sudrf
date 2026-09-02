@@ -40,6 +40,9 @@ let package = Package(
                 // Суды на «винтажной» версии модуля sud_delo (VNKOD-паттерн) —
                 // срез конфигурации tochno-st/sudrfscraper (Scripts/derive-vnkod.py).
                 .copy("Resources/VNKODCourts.json"),
+                // Generated from the four canonical Docs/legal-deadlines
+                // inventories (Scripts/generate-legal-deadline-registry.py).
+                .copy("Resources/LegalDeadlineRegistry.json"),
             ]
         ),
         .executableTarget(

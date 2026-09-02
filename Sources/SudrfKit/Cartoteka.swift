@@ -137,23 +137,62 @@ public enum CartotekaRegistry {
     /// карточка КСОЮ может открываться с одинаковыми `delo_id` и `new`, хотя
     /// форма поиска использует короткий `delo_id`. Поэтому порядок намеренно
     /// строгий: точная пара → значимый `new` → `delo_id` → индекс номера дела.
+    ///
+    /// Исключение — исторические КАС-карточки, которые открываются через
+    /// гражданские технические пары (`1540005`, `5`, `2800001`). Если
+    /// официальный индекс номера однозначно административный, возвращается
+    /// парная `p*`-картотека; исходные параметры URL вызывающая сторона хранит
+    /// отдельно и по-прежнему использует для прямого GET.
     public static func resolve(level: CourtLevel, deloID: String, new: String?,
                                caseNumber: String) -> Cartoteka? {
         let candidates = sets(for: level)
         let normalizedNew = new ?? "0"
+        let resolved: Cartoteka?
         if let exact = candidates.first(where: {
             $0.deloID == deloID && $0.new == normalizedNew
         }) {
-            return exact
+            resolved = exact
+        } else if normalizedNew != "0",
+                  let byNew = candidates.first(where: { $0.new == normalizedNew }) {
+            resolved = byNew
+        } else if let byDeloID = candidates.first(where: { $0.deloID == deloID }) {
+            resolved = byDeloID
+        } else {
+            resolved = matches(caseNumber: caseNumber, level: level).first
         }
-        if normalizedNew != "0",
-           let byNew = candidates.first(where: { $0.new == normalizedNew }) {
-            return byNew
+        guard let resolved else { return nil }
+        return administrativeCounterpart(
+            for: resolved, caseNumber: caseNumber, level: level) ?? resolved
+    }
+
+    /// Старые карточки КАС могут сохранять гражданскую техническую таблицу,
+    /// поэтому URL и процессуальная отрасль здесь являются разными измерениями.
+    /// Подмена допускается только между парными `g*`/`p*` картотеками того же
+    /// звена и только при однозначно административном индексе номера.
+    private static func administrativeCounterpart(
+        for resolved: Cartoteka, caseNumber: String, level: CourtLevel
+    ) -> Cartoteka? {
+        let pairedID: String
+        switch resolved.id.lowercased() {
+        case "g1": pairedID = "p1"
+        case "g2": pairedID = "p2"
+        case "g3": pairedID = "p3"
+        case "g33": pairedID = "p33"
+        default: return nil
         }
-        if let byDeloID = candidates.first(where: { $0.deloID == deloID }) {
-            return byDeloID
+        guard let paired = sets(for: level).first(where: { $0.id == pairedID }) else {
+            return nil
         }
-        return matches(caseNumber: caseNumber, level: level).first
+
+        let indexed = matches(caseNumber: caseNumber, level: level)
+        if indexed.count == 1, indexed.first?.id == pairedID { return paired }
+
+        // `9а-…` — предварительный номер административного заявления. На
+        // районном звене он исторически жил в g1, а в архивах встречается и у
+        // судов субъектов, где отдельного префикса в поисковой форме также нет.
+        let normalized = normalizedNumber(caseNumber)
+        guard normalized.hasPrefix("9а-") else { return nil }
+        return pairedID == "p1" ? paired : nil
     }
 
     /// Соответствует ли номер дела индексам данной картотеки.

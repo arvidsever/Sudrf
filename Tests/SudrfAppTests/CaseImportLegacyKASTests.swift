@@ -87,4 +87,26 @@ final class CaseImportLegacyKASTests: XCTestCase {
                 cartotekaID: context.cartotekaId),
             .kas)
     }
+
+    @MainActor
+    func testReimportReclassifiesSameSourceCardWithoutDuplicate() throws {
+        let imported = try seed(
+            number: "2а-321/2021",
+            court: "Сыктывкарский городской суд (Республика Коми)",
+            url: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=1&case_uid=u1&delo_id=1540005")
+        let corrected = CaseImporter.makeContext(
+            CaseImporter.Fetched(seed: imported, card: nil), known: [])
+        var legacy = corrected
+        legacy.cartotekaId = "g1"
+
+        let store = TrackedStore(inMemory: true)
+        let original = try store.reconcileAndUpsert(
+            context: legacy, snapshot: nil, collections: [])
+        let reimported = try store.reconcileAndUpsert(
+            context: corrected, snapshot: nil, collections: [])
+
+        XCTAssertTrue(original === reimported)
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertEqual(reimported.context?.cartotekaId, "p1")
+    }
 }

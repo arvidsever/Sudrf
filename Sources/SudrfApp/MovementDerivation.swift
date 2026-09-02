@@ -48,8 +48,22 @@ struct StoredDeadline: Codable, Equatable {
     var basis: String          // основание расчёта
     var calLabel: String       // короткий ярлык для клетки календаря
     var dateRef: Double        // timeIntervalSinceReferenceDate (полночь дня)
-    var statusRaw: String      // «proposed» | «confirmed»
+    var statusRaw: String      // «proposed» | «confirmed» | «overridden»
+    /// Устойчивая identity occurrence: rule + процессуальный круг + trigger.
+    /// Старые snapshots не имели ключа и декодируются с nil.
+    var occurrenceKey: String? = nil
+    /// Нормативная provenance рассчитанного срока. Optional сохраняет старые
+    /// snapshots и вручную созданные legacy deadlines.
+    var provenance: DeadlineProvenance? = nil
+    /// `nil` в snapshot до #70 эквивалентен active.
+    var lifecycleRaw: String? = nil
     var date: Date { Date(timeIntervalSinceReferenceDate: dateRef) }
+    var status: DeadlineStatus { DeadlineStatus(rawValue: statusRaw) ?? .proposed }
+    var lifecycle: DeadlineLifecycle {
+        DeadlineLifecycle(rawValue: lifecycleRaw ?? "") ?? .active
+    }
+    var isActive: Bool { lifecycle == .active }
+    var isUserControlled: Bool { status.isUserControlled }
 }
 
 /// Вторая строка ячейки «Списком» для УПК/КоАП: либо второй подсудимый
@@ -77,6 +91,9 @@ struct CaseSnapshot: Codable, Equatable {
     var steps: [String]         // процессуальная цепочка: «done» | «active» | «todo»
     var sessions: [StoredSession]
     var deadlines: [StoredDeadline]
+    /// Известные rules, которые не создали дату без догадки. Optional для
+    /// безопасного чтения JSON snapshots, созданных до #70.
+    var deadlineAssessments: [DeadlineRuleAssessment]? = nil
     /// Метаданные опубликованных актов для детектора фоновых обновлений.
     /// Optional сохраняет декодирование снимков, созданных до появления поля.
     var actsFingerprint: [String]?
@@ -95,6 +112,7 @@ struct CaseSnapshot: Codable, Equatable {
             && sessions.count == other.sessions.count
             && zip(sessions, other.sessions).allSatisfy { $0.hasSameRefreshSource(as: $1) }
             && deadlines == other.deadlines
+            && deadlineAssessments == other.deadlineAssessments
             && actsFingerprint == other.actsFingerprint
     }
 }
@@ -128,17 +146,11 @@ struct CaseLifecyclePresentation {
 
 enum MovementDerivation {
 
-    private struct LegalForceState {
-        var effective: Bool?
-        var date: Date?
-    }
-
     /// Главная функция: движение + контекст → снимок. `today` — для расчёта
     /// «дальше», заседаний и сроков (по умолчанию системная дата).
     static func snapshot(from mv: CaseMovement, context: MovementContext,
                          today: Date = DateUtil.today) -> CaseSnapshot {
 
-        let prefix = String(context.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
         let production = production(from: context)
 
         // Сессии всех инстанций.
@@ -161,10 +173,15 @@ enum MovementDerivation {
         let leadCharges = mv.parties.leadCharges
         let secondPartyLine = self.partiesSecondLine(mv.parties)
 
-        // Заседания (будущие, со временем) и сроки.
-        let deadlines = self.deadlines(from: mv, prefix: prefix, production: production, today: today)
+        // Заседания (будущие, со временем) и сроки. Registry is the single
+        // source of normative wording; a missing resource fails closed.
+        let deadlineEvaluation = self.deadlineEvaluation(
+            from: mv, context: context, production: production, today: today)
+        let deadlines = deadlineEvaluation.deadlines
         let presentation = lifecyclePresentation(from: mv, sessions: sessions,
-                                                 deadlines: deadlines, context: context,
+                                                 deadlines: deadlines,
+                                                 assessments: deadlineEvaluation.assessments,
+                                                 context: context,
                                                  today: today)
         // Порядок `acts` не должен сам по себе создавать ложное уведомление.
         // Тело акта намеренно не включаем: для факта новой публикации достаточно
@@ -191,6 +208,7 @@ enum MovementDerivation {
             lastEvent: lastEvent, nextEvent: presentation.nextEvent,
             nextChipRaw: presentation.nextChip.rawValue,
             steps: presentation.steps, sessions: sessions, deadlines: deadlines,
+            deadlineAssessments: deadlineEvaluation.assessments,
             actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint)
     }
 
@@ -201,23 +219,29 @@ enum MovementDerivation {
                                       context: MovementContext?,
                                       today: Date = DateUtil.today) -> CaseLifecyclePresentation {
         lifecyclePresentation(from: mv, sessions: snapshot.sessions,
-                              deadlines: snapshot.deadlines, context: context, today: today)
+                              deadlines: snapshot.deadlines,
+                              assessments: snapshot.deadlineAssessments ?? [],
+                              context: context, today: today)
     }
 
     private static func lifecyclePresentation(from mv: CaseMovement,
                                               sessions: [StoredSession],
                                               deadlines: [StoredDeadline],
+                                              assessments: [DeadlineRuleAssessment],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
         let production = production(from: context)
         let resolution = CaseLifecycleResolver.resolve(movement: mv, production: production,
-                                                       deadlines: deadlines, today: today)
+                                                       deadlines: deadlines,
+                                                       deadlineAssessments: assessments,
+                                                       today: today)
         let prefix = context.map {
             String($0.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
         } ?? ""
         let nextHearing = resolution.isCompleted ? nil : futureHearings(
             sessions.filter { $0.level != .material }, today: today).first
         let nextDeadline = deadlines
+            .filter(\.isActive)
             .filter { $0.date >= today || $0 == resolution.graceDeadline }
             .sorted(by: { $0.dateRef < $1.dateRef })
             .first
@@ -248,12 +272,17 @@ enum MovementDerivation {
         } else if let deadline = nextDeadline {
             nextEvent = "срок \(deadline.kind == "cassation" ? "кассации" : "апелляции"): "
                 + DateUtil.shortDM(deadline.date)
-            nextChip = deadline.statusRaw == DeadlineStatus.confirmed.rawValue
+            nextChip = deadline.isUserControlled
                 ? .confirmed : .proposed
             // В буфере продолжаем показывать сам истёкший срок, а в сортировке
             // держим карточку до конца седьмого календарного дня.
             nextEventDate = deadline == resolution.graceDeadline && deadline.date < today
                 ? DateUtil.addDays(deadline.date, 7) : deadline.date
+        } else if !resolution.isCompleted, let reason = deadlineAssessmentReason(assessments) {
+            // Норма и формула остаются в registry. В проекции показываем лишь
+            // ID рассмотренного правила и отсутствующее поле/политику, чтобы
+            // активная карточка не выглядела как беспричинное «—».
+            nextEvent = reason
         } else if resolution.isCompleted {
             nextEvent = "завершено"
         }
@@ -303,6 +332,53 @@ enum MovementDerivation {
                 ?? inferredTier(stage: resolution.stage, production: production, context: context),
             currentReviewNumber: currentReviewNumber,
             nextEventCourt: nextEventCourt)
+    }
+
+    /// Короткое, локализованное объяснение fail-closed результата. Здесь нет
+    /// текста нормы или формулы: пользовательские нормативные сведения берутся
+    /// только из registry/provenance popover.
+    static func deadlineAssessmentReason(_ assessments: [DeadlineRuleAssessment]) -> String? {
+        guard let assessment = assessments.first(where: { $0.isIndeterminate }) else { return nil }
+        let detail: String
+        switch assessment.status {
+        case .insufficientEvidence:
+            let evidence = assessment.missingEvidenceRaw.compactMap {
+                DeadlineEvidenceRequirement(rawValue: $0)
+            }.map(evidenceLabel)
+            detail = evidence.isEmpty
+                ? "не хватает подтверждённого факта"
+                : "нет: \(evidence.joined(separator: ", "))"
+        case .unsupportedCalculation:
+            let policies = assessment.missingPolicyIDs.map(policyLabel)
+            detail = policies.isEmpty
+                ? "не реализована политика исчисления"
+                : "не реализована политика: \(policies.joined(separator: ", "))"
+        case .needsLegalReview:
+            detail = "требуется юридическая проверка"
+        case .applicable, .notApplicable:
+            return nil
+        }
+        return "срок не рассчитан · \(assessment.ruleID) · \(detail)"
+    }
+
+    private static func evidenceLabel(_ requirement: DeadlineEvidenceRequirement) -> String {
+        switch requirement {
+        case .production: return "вид производства"
+        case .caseCategory: return "категория дела"
+        case .actType: return "вид судебного акта"
+        case .finalAct: return "итоговый судебный акт"
+        case .finalForm: return "окончательная форма акта"
+        case .deliveryOrReceipt: return "вручение или получение акта"
+        case .legalForce: return "вступление акта в силу"
+        case .motivatedAppealDetermination: return "мотивированное апелляционное определение"
+        }
+    }
+
+    private static func policyLabel(_ id: String) -> String {
+        let value = id.uppercased()
+        if value.contains("NONWORKING") { return "перенос с нерабочего дня" }
+        if value.contains("WORKING") { return "производственный календарь" }
+        return id
     }
 
     /// Стадия определяется по исходной картотеке дела, а не по номеру
@@ -430,20 +506,87 @@ enum MovementDerivation {
         }
     }
 
-    /// Переносит в свежий снимок пользовательские правки сроков: подтверждённый
-    /// срок (statusRaw == «confirmed») не сбрасывается пересчётом — дата и статус
-    /// берутся из прежнего снимка. Срок, исчезнувший из свежего расчёта (жалоба
-    /// подана — считать нечего), не восстанавливается.
+    /// Совмещает свежий расчёт с сохранёнными occurrences. Ручное решение
+    /// переносится только на тот же rule/round/trigger; старые и просроченные
+    /// occurrences остаются историей и не могут возродиться при refresh.
     static func preservingConfirmedDeadlines(_ snap: CaseSnapshot,
-                                             old: CaseSnapshot?) -> CaseSnapshot {
-        guard let old else { return snap }
+                                             old: CaseSnapshot?,
+                                             today: Date = DateUtil.today) -> CaseSnapshot {
+        guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
         var out = snap
-        for (i, dl) in out.deadlines.enumerated() {
-            if let prev = old.deadlines.first(where: { $0.kind == dl.kind }),
-               prev.statusRaw == DeadlineStatus.confirmed.rawValue {
-                out.deadlines[i].dateRef = prev.dateRef
-                out.deadlines[i].statusRaw = prev.statusRaw
+        var fresh = out.deadlines
+        var historical: [StoredDeadline] = []
+        var usedFresh = Set<Int>()
+        var suppressedFresh = Set<Int>()
+
+        func freshIndex(matching deadline: StoredDeadline) -> Int? {
+            guard let key = deadline.occurrenceKey else { return nil }
+            return fresh.indices.first { fresh[$0].occurrenceKey == key }
+        }
+
+        for previous in old.deadlines {
+            if let index = freshIndex(matching: previous) {
+                usedFresh.insert(index)
+                // An inactive occurrence is immutable, even if a later source
+                // refresh happens to expose its old trigger again.
+                if !previous.isActive {
+                    historical.append(previous)
+                    suppressedFresh.insert(index)
+                    continue
+                }
+                if previous.isUserControlled {
+                    fresh[index].dateRef = previous.dateRef
+                    fresh[index].statusRaw = previous.statusRaw
+                }
+                continue
             }
+
+            // Legacy snapshots have no occurrence key. A user-controlled
+            // deadline may safely migrate to the sole fresh deadline of its
+            // kind; proposed legacy values are replaced by the registry result.
+            if previous.occurrenceKey == nil,
+               previous.isUserControlled,
+               let index = fresh.indices.first(where: {
+                   !usedFresh.contains($0) && fresh[$0].kind == previous.kind
+               }) {
+                usedFresh.insert(index)
+                fresh[index].dateRef = previous.dateRef
+                fresh[index].statusRaw = previous.statusRaw
+                continue
+            }
+
+            // A manual decision takes precedence over an incomplete refresh.
+            // It becomes superseded only when the fresh source actually
+            // proves a different occurrence of the same kind. This also keeps
+            // a confirmed date safe while a portal temporarily omits a row.
+            if previous.isUserControlled,
+               !fresh.contains(where: { $0.kind == previous.kind }) {
+                historical.append(previous)
+            } else {
+                var superseded = previous
+                if superseded.isActive {
+                    superseded.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+                }
+                historical.append(superseded)
+            }
+        }
+        out.deadlines = fresh.enumerated()
+            .filter { !suppressedFresh.contains($0.offset) }
+            .map(\.element) + historical
+        return applyingDeadlineRetention(to: out, today: today)
+    }
+
+    private static func applyingDeadlineRetention(to snapshot: CaseSnapshot,
+                                                   today: Date) -> CaseSnapshot {
+        var out = snapshot
+        out.deadlines = out.deadlines.map { deadline in
+            guard deadline.isActive,
+                  deadline.status == .proposed,
+                  DateUtil.daysBetween(deadline.date, today) > AppRouter.deadlineGraceDays
+            else { return deadline }
+            var expired = deadline
+            expired.lifecycleRaw = DeadlineLifecycle.expiredUnconfirmed.rawValue
+            return expired
         }
         return out
     }
@@ -505,150 +648,20 @@ enum MovementDerivation {
         .map(\.element)
     }
 
-    // MARK: Сроки (ОРИЕНТИРОВОЧНЫЙ расчёт — требует подтверждения пользователем)
+    // MARK: Сроки
 
-    /// ВНИМАНИЕ: таблица сроков — ориентир по ГПК/КАС/КоАП/УПК, не истина в
-    /// последней инстанции (исчисление со дня изготовления мотивированного акта,
-    /// переносы с выходных, восстановление и т. п. здесь не учитываются). Все
-    /// расчётные сроки помечаются «proposed» и требуют подтверждения. Для КоАП и
-    /// УПК единый срок кассации отсутствует — кассацию не считаем.
-    private static func deadlines(from mv: CaseMovement,
-                                  prefix: String, production: ProductionType?,
-                                  today: Date) -> [StoredDeadline] {
-        var out: [StoredDeadline] = []
-        // Юридическая сила относится к текущему кругу. Старое вступление в
-        // силу первой инстанции не должно порождать срок кассации, пока более
-        // поздняя апелляция/кассация остаётся активной.
-        let current = CaseLifecycleResolver.resolve(
-            movement: mv, production: production, deadlines: [], today: today)
-        // После возврата на новое рассмотрение историческая апелляция относится
-        // к прежнему кругу и не должна подавлять новый расчётный срок.
-        let timeline = CaseLifecycleResolver.timeline(in: mv, production: production)
-        let hasAppealInCurrentRound = timeline.hasAppealInCurrentRound
-        let hasCassationInCurrentRound = timeline.hasCassationInCurrentRound
-        let forceState = currentLegalForceState(in: current.currentInstance?.sessions ?? [])
-        let activeReview = current.completionReason == nil
-            && current.currentInstance.map { isReviewLevel($0.level) } == true
-        let legallyEffective = !activeReview && (forceState.effective ?? mv.inForce)
-        let currentlyReactivated = forceState.effective == false
-
-        // Срок апелляции: есть решение 1-й инстанции, дело не обжаловано в
-        // апелляцию и не вступило в силу.
-        if !legallyEffective, !currentlyReactivated,
-           !hasAppealInCurrentRound, !hasCassationInCurrentRound {
-            if let firstDecision = firstInstanceDecisionDate(mv, timeline: timeline),
-               let days = appealDays(prefix: prefix) {
-                let due = DateUtil.addDays(firstDecision, days)
-                out.append(StoredDeadline(
-                    kind: "appeal", what: "Апелляционная жалоба",
-                    basis: "\(daysPhrase(days)) со дня решения (\(DateUtil.shortDM(firstDecision))) — расчётный, проверьте",
-                    calLabel: "апел. жалоба \(shortNum(mv.caseNumber))",
-                    dateRef: due.timeIntervalSinceReferenceDate, statusRaw: "proposed"))
-            }
+    private static func deadlineEvaluation(from movement: CaseMovement,
+                                           context: MovementContext,
+                                           production: ProductionType?,
+                                           today: Date) -> DeadlineRuleEngine.Evaluation {
+        guard production != nil, let registry = try? LegalDeadlineRegistry.load() else {
+            return DeadlineRuleEngine.Evaluation(deadlines: [], assessments: [])
         }
-
-        // Срок кассации: акт вступил в силу, в кассацию ещё не подавали.
-        if legallyEffective, !hasCassationInCurrentRound,
-           let days = cassationDays(prefix: prefix) {
-            guard let base = forceState.date ?? lastAppealDate(mv) else { return out }
-            let due = DateUtil.addDays(base, days)
-            out.append(StoredDeadline(
-                kind: "cassation", what: "Кассационная жалоба",
-                basis: "\(daysPhrase(days)) со вступления в силу (\(DateUtil.shortDM(base))) — расчётный, проверьте",
-                calLabel: "касс. жалоба \(shortNum(mv.caseNumber))",
-                dateRef: due.timeIntervalSinceReferenceDate, statusRaw: "proposed"))
-        }
-        return out
-    }
-
-    /// Срок апелляционного обжалования (календарные дни, ориентир).
-    private static func appealDays(prefix: String) -> Int? {
-        switch prefix {
-        case "g", "p": return 30   // ГПК / КАС — месяц
-        case "adm":    return 10   // КоАП — 10 суток (ст. 30.3)
-        case "u":      return 15   // УПК — 15 суток (ст. 389.4)
-        default:       return nil  // материалы и прочее — не считаем
-        }
-    }
-    /// Срок кассационного обжалования (ориентир). КоАП/УПК — без единого срока.
-    private static func cassationDays(prefix: String) -> Int? {
-        switch prefix {
-        case "g": return 90    // ГПК — 3 месяца
-        case "p": return 180   // КАС — 6 месяцев
-        default:  return nil
-        }
-    }
-
-    private static func firstInstanceDecisionDate(_ mv: CaseMovement,
-                                                  timeline: CaseLifecycleResolver.Timeline) -> Date? {
-        guard let first = timeline.latestFirst?.instance else { return nil }
-
-        // Триггер срока — строка, которой объявлен обжалуемый итоговый акт.
-        // Раньше бралась «последняя сессия с непустым результатом, иначе
-        // последняя по дате»: обе ветки семантику события не проверяли, и срок
-        // уезжал на произвольную строку — портал заполняет «Результат события»
-        // и у промежуточных, и у канцелярских строк (#80).
-        // Выбираем по ДАТЕ, а не по порядку в массиве: сессии инстанции идут
-        // как их отдал парсер (по дате их сортирует только сборка снимка), а в
-        // круге после возврата на новое рассмотрение итоговых актов может быть
-        // несколько — срок считается от последнего.
-        if let date = first.sessions
-            .filter({ CaseLifecycleResolver.isFinalActAnnouncement(
-                event: $0.event, result: $0.result) })
-            .compactMap({ DateUtil.parse($0.date) })
-            .max() {
-            return date
-        }
-
-        // Итоговую строку опознать не удалось. Полностью отказаться от срока
-        // нельзя: `resolveTerminalFirst` завершает дело, когда расчётного срока
-        // апелляции нет, — то есть дело с нераспознанной формулировкой молча
-        // уехало бы в «Завершённые» и пропало из активных списков. Это хуже
-        // неточной даты, поэтому поведение остаётся прежним, но канцелярские
-        // строки в кандидаты больше не попадают: именно они и перебивали
-        // настоящий итог, будучи позже него по дате.
-        let meaningful = first.sessions.filter {
-            !CaseLifecycleResolver.isClericalEvent($0.event)
-        }
-        let candidates = meaningful.isEmpty ? first.sessions : meaningful
-        if let withResult = candidates.last(where: { ($0.result ?? "").isEmpty == false }),
-           let date = DateUtil.parse(withResult.date) {
-            return date
-        }
-        return candidates.compactMap { DateUtil.parse($0.date) }.max()
-    }
-    private static func currentLegalForceState(in sessions: [CaseSession]) -> LegalForceState {
-        let ordered = sessions.enumerated().sorted { left, right in
-            let leftDate = DateUtil.parse(left.element.date) ?? .distantPast
-            let rightDate = DateUtil.parse(right.element.date) ?? .distantPast
-            return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
-        }
-        var state = LegalForceState()
-        for (_, session) in ordered {
-            if CaseLifecycleResolver.hasLegalForceEvidence(
-                event: session.event, result: session.result
-            ) {
-                state.effective = true
-                state.date = DateUtil.parse(session.date)
-            } else if CaseLifecycleResolver.isReactivation(
-                event: session.event, result: session.result
-            ) {
-                state.effective = false
-                state.date = nil
-            }
-        }
-        return state
-    }
-    private static func isReviewLevel(_ level: CaseInstance.Level) -> Bool {
-        switch level {
-        case .appeal, .cassation, .vsCassation, .supervisory: return true
-        case .first, .material: return false
-        }
-    }
-    private static func lastAppealDate(_ mv: CaseMovement) -> Date? {
-        mv.instances.filter { $0.level == .appeal }
-            .compactMap { inst in inst.sessions.compactMap { DateUtil.parse($0.date) }.max() }
-            .max()
+        let timeline = CaseLifecycleResolver.timeline(in: movement, production: production)
+        return DeadlineRuleEngine.evaluate(
+            registry: registry, movement: movement,
+            context: DeadlineRuleEngine.Context(movementContext: context),
+            timeline: timeline, today: today)
     }
 
     // MARK: Ярлыки
@@ -749,17 +762,6 @@ enum MovementDerivation {
         }
     }
 
-    private static func daysPhrase(_ n: Int) -> String {
-        switch n {
-        case 30:  return "1 месяц"
-        case 90:  return "3 месяца"
-        case 180: return "6 месяцев"
-        default:  return "\(n) " + DateUtil.plural(n, "сутки", "суток", "суток")
-        }
-    }
-    private static func shortNum(_ caseNumber: String) -> String {
-        caseNumber.split(separator: " ").first.map(String.init) ?? caseNumber
-    }
     private static func trim(_ s: String) -> String {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.count > 60 ? String(t.prefix(58)) + "…" : t

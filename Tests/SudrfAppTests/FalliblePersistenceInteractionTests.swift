@@ -36,13 +36,14 @@ final class FalliblePersistenceInteractionTests: XCTestCase {
 
     private func movement(for context: MovementContext) -> CaseMovement {
         let session = CaseSession(date: "01.08.2026", event: "Судебное заседание",
-                                  result: "Решение")
+                                  result: "Иск удовлетворён; решение принято в окончательной форме")
         let instance = CaseInstance(
             level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
             judge: nil, domain: context.searchDomain, foundByUID: false,
-            result: "Решение", sessions: [session])
+            result: "Иск удовлетворён", sessions: [session])
         return CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
-                            instances: [instance], complaints: [:], acts: [])
+                            instances: [instance], complaints: [:], acts: [],
+                            category: "Споры из договоров")
     }
 
     func testFailedTrackRestoresPublishedCasesAndShowsCommonAlert() throws {

@@ -449,6 +449,81 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(execution?.outcome, .refreshed)
     }
 
+    func testSuccessfulRefreshAppendsSemanticEventOnceAndPersistsAcrossReopen() async throws {
+        let localStore = TrackedStore(inMemory: true)
+        var context = makeContext()
+        context.caseID = "source-card-1"
+        var oldMovement = makeSuccessMovement(court: context.searchCourt)
+        oldMovement.instances[0].result = nil
+        let baseline = MovementDerivation.snapshot(from: oldMovement, context: context)
+        let record = try localStore.upsert(
+            context: context, snapshot: baseline, movement: oldMovement, collections: [])
+        var refreshed = oldMovement
+        refreshed.instances[0].sessions = [CaseSession(
+            date: "10.03.2027", time: "10:00", room: "1",
+            event: "Судебное заседание", result: nil)]
+        let service = FixedMovement(refreshed)
+        let center = RefreshCenter(store: localStore, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+
+        _ = await center.refresh(key: record.key)?.value
+        _ = await center.refresh(key: record.key)?.value
+
+        let saved = try XCTUnwrap(localStore.record(forKey: record.key))
+        XCTAssertEqual(saved.eventJournal?.events.map(\.kind), [.hearingScheduled])
+        let reopened = try TrackedStore(container: localStore.container)
+        XCTAssertEqual(reopened.record(forKey: record.key)?.eventJournal,
+                       saved.eventJournal)
+    }
+
+    func testPartialRefreshDoesNotAppendSemanticEvents() async throws {
+        let localStore = TrackedStore(inMemory: true)
+        var context = makeContext()
+        context.caseID = "source-card-1"
+        let oldMovement = makeSuccessMovement(court: context.searchCourt)
+        let baseline = MovementDerivation.snapshot(from: oldMovement, context: context)
+        let record = try localStore.upsert(
+            context: context, snapshot: baseline, movement: oldMovement, collections: [])
+        var partial = oldMovement
+        partial.instances[0].sessions = [CaseSession(
+            date: "10.03.2027", time: "10:00", room: "1",
+            event: "Судебное заседание", result: nil)]
+        partial.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        let center = RefreshCenter(store: localStore, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(partial) })
+
+        _ = await center.refresh(key: record.key)?.value
+
+        XCTAssertTrue(record.eventJournal?.events.isEmpty == true)
+    }
+
+    func testChangedDerivationVersionUsesRefreshAsBaseline() async throws {
+        let localStore = TrackedStore(inMemory: true)
+        var context = makeContext()
+        context.caseID = "source-card-1"
+        var oldMovement = makeSuccessMovement(court: context.searchCourt)
+        oldMovement.instances[0].result = nil
+        let record = try localStore.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: oldMovement, context: context),
+            movement: oldMovement, collections: [])
+        record.eventJournal = CaseEventJournal(derivationVersion: 0)
+        try localStore.save()
+        var refreshed = oldMovement
+        refreshed.instances[0].sessions = [CaseSession(
+            date: "10.03.2027", time: "10:00", room: "1",
+            event: "Судебное заседание", result: nil)]
+        let center = RefreshCenter(store: localStore, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(refreshed) })
+
+        _ = await center.refresh(key: record.key)?.value
+
+        XCTAssertEqual(record.eventJournal?.derivationVersion,
+                       CaseEventJournal.currentDerivationVersion)
+        XCTAssertTrue(record.eventJournal?.events.isEmpty == true)
+        XCTAssertEqual(record.snapshot?.sessions.count, 1)
+    }
+
     func testRefreshRecoversBlankContextUIDFromCachedMovement() async throws {
         let key = store.all()[0].key
         let record = try XCTUnwrap(store.record(forKey: key))
@@ -719,12 +794,14 @@ final class RefreshCenterTests: XCTestCase {
         let savedSurvivorSeenAt = beforeSurvivor.seenAt
         let savedSurvivorState = beforeSurvivor.identityStateData
         let savedSurvivorAttempt = beforeSurvivor.sourceRefreshAttempt
+        let savedSurvivorJournal = beforeSurvivor.eventJournalData
         let savedRefreshedMovement = beforeRefreshed.movement
         let savedRefreshedSnapshot = beforeRefreshed.snapshot
         let savedRefreshedFetchedAt = beforeRefreshed.movementFetchedAt
         let savedRefreshedSeenAt = beforeRefreshed.seenAt
         let savedRefreshedState = beforeRefreshed.identityStateData
         let savedRefreshedAttempt = try XCTUnwrap(beforeRefreshed.sourceRefreshAttempt)
+        let savedRefreshedJournal = beforeRefreshed.eventJournalData
 
         var refreshedCallback: (String, [String: String])?
         var failed: (String, String)?
@@ -746,6 +823,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(persistedSurvivor.seenAt, savedSurvivorSeenAt)
         XCTAssertEqual(persistedSurvivor.identityStateData, savedSurvivorState)
         XCTAssertEqual(persistedSurvivor.sourceRefreshAttempt, savedSurvivorAttempt)
+        XCTAssertEqual(persistedSurvivor.eventJournalData, savedSurvivorJournal)
         XCTAssertEqual(persistedSurvivor.collectionNames, ["Первая инстанция"])
         XCTAssertEqual(persistedRefreshed.movement, savedRefreshedMovement)
         XCTAssertEqual(persistedRefreshed.snapshot, savedRefreshedSnapshot)
@@ -753,6 +831,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(persistedRefreshed.seenAt, savedRefreshedSeenAt)
         XCTAssertEqual(persistedRefreshed.identityStateData, savedRefreshedState)
         XCTAssertEqual(persistedRefreshed.sourceRefreshAttempt, savedRefreshedAttempt)
+        XCTAssertEqual(persistedRefreshed.eventJournalData, savedRefreshedJournal)
         XCTAssertEqual(persistedRefreshed.collectionNames, ["Апелляция"])
         XCTAssertEqual(store.courtActID(caseKey: survivorKey, sourceActID: "survivor-act"),
                        survivorProjectionID)

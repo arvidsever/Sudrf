@@ -90,6 +90,30 @@ final class FalliblePersistenceInteractionTests: XCTestCase {
         XCTAssertEqual(router.draftDate, draft)
         XCTAssertEqual(router.deadline(deadline.id)?.date, deadline.date)
         XCTAssertEqual(router.persistenceError, "Изменения не сохранены. Повторите попытку.")
+        let store = try TrackedStore(container: router.modelContainer)
+        let key = try XCTUnwrap(router.cases.first?.recordKey)
+        XCTAssertTrue(store.record(forKey: key)?.eventJournal?.events.isEmpty == true)
+    }
+
+    func testDeadlineConfirmationAndOverrideAppendJournalOnce() throws {
+        let gate = ProjectionGate()
+        let router = try router(using: gate)
+        let value = context()
+        router.track(context: value, movement: movement(for: value))
+        let deadline = try XCTUnwrap(router.deadlines.first)
+        let key = try XCTUnwrap(router.cases.first?.recordKey)
+        let store = try TrackedStore(container: router.modelContainer)
+
+        router.confirm(deadline.id)
+        router.confirm(deadline.id)
+        XCTAssertEqual(store.record(forKey: key)?.eventJournal?.events.map(\.kind),
+                       [.deadlineConfirmed])
+
+        router.beginEdit(deadline.id)
+        router.step(1)
+        router.save(deadline.id)
+        XCTAssertEqual(store.record(forKey: key)?.eventJournal?.events.map(\.kind),
+                       [.deadlineConfirmed, .deadlineChanged])
     }
 
     func testCollectionIntentRethrowsCommitFailureWithoutMembershipSuccess() throws {

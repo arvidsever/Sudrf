@@ -716,6 +716,27 @@ enum CaseLifecycleResolver {
         return isReliableFirstTerminalResult(value) || isTerminalDisposition(value)
     }
 
+    /// Stable, deliberately narrow disposition vocabulary for the semantic
+    /// shadow journal. It is gated by the lifecycle predicates above so an
+    /// arbitrary wording edit cannot become `resultChanged`.
+    static func semanticDisposition(event: String = "", result: String?) -> String? {
+        let value = normalized(event + " " + (result ?? ""))
+        if let target = remandTarget(in: value) { return "remand:\(target.rawValue)" }
+        if hasLegalForceEvidence(in: value) { return "legal-force" }
+        guard isFinalActAnnouncement(event: event, result: result) else { return nil }
+        if value.contains("остав") && (value.contains("без изменен")
+            || value.contains("без удовлетвор")) { return "unchanged" }
+        if value.contains("прекращ") { return "terminated" }
+        if value.contains("возврат") || value.contains("возвращ") { return "returned" }
+        if value.contains("отмен") && value.contains("без направ") {
+            return "cancelled-no-remand"
+        }
+        if value.contains("измен") && (value.contains("решен")
+            || value.contains("приговор") || value.contains("постановлен")
+            || value.contains("определен")) { return "changed" }
+        return nil
+    }
+
     /// Конечные формулы первой инстанции. Намеренно не считаем итогом простое
     /// «рассмотрение отложено», «принято» или неоконченную карточку.
     private static func isReliableFirstTerminalResult(_ value: String) -> Bool {

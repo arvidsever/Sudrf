@@ -28,7 +28,7 @@ final class StoreBootstrapTests: XCTestCase {
     private var freshStoreURL: URL! { root.appendingPathComponent("default.store") }
     private var quarantineRoot: URL! { root.appendingPathComponent("store-backups") }
     private let quarantineDate = Date(timeIntervalSince1970: 0)
-    private let quarantineName = "unopenable-1970-01-01T00-00-00Z-schema-6.0.0"
+    private let quarantineName = "unopenable-1970-01-01T00-00-00Z-schema-7.0.0"
 
     private struct StartupFailure: LocalizedError {
         var errorDescription: String? { "test startup failure" }
@@ -298,7 +298,7 @@ final class StoreBootstrapTests: XCTestCase {
                                 encoding: .utf8)
         XCTAssertTrue(readme.contains("Создано (UTC): 1970-01-01T00-00-00Z"))
         XCTAssertTrue(readme.contains("Приложение: "))
-        XCTAssertTrue(readme.contains("Версия схемы: 6.0.0"))
+        XCTAssertTrue(readme.contains("Версия схемы: 7.0.0"))
         XCTAssertTrue(readme.contains("Исходный путь базы: \(store.standardizedFileURL.path)"))
         XCTAssertTrue(readme.contains("Ошибка запуска: test startup failure"))
         XCTAssertTrue(readme.contains("Файлы в этом каталоге:\n- default.store-wal\n- default.store-shm\n- default.store"))

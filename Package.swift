@@ -71,7 +71,8 @@ let package = Package(
         // тестировать executable-таргеты начиная с Swift 5.5.
         .testTarget(
             name: "SudrfAppTests",
-            dependencies: ["SudrfApp"]
+            dependencies: ["SudrfApp"],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "CaptchaSolverTests",

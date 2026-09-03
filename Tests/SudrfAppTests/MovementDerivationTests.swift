@@ -1809,6 +1809,43 @@ final class MovementDerivationTests: XCTestCase {
                           "новый акт должен считаться изменением при фоновом обновлении")
     }
 
+    func testActProjectionUsesExactLinkAndRejectsAmbiguousLevelFallback() throws {
+        var ctx = context()
+        ctx.sourceKnownCard = KnownCard(
+            domain: ctx.searchDomain, courtTitle: "СГС", caseID: "card-1",
+            caseUID: "uid-1", deloID: "1540005", new: "5",
+            caseNumber: "2-100/2026", levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: "g")
+        ctx.knownCards = [KnownCard(
+            domain: ctx.searchDomain, courtTitle: "СГС", caseID: "card-2",
+            caseUID: "uid-2", deloID: "1540005", new: "5",
+            caseNumber: "2-200/2026", levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: "g")]
+        let second = CaseInstance(
+            level: .first, court: "СГС", caseNumber: "2-200/2026", judge: nil,
+            domain: ctx.searchDomain, foundByUID: true, result: nil, sessions: [],
+            actIDs: ["linked-act"])
+        var source = movement(sessions: [], instances: [second])
+        source.acts = [
+            CaseAct(id: "linked-act", title: "Решение", date: "10.04.2026",
+                    courtShort: "СГС", instanceLevel: .first),
+            CaseAct(id: "legacy-act", title: "Определение", date: "11.04.2026",
+                    courtShort: "СГС", instanceLevel: .first),
+        ]
+
+        let snapshot = MovementDerivation.snapshot(from: source, context: ctx, today: today)
+        let linked = try XCTUnwrap(snapshot.actObservations?.first {
+            $0.sourceActID == "linked-act"
+        })
+        let secondIdentity = try XCTUnwrap(snapshot.instanceObservations?.first {
+            $0.caseNumber == "2-200/2026"
+        }?.sourceCardID)
+        XCTAssertEqual(linked.sourceCardID, secondIdentity)
+        XCTAssertNil(snapshot.actObservations?.first {
+            $0.sourceActID == "legacy-act"
+        }?.sourceCardID)
+    }
+
     func testLegacySnapshotWithoutActFingerprintStillDecodes() throws {
         let snapshot = MovementDerivation.snapshot(from: movement(sessions: []), context: context(), today: today)
         let data = try JSONEncoder().encode(snapshot)

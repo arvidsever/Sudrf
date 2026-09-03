@@ -966,6 +966,12 @@ final class TrackedCaseRepairCoordinator {
             records = TrackedStore.reconciledEnforcementRecords(
                 existing: records, updates: [record], courtDocuments: courtDocuments)
         }
+        // Identity repair is not itself a case event. Preserve every existing
+        // append-only journal and fail the whole transaction on corruption or
+        // an event-ID collision with a different payload.
+        let mergedJournal = try CaseEventJournal.merged(
+            try all.map { try store.requiredEventJournal(for: $0) })
+        survivor.eventJournalData = try JSONEncoder().encode(mergedJournal)
         survivor.movementFetchedAt = nil
         if let movement {
             var snapshot = MovementDerivation.snapshot(from: movement, context: context)

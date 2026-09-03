@@ -73,3 +73,31 @@ was replaced in-place with equal-length redaction and records both hashes.
 Existing raw fixtures that contain only a link to `r_juid` are not treated as
 endpoint responses. Synthetic unit HTML, unproved origin material, and
 unredacted sensitive captures remain outside the counted corpus.
+
+## Level 2: semantic changes
+
+`Tests/SudrfAppTests/Fixtures/source-contract/l2-index.json` closes the second
+contract level: each entry pins a real raw artifact by SHA-256, derives an old
+and a new normalized snapshot from values present in that artifact, and compares
+the complete deterministic `CaseEvent[]` payload. The runner never uses the live
+network.
+
+The initial matrix covers all required source families:
+
+| Pair | Source artifact | Proven semantic change |
+| --- | --- | --- |
+| `sudrf-sgs-explicit-postponement` | `sgs_card.html` (`1d63993f…`) | the 31 March hearing is explicitly marked `Заседание отложено` and paired with the sole 11 April hearing as one `hearingRescheduled` |
+| `ksoyu-published-act` | `ksoyu_case_card.html` (`50a15cbf…`) | one stable published act becomes `judicialActPublished` |
+| `msudrf-discovered-card` | `magistrate_results.html` (`e83e298d…`) | one stable magistrate card becomes `instanceDiscovered` |
+
+These source-derived pairs are deliberately narrow: they prove the semantic
+facts contained in the retained response, but do not pretend that a single
+capture is a chronological before/after archive. Additional real pairs follow
+the same #65 capture and redaction procedure. Synthetic snapshots remain useful
+only as negative and edge-case unit tests and do not count toward this matrix.
+
+Run the level separately with:
+
+```bash
+swift test --filter SourceFixtureLevel2ContractTests
+```

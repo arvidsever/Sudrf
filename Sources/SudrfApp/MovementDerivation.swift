@@ -24,6 +24,9 @@ struct StoredSession: Codable, Equatable {
     /// Номер производства инстанции пересмотра, из которой пришло событие.
     /// Optional сохраняет декодирование старых snapshots.
     var caseNumber: String? = nil
+    /// Stable source-card identity used only by the shadow semantic journal.
+    /// Optional preserves snapshots written before #155.
+    var sourceCardID: String? = nil
     var level: CaseInstance.Level { CaseInstance.Level(rawValue: levelRaw) ?? .first }
     var date: Date? { DateUtil.parse(dateRaw) }
 
@@ -97,6 +100,12 @@ struct CaseSnapshot: Codable, Equatable {
     /// Метаданные опубликованных актов для детектора фоновых обновлений.
     /// Optional сохраняет декодирование снимков, созданных до появления поля.
     var actsFingerprint: [String]?
+    /// Versioned typed projection consumed by `CaseEventDeriver`. A missing
+    /// version means legacy baseline, never "all rows are new".
+    var semanticProjectionVersion: Int? = nil
+    var instanceObservations: [StoredInstanceObservation]? = nil
+    var actObservations: [StoredActObservation]? = nil
+    var complaintObservations: [StoredComplaintObservation]? = nil
 
     /// Сравнение для фонового бейджа: stage/status/steps/next пересчитываются
     /// из того же движения и текущей даты, поэтому одно лишь исправление этих
@@ -155,14 +164,18 @@ enum MovementDerivation {
 
         // Сессии всех инстанций.
         var sessions: [StoredSession] = []
+        var sourceIDsByInstance = [String: String]()
         for inst in mv.instances {
+            let sourceCardID = CaseSnapshotSourceIdentity.sourceCardID(
+                for: inst, context: context)
+            if let sourceCardID { sourceIDsByInstance[inst.id] = sourceCardID }
             for s in inst.sessions {
                 // CaseSession does not carry a per-session judge; use the instance judge as the closest source.
                 sessions.append(StoredSession(
                     dateRaw: s.date, time: s.time, room: s.room,
                     event: s.event, result: s.result,
                     court: inst.court, judge: inst.judge, levelRaw: inst.level.rawValue,
-                    caseNumber: reviewNumber(for: inst)))
+                    caseNumber: reviewNumber(for: inst), sourceCardID: sourceCardID))
             }
         }
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
@@ -189,6 +202,36 @@ enum MovementDerivation {
         let actsFingerprint = mv.acts.map {
             "\($0.id)|\($0.date)|\($0.title)|\($0.courtShort)|\($0.instanceLevel.rawValue)"
         }.sorted()
+        let instanceObservations = mv.instances.map { instance in
+            StoredInstanceObservation(
+                sourceCardID: sourceIDsByInstance[instance.id],
+                levelRaw: instance.level.rawValue, court: instance.court,
+                caseNumber: instance.caseNumber, judge: instance.judge,
+                result: instance.result)
+        }.sorted {
+            ($0.sourceCardID ?? "", $0.levelRaw, $0.caseNumber)
+                < ($1.sourceCardID ?? "", $1.levelRaw, $1.caseNumber)
+        }
+        let actObservations = mv.acts.map { act -> StoredActObservation in
+            let linked = mv.instances.filter { $0.linkedActIDs.contains(act.id) }
+            let candidates = linked.isEmpty
+                ? mv.instances.filter { $0.level == act.instanceLevel }
+                : linked
+            let owner = candidates.count == 1 ? candidates[0] : nil
+            return StoredActObservation(
+                sourceCardID: owner.flatMap { sourceIDsByInstance[$0.id] },
+                sourceActID: act.id, title: act.title, dateRaw: act.date,
+                court: act.courtShort, levelRaw: act.instanceLevel.rawValue)
+        }.sorted { $0.sourceActID < $1.sourceActID }
+        let complaintObservations = mv.complaints.values.map { complaint in
+            let owner = mv.instances.first {
+                $0.court == complaint.court && $0.caseNumber == complaint.caseNumber
+            }
+            return StoredComplaintObservation(
+                sourceCardID: owner.flatMap { sourceIDsByInstance[$0.id] },
+                sourceComplaintID: complaint.id, label: complaint.label,
+                court: complaint.court, caseNumber: complaint.caseNumber)
+        }.sorted { $0.sourceComplaintID < $1.sourceComplaintID }
 
         // «Последнее событие».
         let lastEvent: String
@@ -209,7 +252,11 @@ enum MovementDerivation {
             nextChipRaw: presentation.nextChip.rawValue,
             steps: presentation.steps, sessions: sessions, deadlines: deadlines,
             deadlineAssessments: deadlineEvaluation.assessments,
-            actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint)
+            actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint,
+            semanticProjectionVersion: CaseEventJournal.currentDerivationVersion,
+            instanceObservations: instanceObservations,
+            actObservations: actObservations,
+            complaintObservations: complaintObservations)
     }
 
     /// Пересчёт представляемой стадии по сохранённому движению и снимку. Поля

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 2,
+  "pairs": [
+    {
+      "id": "sudrf-sgs-explicit-postponement",
+      "portalFamily": "sudrf",
+      "rawArtifactPath": "sgs_card.html",
+      "rawArtifactSHA256": "1d63993ff70a2ccbb60184084dfaaa72bff3aa1a08a594decc65395e7aeda642",
+      "sourceCardID": "sudrf|syktsud--komi.sudrf.ru|g1|sgs-card",
+      "observedAt": "2025-03-31T12:00:00Z",
+      "scenario": "explicitPostponementAndSingleNewDate",
+      "expectedEvents": [
+        {
+          "id": "24ba0f03eebd66de70d2aa1ba8bef170ba2951a6f93792ff5047160d0496b28d",
+          "kind": "hearingRescheduled",
+          "observedAtRef": 765115200,
+          "evidence": {
+            "sourceCardID": "sudrf|syktsud--komi.sudrf.ru|g1|sgs-card",
+            "instanceLevelRaw": "first",
+            "dateRaw": "11.04.2025",
+            "time": "12:00",
+            "previousDateRaw": "31.03.2025",
+            "previousTime": "14:10",
+            "event": "Судебное заседание",
+            "value": "Заседание отложено",
+            "occurrenceKey": "sudrf|syktsud--komi.sudrf.ru|g1|sgs-card|судебное заседание|2025-03-31|0850",
+            "relatedOccurrenceKey": "sudrf|syktsud--komi.sudrf.ru|g1|sgs-card|судебное заседание|2025-04-11|0720"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ksoyu-published-act",
+      "portalFamily": "ksoyu",
+      "rawArtifactPath": "ksoyu_case_card.html",
+      "rawArtifactSHA256": "50a15cbf429e75bfa47c5a09dbc7f392fbef1f42c14aa187b80997d480815b86",
+      "sourceCardID": "ksoyu|77kj0002|g3|ksoyu-card",
+      "observedAt": "2026-08-01T12:00:00Z",
+      "scenario": "publishedAct",
+      "expectedEvents": [
+        {
+          "id": "52d52d9e2d403fd65426f80c9388334c79169c565c3014b2cb5cfc089bf2ae6d",
+          "kind": "judicialActPublished",
+          "observedAtRef": 807278400,
+          "evidence": {
+            "sourceCardID": "ksoyu|77kj0002|g3|ksoyu-card",
+            "instanceLevelRaw": "cassation",
+            "dateRaw": "14.05.2026",
+            "event": "Определение",
+            "value": "Второй кассационный суд общей юрисдикции",
+            "occurrenceKey": "fixture:50a15cbf429e75bfa47c5a09dbc7f392fbef1f42c14aa187b80997d480815b86"
+          }
+        }
+      ]
+    },
+    {
+      "id": "msudrf-discovered-card",
+      "portalFamily": "msudrf",
+      "rawArtifactPath": "magistrate_results.html",
+      "rawArtifactSHA256": "e83e298da45d9944a33d0789e6df56aa83c6dffd67e0e8735baa6276fdca7af3",
+      "sourceCardID": "msudrf|petrozavodskoj.komi.msudrf.ru|1540005|900000001",
+      "observedAt": "2026-07-08T12:00:00Z",
+      "scenario": "instanceDiscovered",
+      "expectedEvents": [
+        {
+          "id": "bd724ea3d0e15c5f6e35f1a8a9cd1547fc75c350b0f6346a5f42ef5004ab84ce",
+          "kind": "instanceDiscovered",
+          "observedAtRef": 805204800,
+          "evidence": {
+            "sourceCardID": "msudrf|petrozavodskoj.komi.msudrf.ru|1540005|900000001",
+            "instanceLevelRaw": "first",
+            "caseNumber": "2-871/2026",
+            "value": "Судебный приказ",
+            "occurrenceKey": "msudrf|petrozavodskoj.komi.msudrf.ru|1540005|900000001"
+          }
+        }
+      ]
+    }
+  ]
+}

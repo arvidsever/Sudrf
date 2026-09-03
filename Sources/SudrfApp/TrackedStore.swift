@@ -31,6 +31,7 @@ struct IdentityReconciliationSummary: Equatable {
 enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
     case projectionSynchronization(details: String)
     case contextSave(details: String)
+    case corruptedEventJournal(key: String)
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +39,8 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
             return "Не удалось подготовить локальные данные для сохранения: \(details)"
         case .contextSave(let details):
             return "Не удалось сохранить изменения в локальной базе: \(details)"
+        case .corruptedEventJournal(let key):
+            return "Повреждён журнал событий записи \(key); изменения не сохранены."
         }
     }
 }
@@ -51,6 +54,7 @@ enum TrackedStorePreparation {
         try migrateJudicialUIDs(context: context)
         try migrateMoscowKeyAliases(context: context)
         try bootstrapPersistentIdentity(context: context)
+        try bootstrapEventJournals(context: context)
         try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
         guard context.hasChanges else { return false }
         try context.save()
@@ -113,6 +117,15 @@ enum TrackedStorePreparation {
             }
             if rec.legacyKeyAliases != aliases { rec.legacyKeyAliases = aliases }
             TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: rec), to: rec)
+        }
+    }
+
+    /// V7 starts from the persisted snapshot as a baseline. Existing source
+    /// history is deliberately not reconstructed during migration.
+    private static func bootstrapEventJournals(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        for record in records where record.eventJournalData == nil {
+            record.eventJournal = CaseEventJournal()
         }
     }
 }
@@ -303,6 +316,8 @@ final class TrackedCaseRecord {
     /// timestamp успешного движения: ошибки и частичные ответы тоже сохраняют
     /// attempt, но не продлевают TTL `movementFetchedAt`.
     var sourceRefreshAttemptData: Data? = nil
+    /// Append-only shadow journal. It has no user-facing readers before #179.
+    var eventJournalData: Data? = nil
     /// Записи об исполнении — JSON. Optional + default позволяют легко
     /// добавить поле к уже существующим SwiftData-записям.
     var enforcementData: Data? = nil
@@ -322,6 +337,7 @@ final class TrackedCaseRecord {
         self.displayDomain = displayDomain
         self.contextData = contextData
         self.snapshotData = snapshotData
+        self.eventJournalData = try? JSONEncoder().encode(CaseEventJournal())
     }
 
     // MARK: Декодирование значений
@@ -370,6 +386,23 @@ final class TrackedCaseRecord {
             do { sourceRefreshAttemptData = try JSONEncoder().encode(newValue) }
             catch {
                 storeLog.error("Не удалось закодировать source refresh attempt; прежние данные сохранены: \(error, privacy: .public)")
+            }
+        }
+    }
+    var eventJournal: CaseEventJournal? {
+        get {
+            eventJournalData.flatMap {
+                Self.decode(CaseEventJournal.self, from: $0, what: "case event journal")
+            }
+        }
+        set {
+            guard let newValue else {
+                eventJournalData = nil
+                return
+            }
+            do { eventJournalData = try JSONEncoder().encode(newValue) }
+            catch {
+                storeLog.error("Не удалось закодировать case event journal; прежние данные сохранены: \(error, privacy: .public)")
             }
         }
     }
@@ -610,6 +643,24 @@ final class TrackedStore {
             predicate: #Predicate { $0.key == key })
         descriptor.fetchLimit = 1
         return try fetchForMutation(descriptor, operation: "поиск записи дела").first
+    }
+
+    func requiredEventJournal(for record: TrackedCaseRecord) throws -> CaseEventJournal {
+        if record.eventJournalData == nil { return CaseEventJournal() }
+        guard let journal = record.eventJournal else {
+            throw TrackedStoreCommitError.corruptedEventJournal(key: record.key)
+        }
+        return journal
+    }
+
+    func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord) throws {
+        guard !events.isEmpty else { return }
+        var journal = try requiredEventJournal(for: record)
+        try journal.append(events)
+        guard let data = try? JSONEncoder().encode(journal) else {
+            throw TrackedStoreCommitError.corruptedEventJournal(key: record.key)
+        }
+        record.eventJournalData = data
     }
 
     /// Разрешает исходный display-derived locator и его исторические aliases

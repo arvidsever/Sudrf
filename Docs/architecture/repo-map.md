@@ -36,6 +36,7 @@
 | Отслеживание и постоянное хранение | `Sources/SudrfApp/TrackedStore.swift`, `DataCatalog.swift` | `AppModel.swift` (`track`, `untrack`, `reload`), `MovementContext.swift` | `DataCatalogTests`, `MovementContextTests`, `MyCasesModelTests` |
 | Добавление дела по прямой ссылке | `Sources/SudrfApp/DirectCaseLinkSheet.swift`, `DirectCaseLinkResolver.swift` | `AppModel.swift` (`resolveDirectCaseLink`, `track`, `openTrackedCase`), `Sources/SudrfKit/SudrfCaseCardLink.swift`, `SudrfClient.swift`, `Cartoteka.swift`, `DistrictCourtResolver.swift`, `MovementContext.swift` | `DirectCaseLinkSheetTests`, `DirectCaseLinkResolverTests`, `SudrfCaseCardLinkTests`, `TrackedCaseRepairTests`, `RefreshCenterTests` |
 | Фоновое обновление и сохранение кэша | `Sources/SudrfApp/RefreshCenter.swift`, `Sources/SudrfKit/SourceOutcome.swift` | `Sources/SudrfKit/MovementCachePolicy.swift`, `Sources/SudrfApp/MovementCache.swift`, `MovementDerivation.swift`, `TrackedStore.swift` | `RefreshCenterTests`, `MovementCachePolicyTests`, `MovementDerivationTests`, `SourceOutcomeTests` |
+| Семантические изменения и shadow-журнал | `Sources/SudrfApp/CaseEvent.swift` | `MovementDerivation.swift` (typed snapshot projections), `RefreshCenter.swift` (usable-snapshot gate), `TrackedStore.swift`, `TrackedCaseRepair.swift`, `DataCatalog.swift` | `CaseEventDeriverTests`, `SourceFixtureLevel2ContractTests`, `RefreshCenterTests`, `TrackedStoreIdentityTests`, `DataCatalogTests` |
 | Исполнительные листы и Казначейство | `Sources/SudrfKit/Enforcement.swift`, `CaseCardParser.swift` | `Movement.swift`, `Sources/SudrfApp/RefreshCenter.swift`, `TrackedStore.swift`, `CaseMovementView.swift`, `AppModel.swift` | `TreasuryClientTests`, `CaseCardParserTests`, `RefreshCenterTests`, `DataCatalogTests`, `OverviewModelTests` |
 | Импорт, объединение дублей и восстановление цепочки | `Sources/SudrfApp/CaseImport.swift`, `TrackedCaseRepair.swift` | `CaseOriginResolver.swift`, `MovementContext.swift`, `TrackedStore.swift`, `Sources/SudrfKit/Cartoteka.swift` (`CartotekaRegistry.resolve`) | `CaseImportTests`, `TrackedCaseRepairTests`, `CaseOriginResolverTests`, `CorrectivePassTests`, `CartotekaRegistryTests` |
 | Автоматическая или ручная CAPTCHA | `Sources/SudrfApp/AutoCaptchaSolver.swift`, `CaptchaWebViewCoordinator.swift`, `RefreshCenter.swift` | `CaptchaWebView.swift`, `CaptchaAssistSheet.swift`, `CaptchaFlowDecisions.swift`, `CaptchaSolverFactory.swift`, `CaptchaSettings.swift`, `CaptchaMenu.swift`, `Sources/SudrfKit/CaptchaImageExtractor.swift`, `CaptchaTokenStore.swift`, `Sources/CaptchaSolver/HighestConfidenceStrategy.swift`, `Sources/CaptchaSolver/` | `AutoCaptchaSolverTests`, `CaptchaAssistTests`, `CaptchaPendingQueueTests`, `CaptchaSheetStateTests`, `CaptchaImageExtractorTests`, `CaptchaTokenStoreTests`, `CaptchaSolverTests`, `VisionOCRStrategyTests` |
@@ -66,7 +67,10 @@
 `AppRouter.track` → `TrackedStore.upsert` → SwiftData. Затем `RefreshCenter`
 восстанавливает `MovementContext`, вызывает `MovementService`, объединяет ответ
 с последним успешным движением через `MovementCachePolicy`, строит снимок через
-`MovementDerivation` и только после этого сохраняет запись.
+`MovementDerivation` и только после этого сохраняет запись. Полный пригодный
+snapshot проходит чистый `CaseEventDeriver`; доказанные события добавляются в
+`CaseEventJournal` в той же транзакции. Partial/error outcomes не создают событий,
+а первый refresh после новой derivation-version только устанавливает baseline.
 
 Ошибка домашнего суда, после которой нельзя собрать пригодный `CaseMovement`,
 идёт в failure/pending-путь и не вызывает `applyMovement`. Последний успешный

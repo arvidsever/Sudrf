@@ -16,6 +16,10 @@
 import Foundation
 import SudrfKit
 import CaptchaSolver
+import os
+
+private let semanticEventLog = Logger(
+    subsystem: "ru.sudrf.app", category: "SemanticEventShadow")
 
 private extension CourtEnforcementDocument {
     /// FSSP accepts the electronic identifier when present and otherwise the
@@ -927,10 +931,10 @@ final class RefreshCenter: ObservableObject {
             !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
         } ?? true
         let changed = movementSourceChanged || snapshotSourceChanged
-
         let persisted: TrackedCaseRecord
         var keyRemaps: [String: String] = [:]
         var publishedMovement = merged
+        var semanticOldSnapshots = oldSnapshot.map { [$0] } ?? []
         let projectionKeys: Set<String>
         if isComplete,
            let identityObservation = TrackedCaseIdentity.observation(
@@ -940,7 +944,11 @@ final class RefreshCenter: ObservableObject {
             // boundary as manual tracking.  Partial/error responses never
             // establish a card/UID relation and are deliberately kept on the
             // existing record below.
-            let before = Set(store.all().map(\.key))
+            let beforeRecords = try store.allForMutation()
+            let before = Set(beforeRecords.map(\.key))
+            let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
+                record in record.snapshot.map { (record.key, $0) }
+            })
             let reconciled = try store.reconcileAndUpsert(
                 context: ctx, snapshot: newSnap, movement: persistedMovement,
                 collections: rec.collectionNames,
@@ -953,6 +961,7 @@ final class RefreshCenter: ObservableObject {
                 ($0, persisted.key)
             })
             projectionKeys = removed.union([persisted.key])
+            semanticOldSnapshots = projectionKeys.compactMap { beforeSnapshots[$0] }
             // Reconciliation may have merged this refreshed card into a
             // dossier whose survivor already contained other instances and
             // acts. Publish the full persisted projection in that case.
@@ -969,10 +978,33 @@ final class RefreshCenter: ObservableObject {
             projectionKeys = [persisted.key]
         }
         persisted.sourceRefreshAttempt = attempt
+        var journal = try store.requiredEventJournal(for: persisted)
+        let finalSnapshot = persisted.snapshot ?? newSnap
+        let derivation: CaseEventDerivationResult
+        if journal.derivationVersion != CaseEventJournal.currentDerivationVersion {
+            derivation = .init(events: [], diagnostics: [.derivationVersionChanged])
+        } else {
+            let baseline = CaseEventDeriver.conservativeBaseline(
+                semanticOldSnapshots, comparedTo: finalSnapshot)
+            derivation = CaseEventDeriver.derive(
+                old: baseline, new: finalSnapshot,
+                attempt: isComplete ? attempt : SourceAttempt(
+                    kind: .partial, provenance: attempt.provenance),
+                observedAt: attempt.provenance.observedAt)
+        }
+        journal.derivationVersion = CaseEventJournal.currentDerivationVersion
+        try journal.append(derivation.events)
+        persisted.eventJournalData = try JSONEncoder().encode(journal)
         // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
         // кроме дела, открытого прямо сейчас (пользователь его и так видит).
         if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
         try store.save(projection: .cases(projectionKeys))
+        let kinds = Dictionary(grouping: derivation.events, by: \.kind)
+            .map { "\($0.key.rawValue):\($0.value.count)" }.sorted()
+            .joined(separator: ",")
+        let reasons = derivation.diagnostics.map(\.rawValue).sorted().joined(separator: ",")
+        semanticEventLog.info(
+            "legacyChanged=\(changed) semanticCount=\(derivation.events.count) kinds=\(kinds, privacy: .public) reasons=\(reasons, privacy: .public)")
         captchaPending.remove(key: key)
         if persisted.key != key { captchaPending.remove(key: persisted.key) }
         onRefreshed?(persisted.key, publishedMovement, keyRemaps)

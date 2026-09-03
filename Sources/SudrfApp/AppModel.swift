@@ -1595,10 +1595,24 @@ final class AppRouter: ObservableObject {
         // Персистим решённую капчу — инстанция переживает перезапуск, а фоновое
         // обновление не деградирует её обратно в заглушку (правило merge).
         if let key = openedKey, let rec = store.record(forKey: key), let mctx = rec.context {
+            let oldSnapshot = rec.snapshot
             rec.movement = MovementCachePolicy.stripped(forPersist: updated)
-            rec.snapshot = MovementDerivation.preservingConfirmedDeadlines(
+            let newSnapshot = MovementDerivation.preservingConfirmedDeadlines(
                 MovementDerivation.snapshot(from: updated, context: mctx), old: rec.snapshot)
+            rec.snapshot = newSnapshot
             do {
+                let observedAt = Date()
+                let attempt = SourceAttempt(
+                    kind: .usableSnapshot,
+                    provenance: SourceProvenance(
+                        operation: .movement,
+                        sourceFamily: domain.lowercased().contains("msudrf")
+                            ? "msudrf" : "sudrf",
+                        host: domain, observedAt: observedAt))
+                let derived = CaseEventDeriver.derive(
+                    old: oldSnapshot, new: newSnapshot,
+                    attempt: attempt, observedAt: observedAt)
+                try store.appendCaseEvents(derived.events, to: rec)
                 try store.save(projection: .cases([key]))
             } catch {
                 reportPersistenceFailure(error)
@@ -1658,9 +1672,14 @@ final class AppRouter: ObservableObject {
               let idx = snap.deadlines.firstIndex(where: {
                   ($0.occurrenceKey ?? $0.kind) == parts[1]
               }) else { return false }
+        let oldSnapshot = snap
         change(&snap.deadlines[idx])
         rec.snapshot = snap
         do {
+            let observedAt = Date()
+            let derived = CaseEventDeriver.derive(
+                old: oldSnapshot, new: snap, attempt: nil, observedAt: observedAt)
+            try store.appendCaseEvents(derived.events, to: rec)
             try store.save()
             reload()
             return true

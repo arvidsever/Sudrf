@@ -1,0 +1,42 @@
+[
+  {
+    "url": "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=32002827&case_uid=9d40b65b-f077-4adf-b91c-135981443fdb&delo_id=5&new=5",
+    "response_url": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=32002827&case_uid=9d40b65b-f077-4adf-b91c-135981443fdb&delo_id=5&new=5",
+    "status": 200,
+    "captured_at": "2026-09-07T18:17:43.594791+00:00",
+    "sha256": "830565abf0af042ad4b4890213d002402ec0bb4639d18a9ca04b07da416fad78",
+    "bytes": 51885,
+    "fixture": "komi-original.html",
+    "fixture_sha256": "b72cee4d011db473252c651955e3042dd84d76cfd7679573adcf9370e26da4b3"
+  },
+  {
+    "url": "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=32002827&case_uid=9d40b65b-f077-4adf-b91c-135981443fdb&delo_id=42&new=0",
+    "response_url": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=32002827&case_uid=9d40b65b-f077-4adf-b91c-135981443fdb&delo_id=42&new=0",
+    "status": 200,
+    "captured_at": "2026-09-07T18:17:45.815766+00:00",
+    "sha256": "de6c8b558cb94c46efd90405d0f190b01214e1fb14f6c4e238e272e58b6e53f9",
+    "bytes": 85444,
+    "fixture": "komi-recovered.html",
+    "fixture_sha256": "4275984fb436082e592831c6c8f41c9dcbdf96db2ba365f8bf650ecd6a15eaf1"
+  },
+  {
+    "url": "https://1ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=590268&case_uid=6dc098e7-acb0-4b6b-b250-fcbb25479004&delo_id=5&new=5",
+    "response_url": "https://1ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=590268&case_uid=6dc098e7-acb0-4b6b-b250-fcbb25479004&delo_id=5&new=5",
+    "status": 200,
+    "captured_at": "2026-09-07T18:17:47.476139+00:00",
+    "sha256": "ee89f5b986ad1f739fa158e3587ac9654a174f8d7fb16fd5a8d7e57a1d3396c4",
+    "bytes": 61180,
+    "fixture": "appeal-original.html",
+    "fixture_sha256": "b72cee4d011db473252c651955e3042dd84d76cfd7679573adcf9370e26da4b3"
+  },
+  {
+    "url": "https://1ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=590268&case_uid=6dc098e7-acb0-4b6b-b250-fcbb25479004&delo_id=42&new=0",
+    "response_url": "https://1ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=590268&case_uid=6dc098e7-acb0-4b6b-b250-fcbb25479004&delo_id=42&new=0",
+    "status": 200,
+    "captured_at": "2026-09-07T18:17:49.983373+00:00",
+    "sha256": "1c85cff1eef3c0ada8e831cdf01b93237f62e7a92bfa77c1bb64294fcac77474",
+    "bytes": 118991,
+    "fixture": "appeal-recovered.html",
+    "fixture_sha256": "40a4c3b48dd00cd262830df669d5f628e8ca0a30b011698ed6c1acc53c4e3a86"
+  }
+]

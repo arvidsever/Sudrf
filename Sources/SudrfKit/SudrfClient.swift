@@ -585,11 +585,26 @@ public actor SudrfClient {
         }
     }
 
+    public func searchComplete(court: Court,
+                               cartoteka: Cartoteka,
+                               field: SearchField,
+                               value: String,
+                               srvNum: Int = 1) async throws -> [CaseSearchResult] {
+        guard srvNum > 0 else { throw IncompleteCaseSearchError() }
+        return try await withHostFallback(court) { c in
+            try await self.searchOnce(court: c, cartoteka: cartoteka, field: field,
+                                      value: value, srvNum: srvNum,
+                                      requireCompleteResults: true)
+        }
+    }
+
     private func searchOnce(court: Court,
                             cartoteka: Cartoteka,
                             field: SearchField,
-                            value: String) async throws -> [CaseSearchResult] {
-        let builder = SudrfURLBuilder(court: court)
+                            value: String,
+                            srvNum: Int = 1,
+                            requireCompleteResults: Bool = false) async throws -> [CaseSearchResult] {
+        let builder = SudrfURLBuilder(court: court, srvNum: srvNum)
 
         // 0) Решённая ранее капча этого суда: без предпроверки формы, сразу
         // на выдачу с парой captcha/captchaid (минус запрос и минус окно).
@@ -598,7 +613,8 @@ public actor SudrfClient {
             do {
                 return try await runVariants(builder: builder, court: court,
                                              cartoteka: cartoteka, field: field,
-                                             value: value, captcha: token)
+                                             value: value, captcha: token,
+                                             requireCompleteResults: requireCompleteResults)
             } catch SudrfError.captchaRequired {
                 await captchaStore.invalidate(domain: court.domain, matching: token)
             }
@@ -628,7 +644,8 @@ public actor SudrfClient {
         // 2) Перебор вариантов выдачи.
         return try await runVariants(builder: builder, court: court,
                                      cartoteka: cartoteka, field: field,
-                                     value: value, captcha: nil)
+                                     value: value, captcha: nil,
+                                     requireCompleteResults: requireCompleteResults)
     }
 
     /// Перебор вариантов поискового URL. Рабочий вариант прошлых запросов —
@@ -642,7 +659,8 @@ public actor SudrfClient {
                              cartoteka: Cartoteka,
                              field: SearchField,
                              value: String,
-                             captcha: CaptchaToken?) async throws -> [CaseSearchResult] {
+                             captcha: CaptchaToken?,
+                             requireCompleteResults: Bool = false) async throws -> [CaseSearchResult] {
         var variants = try builder.searchURLVariants(cartoteka: cartoteka, field: field,
                                                      value: value, captcha: captcha)
         if let workingID = await variantStore.workingVariantID(domain: court.domain, cartoteka: cartoteka),
@@ -651,6 +669,9 @@ public actor SudrfClient {
         }
 
         var sawEmpty = false
+        var sawCompleteEmpty = false
+        var sawUnprovenEmpty = false
+        var sawIncompleteResults = false
         var lastData: Data? = nil
         var captchaRejectedResponse: (data: Data, host: String)?
         var maintenanceHost: String?
@@ -698,10 +719,31 @@ public actor SudrfClient {
                 captchaRejectedResponse = (response.data, responseHost)
                 continue
             case .results:
-                await variantStore.remember(variantID: v.id, domain: court.domain, cartoteka: cartoteka)
+                if requireCompleteResults {
+                    do {
+                        let rows = try ResultsParser.parseComplete(
+                            html: response.html, court: responseCourt)
+                        await variantStore.remember(variantID: v.id, domain: court.domain,
+                                                    cartoteka: cartoteka)
+                        return rows
+                    } catch is IncompleteCaseSearchError {
+                        sawIncompleteResults = true
+                        continue
+                    }
+                }
+                await variantStore.remember(variantID: v.id, domain: court.domain,
+                                            cartoteka: cartoteka)
                 return try ResultsParser.parse(html: response.html, court: responseCourt)
             case .empty:
                 sawEmpty = true
+                if requireCompleteResults {
+                    if (try? ResultsParser.parseComplete(
+                        html: response.html, court: responseCourt))?.isEmpty == true {
+                        sawCompleteEmpty = true
+                    } else {
+                        sawUnprovenEmpty = true
+                    }
+                }
             case .maintenance:
                 lastData = response.data
                 lastResponseHost = responseHost
@@ -712,7 +754,17 @@ public actor SudrfClient {
                 continue
             }
         }
-        if sawEmpty, maintenanceHost == nil, lastTransportError == nil, lastData == nil { return [] }
+        if sawEmpty, maintenanceHost == nil, lastTransportError == nil, lastData == nil {
+            if requireCompleteResults {
+                if sawCompleteEmpty && !sawUnprovenEmpty && !sawIncompleteResults { return [] }
+                throw IncompleteCaseSearchError()
+            }
+            return []
+        }
+        if requireCompleteResults, sawIncompleteResults,
+           maintenanceHost == nil, lastTransportError == nil, lastData == nil {
+            throw IncompleteCaseSearchError()
+        }
         // Ни один вариант не дал ни выдачи, ни валидной пустоты: суд отвечает
         // в неизвестном формате.
         // Сбрасываем последний ответ (сырые байты + декодированную строку),

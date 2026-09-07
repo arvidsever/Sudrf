@@ -86,7 +86,7 @@ public struct SudrfCaseCardLink: Sendable, Equatable {
         sanitized.scheme = components.scheme?.lowercased()
         sanitized.host = host
         sanitized.fragment = nil
-        sanitized.queryItems = items.filter { !isRemovableQueryItem($0) }
+        sanitized.percentEncodedQuery = sanitizedQuery(components.percentEncodedQuery)
         guard let sanitizedURL = sanitized.url else {
             throw invalidURL("не удалось нормализовать URL")
         }
@@ -160,8 +160,21 @@ public struct SudrfCaseCardLink: Sendable, Equatable {
         "yclid", "mc_cid", "mc_eid", "_ga", "_gl", "referrer", "referral"
     ]
 
-    private static func isRemovableQueryItem(_ item: URLQueryItem) -> Bool {
-        let name = item.name.lowercased()
+    private static func sanitizedQuery(_ query: String?) -> String? {
+        guard let query else { return nil }
+        return query.split(separator: "&", omittingEmptySubsequences: false)
+            .filter { segment in
+                let encodedName = segment.split(
+                    separator: "=", maxSplits: 1, omittingEmptySubsequences: false
+                ).first.map(String.init) ?? ""
+                let name = encodedName.removingPercentEncoding?.lowercased()
+                    ?? encodedName.lowercased()
+                return !isRemovableQueryName(name)
+            }
+            .joined(separator: "&")
+    }
+
+    private static func isRemovableQueryName(_ name: String) -> Bool {
         return name == "captcha" || name == "captchaid"
             || name.hasPrefix("utm_") || trackingParameterNames.contains(name)
     }

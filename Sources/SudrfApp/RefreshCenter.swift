@@ -137,6 +137,10 @@ final class RefreshCenter: ObservableObject {
     /// Точечный repair-preflight. Может переякорить запись и вернуть
     /// новый ключ; отказ commit поднимается в refresh как persistence failure.
     var repairBeforeRefresh: ((String) async throws -> String)?
+    /// The App layer owns the shared card resolver. A nil seam preserves the
+    /// deterministic RefreshCenter tests and leaves the pre-existing outcome
+    /// handling untouched for unsupported sources.
+    var recoverCard: ((MovementContext) async throws -> CaseCardRecoveryResolution)?
 
     private let store: TrackedStore
     private let client: SudrfClient
@@ -719,6 +723,10 @@ final class RefreshCenter: ObservableObject {
             guard !Task.isCancelled else {
                 return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
             }
+            if let recovered = try await retryAfterCardRecovery(
+                after: outcome, key: effectiveKey, context: ctx) {
+                return recovered
+            }
             return try await handle(outcome, service: service, key: effectiveKey,
                                     ctx: ctx, cart: cart, mayAutoSolve: true)
         } catch is CancellationError {
@@ -731,6 +739,142 @@ final class RefreshCenter: ObservableObject {
             return failure(effectiveKey,
                            "Не удалось собрать движение дела: \(error.localizedDescription)")
         }
+    }
+
+    /// A movement request can discover that an imported base locator is no
+    /// longer a card. Resolve it once, persist the verified replacement, then
+    /// rebuild movement with that replacement. The normal outcome path remains
+    /// responsible for CAPTCHA and partial higher-court handling.
+    private func retryAfterCardRecovery(
+        after outcome: SourceOutcome<CaseMovement>, key: String,
+        context: MovementContext
+    ) async throws -> RefreshExecution? {
+        switch outcome {
+        case .parserFailure:
+            break
+        case .transportFailure(_, let attempt)
+            where attempt.provenance.httpStatus == 404 || attempt.provenance.httpStatus == 410:
+            break
+        default:
+            return nil
+        }
+        guard let recoverCard else { return nil }
+        do {
+            let resolution = try await recoverCard(context)
+            return try await retryWithResolvedCard(resolution, key: key,
+                                                   expectedContext: context)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            throw error
+        } catch let error as TrackedStoreCommitError {
+            throw error
+        } catch SudrfError.captchaRequired(let formURL) {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: SudrfError.captchaRequired(formURL: formURL), operation: .discovery,
+                sourceFamily: "sudrf", host: context.searchDomain)
+            guard let cartoteka = context.cartoteka else {
+                return failure(key, "Не удалось восстановить параметры поиска по делу.")
+            }
+            if let solver = captchaSolver, let settings = captchaSettings,
+               settings.isEffectivelyEnabled {
+                let solved = await solveCaptcha(formURL: formURL, solver: solver, settings: settings)
+                if solved.cancelled || Task.isCancelled { throw CancellationError() }
+                if solved.token != nil {
+                    do {
+                        let resolution = try await recoverCard(context)
+                        return try await retryWithResolvedCard(resolution, key: key,
+                                                               expectedContext: context)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                        throw error
+                    } catch let error as TrackedStoreCommitError {
+                        throw error
+                    } catch SudrfError.captchaRequired(let repeatedFormURL) {
+                        let repeatedAttempt = SourceOutcomeClassifier.attempt(
+                            for: SudrfError.captchaRequired(formURL: repeatedFormURL),
+                            operation: .discovery, sourceFamily: "sudrf",
+                            host: context.searchDomain)
+                        return try await handle(.captcha(formURL: repeatedFormURL, repeatedAttempt),
+                                                service: serviceBuilder(context), key: key,
+                                                ctx: context, cart: cartoteka, mayAutoSolve: false)
+                    } catch {
+                        let latestAttempt = (error as? CaseCardRecoveryError)?
+                            .sourceAttempt(host: context.searchDomain)
+                            ?? SourceOutcomeClassifier.attempt(
+                                for: error, operation: .discovery, sourceFamily: "sudrf",
+                                host: context.searchDomain)
+                        try persistAttempt(key, latestAttempt)
+                        return failure(key, error.localizedDescription)
+                    }
+                }
+            }
+            // Manual retry restarts this bounded resolver with the accepted
+            // token in the shared client.
+            return try await handle(.captcha(formURL: formURL, attempt),
+                                    service: serviceBuilder(context), key: key,
+                                    ctx: context, cart: cartoteka, mayAutoSolve: false)
+        } catch {
+            // An ambiguous recovery must not be shown as a successful empty
+            // refresh. Leave URL/cache untouched and persist its latest typed
+            // source attempt for an honest visible reason.
+            let latestAttempt = (error as? CaseCardRecoveryError)?
+                .sourceAttempt(host: context.searchDomain)
+                ?? SourceOutcomeClassifier.attempt(
+                    for: error, operation: .discovery, sourceFamily: "sudrf",
+                    host: context.searchDomain)
+            try persistAttempt(key, latestAttempt)
+            return failure(key, error.localizedDescription)
+        }
+    }
+
+    private func retryWithResolvedCard(_ resolution: CaseCardRecoveryResolution,
+                                       key: String,
+                                       expectedContext: MovementContext) async throws -> RefreshExecution {
+        try Task.checkCancellation()
+        guard let current = store.record(forKey: key) else {
+            return RefreshExecution(effectiveKey: key, outcome: .notFound)
+        }
+        guard current.context == expectedContext else {
+            return RefreshExecution(effectiveKey: key, outcome: .cancelled)
+        }
+        let persisted: TrackedCaseRecord
+        if resolution.wasRecovered {
+            guard let saved = try store.applyVerifiedCardContext(
+                forLocator: key, context: resolution.context,
+                attempt: SourceAttempt(
+                    kind: .usableSnapshot,
+                    provenance: SourceProvenance(operation: .discovery,
+                                                 sourceFamily: "sudrf",
+                                                 host: resolution.context.searchDomain)),
+                expectedActiveContext: expectedContext) else {
+                return RefreshExecution(effectiveKey: key, outcome: .cancelled)
+            }
+            persisted = saved
+        } else {
+            guard let saved = store.record(forKey: key) else {
+                return RefreshExecution(effectiveKey: key, outcome: .notFound)
+            }
+            persisted = saved
+        }
+        let verifiedContext = resolution.wasRecovered
+            ? (persisted.context ?? resolution.context) : resolution.context
+        let persistedContext = resolution.wasRecovered ? verifiedContext : expectedContext
+        guard let cartoteka = verifiedContext.cartoteka else {
+            return failure(persisted.key, "Не удалось восстановить параметры поиска по делу.")
+        }
+        let retryService = serviceBuilder(verifiedContext)
+        let retry = try await fetchOutcome(service: retryService, ctx: verifiedContext,
+                                           cart: cartoteka)
+        guard !Task.isCancelled else {
+            return RefreshExecution(effectiveKey: persisted.key, outcome: .cancelled)
+        }
+        guard store.record(forKey: persisted.key)?.context == persistedContext else {
+            return RefreshExecution(effectiveKey: persisted.key, outcome: .cancelled)
+        }
+        return try await handle(retry, service: retryService, key: persisted.key,
+                                ctx: verifiedContext, cart: cartoteka, mayAutoSolve: true)
     }
 
     private func fetchOutcome(service: any MovementProviding, ctx: MovementContext,

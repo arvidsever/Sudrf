@@ -26,6 +26,34 @@ final class SudrfCaseCardLinkTests: XCTestCase {
         XCTAssertFalse(link.url.absoluteString.contains("captcha"))
     }
 
+    func testSanitizingPreservesUnknownPercentEncodedQueryBytes() throws {
+        let link = try SudrfCaseCardLink.parse(URL(string:
+            "https://court.tum.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=42&case_uid=uid-42&delo_id=1540005"
+            + "&legacy=%CF%F0&note=a%20b&utm_source=mail")!)
+
+        XCTAssertTrue(link.url.absoluteString.contains("legacy=%CF%F0"))
+        XCTAssertTrue(link.url.absoluteString.contains("note=a%20b"))
+        XCTAssertFalse(link.url.absoluteString.contains("utm_source"))
+    }
+
+    func testDirectFetchSendsUnknownPercentEncodedQueryBytesUnchanged() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RawQueryCardStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let input = URL(string:
+            "https://court.tum.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=42&case_uid=uid-42&delo_id=1540005"
+            + "&legacy=%CF%F0&note=a%20b&utm_source=mail")!
+
+        let result = try await client.fetchCardWithResponseURL(url: input)
+
+        XCTAssertEqual(result.card.caseNumber, "2-42/2026")
+        XCTAssertTrue(result.responseURL.absoluteString.contains("legacy=%CF%F0"))
+        XCTAssertTrue(result.responseURL.absoluteString.contains("note=a%20b"))
+        XCTAssertFalse(result.responseURL.absoluteString.contains("utm_source"))
+    }
+
     func testParsesVintageUnderscoreUIDOnlyLink() throws {
         let link = try SudrfCaseCardLink.parse("https://court--tum.sudrf.ru/modules.php"
             + "?name=sud_delo&name_op=case&_uid=uid-42&_deloId=1540005&_new=5"
@@ -205,6 +233,32 @@ private final class ExternalRedirectingCardStub: URLProtocol {
         let redirect = URLRequest(url: URL(string: "https://example.org/stolen")!)
         client?.urlProtocol(self, wasRedirectedTo: redirect, redirectResponse: response)
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class RawQueryCardStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
+        let valid = query.contains("legacy=%CF%F0") && query.contains("note=a%20b")
+            && !query.contains("utm_source")
+        let response = HTTPURLResponse(
+            url: url, statusCode: valid ? 200 : 400, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if valid {
+            client?.urlProtocol(self, didLoad: Data(
+                "<div class=\"casenumber\">ДЕЛО № 2-42/2026</div>".utf8))
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 

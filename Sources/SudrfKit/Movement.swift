@@ -212,11 +212,30 @@ public protocol MovementProviding: Sendable {
 public protocol CaseProviding: Sendable {
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult]
+    /// Search whose result count is proven complete by source-published metadata.
+    /// Providers without such proof fail closed through the default implementation.
+    func searchComplete(court: Court, cartoteka: Cartoteka,
+                        field: SearchField, value: String,
+                        srvNum: Int) async throws -> [CaseSearchResult]
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard
     /// Карточка по готовой ссылке из выдачи — для строк без case_id/case_uid
     /// (винтажные суды дают только `_uid`, ссылка самодостаточна).
     func fetchCard(url: URL) async throws -> CaseCard
+    /// Card together with the effective URL after validated redirects.
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult
+}
+
+public extension CaseProviding {
+    func searchComplete(court: Court, cartoteka: Cartoteka,
+                        field: SearchField, value: String,
+                        srvNum: Int) async throws -> [CaseSearchResult] {
+        throw IncompleteCaseSearchError()
+    }
+
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        SudrfCaseCardFetchResult(card: try await fetchCard(url: url), responseURL: url)
+    }
 }
 
 extension SudrfClient: CaseProviding {}

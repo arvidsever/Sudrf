@@ -138,6 +138,20 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor ParserThenMovement: MovementProviding {
+        let value: CaseMovement
+        private var calls = 0
+
+        init(_ value: CaseMovement) { self.value = value }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            if calls == 1 { throw SudrfError.parsing("stale base card") }
+            return value
+        }
+    }
+
     private actor CancelledMovement: MovementProviding {
         func movement(for base: CaseSearchResult, court: Court,
                       cartoteka: Cartoteka) async throws -> CaseMovement {
@@ -1779,6 +1793,45 @@ final class RefreshCenterTests: XCTestCase {
                        "partial не должен продлевать TTL полного успеха")
         XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
         XCTAssertNotNil(center.lastErrors[key])
+    }
+
+    func testRecoveredLocatorSurvivesPartialRetryWithoutAdvancingLastSuccess() async throws {
+        let key = store.all()[0].key
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var original = try XCTUnwrap(record.context)
+        original.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=5&new=5"
+        record.context = original
+        record.movement = successMV
+        record.snapshot = MovementDerivation.snapshot(from: successMV, context: original)
+        let previousSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        record.movementFetchedAt = previousSuccess
+        try store.save()
+
+        var partial = successMV!
+        partial.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        let service = ParserThenMovement(partial)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+        center.recoverCard = { context in
+            var verified = context
+            verified.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0"
+            verified.cartotekaId = "g1"
+            return CaseCardRecoveryResolution(
+                card: CaseCard(rawText: "", actText: nil,
+                               caseNumber: verified.caseNumber),
+                verifiedURL: try XCTUnwrap(URL(string: verified.cardURLString!)),
+                reason: .cartotekaParameters, context: verified)
+        }
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("recovered locator must retry the movement once")
+        }
+        XCTAssertEqual(store.record(forKey: key)?.context?.cardURLString,
+                       "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0")
+        XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, previousSuccess)
+        XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .partial)
     }
 
     func testPartialMaterialRefreshKeepsCachedHistoryAndLastSuccess() async throws {

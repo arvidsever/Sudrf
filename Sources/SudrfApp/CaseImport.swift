@@ -307,6 +307,8 @@ enum ImportIssueCategory: String, CaseIterable, Codable {
     case transientSource = "transient_source"
     case captcha = "captcha"
     case ambiguousFirstInstance = "ambiguous_first_instance"
+    case cardLinkRecovered = "card_link_recovered"
+    case ambiguousCardLink = "ambiguous_card_link"
 
     var displayName: String {
         switch self {
@@ -319,6 +321,8 @@ enum ImportIssueCategory: String, CaseIterable, Codable {
         case .transientSource: return "временная ошибка источника"
         case .captcha: return "капча"
         case .ambiguousFirstInstance: return "неоднозначная первая инстанция"
+        case .cardLinkRecovered: return "ссылка на карточку восстановлена"
+        case .ambiguousCardLink: return "неоднозначная ссылка на карточку"
         }
     }
 }
@@ -533,6 +537,8 @@ struct ImportSummary {
     var materials = 0                  // записей-материалов (отдельных)
     var stitched = 0                   // карточек сшито в knownCards
     var cold = 0                       // карточка не загрузилась — импорт без сшивания
+    var recoveredLinks = 0              // исправлен технический locator карточки
+    var ambiguousLinks = 0              // несколько подтверждённых карточек
     var stitchedExisting = 0           // объединено с уже отслеживаемыми записями
     var recoveredDown = 0              // найдена и добавлена первая инстанция
     var rerouted = 0                   // исправлена процессуальная роль/маршрут КоАП
@@ -555,6 +561,8 @@ struct ImportSummary {
         if recoveredDown > 0 { lines.append("Восстановлено карточек первой инстанции: \(recoveredDown).") }
         if rerouted > 0 { lines.append("Исправлено маршрутов КоАП: \(rerouted).") }
         if cold > 0 { lines.append("Без сшивания (карточка не загрузилась): \(cold).") }
+        if recoveredLinks > 0 { lines.append("Восстановлено ссылок на карточки: \(recoveredLinks).") }
+        if ambiguousLinks > 0 { lines.append("Неоднозначных ссылок на карточки: \(ambiguousLinks).") }
         if transient > 0 { lines.append("Временно недоступно, можно повторить импорт: \(transient).") }
         if parsing > 0 { lines.append("Не удалось разобрать ответ карточки: \(parsing).") }
         if withoutUID > 0 { lines.append("Карточек без опубликованного УИД: \(withoutUID).") }
@@ -785,16 +793,31 @@ enum CaseImporter {
         var seed: ImportSeed
         var card: CaseCard?
         var higherCourtTargets: [MovementSearchTarget]? = nil
+        /// A card resolver may correct only the published card locator.  The
+        /// original context remains available until the batch commits so its
+        /// source identity is retained in the logical dossier.
+        var resolvedContext: MovementContext? = nil
+        var originalContext: MovementContext? = nil
+        var sourceAttempt: SourceAttempt? = nil
+        var wasRecovered = false
         /// Usually one row; grouped imports may carry more than one.
         var sourceRows: [ImportedRow]
 
         init(seed: ImportSeed, card: CaseCard?,
              higherCourtTargets: [MovementSearchTarget]? = nil,
-             sourceRows: [ImportedRow]? = nil) {
+             sourceRows: [ImportedRow]? = nil,
+             resolvedContext: MovementContext? = nil,
+             originalContext: MovementContext? = nil,
+             sourceAttempt: SourceAttempt? = nil,
+             wasRecovered: Bool = false) {
             self.seed = seed
             self.card = card
             self.higherCourtTargets = higherCourtTargets
             self.sourceRows = sourceRows ?? [seed.row]
+            self.resolvedContext = resolvedContext
+            self.originalContext = originalContext
+            self.sourceAttempt = sourceAttempt
+            self.wasRecovered = wasRecovered
         }
 
         var sourceRow: ImportedRow? { sourceRows.first }
@@ -824,17 +847,38 @@ enum CaseImporter {
 
     /// Готовая к записи единица импорта.
     struct PlannedRecord {
+        struct RecoveredSource {
+            var originalContext: MovementContext
+            var verifiedContext: MovementContext
+            var sourceAttempt: SourceAttempt
+        }
+
         var context: MovementContext
         var isMaterial: Bool
+        /// The pre-recovery locator is only used while committing this batch.
+        /// It lets the identity graph remember a corrected historical card
+        /// without leaving its stale URL among active known cards.
+        var originalContext: MovementContext? = nil
+        var sourceAttempt: SourceAttempt? = nil
+        /// Recovered non-anchor cards of a UID group. Their active URLs live
+        /// in `knownCards`; this transient list carries their old locators and
+        /// source observations into the same atomic store commit.
+        var recoveredSources: [RecoveredSource] = []
         /// Original CSV rows represented by this logical record. This is
         /// transient provenance and is not persisted in MovementContext.
         var sourceRows: [ImportedRow]
 
         init(context: MovementContext, isMaterial: Bool,
-             sourceRows: [ImportedRow] = []) {
+             sourceRows: [ImportedRow] = [],
+             originalContext: MovementContext? = nil,
+             sourceAttempt: SourceAttempt? = nil,
+             recoveredSources: [RecoveredSource] = []) {
             self.context = context
             self.isMaterial = isMaterial
             self.sourceRows = sourceRows
+            self.originalContext = originalContext
+            self.sourceAttempt = sourceAttempt
+            self.recoveredSources = recoveredSources
         }
 
         var sourceRow: ImportedRow? { sourceRows.first }
@@ -845,6 +889,7 @@ enum CaseImporter {
         var records: [PlannedRecord] = []
         var stitched = 0
         var cold = 0
+        var recoveredLinks = 0
     }
 
     /// Сшивание: группировка по УИД, выбор якоря, knownCards для остальных.
@@ -861,9 +906,8 @@ enum CaseImporter {
             }
         }
         for f in loners {
-            plan.records.append(PlannedRecord(context: makeContext(f, known: []),
-                                              isMaterial: f.seed.isMaterial,
-                                              sourceRows: f.sourceRows))
+            plan.records.append(plannedRecord(f, known: []))
+            if f.wasRecovered { plan.recoveredLinks += 1 }
         }
         for (_, members) in groups.sorted(by: { $0.key < $1.key }) {
             let sorted = members.sorted { $0.anchorRank < $1.anchorRank }
@@ -872,17 +916,26 @@ enum CaseImporter {
                 // Группа из одних материалов — дела в выгрузке нет; каждый
                 // материал остаётся самостоятельной записью.
                 for f in sorted {
-                    plan.records.append(PlannedRecord(context: makeContext(f, known: []),
-                                                      isMaterial: true,
-                                                      sourceRows: f.sourceRows))
+                    plan.records.append(plannedRecord(f, known: []))
+                    if f.wasRecovered { plan.recoveredLinks += 1 }
                 }
                 continue
             }
             let known = sorted.dropFirst().map(knownCard)
             plan.stitched += known.count
-            plan.records.append(PlannedRecord(context: makeContext(anchor, known: known),
-                                              isMaterial: false,
-                                              sourceRows: uniqueSourceRows(sorted.flatMap(\.sourceRows))))
+            var planned = plannedRecord(anchor, known: known)
+            planned.sourceRows = uniqueSourceRows(sorted.flatMap(\.sourceRows))
+            planned.recoveredSources = sorted.dropFirst().compactMap { member in
+                guard member.wasRecovered,
+                      let originalContext = member.originalContext,
+                      let verifiedContext = member.resolvedContext,
+                      let sourceAttempt = member.sourceAttempt else { return nil }
+                return PlannedRecord.RecoveredSource(
+                    originalContext: originalContext, verifiedContext: verifiedContext,
+                    sourceAttempt: sourceAttempt)
+            }
+            plan.records.append(planned)
+            plan.recoveredLinks += sorted.filter(\.wasRecovered).count
         }
         return plan
     }
@@ -892,8 +945,29 @@ enum CaseImporter {
         return rows.filter { seen.insert($0.sourceIdentity).inserted }
     }
 
+    private static func plannedRecord(_ fetched: Fetched, known: [KnownCard]) -> PlannedRecord {
+        PlannedRecord(context: makeContext(fetched, known: known),
+                      isMaterial: fetched.seed.isMaterial,
+                      sourceRows: fetched.sourceRows,
+                      originalContext: fetched.wasRecovered ? fetched.originalContext : nil,
+                      sourceAttempt: fetched.sourceAttempt)
+    }
+
     /// Контекст записи «Моих дел» из карточки-якоря.
     static func makeContext(_ f: Fetched, known: [KnownCard]) -> MovementContext {
+        if var resolved = f.resolvedContext {
+            if !known.isEmpty { resolved.knownCards = known }
+            resolved.baseInstanceLevelRaw = f.instanceLevel.rawValue
+            resolved.higherCourtTargets = f.higherCourtTargets ?? resolved.cartoteka.flatMap {
+                MovementTargetBuilder.targets(
+                    branch: resolved.branch, courtLevel: resolved.courtLevel,
+                    baseCartoteka: $0, caseNumber: resolved.caseNumber,
+                    judicialUID: f.card?.uid ?? resolved.judicialUID,
+                    courtTitle: resolved.courtTitle, courtCode: resolved.courtCode,
+                    region: resolved.region, displayDomain: resolved.displayDomain)
+            }
+            return resolved
+        }
         let seed = f.seed
         let number = f.card?.caseNumber ?? seed.row.number
         // Стороны из карточки авторитетнее выгрузки; формат выгрузки «X ⚔ Y»
@@ -935,6 +1009,7 @@ enum CaseImporter {
 
     /// Не-якорная карточка группы → прямая ссылка для MovementService.
     static func knownCard(_ f: Fetched) -> KnownCard {
+        if let resolved = f.resolvedContext?.sourceKnownCard { return resolved }
         let seed = f.seed
         return KnownCard(domain: seed.searchDomain,
                          courtTitle: seed.courtTitle,

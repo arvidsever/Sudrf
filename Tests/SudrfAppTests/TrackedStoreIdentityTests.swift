@@ -10,16 +10,19 @@ final class TrackedStoreIdentityTests: XCTestCase {
 
     private func context(number: String, cardID: String, caseUID: String = "link-1",
                          judicialUID: String? = nil, domain: String = "court--komi.sudrf.ru",
-                         courtCode: String = "11RS0001", cartoteka: String = "g1")
+                         courtCode: String = "11RS0001", cartoteka: String = "g1",
+                         courtLevel: CourtLevel = .district,
+                         baseInstanceLevel: CaseInstance.Level? = nil)
         -> MovementContext {
         var value = MovementContext(
             branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
             searchDomain: domain, displayDomain: SudrfHost.alternate(domain) ?? domain,
-            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtTitle: "Тестовый суд", courtLevelRaw: courtLevel.rawValue,
             courtCode: courtCode, cartotekaId: cartoteka,
-            cartotekaLevelRaw: CourtLevel.district.rawValue,
+            cartotekaLevelRaw: courtLevel.rawValue,
             caseNumber: number, caseID: cardID, caseUID: caseUID)
         value.judicialUID = judicialUID
+        value.baseInstanceLevelRaw = baseInstanceLevel?.rawValue
         return value
     }
 
@@ -57,6 +60,178 @@ final class TrackedStoreIdentityTests: XCTestCase {
             URLQueryItem(name: "case_uid", value: context.caseUID)
         ]
         return components.url!
+    }
+
+    private func reviewInstance(for context: MovementContext,
+                                foundByUID: Bool = true,
+                                sourceURL: URL? = nil) -> CaseInstance {
+        CaseInstance(
+            level: context.baseInstanceLevel, court: context.courtTitle,
+            caseNumber: context.caseNumber, judge: nil,
+            domain: context.searchDomain, foundByUID: foundByUID,
+            result: "Поступление жалобы в суд", sessions: [],
+            sourceURL: sourceURL ?? self.sourceURL(for: context))
+    }
+
+    func testStoredKoapReviewLinksMergeBothDuplicatePairsOfflineAndRemainIdempotent() throws {
+        let pairs = [
+            ("5-469/2026", "35768698", "16-5132/2026", "25004446"),
+            ("5-470/2026", "35768700", "16-4990/2026", "24914918"),
+        ]
+        for latestKind in [SourceOutcomeKind.partial, .transportFailure, nil] {
+            let store = TrackedStore(inMemory: true)
+            var expectedTTLByKey = [String: Date]()
+            var expectedAttemptByKey = [String: SourceAttempt]()
+
+            for (index, pair) in pairs.enumerated() {
+                let base = context(
+                    number: pair.0, cardID: pair.1, caseUID: "base-\(index)",
+                    cartoteka: "adm", baseInstanceLevel: .first)
+                let review = context(
+                    number: pair.2, cardID: pair.3, caseUID: "review-\(index)",
+                    domain: "3kas.sudrf.ru", courtCode: "", cartoteka: "adm3",
+                    courtLevel: .cassation, baseInstanceLevel: .cassation)
+                let baseRecord = try store.reconcileAndUpsert(
+                    context: base, snapshot: nil, movement: movement(for: base),
+                    collections: ["Основные"])
+                _ = try store.reconcileAndUpsert(
+                    context: review, snapshot: nil,
+                    movement: CaseMovement(
+                        uid: "", caseNumber: review.caseNumber, inForce: false,
+                        instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+                    collections: ["Надзор"])
+
+                var cached = try XCTUnwrap(baseRecord.movement)
+                cached.instances.append(reviewInstance(for: review))
+                baseRecord.movement = cached
+                let fetchedAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+                baseRecord.movementFetchedAt = fetchedAt
+                let latestAttempt = latestKind.map { kind in
+                    SourceAttempt(
+                        kind: kind,
+                        provenance: SourceProvenance(
+                            operation: .movement, sourceFamily: "sudrf",
+                            host: base.searchDomain,
+                            observedAt: fetchedAt.addingTimeInterval(86_400),
+                            affectedSources: kind == .partial ? ["3kas.sudrf.ru"] : []))
+                }
+                baseRecord.sourceRefreshAttempt = latestAttempt
+                expectedTTLByKey[base.key] = fetchedAt
+                if let latestAttempt { expectedAttemptByKey[base.key] = latestAttempt }
+            }
+            try store.save()
+            XCTAssertEqual(store.all().count, 4)
+
+            let summary = try store.reconcileStoredIdentity()
+
+            XCTAssertEqual(summary.merged, 2)
+            XCTAssertEqual(store.all().count, 2)
+            for pair in pairs {
+                let baseKey = "court.komi.sudrf.ru/\(pair.0)"
+                let record = try XCTUnwrap(store.record(forKey: baseKey))
+                XCTAssertEqual(record.context?.caseNumber, pair.0)
+                XCTAssertEqual(record.movementFetchedAt, expectedTTLByKey[baseKey])
+                XCTAssertEqual(record.sourceRefreshAttempt, expectedAttemptByKey[baseKey])
+                XCTAssertEqual(Set(record.collectionNames), ["Основные", "Надзор"])
+                let state = TrackedCaseIdentity.state(for: record)
+                XCTAssertTrue(state.cards.contains { $0.identity.sourceNativeID == pair.3 })
+                let relation = try XCTUnwrap(state.officialRelations.first {
+                    $0.kind == .sourceNative && $0.relatedCard?.sourceNativeID == pair.3
+                })
+                XCTAssertEqual(relation.provenance.observedAt, expectedTTLByKey[baseKey])
+            }
+
+            store.failNextSaveForTesting = true
+            XCTAssertEqual(try store.reconcileStoredIdentity(), IdentityReconciliationSummary())
+            XCTAssertTrue(store.failNextSaveForTesting)
+        }
+    }
+
+    func testReviewRelationRejectsMaterialUnverifiedFailedAndMalformedCards() throws {
+        let base = context(number: "5-100/2026", cardID: "base", cartoteka: "adm")
+        let review = context(
+            number: "16-100/2026", cardID: "review", domain: "3kas.sudrf.ru",
+            courtCode: "", cartoteka: "adm3", courtLevel: .cassation,
+            baseInstanceLevel: .cassation)
+        let linkedMaterial = context(
+            number: "15-108/2026", cardID: "material", caseUID: "material-link",
+            cartoteka: "m", baseInstanceLevel: .material)
+        let malformed = URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=review&delo_id=2550001&new=0&new=1")!
+        var cached = movement(for: base)
+        cached.instances.append(reviewInstance(for: linkedMaterial))
+        cached.instances.append(reviewInstance(for: review, foundByUID: false))
+        cached.instances.append(reviewInstance(for: review, sourceURL: malformed))
+        var failed = reviewInstance(for: review)
+        failed.transientError = true
+        cached.instances.append(failed)
+        var crossHost = reviewInstance(for: review)
+        crossHost.domain = "2kas.sudrf.ru"
+        cached.instances.append(crossHost)
+
+        let observation = try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: base, movement: cached))
+        XCTAssertFalse(observation.officialRelations.contains { $0.kind == .sourceNative })
+
+        let affectedAttempt = SourceAttempt(
+            kind: .partial,
+            provenance: SourceProvenance(
+                operation: .movement, sourceFamily: "sudrf", host: base.searchDomain,
+                affectedSources: ["3kas.sudrf.ru"]))
+        XCTAssertNil(TrackedCaseIdentity.partialRefreshObservation(
+            context: base,
+            movement: CaseMovement(
+                uid: oldUID, caseNumber: base.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+            attempt: affectedAttempt))
+
+        var material = base
+        material.cartotekaId = "m"
+        material.baseInstanceLevelRaw = CaseInstance.Level.material.rawValue
+        XCTAssertFalse(try XCTUnwrap(TrackedCaseIdentity.observation(
+            context: material,
+            movement: CaseMovement(
+                uid: "", caseNumber: material.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: [])))
+            .officialRelations.contains { $0.kind == .sourceNative })
+    }
+
+    func testRetrackingMergedReviewCardKeepsFirstInstancePresentation() throws {
+        let store = TrackedStore(inMemory: true)
+        let base = context(number: "5-469/2026", cardID: "35768698",
+                           cartoteka: "adm", baseInstanceLevel: .first)
+        let review = context(
+            number: "16-5132/2026", cardID: "25004446",
+            domain: "3kas.sudrf.ru", courtCode: "", cartoteka: "adm3",
+            courtLevel: .cassation, baseInstanceLevel: .cassation)
+        var baseMovement = movement(for: base)
+        baseMovement.instances.append(reviewInstance(for: review))
+        _ = try store.reconcileAndUpsert(
+            context: review, snapshot: nil,
+            movement: CaseMovement(
+                uid: "", caseNumber: review.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+            collections: ["Надзор"])
+        let survivor = try store.reconcileAndUpsert(
+            context: base, snapshot: nil, movement: baseMovement,
+            collections: ["Основные"])
+        let key = survivor.key
+
+        let retracked = try store.reconcileAndUpsert(
+            context: review, snapshot: nil,
+            movement: CaseMovement(
+                uid: "", caseNumber: review.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+            collections: ["Повторный импорт"])
+
+        XCTAssertTrue(retracked === survivor)
+        XCTAssertEqual(retracked.key, key)
+        XCTAssertEqual(retracked.context?.caseNumber, base.caseNumber)
+        XCTAssertEqual(retracked.context?.baseInstanceLevel, .first)
+        XCTAssertEqual(Set(retracked.movement?.instances.map(\.caseNumber) ?? []),
+                       [base.caseNumber, review.caseNumber])
+        XCTAssertEqual(Set(retracked.collectionNames),
+                       ["Основные", "Надзор", "Повторный импорт"])
     }
 
     func testSameSourceCardRenumberingKeepsPersistentKeyActsCollectionsAndDeepLinks() async throws {

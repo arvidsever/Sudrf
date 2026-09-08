@@ -1080,14 +1080,16 @@ final class RefreshCenter: ObservableObject {
         var publishedMovement = merged
         var semanticOldSnapshots = oldSnapshot.map { [$0] } ?? []
         let projectionKeys: Set<String>
-        if isComplete,
-           let identityObservation = TrackedCaseIdentity.observation(
-               context: ctx, movement: persistedMovement, attempt: attempt,
-               outcome: .usableSnapshot) {
-            // A usable background snapshot enters through the same identity
-            // boundary as manual tracking.  Partial/error responses never
-            // establish a card/UID relation and are deliberately kept on the
-            // existing record below.
+        let identityObservation = isComplete
+            ? TrackedCaseIdentity.observation(
+                context: ctx, movement: mv, attempt: attempt,
+                outcome: .usableSnapshot)
+            : TrackedCaseIdentity.partialRefreshObservation(
+                context: ctx, movement: mv, attempt: attempt)
+        if let identityObservation {
+            // A complete snapshot enters through the normal identity boundary.
+            // A partial chain contributes only exact review-card relations
+            // fetched in this attempt; its number, UID and success TTL do not.
             let beforeRecords = try store.allForMutation()
             let before = Set(beforeRecords.map(\.key))
             let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
@@ -1097,7 +1099,9 @@ final class RefreshCenter: ObservableObject {
                 context: ctx, snapshot: newSnap, movement: persistedMovement,
                 collections: rec.collectionNames,
                 identityObservation: identityObservation,
-                movementFetchedAt: attempt.provenance.observedAt,
+                movementFetchedAt: isComplete ? attempt.provenance.observedAt
+                                              : rec.movementFetchedAt,
+                updatesMovementFetchedAt: isComplete,
                 saveChanges: false)
             persisted = reconciled
             let removed = before.subtracting(Set(store.all().map(\.key)))

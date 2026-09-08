@@ -791,9 +791,22 @@ final class TrackedStore {
                 .movement?.instances.contains {
                 $0.previousRegistration != nil
             } == true
+            let hasMovementReviewRelation = records.first(where: { $0.key == key }).map { record in
+                TrackedCaseIdentity.bootstrapObservation(for: record).officialRelations.contains {
+                    relation in
+                    guard relation.kind == .sourceNative else { return false }
+                    let relationIsMissing = !state.officialRelations.contains {
+                        $0.id == relation.id
+                    }
+                    let relatedCardHasAnotherOwner = relation.relatedCard.map {
+                        cardOwners[$0]?.contains(where: { $0 != key }) == true
+                    } == true
+                    return relationIsMissing || relatedCardHasAnotherOwner
+                }
+            } == true
             let needsPersistence = !persistedKeys.contains(key)
             guard needsPersistence || hasCrossRecordCard || hasCrossRecordUID
-                    || hasMovementPredecessor,
+                    || hasMovementPredecessor || hasMovementReviewRelation,
                   let record = try recordForMutation(forKey: key),
                   let movementContext = record.context else {
                 continue
@@ -941,6 +954,7 @@ final class TrackedStore {
         }) {
             let mergedGroup = [domainSurvivor] + mergedRecords.filter { $0 !== domainSurvivor }
             let survivor = preferredPersistentSurvivor(in: mergedGroup)
+            let previousMovementFetchedAt = survivor.movementFetchedAt
             let persistedState = state.logicalCaseID == survivor.logicalCaseID
                 ? state
                 : LogicalCaseState(
@@ -966,18 +980,26 @@ final class TrackedStore {
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: canonical, canonicalCard: nil,
                     identityState: persistedState, saveChanges: false)
+                if !updatesMovementFetchedAt {
+                    survivor.movementFetchedAt = previousMovementFetchedAt
+                }
             }
 
             let locatorOwner = try recordForMutation(forLocator: ctx.key)
             let ownsOrCanClaimLocator = locatorOwner.map { $0 === survivor } ?? true
-            // An exact source-card match is a renumbering/refresh of that
-            // card, so its display projection must advance even if the
-            // display-derived locator changed.  A UID/relation link between
-            // distinct cards keeps the existing card projection intact.
-            let adoptsIncomingCard = result.decision.kind == .sameCard
+            // An exact active-card match may advance its presentation. A
+            // newly linked lower-tier card becomes canonical; re-observing a
+            // higher card already in the dossier keeps the lower projection.
+            let activeCard = survivor.context.flatMap {
+                TrackedCaseIdentity.observation(context: $0)?.cardIdentity
+            }
+            let adoptsIncomingCard = (result.decision.kind == .sameCard
+                    && (activeCard == nil || activeCard == observation.cardIdentity)
+                ) || (result.decision.kind == .linkedExistingCase
+                    && persistentSurvivorRank(ctx) < persistentSurvivorRank(survivor))
             var projectedMovement = mv
             var projectedSnapshot = snap
-            if result.decision.kind == .linkedExistingCase {
+            if result.decision.kind == .linkedExistingCase || !adoptsIncomingCard {
                 let cachedSnapshot = survivor.snapshot
                 projectedMovement = TrackedCaseRepairCoordinator.mergeMovements(
                     [survivor.movement, mv].compactMap { $0 })
@@ -1038,7 +1060,10 @@ final class TrackedStore {
     }
 
     private func persistentSurvivorRank(_ record: TrackedCaseRecord) -> Int {
-        guard let context = record.context else { return 50 }
+        record.context.map(persistentSurvivorRank) ?? 50
+    }
+
+    private func persistentSurvivorRank(_ context: MovementContext) -> Int {
         let role = CaseIndexClassifier.classify(
             caseNumber: context.caseNumber,
             courtLevel: context.courtLevel,

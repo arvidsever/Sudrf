@@ -1220,6 +1220,10 @@ final class AppRouter: ObservableObject {
             if record.originalContext == nil,
                let existing = try store.recordForMutation(forLocator: incomingContext.key),
                let verified = existing.context,
+               let incomingCard = TrackedCaseIdentity.observation(
+                   context: incomingContext)?.cardIdentity,
+               incomingCard.isComplete,
+               TrackedCaseIdentity.state(for: existing).contains(card: incomingCard),
                verified.cardURLString != incomingContext.cardURLString {
                 initialContext = verified
             } else {

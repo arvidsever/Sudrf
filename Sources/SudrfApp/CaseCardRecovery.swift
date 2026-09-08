@@ -174,7 +174,9 @@ struct CaseCardRecovery: Sendable {
                                 srvNum: Int) async throws
         -> (card: CaseCard, url: URL)? {
         let exact = rows.filter {
-            CaseOriginResolver.sameCaseNumber($0.caseNumber, context.caseNumber)
+            Self.matchesRecoveryCaseNumber(
+                $0.caseNumber, expected: context.caseNumber,
+                context: context, cartoteka: cartoteka)
         }
         var seen = Set<String>()
         var seenEffective = Set<String>()
@@ -239,7 +241,9 @@ struct CaseCardRecovery: Sendable {
     private func verifies(card: CaseCard, expected context: MovementContext,
                           cartoteka: Cartoteka) -> Bool {
         guard let number = nonEmpty(card.caseNumber),
-              CaseOriginResolver.sameCaseNumber(number, context.caseNumber),
+              Self.matchesRecoveryCaseNumber(
+                number, expected: context.caseNumber,
+                context: context, cartoteka: cartoteka),
               CartotekaRegistry.resolve(
                 level: context.cartotekaLevel, deloID: cartoteka.deloID,
                 new: cartoteka.new, caseNumber: number)?.id == cartoteka.id else {
@@ -269,6 +273,103 @@ struct CaseCardRecovery: Sendable {
             return false
         }
         return verifies(card: fetched.card, expected: context, cartoteka: cartoteka)
+    }
+
+    /// Recovery-only exception for KSOYU headers that contain the incoming
+    /// registration followed by the accepted proceeding in square brackets.
+    static func matchesRecoveryCaseNumber(
+        _ published: String, expected: String,
+        context: MovementContext, cartoteka: Cartoteka
+    ) -> Bool {
+        if published.trimmingCharacters(in: .whitespacesAndNewlines)
+            == expected.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return true
+        }
+        let containsBrackets = published.contains("[") || published.contains("]")
+        if !containsBrackets,
+           CaseOriginResolver.sameCaseNumber(published, expected) { return true }
+        let host = SudrfHost.moduleHost(context.searchDomain)
+        guard context.courtLevel == .cassation,
+              context.cartotekaLevel == .cassation,
+              CourtDirectory.cassationCourts.contains(where: {
+                  SudrfHost.moduleHost($0.domain) == host
+              }),
+              let (incoming, accepted) = compositeCaseNumbers(published),
+              let expected = strictCaseNumber(expected),
+              accepted == expected else {
+            return false
+        }
+
+        let acceptedPrefixes: Set<String>
+        let requiredCartoteka: String
+        switch incoming.prefix {
+        case "8", "8г":
+            acceptedPrefixes = ["88"]
+            requiredCartoteka = "g3"
+        case "8а":
+            acceptedPrefixes = ["88а"]
+            requiredCartoteka = "p3"
+        case "7":
+            acceptedPrefixes = ["77", "77у"]
+            requiredCartoteka = "u3"
+        case "7у":
+            acceptedPrefixes = ["77", "77у"]
+            requiredCartoteka = "u3"
+        default:
+            return false
+        }
+        guard acceptedPrefixes.contains(accepted.prefix),
+              cartoteka.id == requiredCartoteka,
+              let registered = CartotekaRegistry.find(
+                level: .cassation, id: requiredCartoteka),
+              registered.deloID == cartoteka.deloID,
+              registered.new == cartoteka.new else {
+            return false
+        }
+        return true
+    }
+
+    private static func compositeCaseNumbers(
+        _ raw: String
+    ) -> (incoming: (value: String, prefix: String),
+          accepted: (value: String, prefix: String))? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.filter({ $0 == "[" }).count == 1,
+              value.filter({ $0 == "]" }).count == 1,
+              let open = value.firstIndex(of: "["),
+              let close = value.firstIndex(of: "]"),
+              open < close,
+              open > value.startIndex,
+              value[value.index(before: open)].isWhitespace,
+              close == value.index(before: value.endIndex),
+              let incoming = strictCaseNumber(String(value[..<open])),
+              let accepted = strictCaseNumber(String(value[value.index(after: open)..<close]))
+        else { return nil }
+        return (incoming, accepted)
+    }
+
+    private static func strictCaseNumber(
+        _ raw: String
+    ) -> (value: String, prefix: String)? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("№") {
+            value.removeFirst()
+            value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !value.isEmpty,
+              !value.contains(where: { $0.isWhitespace || "[]~()".contains($0) }) else {
+            return nil
+        }
+        value = CartotekaRegistry.normalizedNumber(value)
+        let dash = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard dash.count == 2, !dash[0].isEmpty else { return nil }
+        let date = dash[1].split(separator: "/", omittingEmptySubsequences: false)
+        guard date.count == 2, !date[0].isEmpty,
+              date[0].allSatisfy(\.isNumber),
+              date[1].count == 4, date[1].allSatisfy(\.isNumber) else {
+            return nil
+        }
+        return (value, String(dash[0]))
     }
 
     private func candidateURL(for row: CaseSearchResult, originalURL: URL,

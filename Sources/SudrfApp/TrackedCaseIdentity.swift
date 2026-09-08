@@ -28,10 +28,17 @@ enum TrackedCaseIdentity {
                 ?? SudrfHost.moduleHost(known?.domain ?? context.searchDomain),
             cartotekaKey: nonEmpty(known?.cartotekaID) ?? context.cartotekaId,
             sourceNativeID: sourceNativeID)
-        let officialRelations = predecessorRelation(
+        let officialRelations = (predecessorRelation(
             context: context, movement: movement, sourceCard: card,
             sourceFamily: sourceFamily, outcome: outcome, provenance: provenance
-        ).map { [$0] } ?? []
+        ).map { [$0] } ?? [])
+            + reviewRelations(
+                context: context, movement: movement, sourceCard: card,
+                sourceFamily: sourceFamily,
+                outcome: outcome, provenance: provenance,
+                excludedHosts: attempt?.kind == .partial
+                    ? Set((attempt?.provenance.affectedSources ?? []).map(canonicalHost))
+                    : [])
         return SourceCardObservation(
             cardIdentity: card,
             caseUID: nonEmpty(context.caseUID) ?? nonEmpty(known?.caseUID),
@@ -42,6 +49,27 @@ enum TrackedCaseIdentity {
             officialRelations: officialRelations,
             outcome: outcome,
             provenance: provenance)
+    }
+
+    /// A partial chain may still contain review cards that were fetched in
+    /// this attempt. Feed only those exact source relations to identity; the
+    /// partial payload must not publish a new number or UID observation.
+    static func partialRefreshObservation(
+        context: MovementContext,
+        movement: CaseMovement,
+        attempt: SourceAttempt
+    ) -> SourceCardObservation? {
+        guard let base = observation(
+            context: context, movement: movement, attempt: attempt,
+            outcome: .usableSnapshot),
+              base.officialRelations.contains(where: { $0.kind == .sourceNative }) else {
+            return nil
+        }
+        return SourceCardObservation(
+            cardIdentity: base.cardIdentity,
+            officialRelations: base.officialRelations.filter { $0.kind == .sourceNative },
+            outcome: .usableSnapshot,
+            provenance: base.provenance)
     }
 
     /// Decodes the domain graph if possible, or rebuilds a conservative legacy
@@ -57,7 +85,7 @@ enum TrackedCaseIdentity {
         }
 
         let context = record.context
-        let provenance = record.sourceRefreshAttempt?.provenance ?? SourceProvenance(
+        let provenance = usableProvenance(for: record) ?? SourceProvenance(
             operation: .discovery, sourceFamily: family(for: context),
             host: context?.searchDomain ?? record.displayDomain,
             observedAt: record.movementFetchedAt ?? record.addedAt)
@@ -94,7 +122,7 @@ enum TrackedCaseIdentity {
     }
 
     static func bootstrapObservation(for record: TrackedCaseRecord) -> SourceCardObservation {
-        let bootstrapProvenance = record.sourceRefreshAttempt?.provenance ?? SourceProvenance(
+        let bootstrapProvenance = usableProvenance(for: record) ?? SourceProvenance(
             operation: .discovery, sourceFamily: family(for: record.context),
             host: record.context?.searchDomain ?? record.displayDomain,
             observedAt: record.movementFetchedAt ?? record.addedAt)
@@ -203,6 +231,70 @@ enum TrackedCaseIdentity {
             provenance: provenance)
     }
 
+    /// Exact review cards discovered through the source's UID route are
+    /// authoritative links. Materials and failed/captcha placeholders remain
+    /// separate dossiers even when they carry a superficially similar URL.
+    private static func reviewRelations(
+        context: MovementContext,
+        movement: CaseMovement?,
+        sourceCard: SourceNativeCardIdentity,
+        sourceFamily: String,
+        outcome: SourceOutcomeKind,
+        provenance: SourceProvenance,
+        excludedHosts: Set<String>
+    ) -> [OfficialCardRelation] {
+        guard sourceFamily == "sudrf", context.baseInstanceLevel != .material,
+              let movement else { return [] }
+        var seen = Set<SourceNativeCardIdentity>()
+        return movement.instances.compactMap { instance in
+            guard [.appeal, .cassation].contains(instance.level),
+                  instance.foundByUID,
+                  instance.captchaFormURL == nil,
+                  instance.transientError != true,
+                  !excludedHosts.contains(canonicalHost(instance.domain)),
+                  let card = reviewCardIdentity(for: instance, context: context),
+                  card != sourceCard,
+                  seen.insert(card).inserted else { return nil }
+            return OfficialCardRelation(
+                kind: .sourceNative, relatedCard: card,
+                outcome: outcome, provenance: provenance)
+        }
+    }
+
+    private static func reviewCardIdentity(
+        for instance: CaseInstance,
+        context: MovementContext
+    ) -> SourceNativeCardIdentity? {
+        guard let url = instance.sourceURL,
+              let link = try? SudrfCaseCardLink(url: url),
+              let sourceNativeID = link.caseID,
+              link.moduleHost == canonicalHost(instance.domain) else {
+            return nil
+        }
+        let targetLevels = (context.higherCourtTargets ?? []).compactMap { target -> CourtLevel? in
+            guard canonicalHost(target.domain) == link.moduleHost,
+                  target.instanceLevel == nil || target.instanceLevel == instance.level else {
+                return nil
+            }
+            return target.courtLevel
+        }.reduce(into: [CourtLevel]()) { levels, level in
+            if !levels.contains(level) { levels.append(level) }
+        }
+        let directoryLevel = CourtDirectory.court(forDomain: link.moduleHost)?.level
+            ?? SudrfHost.alternate(link.moduleHost)
+                .flatMap { CourtDirectory.court(forDomain: $0)?.level }
+        if let directoryLevel, !targetLevels.isEmpty,
+           targetLevels != [directoryLevel] { return nil }
+        let levels = targetLevels.isEmpty ? directoryLevel.map { [$0] } ?? [] : targetLevels
+        guard levels.count == 1, let level = levels.first else { return nil }
+        guard let cartoteka = CartotekaRegistry.resolve(
+            level: level, deloID: link.deloID, new: link.new,
+            caseNumber: "") else { return nil }
+        return SourceNativeCardIdentity(
+            sourceFamily: "sudrf", courtKey: link.moduleHost,
+            cartotekaKey: cartoteka.id, sourceNativeID: sourceNativeID)
+    }
+
     /// Builds a source-native card identity directly from a published card URL.
     /// A relation is ignored when the link is ambiguous, points to another
     /// court, or cannot name a known cartoteka without looking at its number.
@@ -273,6 +365,15 @@ enum TrackedCaseIdentity {
         guard let context else { return "legacy" }
         if MosGorSudRouting.isMosGorSud(domain: context.searchDomain) { return "mosgorsud" }
         return context.courtLevel == .magistrate ? "msudrf" : "sudrf"
+    }
+
+    private static func usableProvenance(for record: TrackedCaseRecord) -> SourceProvenance? {
+        guard record.sourceRefreshAttempt?.kind == .usableSnapshot else { return nil }
+        return record.sourceRefreshAttempt?.provenance
+    }
+
+    private static func canonicalHost(_ value: String) -> String {
+        SudrfHost.moduleHost(value.lowercased())
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

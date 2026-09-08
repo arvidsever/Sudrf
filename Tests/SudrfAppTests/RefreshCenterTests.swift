@@ -584,6 +584,91 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertTrue(record.eventJournal?.events.isEmpty == true)
     }
 
+    func testPartialRefreshMergesFreshUIDReviewRelationWithoutAdvancingTTLAndRollsBack() async throws {
+        let localStore = TrackedStore(inMemory: true)
+        var base = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: CourtLevel.district.rawValue, courtCode: "11RS0001",
+            cartotekaId: "adm", cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: "5-469/2026", caseID: "35768698", caseUID: "base-link")
+        base.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        base.higherCourtTargets = [MovementSearchTarget(
+            domain: "3kas.sudrf.ru", courtTitle: "Третий кассационный суд",
+            courtLevel: .cassation, instanceLevel: .cassation,
+            cartotekaIDs: ["adm3"])]
+        var review = koapCassationContext(
+            caseNumber: "16-5132/2026", domain: "3kas.sudrf.ru")
+        review.caseID = "25004446"
+        review.caseUID = "review-link"
+        let reviewURL = URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=25004446&case_uid=review-link&delo_id=2550001")!
+        let baseInstance = CaseInstance(
+            level: .first, court: base.courtTitle, caseNumber: base.caseNumber,
+            judge: nil, domain: base.searchDomain, foundByUID: false,
+            result: nil, sessions: [])
+        let reviewInstance = CaseInstance(
+            level: .cassation, court: review.courtTitle, caseNumber: review.caseNumber,
+            judge: nil, domain: review.searchDomain, foundByUID: true,
+            result: "Поступление жалобы в суд", sessions: [], sourceURL: reviewURL)
+        let cachedBase = CaseMovement(
+            uid: "", caseNumber: base.caseNumber, inForce: false,
+            instances: [baseInstance], complaints: [:], acts: [])
+        let cachedReview = CaseMovement(
+            uid: "", caseNumber: review.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .cassation, court: review.courtTitle,
+                caseNumber: review.caseNumber, judge: nil,
+                domain: review.searchDomain, foundByUID: false,
+                result: nil, sessions: [], sourceURL: reviewURL)],
+            complaints: [:], acts: [])
+        let baseRecord = try localStore.reconcileAndUpsert(
+            context: base, snapshot: MovementDerivation.snapshot(from: cachedBase, context: base),
+            movement: cachedBase, collections: ["Основные"])
+        _ = try localStore.reconcileAndUpsert(
+            context: review,
+            snapshot: MovementDerivation.snapshot(from: cachedReview, context: review),
+            movement: cachedReview, collections: ["Надзор"])
+        let successfulTTL = Date(timeIntervalSince1970: 1_700_000_000)
+        baseRecord.movementFetchedAt = successfulTTL
+        try localStore.save()
+
+        var partial = cachedBase
+        partial.instances.append(reviewInstance)
+        partial.incompleteHigherCourtDomains = ["unrelated.sudrf.ru"]
+        let center = RefreshCenter(
+            store: localStore, client: SudrfClient(),
+            serviceBuilder: { _ in FixedMovement(partial) })
+        localStore.failNextSaveForTesting = true
+
+        let failed = await center.refresh(key: base.key)?.value
+
+        guard case .failed = failed?.outcome else {
+            return XCTFail("ошибка сохранения должна откатить partial merge")
+        }
+        XCTAssertEqual(localStore.all().count, 2)
+        XCTAssertEqual(localStore.record(forKey: base.key)?.movementFetchedAt, successfulTTL)
+
+        let succeeded = await center.refresh(key: base.key)?.value
+
+        guard case .partial = succeeded?.outcome else {
+            return XCTFail("не связанный отказ должен сохранить partial outcome")
+        }
+        XCTAssertEqual(succeeded?.effectiveKey, base.key)
+        XCTAssertEqual(localStore.all().count, 1)
+        let survivor = try XCTUnwrap(localStore.record(forKey: base.key))
+        XCTAssertEqual(survivor.context?.caseNumber, base.caseNumber)
+        XCTAssertEqual(survivor.movementFetchedAt, successfulTTL)
+        XCTAssertEqual(Set(survivor.collectionNames), ["Основные", "Надзор"])
+        XCTAssertEqual(survivor.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertTrue(survivor.eventJournal?.events.isEmpty == true)
+        XCTAssertTrue(TrackedCaseIdentity.state(for: survivor).cards.contains {
+            $0.identity.sourceNativeID == "25004446"
+        })
+    }
+
     func testChangedDerivationVersionUsesRefreshAsBaseline() async throws {
         let localStore = TrackedStore(inMemory: true)
         var context = makeContext()

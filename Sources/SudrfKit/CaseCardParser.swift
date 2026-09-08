@@ -460,22 +460,113 @@ public enum CaseCardParser {
     // MARK: - Метаданные (вкладка «ДЕЛО» / «ПРОИЗВОДСТВО»)
 
     /// Карта «метка (нижний регистр) → значение» из контейнера, где встречается
-    /// «Уникальный идентификатор дела». Берётся первое значение для каждой метки.
+    /// «Уникальный идентификатор дела». В карточках КоАП без УИД берётся только
+    /// таблица «ДЕЛО» однозначной вкладки «ЖАЛОБА».
     private static func parseMeta(_ doc: Document) -> [String: String] {
         let marker = "уникальный идентификатор дела"
-        let cont = tabContainers(doc).first { el in
-            ((try? el.text()) ?? "").lowercased().contains(marker)
+        let cont = tabContainers(doc).first { container in
+            ((try? container.text()) ?? "").lowercased().contains(marker)
+                && !isLowerCourtTabContainer(container, in: doc)
         }
+        if let cont { return legacyMetadataMap(from: cont) }
+
+        let complaintTabs = ((try? doc.select("ul.tabs li").array()) ?? []).filter {
+            normalizeHeader((try? $0.text()) ?? "") == "жалоба"
+        }
+        guard complaintTabs.count == 1 else { return [:] }
+        let tabID = (try? complaintTabs[0].attr("id")) ?? ""
+        guard tabID.range(of: #"^tab\d+$"#, options: .regularExpression) != nil,
+              let tabNumber = number(in: tabID) else { return [:] }
+
+        let containerID = "cont\(tabNumber)"
+        let containers = tabContainers(doc).filter {
+            ((try? $0.attr("id")) ?? "") == containerID
+        }
+        guard containers.count == 1 else { return [:] }
+
+        let tables = metadataTables(in: containers[0], headers: ["дело"])
+        guard tables.count == 1 else { return [:] }
+
+        return metadataMap(from: directRows(tables[0]))
+    }
+
+    private static func isLowerCourtTabContainer(_ container: Element, in doc: Document) -> Bool {
+        let containerID = (try? container.attr("id")) ?? ""
+        guard containerID.range(of: #"^cont\d+$"#, options: .regularExpression) != nil,
+              let tabNumber = number(in: containerID) else { return false }
+        return ((try? doc.select("ul.tabs li").array()) ?? []).contains { tab in
+            ((try? tab.attr("id")) ?? "") == "tab\(tabNumber)"
+                && normalizeHeader((try? tab.text()) ?? "")
+                    == "рассмотрение в нижестоящем суде"
+        }
+    }
+
+    /// Обычные карточки с УИД сохраняют прежний разбор всего контейнера.
+    private static func legacyMetadataMap(from container: Element) -> [String: String] {
         var map: [String: String] = [:]
-        guard let cont else { return map }
-        for row in (try? cont.select("tr").array()) ?? [] {
+        for row in (try? container.select("tr").array()) ?? [] {
             let cells = (try? row.select("td, th").array()) ?? []
+            guard cells.count >= 2 else { continue }
+            let key = ((try? cells[0].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = ((try? cells[1].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty, key.count <= 60 else { continue }
+            let normalizedKey = key.lowercased()
+            if map[normalizedKey] == nil { map[normalizedKey] = value }
+        }
+        return map
+    }
+
+    private static func metadataTables(
+        in container: Element,
+        headers: Set<String>
+    ) -> [Element] {
+        ((try? container.select("table").array()) ?? []).filter { table in
+            var parent = table.parent()
+            var belongsToContainer = false
+            while let element = parent {
+                if element === container {
+                    belongsToContainer = true
+                    break
+                }
+                if element.tagName().lowercased() == "table" { return false }
+                parent = element.parent()
+            }
+            guard belongsToContainer else { return false }
+            return directRows(table).contains { row in
+                let cells = directCells(row, tags: ["td", "th"])
+                return cells.count == 1
+                    && headers.contains(normalizeHeader((try? cells[0].text()) ?? ""))
+            }
+        }
+    }
+
+    private static func metadataMap(from rows: [Element]) -> [String: String] {
+        let allowedKeys = Set([
+            "дата поступления",
+            "дата рассмотрения",
+            "результат рассмотрения",
+            "результат кассационного рассмотрения"
+        ])
+        var map: [String: String] = [:]
+        var conflicts: Set<String> = []
+        for row in rows {
+            let cells = directCells(row, tags: ["td", "th"])
             guard cells.count >= 2 else { continue }
             let key = ((try? cells[0].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let val = ((try? cells[1].text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, !val.isEmpty, key.count <= 60 else { continue }
-            let k = key.lowercased()
-            if map[k] == nil { map[k] = val }
+            let rawKey = normalizeHeader(key)
+            guard allowedKeys.contains(rawKey) else { continue }
+            let k = rawKey == "результат кассационного рассмотрения"
+                ? "результат рассмотрения"
+                : rawKey
+            guard !conflicts.contains(k) else { continue }
+            if let existing = map[k], existing != val {
+                map.removeValue(forKey: k)
+                conflicts.insert(k)
+            } else {
+                map[k] = val
+            }
         }
         return map
     }

@@ -122,9 +122,96 @@ final class CaseCardParserTests: XCTestCase {
         let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_early_complaint_card"))
 
         XCTAssertEqual(card.caseNumber, "16-5133/2026")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.receiptDate, "03.08.2026")
+        XCTAssertNil(card.decisionDate)
+        XCTAssertNil(card.result)
         XCTAssertEqual(card.sessions, [
             CaseSession(date: "03.08.2026", event: "Поступление жалобы в суд")
         ])
+    }
+
+    func testCompletedKSOYuKoAPComplaintWithoutUIDParsesMetadata() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_koap_returned_2kas"))
+
+        XCTAssertEqual(card.caseNumber, "16-5035/2023")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.receiptDate, "13.07.2023")
+        XCTAssertEqual(card.decisionDate, "25.07.2023")
+        XCTAssertEqual(card.result, "Возвращено без рассмотрения")
+    }
+
+    func testSecondCompletedKSOYuKoAPComplaintWithoutUIDParsesMetadata() throws {
+        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_koap_returned_3kas"))
+
+        XCTAssertEqual(card.caseNumber, "16-3568/2021")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.receiptDate, "21.05.2021")
+        XCTAssertEqual(card.decisionDate, "01.06.2021")
+        XCTAssertEqual(card.result, "Возвращено без рассмотрения")
+    }
+
+    func testComplaintMetadataRejectsAmbiguousTabsAndConflictingValues() throws {
+        let duplicatedTabs = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-1/2026</div>
+        <ul class="tabs">
+          <li id="tab1">ЖАЛОБА</li><li id="tab2"> жалоба </li>
+        </ul>
+        <div id="cont1"><table>
+          <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Результат рассмотрения</td><td>Первый</td></tr>
+        </table></div>
+        <div id="cont2"><table>
+          <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Результат рассмотрения</td><td>Второй</td></tr>
+        </table></div>
+        """)
+        XCTAssertNil(duplicatedTabs.result)
+
+        let conflictingValues = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-2/2026</div>
+        <ul class="tabs"><li id="tab4">ЖАЛОБА</li></ul>
+        <div id="cont4"><table>
+          <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Дата поступления</td><td>01.09.2026</td></tr>
+          <tr><td>Дата поступления</td><td>02.09.2026</td></tr>
+          <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+          <tr><td>Результат рассмотрения</td><td>Первый</td></tr>
+          <tr><td>Результат кассационного рассмотрения</td><td>Второй</td></tr>
+        </table></div>
+        """)
+        XCTAssertNil(conflictingValues.receiptDate)
+        XCTAssertEqual(conflictingValues.decisionDate, "03.09.2026")
+        XCTAssertNil(conflictingValues.result)
+    }
+
+    func testComplaintMetadataIgnoresLowerCourtAndNestedTables() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-3/2026</div>
+        <ul class="tabs">
+          <li id="tab1">ЖАЛОБА</li>
+          <li id="tab2">РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ</li>
+        </ul>
+        <div id="cont1"><table>
+          <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Дата поступления</td><td>04.09.2026</td></tr>
+          <tr><td>Результат рассмотрения</td><td>Возвращено без рассмотрения</td></tr>
+          <tr><td colspan="2"><table>
+            <tr><td>Результат рассмотрения</td><td>Вложенный результат</td></tr>
+          </table></td></tr>
+        </table></div>
+        <div id="cont2"><table>
+          <tr><th colspan="2">РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ</th></tr>
+          <tr><td>Номер дела в первой инстанции</td><td>5-4/2026</td></tr>
+          <tr><td>Уникальный идентификатор дела</td><td>fake-lower-court-uid</td></tr>
+          <tr><td>Результат рассмотрения</td><td>Результат нижестоящего суда</td></tr>
+        </table></div>
+        """)
+
+        XCTAssertEqual(card.receiptDate, "04.09.2026")
+        XCTAssertEqual(card.result, "Возвращено без рассмотрения")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.lowerCourt?.caseNumber, "5-4/2026")
     }
 
     func testGenericReceiptMetadataDoesNotBecomeComplaintSession() throws {

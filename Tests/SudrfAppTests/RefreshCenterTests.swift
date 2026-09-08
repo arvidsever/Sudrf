@@ -131,6 +131,48 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    /// Keeps the regression on the production parsing/aggregation path while
+    /// avoiding a network dependency in the app-level refresh tests.
+    private actor FixtureCardClient: CaseProviding {
+        let html: String
+        let responseURL: URL
+
+        init(html: String, responseURL: URL) {
+            self.html = html
+            self.responseURL = responseURL
+        }
+
+        func search(court: Court, cartoteka: Cartoteka,
+                    field: SearchField, value: String) async throws -> [CaseSearchResult] {
+            []
+        }
+
+        func fetchCard(court: Court, caseID: String, caseUID: String,
+                       deloID: String, new: String) async throws -> CaseCard {
+            try CaseCardParser.parse(html: html, cardURL: responseURL)
+        }
+
+        func fetchCard(url: URL) async throws -> CaseCard {
+            try CaseCardParser.parse(html: html, cardURL: responseURL)
+        }
+    }
+
+    private actor FixtureThenUnavailableMovement: MovementProviding {
+        let fixtureService: MovementService
+        private var calls = 0
+
+        init(_ fixtureService: MovementService) {
+            self.fixtureService = fixtureService
+        }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            guard calls == 1 else { throw SudrfError.caseCardTemporarilyUnavailable }
+            return try await fixtureService.movement(for: base, court: court, cartoteka: cartoteka)
+        }
+    }
+
     private actor NetworkFailureMovement: MovementProviding {
         func movement(for base: CaseSearchResult, court: Court,
                       cartoteka: Cartoteka) async throws -> CaseMovement {
@@ -327,6 +369,37 @@ final class RefreshCenterTests: XCTestCase {
         return CaseMovement(uid: "uid-A1", caseNumber: "2-100/2026",
                             inForce: false, instances: [inst],
                             complaints: [:], acts: [])
+    }
+
+    private func sourceFixture(_ name: String) throws -> String {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let url = testsDirectory
+            .appendingPathComponent("SudrfKitTests/Fixtures")
+            .appendingPathComponent(name)
+            .appendingPathExtension("html")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func koapCassationContext(caseNumber: String, domain: String) -> MovementContext {
+        let ordinal = domain == "2kas.sudrf.ru" ? "Второй" : "Третий"
+        return MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "",
+            searchDomain: domain, displayDomain: domain,
+            courtTitle: "\(ordinal) кассационный суд общей юрисдикции",
+            courtLevelRaw: CourtLevel.cassation.rawValue, courtCode: nil,
+            cartotekaId: "adm3", cartotekaLevelRaw: CourtLevel.cassation.rawValue,
+            caseNumber: caseNumber, caseID: "fixture-card", caseUID: "fixture-link",
+            baseInstanceLevelRaw: CaseInstance.Level.cassation.rawValue)
+    }
+
+    private func fixtureService(_ fixture: String,
+                                context: MovementContext) throws -> MovementService {
+        let responseURL = try XCTUnwrap(URL(string:
+            "https://\(context.searchDomain)/modules.php?name=sud_delo&name_op=case"))
+        let client = FixtureCardClient(html: try sourceFixture(fixture), responseURL: responseURL)
+        return context.makeService(client: client)
     }
 
     private func paperWrit(_ id: String = "court-writ-1",
@@ -1529,6 +1602,116 @@ final class RefreshCenterTests: XCTestCase {
 
         XCTAssertEqual(rec.seenAt, seenAt,
                        "форматирование тела уже известного акта не должно создавать бейдж")
+    }
+
+    func testKoAPReturnedComplaintFixturesCompleteThroughRefresh() async throws {
+        let scenarios = [
+            (fixture: "ksoyu_koap_returned_2kas", number: "16-5035/2023",
+             domain: "2kas.sudrf.ru", receipt: "13.07.2023"),
+            (fixture: "ksoyu_koap_returned_3kas", number: "16-3568/2021",
+             domain: "3kas.sudrf.ru", receipt: "21.05.2021"),
+        ]
+
+        for scenario in scenarios {
+            let context = koapCassationContext(
+                caseNumber: scenario.number, domain: scenario.domain)
+            let scenarioStore = TrackedStore(inMemory: true)
+            _ = try scenarioStore.upsert(
+                context: context, snapshot: nil, movement: nil, collections: [])
+            let service = try fixtureService(scenario.fixture, context: context)
+            let center = RefreshCenter(
+                store: scenarioStore, client: SudrfClient(),
+                serviceBuilder: { _ in service })
+
+            let execution = await center.refresh(key: context.key)?.value
+
+            XCTAssertEqual(execution?.outcome, .refreshed, scenario.fixture)
+            let record = try XCTUnwrap(scenarioStore.record(forKey: context.key))
+            let instance = try XCTUnwrap(record.movement?.instances.first)
+            XCTAssertEqual(instance.level, .cassation, scenario.fixture)
+            XCTAssertEqual(instance.caseNumber, scenario.number, scenario.fixture)
+            XCTAssertEqual(instance.result, "Возвращено без рассмотрения", scenario.fixture)
+            XCTAssertEqual(instance.sessions.map(\.date), [scenario.receipt], scenario.fixture)
+            XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.done.rawValue, scenario.fixture)
+            XCTAssertEqual(record.snapshot?.statusText,
+                           "Возвращено без рассмотрения", scenario.fixture)
+            XCTAssertNotNil(record.movementFetchedAt, scenario.fixture)
+        }
+    }
+
+    func testKoAPEarlyComplaintFixtureRemainsSupervisoryThroughRefresh() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-5133/2026", domain: "3kas.sudrf.ru")
+        let scenarioStore = TrackedStore(inMemory: true)
+        _ = try scenarioStore.upsert(
+            context: context, snapshot: nil, movement: nil, collections: [])
+        let service = try fixtureService("ksoyu_early_complaint_card", context: context)
+        let center = RefreshCenter(
+            store: scenarioStore, client: SudrfClient(),
+            serviceBuilder: { _ in service })
+
+        let execution = await center.refresh(key: context.key)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+        let record = try XCTUnwrap(scenarioStore.record(forKey: context.key))
+        XCTAssertNil(record.movement?.instances.first?.result)
+        XCTAssertEqual(record.movement?.instances.first?.sessions, [
+            CaseSession(date: "03.08.2026", event: "Поступление жалобы в суд")
+        ])
+        XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.supervisory.rawValue)
+        XCTAssertEqual(record.snapshot?.steps, ["todo", "todo", "active"])
+    }
+
+    func testKoAPCompletedRefreshSurvivesLaterTemporaryError() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-3568/2021", domain: "3kas.sudrf.ru")
+        let scenarioStore = TrackedStore(inMemory: true)
+        let record = try scenarioStore.upsert(
+            context: context, snapshot: nil, movement: nil, collections: [])
+        let cachedActive = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .cassation, court: context.courtTitle,
+                caseNumber: context.caseNumber, judge: nil, domain: context.searchDomain,
+                foundByUID: false, result: nil,
+                sessions: [CaseSession(
+                    date: "21.05.2021", event: "Поступление жалобы в суд")])],
+            complaints: [:], acts: [])
+        let oldFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        record.movement = cachedActive
+        record.snapshot = MovementDerivation.snapshot(from: cachedActive, context: context)
+        record.movementFetchedAt = oldFetchedAt
+        XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.supervisory.rawValue)
+        try scenarioStore.save()
+
+        let parsedService = try fixtureService("ksoyu_koap_returned_3kas", context: context)
+        let scriptedService = FixtureThenUnavailableMovement(parsedService)
+        let center = RefreshCenter(
+            store: scenarioStore, client: SudrfClient(),
+            serviceBuilder: { _ in scriptedService })
+
+        let refreshed = await center.refresh(key: context.key)?.value
+        XCTAssertEqual(refreshed?.outcome, .refreshed)
+        let completedRecord = try XCTUnwrap(scenarioStore.record(forKey: context.key))
+        let completedMovement = completedRecord.movement
+        let completedSnapshot = completedRecord.snapshot
+        let completedFetchedAt = try XCTUnwrap(completedRecord.movementFetchedAt)
+        XCTAssertGreaterThan(completedFetchedAt, oldFetchedAt)
+        XCTAssertEqual(completedMovement?.instances.first?.result,
+                       "Возвращено без рассмотрения")
+        XCTAssertEqual(completedSnapshot?.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(completedSnapshot?.statusText, "Возвращено без рассмотрения")
+
+        _ = await center.refresh(key: context.key)?.value
+
+        let failedRecord = try XCTUnwrap(scenarioStore.record(forKey: context.key))
+        XCTAssertEqual(failedRecord.movement, completedMovement)
+        XCTAssertEqual(failedRecord.snapshot, completedSnapshot)
+        XCTAssertEqual(failedRecord.movementFetchedAt, completedFetchedAt)
+        XCTAssertEqual(failedRecord.snapshot?.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(failedRecord.snapshot?.statusText, "Возвращено без рассмотрения")
+        XCTAssertEqual(failedRecord.sourceRefreshAttempt?.kind, .maintenance)
+        XCTAssertNotNil(center.lastErrors[context.key])
     }
 
     func testUnavailableCourtDoesNotOverwriteSavedCard() async throws {

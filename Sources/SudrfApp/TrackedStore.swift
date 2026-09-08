@@ -806,6 +806,72 @@ final class TrackedStore {
         try reconcileAndUpsert(context: ctx, snapshot: snap, movement: mv, collections: collections)
     }
 
+    /// Replaces a verified card locator without rotating the persistent record.
+    /// A repaired `delo_id/new` describes the same published card but can map
+    /// to another cartoteka identity, so normal reconciliation must not turn a
+    /// locator correction into a new tracked case. Keep both observations in
+    /// the existing logical dossier and commit the URL, provenance and court
+    /// act projection together.
+    @discardableResult
+    func applyVerifiedCardContext(forLocator locator: String,
+                                  context verifiedContext: MovementContext,
+                                  attempt: SourceAttempt,
+                                  replacesActiveContext: Bool = true,
+                                  replacingKnownCardFrom originalContext: MovementContext? = nil,
+                                  expectedActiveContext: MovementContext? = nil,
+                                  saveChanges: Bool = true) throws -> TrackedCaseRecord? {
+        guard let record = try recordForMutation(forLocator: locator) else { return nil }
+        guard expectedActiveContext == nil || record.context == expectedActiveContext else { return nil }
+        var identity = TrackedCaseIdentity.state(for: record)
+        if let originalContext,
+           let originalObservation = TrackedCaseIdentity.observation(
+            context: originalContext, attempt: attempt, outcome: .usableSnapshot,
+            observedAt: attempt.provenance.observedAt) {
+            _ = identity.apply(originalObservation)
+            let owner = try recordForMutation(forLocator: originalContext.key)
+            if owner == nil || owner === record {
+                record.addLegacyKeyAlias(originalContext.key)
+            }
+        }
+        if let observation = TrackedCaseIdentity.observation(
+            context: verifiedContext, attempt: attempt, outcome: .usableSnapshot,
+            observedAt: attempt.provenance.observedAt) {
+            _ = identity.apply(observation)
+        }
+        if replacesActiveContext {
+            var correctedContext = verifiedContext
+            if let staleContext = originalContext ?? record.context,
+               let staleCard = TrackedCaseRepairCoordinator.knownCard(from: staleContext) {
+                correctedContext.knownCards?.removeAll { $0 == staleCard }
+            }
+            record.context = correctedContext
+            record.caseNumber = correctedContext.caseNumber
+            record.courtTitle = correctedContext.courtTitle
+            record.displayDomain = correctedContext.displayDomain
+            if let uid = correctedContext.judicialUID, !uid.isEmpty {
+                record.judicialUID = Self.normalizedUID(uid)
+            }
+            record.addLegacyKeyAlias(correctedContext.key)
+            try synchronizeCourtActMetadata(caseKey: record.key)
+        } else if var active = record.context,
+                  let verifiedCard = TrackedCaseRepairCoordinator.knownCard(from: verifiedContext) {
+            var known = active.knownCards ?? []
+            if let originalContext,
+               let staleCard = TrackedCaseRepairCoordinator.knownCard(from: originalContext) {
+                known.removeAll { $0 == staleCard }
+            }
+            if !known.contains(verifiedCard) {
+                known.append(verifiedCard)
+            }
+            active.knownCards = known
+            record.context = active
+        }
+        TrackedCaseIdentity.persist(identity, to: record)
+        record.sourceRefreshAttempt = attempt
+        if saveChanges { try save(projection: .cases([record.key])) }
+        return record
+    }
+
     /// Единственная точка записи для ручного добавления и фонового discovery.
     /// Только `LogicalCaseReconciler` связывает разные source cards; locator
     /// номера применяется после его решения исключительно для compatibility.

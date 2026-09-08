@@ -368,6 +368,51 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(record.eventJournal, CaseEventJournal())
     }
 
+    func testVerifiedRecoveredAppealKeepsExistingFirstInstancePresentation() throws {
+        let store = TrackedStore(inMemory: true)
+        let first = context(number: "2-100/2026", cardID: "first-card", judicialUID: oldUID)
+        let tracked = try store.reconcileAndUpsert(
+            context: first, snapshot: nil, movement: movement(for: first), collections: ["Existing"])
+        let logicalCaseID = try XCTUnwrap(tracked.logicalCaseID)
+
+        var staleAppeal = context(
+            number: "33-200/2026", cardID: "appeal-old", judicialUID: oldUID,
+            domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
+        staleAppeal.courtLevelRaw = CourtLevel.subject.rawValue
+        staleAppeal.cartotekaLevelRaw = CourtLevel.subject.rawValue
+        staleAppeal.cardURLString = sourceURL(for: staleAppeal).absoluteString
+        let survivor = try store.reconcileAndUpsert(
+            context: staleAppeal, snapshot: nil, collections: ["Imported"])
+        XCTAssertTrue(survivor === tracked)
+        XCTAssertEqual(survivor.context?.caseNumber, first.caseNumber)
+        let staleKnown = try XCTUnwrap(TrackedCaseRepairCoordinator.knownCard(from: staleAppeal))
+        var active = try XCTUnwrap(survivor.context)
+        active.knownCards = [staleKnown]
+        survivor.context = active
+        try store.save()
+
+        var healedAppeal = staleAppeal
+        healedAppeal.caseID = "appeal-verified"
+        healedAppeal.caseUID = "appeal-link-verified"
+        healedAppeal.cardURLString = sourceURL(for: healedAppeal).absoluteString
+        let attempt = SourceAttempt(
+            kind: .usableSnapshot,
+            provenance: SourceProvenance(operation: .discovery, sourceFamily: "sudrf",
+                                         host: healedAppeal.searchDomain))
+        let saved = try XCTUnwrap(store.applyVerifiedCardContext(
+            forLocator: survivor.key, context: healedAppeal, attempt: attempt,
+            replacesActiveContext: false,
+            replacingKnownCardFrom: staleAppeal))
+
+        XCTAssertEqual(saved.key, tracked.key)
+        XCTAssertEqual(saved.logicalCaseID, logicalCaseID)
+        XCTAssertEqual(saved.context?.caseNumber, first.caseNumber)
+        XCTAssertEqual(saved.context?.cardURLString, first.cardURLString)
+        XCTAssertEqual(saved.context?.knownCards?.map(\.caseID), ["appeal-verified"])
+        let state = TrackedCaseIdentity.state(for: saved)
+        XCTAssertTrue(state.cards.contains { $0.identity.sourceNativeID == "appeal-verified" })
+    }
+
     func testAtomicMergeUnionsEventJournalsWithoutCreatingRepairEvent() throws {
         let store = TrackedStore(inMemory: true)
         let first = context(number: "2-100/2026", cardID: "first-card", judicialUID: oldUID)

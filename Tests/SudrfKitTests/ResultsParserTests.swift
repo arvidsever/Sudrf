@@ -103,6 +103,58 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertTrue(r.cardURL?.absoluteString.contains("_new=5") == true)
     }
 
+    func testCompleteParserAcceptsPublishedCountAndRichestResponsiveDuplicate() throws {
+        let html = try loadFixture("samara_kas_appeal_uid_results")
+        let court = Court(domain: "oblsud--sam.sudrf.ru",
+                          title: "Самарский областной суд", level: .subject)
+
+        let results = try ResultsParser.parseComplete(html: html, court: court)
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].caseID, "45090185")
+        XCTAssertEqual(results[0].caseUID, "70f25bb3-b647-4795-a592-61e457a42ea7")
+    }
+
+    func testCompleteParserRejectsMissingOrTruncatedCount() throws {
+        XCTAssertThrowsError(try ResultsParser.parseComplete(
+            html: fixture.replacingOccurrences(
+                of: "<div>Всего по запросу найдено: 1</div>", with: ""),
+            court: .syktyvkarskiy)) { error in
+                XCTAssertTrue(error is IncompleteCaseSearchError)
+            }
+        XCTAssertThrowsError(try ResultsParser.parseComplete(
+            html: fixture.replacingOccurrences(of: "найдено: 1", with: "найдено: 2"),
+            court: .syktyvkarskiy)) { error in
+                XCTAssertTrue(error is IncompleteCaseSearchError)
+            }
+    }
+
+    func testCompleteParserDoesNotReadPrefixOfGroupedTotal() throws {
+        for total in ["1 234", "1,234"] {
+            let html = fixture.replacingOccurrences(of: "найдено: 1",
+                                                     with: "найдено: \(total)")
+            XCTAssertThrowsError(try ResultsParser.parseComplete(
+                html: html, court: .syktyvkarskiy)) { error in
+                    XCTAssertTrue(error is IncompleteCaseSearchError)
+                }
+        }
+    }
+
+    func testDedupeKeepsUIDOnlyCardsFromDifferentSourcesDistinct() throws {
+        let html = """
+        <html><body><table>
+          <tr><td><a href="modules.php?name=sud_delo&amp;srv_num=1&amp;name_op=case&amp;_uid=A&amp;_deloId=42&amp;_new=0">33а-1/2026</a></td></tr>
+          <tr><td><a href="modules.php?name=sud_delo&amp;srv_num=1&amp;name_op=case&amp;_uid=B&amp;_deloId=42&amp;_new=0">33а-1/2026</a></td></tr>
+          <tr><td><a href="modules.php?name=sud_delo&amp;srv_num=2&amp;name_op=case&amp;_uid=A&amp;_deloId=42&amp;_new=0">33а-1/2026</a></td></tr>
+        </table></body></html>
+        """
+
+        let results = try ResultsParser.parse(html: html, court: .syktyvkarskiy)
+
+        XCTAssertEqual(results.count, 3)
+        XCTAssertEqual(Set(results.compactMap(\.cardURL?.absoluteString)).count, 3)
+    }
+
     // MARK: - Ссылки на тексты актов (последняя колонка)
 
     /// Живая разметка КСОЮ: у дела с опубликованным актом последняя колонка

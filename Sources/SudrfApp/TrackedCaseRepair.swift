@@ -271,6 +271,7 @@ final class TrackedCaseRepairCoordinator {
     private let client: SudrfClient
     private let originResolver: any CaseOriginResolving
     private let anchorCardFetcher: (MovementContext) async throws -> CaseCard
+    private let anchorCardResolver: ((MovementContext) async throws -> CaseCardRecoveryResolution)?
     private let defaults: UserDefaults
     private let now: () -> Date
     private let captchaSolver: CaptchaSolver?
@@ -293,6 +294,7 @@ final class TrackedCaseRepairCoordinator {
          captchaSettings: CaptchaSettings? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
+         anchorCardResolver: ((MovementContext) async throws -> CaseCardRecoveryResolution)? = nil,
          anchorCardFetcher: ((MovementContext) async throws -> CaseCard)? = nil) {
         self.store = store; self.client = client; self.originResolver = originResolver
         self.defaults = defaults; self.now = now
@@ -302,6 +304,7 @@ final class TrackedCaseRepairCoordinator {
             await AutoCaptchaSolver.solve(formURL: url, client: client,
                                           solver: solver, settings: settings)
         }
+        self.anchorCardResolver = anchorCardResolver
         self.anchorCardFetcher = anchorCardFetcher ?? { ctx in
             if let url = ctx.cardURLString.flatMap(URL.init(string:)) {
                 return try await client.fetchCard(url: url)
@@ -480,8 +483,9 @@ final class TrackedCaseRepairCoordinator {
     private func repairHigherAnchor(key: String, caseKey: String? = nil,
                                     summary: inout CaseRepairSummary,
                                     allowAutoSolve: Bool = true) async throws {
-        guard let rec = try store.recordForMutation(forLocator: key),
-              let anchorContext = rec.context else { return }
+        guard let initialRecord = try store.recordForMutation(forLocator: key),
+              var anchorContext = initialRecord.context else { return }
+        var rec = initialRecord
         let anchorKey = rec.key
         let eventKey = caseKey ?? anchorKey
         // Самостоятельный материал уже является корректным базовым якорем:
@@ -495,7 +499,30 @@ final class TrackedCaseRepairCoordinator {
             return
         }
         do {
-            let anchorCard = try await fetchAnchorCard(anchorContext)
+            let anchorCard: CaseCard
+            if let anchorCardResolver {
+                let resolution = try await anchorCardResolver(anchorContext)
+                anchorCard = resolution.card
+                if resolution.wasRecovered {
+                    let attempt = SourceAttempt(
+                        kind: .usableSnapshot,
+                        provenance: SourceProvenance(operation: .discovery,
+                                                     sourceFamily: "sudrf",
+                                                     host: resolution.context.searchDomain))
+                    guard let persisted = try store.applyVerifiedCardContext(
+                        forLocator: anchorKey, context: resolution.context, attempt: attempt,
+                        expectedActiveContext: anchorContext) else {
+                        return
+                    }
+                    anchorContext = persisted.context ?? resolution.context
+                    summary.affectedCaseKeys.insert(persisted.key)
+                }
+            } else {
+                anchorCard = try await fetchAnchorCard(anchorContext)
+            }
+            guard let current = try store.recordForMutation(forKey: anchorKey),
+                  current.context == anchorContext else { return }
+            rec = current
             let normalized = normalizedKoAPContext(anchorContext, card: anchorCard)
             let effectiveContext = normalized.context
             if normalized.changed {
@@ -515,6 +542,9 @@ final class TrackedCaseRepairCoordinator {
             if Self.mayBecomeMainCase(effectiveContext) {
                 let origin = try await originResolver.resolveMainCase(
                     anchorContext: effectiveContext, anchorCard: anchorCard)
+                guard let current = try store.recordForMutation(forKey: anchorKey),
+                      current.context == effectiveContext else { return }
+                rec = current
                 var canonical = makeContext(origin: origin, anchor: effectiveContext,
                                             anchorCard: anchorCard)
                 let primaryNumber = CaseNumberPresentation.primary(canonical.caseNumber)
@@ -556,6 +586,9 @@ final class TrackedCaseRepairCoordinator {
             }
             let origin = try await originResolver.resolve(anchorContext: effectiveContext,
                                                           anchorCard: anchorCard)
+            guard let current = try store.recordForMutation(forKey: anchorKey),
+                  current.context == effectiveContext else { return }
+            rec = current
             let canonical = makeContext(origin: origin, anchor: effectiveContext,
                                         anchorCard: anchorCard)
             guard let result = try reconcileResolvedOrigin(

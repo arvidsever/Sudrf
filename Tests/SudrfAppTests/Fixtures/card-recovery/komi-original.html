@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body>
+<form id='calformH' name='calformH' method='get' action='/modules.php'>
+        <input name="name" type="hidden" value="sud_delo">
+        <input name="srv_num" type="hidden" value=1>
+        <table id=top_menu cellSpacing=0 cellPadding=1>
+            <tr>
+                <td>Вывести список дел, назначенных на дату</td>
+                <td id=calendar>
+                    <img title="Вызвать календарь" onclick="javascript:show_calendar('calformH.H_date');" src='/modules/sud_delo/images/top_calc.gif'/>
+                </td>
+                <td>
+                    <input name='H_date' class='text' id='H_date' style='width: 66px;' type='text' maxLength='10' value=07.09.2026>
+                </td>
+                <td id=calendar style='padding-left: 0px; padding-right: 0px'>
+                    <img title="Вывести список дел" onclick="javascript:hearing_list();" src='/modules/sud_delo/images/doSearch.gif'/>
+                </td>
+            </tr>
+                            <tr>
+                    <td colspan=4>
+                        <a href="#" onclick="show_search(1,2)"><b>Поиск информации по делам</b></a>
+                        &nbsp;|&nbsp;<a href='#' onclick='back()'><b>Вернуться к списку дел</b></a>                 </td>
+                </tr>
+                    </table>
+     </form>
+</body></html>

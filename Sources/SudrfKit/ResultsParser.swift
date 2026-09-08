@@ -1,6 +1,14 @@
 import Foundation
 import SwiftSoup
 
+public struct IncompleteCaseSearchError: Error, Sendable, Equatable, LocalizedError {
+    public init() {}
+
+    public var errorDescription: String? {
+        "Источник не подтвердил полноту поисковой выдачи."
+    }
+}
+
 /// Разбор страницы выдачи (`name_op=r`) в массив результатов.
 ///
 /// Опорная точка — ссылки на карточку (`name_op=case`): из их href надёжно
@@ -56,6 +64,31 @@ public enum ResultsParser {
         return dedupe(results)
     }
 
+    /// Parses a first-page search only when the source's own counter proves
+    /// that every matching row is present on that page.
+    public static func parseComplete(html: String, court: Court) throws -> [CaseSearchResult] {
+        let rows = try parse(html: html, court: court)
+        let text: String
+        do { text = try SwiftSoup.parse(html).text() }
+        catch { throw IncompleteCaseSearchError() }
+        guard let total = firstInteger(
+            in: text,
+            pattern: #"Всего\s+по\s+запросу\s+найдено\s*[-—–:]\s*(\d{1,3}(?:[\s,]\d{3})+|\d+)"#
+        ), total == rows.count else {
+            throw IncompleteCaseSearchError()
+        }
+        if let range = firstIntegerPair(
+            in: text,
+            pattern: #"На\s+странице\s+записи\s+с\s*(\d+)\s+по\s*(\d+)"#
+        ) {
+            let validEmpty = total == 0 && rows.isEmpty && range.0 == 0 && range.1 == 0
+            let validNonEmpty = range.0 == 1 && range.1 == total
+                && range.1 - range.0 + 1 == rows.count
+            if !validEmpty && !validNonEmpty { throw IncompleteCaseSearchError() }
+        }
+        return rows
+    }
+
     // MARK: - helpers
 
     static func queryValue(_ name: String, in href: String) -> String? {
@@ -109,12 +142,53 @@ public enum ResultsParser {
     }
 
     private static func dedupe(_ items: [CaseSearchResult]) -> [CaseSearchResult] {
-        var seen = Set<String>()
+        var indexes: [String: Int] = [:]
         var out: [CaseSearchResult] = []
         for r in items {
-            let key = (r.caseID ?? "") + "|" + r.caseNumber
-            if seen.insert(key).inserted { out.append(r) }
+            let key = sourceIdentity(r)
+            if let index = indexes[key] {
+                if richness(r) > richness(out[index]) { out[index] = r }
+            } else {
+                indexes[key] = out.count
+                out.append(r)
+            }
         }
         return out
+    }
+
+    private static func sourceIdentity(_ row: CaseSearchResult) -> String {
+        guard let url = row.cardURL, let link = try? SudrfCaseCardLink(url: url) else {
+            return row.stableID
+        }
+        let sourceID = link.caseID.map { "id:\($0)" }
+            ?? link.caseUID.map { "uid:\($0)" }
+            ?? row.stableID
+        return [link.moduleHost, link.srvNum ?? "1", link.deloID,
+                link.resolvedNew, sourceID].joined(separator: "|")
+    }
+
+    private static func richness(_ row: CaseSearchResult) -> Int {
+        [row.caseID, row.caseUID, row.receiptDate, row.essence, row.judge,
+         row.decisionDate, row.result, row.legalForceDate]
+            .compactMap { $0 }.filter { !$0.isEmpty }.count
+            + (row.cardURL == nil ? 0 : 1)
+    }
+
+    private static func firstInteger(in text: String, pattern: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return Int(String(text[range].filter(\.isNumber)))
+    }
+
+    private static func firstIntegerPair(in text: String, pattern: String) -> (Int, Int)? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let firstRange = Range(match.range(at: 1), in: text),
+              let secondRange = Range(match.range(at: 2), in: text),
+              let first = Int(text[firstRange]), let second = Int(text[secondRange]) else {
+            return nil
+        }
+        return (first, second)
     }
 }

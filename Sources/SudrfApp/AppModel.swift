@@ -20,6 +20,21 @@ import SudrfKit
 import CaptchaSolver
 import SwiftData
 
+extension CaseCardRecoveryError {
+    func sourceAttempt(host: String) -> SourceAttempt {
+        let errorCode: String
+        switch self {
+        case .unsupportedSource: errorCode = "recoveryUnsupported"
+        case .ambiguous: errorCode = "recoveryAmbiguous"
+        case .incompleteCandidates: errorCode = "recoveryIncomplete"
+        }
+        return SourceAttempt(
+            kind: .parserFailure,
+            provenance: SourceProvenance(operation: .discovery, sourceFamily: "sudrf",
+                                         host: host, errorCode: errorCode))
+    }
+}
+
 @MainActor
 final class AppRouter: ObservableObject {
 
@@ -132,6 +147,7 @@ final class AppRouter: ObservableObject {
     /// контекста и экран поиска делят одну FIFO-очередь и одну активную
     /// origin-scoped URLSession.
     let client = SudrfClient()
+    private let cardRecovery: CaseCardRecovery
     let refreshCenter: RefreshCenter
     private let repairCoordinator: TrackedCaseRepairCoordinator
     @Published var repairSummary: CaseRepairSummary? = nil
@@ -369,10 +385,14 @@ final class AppRouter: ObservableObject {
         let fsspClient = FSSPClient()
         self.fsspClient = fsspClient
         let configuredSolver = CaptchaSolverFactory.make(settings: captchaSettings)
+        self.cardRecovery = CaseCardRecovery(provider: client)
         let originResolver = CaseOriginResolver(client: client)
         self.repairCoordinator = TrackedCaseRepairCoordinator(
             store: store, client: client, originResolver: originResolver,
-            captchaSolver: configuredSolver, captchaSettings: captchaSettings)
+            captchaSolver: configuredSolver, captchaSettings: captchaSettings,
+            anchorCardResolver: { [cardRecovery] context in
+                try await cardRecovery.resolve(context: context)
+            })
         refreshCenter = RefreshCenter(store: store, client: client,
                                        captchaSolver: configuredSolver,
                                        captchaSettings: captchaSettings,
@@ -391,6 +411,10 @@ final class AppRouter: ObservableObject {
                 }
                 throw partial.underlying
             }
+        }
+        refreshCenter.recoverCard = { [weak self] context in
+            guard let self else { throw CancellationError() }
+            return try await self.cardRecovery.resolve(context: context)
         }
         refreshCenter.openedKey = { [weak self] in self?.openedKey }
         refreshCenter.onRefreshed = { [weak self] key, mv, keyRemaps in
@@ -1034,21 +1058,60 @@ final class AppRouter: ObservableObject {
         var transient = 0
         var parsing = 0
         var withoutUID = 0
+        var recoveredLinks = 0
+        var ambiguousLinks = 0
         for (i, seed) in seeds.enumerated() {
-            let court = Court(domain: seed.searchDomain, title: seed.courtTitle, level: seed.level)
+            let originalContext = CaseImporter.makeContext(
+                CaseImporter.Fetched(seed: seed, card: nil), known: [])
             let card: CaseCard?
+            var resolvedContext: MovementContext?
+            var sourceAttempt: SourceAttempt?
+            var wasRecovered = false
             do {
-                card = try await client.fetchCard(court: court, caseID: seed.caseID,
-                                                  caseUID: seed.caseUID,
-                                                  deloID: seed.deloID, new: seed.new)
+                let resolved = try await cardRecovery.resolve(context: originalContext)
+                card = resolved.card
+                resolvedContext = resolved.context
+                wasRecovered = resolved.wasRecovered
+                sourceAttempt = SourceAttempt(
+                    kind: .usableSnapshot,
+                    provenance: SourceProvenance(operation: .discovery,
+                                                 sourceFamily: "sudrf",
+                                                 host: seed.searchDomain))
+                if resolved.wasRecovered {
+                    recoveredLinks += 1
+                    report.append(ImportIssue(
+                        category: .cardLinkRecovered,
+                        reason: "Ссылка на карточку восстановлена: \(Self.recoveryReasonText(resolved.reason)).",
+                        sourceRow: seed.row, severity: .warning))
+                }
                 if card?.uid?.isEmpty != false {
                     withoutUID += 1
                     report.append(CaseImporter.missingUIDIssue(
                         for: seed.row,
                         reason: "Карточка импортирована, но суд не опубликовал УИД."))
                 }
+            } catch let error as CaseCardRecoveryError {
+                card = nil
+                sourceAttempt = error.sourceAttempt(host: seed.searchDomain)
+                switch error {
+                case .ambiguous, .incompleteCandidates:
+                    ambiguousLinks += 1
+                    report.append(ImportIssue(
+                        category: .ambiguousCardLink,
+                        reason: error.localizedDescription,
+                        sourceRow: seed.row, severity: .warning))
+                case .unsupportedSource:
+                    parsing += 1
+                    report.append(ImportIssue(
+                        category: .unsupportedSource,
+                        reason: error.localizedDescription,
+                        sourceRow: seed.row, severity: .warning))
+                }
             } catch let error as SudrfError {
                 card = nil
+                sourceAttempt = SourceOutcomeClassifier.attempt(
+                    for: error, operation: .discovery, sourceFamily: "sudrf",
+                    host: seed.searchDomain)
                 var issue = CaseImporter.issue(for: seed.row, error: error)
                 issue.severity = .warning
                 if issue.category == .transientSource { transient += 1 }
@@ -1056,13 +1119,19 @@ final class AppRouter: ObservableObject {
                 report.append(issue)
             } catch {
                 card = nil
+                sourceAttempt = SourceOutcomeClassifier.attempt(
+                    for: error, operation: .discovery, sourceFamily: "sudrf",
+                    host: seed.searchDomain)
                 parsing += 1
                 var issue = CaseImporter.issue(for: seed.row, error: error)
                 issue.severity = .warning
                 report.append(issue)
             }
             guard generation == importGeneration, !Task.isCancelled else { return }
-            fetched.append(CaseImporter.Fetched(seed: seed, card: card))
+            fetched.append(CaseImporter.Fetched(
+                seed: seed, card: card, resolvedContext: resolvedContext,
+                originalContext: wasRecovered ? originalContext : nil,
+                sourceAttempt: sourceAttempt, wasRecovered: wasRecovered))
             importState = .running(done: i + 1, total: seeds.count, canCancel: true)
         }
 
@@ -1097,6 +1166,8 @@ final class AppRouter: ObservableObject {
         summary.materials = plan.records.filter { $0.isMaterial }.count
         summary.stitched = plan.stitched
         summary.cold = plan.cold
+        summary.recoveredLinks = recoveredLinks
+        summary.ambiguousLinks = ambiguousLinks
         summary.transient = transient
         summary.parsing = parsing
         summary.withoutUID = withoutUID
@@ -1141,13 +1212,64 @@ final class AppRouter: ObservableObject {
         -> [String: [ImportedRow]] {
         var rowsByKey: [String: [ImportedRow]] = [:]
         for record in records {
+            let incomingContext = record.originalContext ?? record.context
+            // A CSV can carry the same stale URL again after it was healed.
+            // The persistent locator is stable, so retain its verified active
+            // context instead of letting a later import reverse it.
+            let initialContext: MovementContext
+            if record.originalContext == nil,
+               let existing = try store.recordForMutation(forLocator: incomingContext.key),
+               let verified = existing.context,
+               let incomingCard = TrackedCaseIdentity.observation(
+                   context: incomingContext)?.cardIdentity,
+               incomingCard.isComplete,
+               TrackedCaseIdentity.state(for: existing).contains(card: incomingCard),
+               verified.cardURLString != incomingContext.cardURLString {
+                initialContext = verified
+            } else {
+                initialContext = incomingContext
+            }
             let saved = try store.reconcileAndUpsert(
-                context: record.context, snapshot: nil, movement: nil,
+                context: initialContext, snapshot: nil, movement: nil,
                 collections: [collection], saveChanges: false)
-            rowsByKey[saved.key, default: []].append(contentsOf: record.sourceRows)
+            let persisted: TrackedCaseRecord
+            if record.originalContext != nil,
+               let attempt = record.sourceAttempt {
+                let activeCard = saved.context.flatMap { TrackedCaseIdentity.observation(context: $0) }?.cardIdentity
+                let repairedCard = TrackedCaseIdentity.observation(context: incomingContext)?.cardIdentity
+                persisted = try store.applyVerifiedCardContext(
+                    forLocator: saved.key, context: record.context, attempt: attempt,
+                    replacesActiveContext: activeCard == repairedCard,
+                    replacingKnownCardFrom: incomingContext,
+                    saveChanges: false) ?? saved
+            } else {
+                if let attempt = record.sourceAttempt { saved.sourceRefreshAttempt = attempt }
+                persisted = saved
+            }
+            for recovered in record.recoveredSources {
+                _ = try store.applyVerifiedCardContext(
+                    forLocator: persisted.key, context: recovered.verifiedContext,
+                    attempt: recovered.sourceAttempt, replacesActiveContext: false,
+                    replacingKnownCardFrom: recovered.originalContext,
+                    saveChanges: false)
+            }
+            rowsByKey[persisted.key, default: []].append(contentsOf: record.sourceRows)
         }
         try store.save(projection: .full)
         return rowsByKey.mapValues(uniqueImportRows)
+    }
+
+    private static func recoveryReasonText(_ reason: CaseCardRecoveryReason) -> String {
+        switch reason {
+        case .originalURL:
+            return "исходная ссылка уже работала"
+        case .cartotekaParameters:
+            return "исправлены параметры картотеки"
+        case .judicialUID:
+            return "карточка найдена по судебному УИД"
+        case .caseNumber:
+            return "карточка найдена по номеру дела"
+        }
     }
 
     private func mergeImportRepair(_ repaired: CaseRepairSummary,
@@ -1930,7 +2052,10 @@ final class AppRouter: ObservableObject {
                                  production: production), newDot: isNew,
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next)
         }
-        // Снимок ещё не собран (трек до загрузки движения).
+        // Снимок ещё не собран. Показываем сохранённый исход последней
+        // попытки, если он был: холодная импортированная запись не должна
+        // маскировать временную ошибку приглашением «Откройте».
+        let sourceStatus = Self.coldSourceStatus(rec.sourceRefreshAttempt)
         return TrackedCase(
             recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
@@ -1942,12 +2067,48 @@ final class AppRouter: ObservableObject {
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
             leadCharges: nil,
             secondPartyLine: nil,
-            statusText: "Откройте, чтобы загрузить", statusChip: .gray,
-            last: "движение ещё не загружено", next: "—", nextChip: .gray,
+            statusText: sourceStatus?.text ?? "Откройте, чтобы загрузить",
+            statusChip: sourceStatus?.chip ?? .gray,
+            last: sourceStatus?.detail ?? "движение ещё не загружено",
+            next: "—", nextChip: sourceStatus?.chip ?? .gray,
             isNew: rec.seenAt == nil,
             steps: makeSteps(["active", "todo", "todo", "todo"],
                              production: production), newDot: false,
             lastEventDate: rec.addedAt, nextEventDate: nil)
+    }
+
+    private static func coldSourceStatus(_ attempt: SourceAttempt?)
+        -> (text: String, detail: String, chip: Palette.Chip)? {
+        guard let attempt else { return nil }
+        switch attempt.provenance.errorCode {
+        case "recoveryAmbiguous":
+            return ("Не удалось однозначно восстановить ссылку",
+                    "найдено несколько подходящих карточек", .gray)
+        case "recoveryIncomplete":
+            return ("Не удалось подтвердить найденную карточку",
+                    "выдача суда оказалась неполной", .gray)
+        case "recoveryUnsupported":
+            return ("Восстановление ссылки недоступно",
+                    "для этого источника нет безопасного способа проверки", .gray)
+        default:
+            break
+        }
+        switch attempt.kind {
+        case .honestZero:
+            return ("Источник не нашёл дело", "последняя попытка: подтверждена пустая выдача", .gray)
+        case .partial:
+            return ("Источник вернул неполные данные", "последняя попытка не дала карточку целиком", .gray)
+        case .captcha:
+            return ("Нужен код с картинки", "последняя попытка остановилась на CAPTCHA", .proposed)
+        case .maintenance:
+            return ("Источник временно недоступен", "последняя попытка: обслуживание суда", .gray)
+        case .transportFailure:
+            return ("Не удалось связаться с источником", "последняя попытка: сетевая ошибка", .gray)
+        case .parserFailure:
+            return ("Источник не вернул карточку", "последняя попытка: ответ нельзя разобрать", .gray)
+        case .usableSnapshot:
+            return ("Карточка загружена", "движение ещё не собрано", .gray)
+        }
     }
 
     private func makeSteps(_ raw: [String], production: ProductionType?) -> [StepState] {

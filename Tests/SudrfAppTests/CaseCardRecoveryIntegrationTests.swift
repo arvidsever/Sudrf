@@ -196,6 +196,41 @@ final class CaseCardRecoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(router.openCaseSourceURL?.absoluteString, healed.cardURLString)
     }
 
+    func testSameDisplayLocatorKeepsDistinctSourceCardsSeparate() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let stale = context(url: "https://syktsud--komi.sudrf.ru/modules.php?case_id=old&case_uid=old-link&delo_id=5&new=5")
+        let healed = try resolution(from: stale).context
+        let success = SourceAttempt(
+            kind: .usableSnapshot,
+            provenance: SourceProvenance(operation: .discovery, sourceFamily: "sudrf",
+                                         host: stale.searchDomain))
+        _ = try router.commitImport(records: [CaseImporter.PlannedRecord(
+            context: healed, isMaterial: false, sourceRows: [],
+            originalContext: stale, sourceAttempt: success)], collection: "Existing")
+
+        var distinct = stale
+        distinct.caseID = "distinct"
+        distinct.caseUID = "distinct-link"
+        distinct.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=distinct&case_uid=distinct-link&delo_id=1540005&new=0"
+        distinct.sourceKnownCard = KnownCard(
+            domain: distinct.searchDomain, courtTitle: distinct.courtTitle,
+            caseID: "distinct", caseUID: "distinct-link", deloID: "1540005", new: "0",
+            caseNumber: distinct.caseNumber, levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: distinct.cartotekaId)
+        _ = try router.commitImport(records: [CaseImporter.PlannedRecord(
+            context: distinct, isMaterial: false, sourceRows: [], sourceAttempt: success)],
+                                    collection: "Incoming")
+
+        let store = try TrackedStore(container: container, prepared: true)
+        XCTAssertEqual(store.all().count, 2)
+        XCTAssertEqual(Set(store.all().flatMap {
+            TrackedCaseIdentity.state(for: $0).cards.map(\.identity.sourceNativeID)
+        }), ["old", "distinct"])
+        XCTAssertEqual(Set(store.all().map { Set($0.collectionNames) }),
+                       Set([Set(["Existing"]), Set(["Incoming"])]))
+    }
+
     func testRecoveredNonAnchorKeepsOldLocatorThroughColdReimport() throws {
         let container = try SudrfModelContainerFactory.make(inMemory: true)
         let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)

@@ -316,6 +316,78 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertNil(MovementDerivation.partiesSecondLine(p))
     }
 
+    func testKoapPrincipalsUseExplicitRolesAndStableNameOrder() {
+        let roles = [
+            "  ЛИЦО   В ОТНОШЕНИИ КОТОРОГО ВЕДЁТСЯ ПРОИЗВОДСТВО  ",
+            "лицо привлекаемое к административной ответственности",
+            "Привлекаемое лицо"
+        ]
+        for items in [
+            [RoleItem(role: roles[0], name: "Яковлев Я. Я.", articles: "ст. 1"),
+             RoleItem(role: roles[1], name: "ООО «Альфа»"),
+             RoleItem(role: roles[2], name: "борисов Б. Б.", articles: "ст. 2")],
+            [RoleItem(role: roles[2], name: "борисов Б. Б.", articles: "ст. 2"),
+             RoleItem(role: roles[0], name: "Яковлев Я. Я.", articles: "ст. 1"),
+             RoleItem(role: roles[1], name: "ООО «Альфа»")]
+        ] {
+            let p = CaseParties(kind: .koap, roleItems: items)
+            XCTAssertEqual(p.koapPrincipalMembers.map(\.name),
+                           ["борисов Б. Б.", "ООО «Альфа»", "Яковлев Я. Я."])
+            XCTAssertEqual(MovementDerivation.partiesShort(p),
+                           "борисов Б. Б. и 2 других")
+            XCTAssertNil(p.leadCharges)
+            XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+        }
+    }
+
+    func testKoapPrincipalFallsBackToExplicitColumnRole() {
+        let principal = PartyMember(name: "ООО «Право»",
+                                    sub: "ПРИВЛЕКАЕМОЕ ЛИЦО")
+        let p = CaseParties(kind: .koap, columns: [
+            PartyColumn(id: "zashita", title: "Сторона защиты",
+                        titleMany: "Сторона защиты", icon: .shield,
+                        members: [principal])
+        ])
+        XCTAssertEqual(p.koapPrincipalMembers, [principal])
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "ООО «Право»")
+        XCTAssertNil(p.leadCharges)
+    }
+
+    func testKoapDoesNotInferPrincipalFromRepresentativeOrArticles() {
+        let p = CaseParties(kind: .koap, roleItems: [
+            RoleItem(role: "Представитель привлекаемого лица",
+                     name: "Петров П. П.", articles: "ст. 12.1 КоАП РФ"),
+            RoleItem(role: "Защитник (адвокат)",
+                     name: "Иванов И. И.", articles: "ст. 12.2 КоАП РФ")
+        ])
+        XCTAssertTrue(p.koapPrincipalMembers.isEmpty)
+        XCTAssertEqual(MovementDerivation.partiesShort(p),
+                       "Петров П. П. · Представитель привлекаемого лица")
+        XCTAssertNil(p.leadCharges)
+        XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+    }
+
+    func testKoapLeadChargesBelongOnlyToSinglePrincipal() {
+        let p = CaseParties(kind: .koap, roleItems: [
+            RoleItem(role: "Защитник", name: "Адвокат А. А.",
+                     articles: "ошибочная статья защитника"),
+            RoleItem(role: "Лицо, привлекаемое к административной ответственности",
+                     name: "ООО «Ответ»", articles: "ст. 12.1 КоАП РФ")
+        ])
+        XCTAssertEqual(p.koapPrincipalMembers.map(\.name), ["ООО «Ответ»"])
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "ООО «Ответ»")
+        XCTAssertEqual(p.leadCharges, "ст. 12.1 КоАП РФ")
+        XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+    }
+
+    func testEmptyKoapPartiesStayUnpublished() {
+        let p = CaseParties(kind: .koap)
+        XCTAssertTrue(p.koapPrincipalMembers.isEmpty)
+        XCTAssertEqual(MovementDerivation.partiesShort(p), "стороны не опубликованы")
+        XCTAssertNil(p.leadCharges)
+        XCTAssertNil(MovementDerivation.partiesSecondLine(p))
+    }
+
     // MARK: Категория на карточке — хвост рубрикатора
     //
     // Строки взяты из живых фикстур: sgs_card, ksoyu_case_card,

@@ -5,8 +5,9 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.57.3**, build 164. Полный
-registry сроков обжалования подключён; следующая задача юридической семантики — #222.
+Текущий baseline: **main 0.57.4**, build 165. Полный registry сроков обжалования
+подключён; оставшиеся typed rules относятся к #222. Счётчик тестов предыдущего
+baseline не переносится без подтверждённого результата для этой версии.
 
 | Версия | Результат |
 | --- | --- |
@@ -68,6 +69,7 @@ registry сроков обжалования подключён; следующ�
 | 0.57.1 | #181, уровень 1: единый offline fixture contract проверяет реальные ответы SUDRF, КСОЮ, vintage SUDRF, `msudrf`, Мосгорсуда и ВС РФ от исходных байтов до `CaseMovement`/`SourceAttempt`; отсутствующие реальные captures остаются видимыми пробелами матрицы |
 | 0.57.2 | #155 + #181, уровень 2: полный успешный refresh пишет доказанные изменения в append-only shadow-журнал `CaseEvent`; реальные SUDRF, КСОЮ и `msudrf` fixtures проверяют semantic diff, а текущая лента остаётся прежней до #179 |
 | 0.57.3 | Неработающие ссылки импортированных дел федеральных судов SUDRF восстанавливаются по проверенным параметрам картотеки либо точному поиску в том же суде; временные ошибки не заменяют адрес и не стирают последний успешный кэш |
+| 0.57.4 | #239: краткое название дела КоАП выбирает привлекаемое лицо по опубликованной роли, сохраняя защитника и остальных участников в полной карточке; старые снимки исправляются из сохранённого движения без сети |
 
 Завершённый AI-фундамент: `S6-0A/B`, `DATA-1`, `SPOT-2`, `INTENT-3`, `AI-4` и
 `SUMMARY-5`. Реализация и критерии сохранены в
@@ -78,134 +80,163 @@ registry сроков обжалования подключён; следующ�
 
 ## Очередь
 
-Порядок читается сверху вниз. Знак `→` означает техническую зависимость; задачи,
-перечисленные через `+`, можно вести независимо или объединять одним PR, если scope
-совпадает. Открытые issues перечислены в этом разделе.
-Дополнительно упомянуты три закрытых reference/acceptance case: #80, #85 и #102.
+Сверено с GitHub 8 сентября 2026 года: сейчас **57 открытых issues**; после merge
+с `Closes #239` останутся **56**, все распределены
+ниже. Ссылки ведут к подробным критериям приёмки. Закрытые issues упоминаются только
+как выполненные основания или reference cases, а не как открытые задачи.
 
-Backlog не является парковкой до окончания крупных фаз. После каждого merge
-перепроверяются prerequisites всех открытых задач. Разблокированная задача поднимается
-в ближайший свободный слот; среди одновременно готовых сначала идут correctness/data
-trust и короткие заметные улучшения, затем более крупные продуктовые линии.
+Приоритет читается сверху вниз; независимая приёмка может идти параллельно.
+`→` обозначает техническую зависимость, `+` — независимые задачи общего направления.
+После каждого merge перепроверяются prerequisites: сначала P1 и достоверность данных,
+затем короткие заметные исправления и более крупные продуктовые линии.
 
-### Ближайшая готовая очередь
+### Текущая незавершённая работа
 
-- **Восстановление ссылок после импорта / #248** — реализация выпущена в 0.57.3;
+- **Восстановление ссылок после импорта / [#248](https://github.com/arvidsever/Sudrf/issues/248)** — реализация выпущена в 0.57.3;
   до закрытия остаётся массовая приёмка последней импортированной подборки с
   окончательным подсчётом восстановленных адресов и отказов. Подробная проверка
   сохранена в [handoff ветки](branch-changelogs/codex/import-card-recovery/v0.57.3.md).
+  Это часть #248, а не завершение всего импорта.
   `MDB_MAP_FULL` исключён: причинная связь не подтверждена.
 
-- **#164** проходит в два доказательных шага. 0.53.2 локально накапливает только
-  принятые судом ручные пары CAPTCHA; отдельная CoreML-модель включится и закроет
-  issue не раньше 500 уникальных картинок минимум с трёх host и прохождения
-  независимого eligibility-gate. Пока корпус накапливается, #164 остаётся открытой;
-  После завершённых #92, #56 и #70 ближайшая задача юридической семантики —
-  **#222**: активация оставшихся typed rules поверх уже подключённого полного registry.
+- **[#265](https://github.com/arvidsever/Sudrf/issues/265)** — реализовано в
+  `codex/koap-complaint-metadata-265`, но ещё не смёржено: карточка жалобы КоАП
+  сохраняет опубликованные результат и дату рассмотрения без строки судебного УИД.
+  На живых делах 16-3568/2021 и 16-5035/2023 результат восстановлен, обе карточки
+  перешли в «Завершённые». Issue остаётся открытой до merge; перенос дат в строки
+  движения относится к #256.
 
-### 1. Correctness и source reliability до event journal
+### 1. Ближайшие исправления: P1, затем короткие задачи
 
-- **#164** переиспользует session-flow #207 без второго сетевого решения. Первый
-  patch-релиз собирает подтверждённый ручной корпус; следующий feature-релиз
-  добавляет отдельную variable-length CoreML-модель. Vision не отправляет коды
-  `msudrf.ru`, а модель допускается только по независимому реальному экзамену.
-- **#181** завершён двумя уровнями. Уровень 1: единый offline-harness
-  проверяет 10 реальных captures SUDRF, КСОЮ, vintage SUDRF, `msudrf`,
-  Мосгорсуда и ВС РФ; CP1251, canonical host, CAPTCHA и полный `CaseMovement`
-  входят в исполняемый contract, а недостающие post-CAPTCHA/KCAPTCHA,
-  maintenance/honest-zero/unknown, duplicate/renumbering, partial/stale-link,
-  transport-envelope и `r_juid` образцы явно отмечены `missing`. Уровень 2
-  проверяет полный `old snapshot + new snapshot → CaseEvent[]` на реальных
-  SUDRF, КСОЮ и `msudrf` artifacts; синтетические snapshots покрывают только
-  дополнительные отрицательные случаи и не считаются строками матрицы.
+- **[#260](https://github.com/arvidsever/Sudrf/issues/260) (P1)** — строгая проверка TLS в production, включая CAPTCHA и отсутствие
+  скрытого downgrade на HTTP. Bundled roots остаются дополнительными trust anchors.
+- **[#261](https://github.com/arvidsever/Sudrf/issues/261) (P1)** — повторяющиеся occurrences событий и полный rollback при ошибке
+  журнала до commit. Shadow-журнал уже находится на пути обычного refresh.
+- **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
+  исправить сохранённые реквизиты без потери документа, текста и связанной сводки.
+- **[#257](https://github.com/arvidsever/Sudrf/issues/257)** — заседания связанных материалов в «Обзоре» из той же нормализованной
+  модели, что и календарь; не ждать [#179](https://github.com/arvidsever/Sudrf/issues/179) и не создавать второй diff-путь.
+- **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,
+  сохранив latest-wins; проверить вместе с [#230](https://github.com/arvidsever/Sudrf/issues/230).
+- **[#45](https://github.com/arvidsever/Sudrf/issues/45)** — восстановить оформление однострочных актов с сохранением контракта
+  paragraphizer version и цитат. Это обычный рендеринг, AI-генерации не требует.
 
-### 2. Единый контур изменений
+### 2. Материалы и процессуальные состояния
 
-- **Выполненная #155 → #179:** shadow `CaseSnapshot → CaseEvent` со стабильными
-  event IDs, append-only журналом и сравнением с текущим поведением готов. Следующая
-  фаза этого контура — #179: после фактической сверки journal становится источником
-  ленты, локальных уведомлений и badges.
-- Оба уровня fixture contract #181 готовы; исчезновение или неоднозначная
-  перезапись строки остаются диагностикой, а не пользовательским событием.
+- **[#247](https://github.com/arvidsever/Sudrf/issues/247) → [#246](https://github.com/arvidsever/Sudrf/issues/246)** — отдельно представлять тип регистрации «материал» и вид
+  производства; после доказанного перехода к принятому делу выбирать актуальный
+  номер и lifecycle, сохраняя прежнюю регистрацию. Классификация нужна и [#222](https://github.com/arvidsever/Sudrf/issues/222).
+- **[#256](https://github.com/arvidsever/Sudrf/issues/256)** — опубликованные истребование дела и итог КСОЮ по КоАП включать в движение
+  с датами источника, без выдуманных событий и дублей.
+- **[#86](https://github.com/arvidsever/Sudrf/issues/86)** — effective legal-force status после рассмотрения жалобы по КоАП;
+  использовать завершённый lifecycle foundation [#56](https://github.com/arvidsever/Sudrf/issues/56), сверить результат с [#256](https://github.com/arvidsever/Sudrf/issues/256).
 
-### 3. Юридическая семантика
+### 3. Обновление, импорт и источники
 
-- **Выполненные #56 + #70 → (#222 + #223 + #224) → (#129 + #125 + #111) → #128.**
-  Ложный срок при живой кассации устранён. Rules engine закрепил полный registry,
-  формулу, evidence, provenance и versioned predicates. #222 активирует оставшиеся
-  typed rules того же каталога, #223 добавляет отдельный registry сроков рассмотрения,
-  а #224 — исторический LegalCalendar 2002+; до них рабочие дни и перенос окончания
-  не подменяются частными списками или эвристиками.
-- Ранее закрытый **#80** остаётся negative fixture; его live-проверка входит в acceptance
-  rules engine. Развязка стадии и срока обязательна до исправления последнего ложного срока.
+- **[#237](https://github.com/arvidsever/Sudrf/issues/237)** — частично реализовано в 0.53.3: обход вышестоящих целей по сохранённому
+  УИД при временной недоступности базовой карточки. Issue остаётся открытым:
+  проверить все failure/CAPTCHA/partial paths, независимое сохранение успешных
+  источников и отсутствие продления TTL полного успеха; устранить остаточные пробелы.
+- **[#238](https://github.com/arvidsever/Sudrf/issues/238)** — использовать сохранённые точные URL вышестоящих карточек независимо
+  от доступности поиска; discovery по УИД сохранить. Дополняет [#237](https://github.com/arvidsever/Sudrf/issues/237).
+- **[#87](https://github.com/arvidsever/Sudrf/issues/87)** — фоновое обнаружение новых вышестоящих производств; после него
+  **[#156](https://github.com/arvidsever/Sudrf/issues/156) + [#76](https://github.com/arvidsever/Sudrf/issues/76)** добавляют registry `r_juid` и правильную маршрутизацию как evidence.
+  **[#104](https://github.com/arvidsever/Sudrf/issues/104)** использует [#87](https://github.com/arvidsever/Sudrf/issues/87) и выполненный [#56](https://github.com/arvidsever/Sudrf/issues/56) для привязки производств ВС РФ.
+- **[#165](https://github.com/arvidsever/Sudrf/issues/165)** — прямой уголовный поиск ВС РФ поднимается сразу после получения
+  конкретного номера и HTML-fixture; [#76](https://github.com/arvidsever/Sudrf/issues/76) — соседняя регрессия, а не блокер.
+- **[#250](https://github.com/arvidsever/Sudrf/issues/250)** — проверка связей импорта с определённым прогрессом, продолжением в фоне
+  и приоритетом интерактивных запросов в существующей очереди. Согласовать с текущим
+  восстановлением ссылок; отдельный scheduler не нужен.
+- **[#248](https://github.com/arvidsever/Sudrf/issues/248)** — частично: 0.56.2 исправила классификацию исторических КАС-карточек;
+  текущая ветка добавляет восстановление федеральных SUDRF-ссылок. Остаются полная
+  приёмка vintage URL, импорт через существующие клиенты Мосгорсуда, `msudrf`, ВС РФ
+  и поддержка мировых Москвы/СПб. Issue закрывается только после проверки всех семейств.
+- **[#164](https://github.com/arvidsever/Sudrf/issues/164)** — этап 1 уже собирает принятые судом ручные CAPTCHA-пары. Следующий этап
+  ждёт 500 уникальных картинок минимум с трёх host и независимый eligibility-gate;
+  существующий session-flow [#207](https://github.com/arvidsever/Sudrf/issues/207) переиспользуется без второго сетевого решения.
+- **[#106](https://github.com/arvidsever/Sudrf/issues/106) → [#108](https://github.com/arvidsever/Sudrf/issues/108) → [#107](https://github.com/arvidsever/Sudrf/issues/107)** — московский источник мировых по проверенному reference,
+  общий routing, затем СПб. Основания [#88](https://github.com/arvidsever/Sudrf/issues/88), этап 1 [#164](https://github.com/arvidsever/Sudrf/issues/164) и level-1 fixtures [#181](https://github.com/arvidsever/Sudrf/issues/181) готовы;
+  новые источники разблокируют соответствующие части [#248](https://github.com/arvidsever/Sudrf/issues/248), существующие их не ждут.
+- **[#68](https://github.com/arvidsever/Sudrf/issues/68) + [#65](https://github.com/arvidsever/Sudrf/issues/65)** — диагностика источников и независимый live canary.
+  **[#180](https://github.com/arvidsever/Sudrf/issues/180)** начинается с измерений [#87](https://github.com/arvidsever/Sudrf/issues/87) и host-health instrumentation [#68](https://github.com/arvidsever/Sudrf/issues/68) на 200+ делах;
+  новый scheduler допустим лишь при подтверждённом starvation/лишней нагрузке.
+  Полный Diagnostics UI и [#65](https://github.com/arvidsever/Sudrf/issues/65) не являются техническими блокерами этих измерений.
 
-### 4. Пользовательские проекции
+### 4. Журнал и пользовательские проекции
 
-- **#101 + #133** — стороны, суд и номер в уведомлениях и центральных панелях «Обзора»;
-  делать после перехода пользовательских изменений на единое событие.
-- **#148** — односторонняя проекция Sudrf → Apple Calendar после event identity и
-  deadline semantics. Изменение `EKEvent` не меняет судебное состояние.
+- Завершённые **[#155](https://github.com/arvidsever/Sudrf/issues/155) + [#181](https://github.com/arvidsever/Sudrf/issues/181)** дали shadow-журнал и два уровня fixture contract.
+  Непокрытые реальные captures остаются явными пробелами матрицы; синтетические
+  примеры их не заменяют. Исчезновение или неоднозначная перезапись строки остаются
+  диагностикой, а не пользовательским событием. Его стабилизация не завершена: **[#261](https://github.com/arvidsever/Sudrf/issues/261) + [#262](https://github.com/arvidsever/Sudrf/issues/262) → [#179](https://github.com/arvidsever/Sudrf/issues/179)**.
+- **[#262](https://github.com/arvidsever/Sudrf/issues/262)** — полезный partial-кэш не должен продвигать обработанный semantic baseline
+  и терять изменения; baseline и журнал должны переживать relaunch согласованно.
+- **[#179](https://github.com/arvidsever/Sudrf/issues/179)** — после исправлений и фактической shadow-сверки перевести ленту,
+  уведомления и badges на единый журнал без повторных уведомлений.
+- **[#179](https://github.com/arvidsever/Sudrf/issues/179) → [#93](https://github.com/arvidsever/Sudrf/issues/93) + [#101](https://github.com/arvidsever/Sudrf/issues/101) + [#133](https://github.com/arvidsever/Sudrf/issues/133)** — движение жалоб в общем event/feed contract,
+  стороны и суд в уведомлениях, понятные названия дел в центральных панелях «Обзора».
+- **[#148](https://github.com/arvidsever/Sudrf/issues/148)** — односторонняя проекция в Apple Calendar после event identity и
+  deadline semantics; правка `EKEvent` не меняет судебное состояние.
+- **[#149](https://github.com/arvidsever/Sudrf/issues/149)** — backend/APNs после проверенного event contract, базовой надёжности
+  источников и refresh-health измерений. Apple Calendar технически не блокирует.
 
-### Параллельная системная приёмка
+### 5. Юридические сроки
 
-- **#43 + #46 + #186 → #66 (APPLE-6):** stale summary при refresh, App Intents на
-  cold start и Debug/Developer ID Spotlight identity проверяются до ручного go/no-go
-  macOS 26/27, Apple Silicon/Intel, clean install/upgrade, recovery, consent и fallback.
-- **#45** — отдельная rendering reliability-задача; case-level AI не блокирует.
-- **#182** — остаточная визуальная приёмка: карточки #85/#102, экран поиска, узкое окно
+- Завершённые **[#56](https://github.com/arvidsever/Sudrf/issues/56) + [#70](https://github.com/arvidsever/Sudrf/issues/70)** позволяют активировать оставшиеся typed rules **[#222](https://github.com/arvidsever/Sudrf/issues/222)**
+  поверх полного registry. Это не равнозначно завершению всей пользовательской функции.
+- **[#224](https://github.com/arvidsever/Sudrf/issues/224)** — единый исторический LegalCalendar 2002+; **[#129](https://github.com/arvidsever/Sudrf/issues/129)** — месяцы и годы,
+  **[#111](https://github.com/arvidsever/Sudrf/issues/111)** — нерабочие дни и перенос окончания, **[#125](https://github.com/arvidsever/Sudrf/issues/125)** — различение решения и
+  определения с правильной counting policy. Календарные политики используют [#224](https://github.com/arvidsever/Sudrf/issues/224),
+  а не локальные списки праздников; арифметику можно проверять независимо.
+- Полная приёмка **[#222](https://github.com/arvidsever/Sudrf/issues/222)** требует [#224](https://github.com/arvidsever/Sudrf/issues/224), [#129](https://github.com/arvidsever/Sudrf/issues/129), [#111](https://github.com/arvidsever/Sudrf/issues/111) и [#125](https://github.com/arvidsever/Sudrf/issues/125), объяснения расчёта в UI
+  и сохранения ручных корректировок. **[#223](https://github.com/arvidsever/Sudrf/issues/223)** — отдельный registry и отображение
+  сроков рассмотрения с тем же календарём и проверенной арифметикой.
+- **[#128](https://github.com/arvidsever/Sudrf/issues/128)** — итоговая регрессия: без доказанного итогового акта срок апелляции
+  не появляется. Закрытый [#80](https://github.com/arvidsever/Sudrf/issues/80) остаётся negative fixture и live acceptance case.
+
+### Параллельная системная и визуальная приёмка
+
+- **[#264](https://github.com/arvidsever/Sudrf/issues/264)** — обязательный gate перед следующим изменением схемы: установить реальные
+  исторические модели V1/V2 и проверить upgrade соответствующих stores. Риск подтверждён
+  по декларациям схем; сбой конкретной старой базы пока не воспроизведён.
+- **[#46](https://github.com/arvidsever/Sudrf/issues/46) + [#186](https://github.com/arvidsever/Sudrf/issues/186) → [#66](https://github.com/arvidsever/Sudrf/issues/66) (APPLE-6)** — cold-start App Intents, Spotlight identity
+  Debug/Developer ID, clean install/upgrade, recovery и независимые системные сценарии.
+  Отложенные AI-проверки остаются непроверенными; [#66](https://github.com/arvidsever/Sudrf/issues/66) целиком не закрывать преждевременно.
+- **[#69](https://github.com/arvidsever/Sudrf/issues/69)** — notary credentials, submission, stapling и production release workflow;
+  TestFlight не заменяет Developer ID/notarization.
+- **[#182](https://github.com/arvidsever/Sudrf/issues/182)** — остаточная визуальная приёмка: карточки [#85](https://github.com/arvidsever/Sudrf/issues/85)/[#102](https://github.com/arvidsever/Sudrf/issues/102), экран поиска, узкое окно
   1180 pt и настройки 720 pt. Выполняется независимо от архитектурной очереди.
-- **#215** — отложенная пользовательская visual QA исправления #210: обычная карточка,
+- **[#215](https://github.com/arvidsever/Sudrf/issues/215)** — отложенная пользовательская visual QA исправления [#210](https://github.com/arvidsever/Sudrf/issues/210): обычная карточка,
   движение дела, глобальный поиск и resize 1180/1280 pt; основной merge не блокирует.
-- **#217** — отложенная пользовательская visual QA ссылок #151: шапка дела,
+- **[#217](https://github.com/arvidsever/Sudrf/issues/217)** — отложенная пользовательская visual QA ссылок [#151](https://github.com/arvidsever/Sudrf/issues/151): шапка дела,
   точные ссылки инстанций, отсутствие fallback и узкая ширина; основной merge не блокирует.
-- **#221** — отложенная пользовательская visual QA файловых актов #213: несколько
+- **[#221](https://github.com/arvidsever/Sudrf/issues/221)** — отложенная пользовательская visual QA файловых актов [#213](https://github.com/arvidsever/Sudrf/issues/213): несколько
   вложений, переключение, оригиналы и понятный fallback при ошибке; основной merge не блокирует.
-- **#226** — отложенная пользовательская visual QA военного поиска #219: скрытый
+- **[#226](https://github.com/arvidsever/Sudrf/issues/226)** — отложенная пользовательская visual QA военного поиска [#219](https://github.com/arvidsever/Sudrf/issues/219): скрытый
   регион, допустимые картотеки GV/OV/AV/KV и возврат к общей ветви; основной merge не блокирует.
-- **#228** — отложенная пользовательская visual QA #211: узкие колонки «Обзора»,
+- **[#228](https://github.com/arvidsever/Sudrf/issues/228)** — отложенная пользовательская visual QA [#211](https://github.com/arvidsever/Sudrf/issues/211): узкие колонки «Обзора»,
   длинные номера и разные исторические инстанции; основной merge не блокирует.
-- **#230** — отложенная пользовательская visual QA #220: двусторонний выбор региона
+- **[#230](https://github.com/arvidsever/Sudrf/issues/230)** — отложенная пользовательская visual QA [#220](https://github.com/arvidsever/Sudrf/issues/220): двусторонний выбор региона
   и суда, очистка на ВС РФ и узкое окно; основной merge не блокирует.
-- **#241** — живая проверка 3 КСОЮ после #88/#89: флапающие страницы техработ,
+- **[#241](https://github.com/arvidsever/Sudrf/issues/241)** — живая проверка 3 КСОЮ после [#88](https://github.com/arvidsever/Sudrf/issues/88)/[#89](https://github.com/arvidsever/Sudrf/issues/89): флапающие страницы техработ,
   точная ссылка карточки, опубликованный акт и сохранение последнего успешного снимка;
   основной merge не блокирует.
 
-### Следующие продуктовые линии
+### Отложенные AI-задачи
 
-- **#87 + #68 + #65 → #180:** discovery вышестоящей инстанции, минимальная host-health
-  instrumentation и live canary дают baseline. Adaptive scheduler реализуется только при
-  измеренном starvation/лишней нагрузке; иначе issue закрывается отчётом.
-- **#69** — Developer ID/notarization: остаются notary credentials, submission, stapling
-  и release workflow. TestFlight эту задачу не закрывает.
-- **#149** — обязательный backend/APNs после event contract, базовой source reliability
-  и результатов refresh-health измерений; технически Apple Calendar не блокирует.
-- **CASEAI-7** — после APPLE-6, event journal, rules engine и устранения stale-summary:
-  «Что изменилось», история инстанций, retrieval по делу, digest и command bar.
-- **PUBLIC-8** — только после CASEAI-7, завершённого APPLE-6, готового production
-  Developer ID/notarization pipeline и backend/APNs foundation. BYOK сохраняется; cloud
-  требует proxy, квот, privacy/legal review и отсутствия хранения текстов судебных актов.
+Решение автора от **8 сентября 2026 года**: генерация сводок и другие AI-функции
+по делу отложены до появления подходящего проверенного способа генерации.
+Это не относится к CAPTCHA/OCR, обычному просмотру актов, Spotlight, App Intents
+и независимым проверкам хранения данных.
 
-### Карта разблокировок backlog
-
-Эта карта задаёт момент включения задач в активную очередь, а не отдельные поздние
-фазы:
-
-| Основание | Что поднимается сразу после него |
-| --- | --- |
-| Уже выполнены #56, #64, #70, #74, #79, #81, #82, #88, #89, #90, #91, #92, #94, #110, #117, #130, #132, #151, #207, #210, #211, #213, #219, #220 и identity/reconciliation foundation | #222 — ближайшая готовая задача юридической семантики |
-| Выполненные #88 + этап 1 #164 | Выполненная #92 переиспользует единый надёжный CAPTCHA/session flow для последующего refresh добавленного URL-якоря |
-| #43 | #67: live-case session выносится из `AppRouter` после стабилизации cancellation сводки; persistence prerequisites #44/#64 уже закрыты |
-| Выполненная #56 | #86: effective legal-force status использует тот же проверенный lifecycle source of truth |
-| Выполненная #70 | #222 + #223 + #224: оставшиеся typed rules, registry сроков рассмотрения и LegalCalendar используют единые predicates, evidence и provenance |
-| #87 | #156 и #76: registry/routing становятся дополнительными evidence sources общего фонового discovery |
-| #87 + #56 и сохранённые fixtures ВС РФ | #104: discovery/linking производства ВС РФ без ложной линейной модели review rounds |
-| Конкретный номер и HTML-fixture уголовного дела ВС РФ | #165 поднимается немедленно; #76 переиспользуется как соседний routing regression, но не блокирует прямой поиск |
-| #155 → #179 | #93: complaint movement входит в единый event/feed contract без второго временного diff-пути |
-| Рабочие #88 + #89, этап 1 #164 и level-1 fixtures #181 | #106 → #108 → #107: московский adapter по проверенному reference, минимальный общий magistrate routing, затем источник СПб |
-
-#70 завершена; ближайшая задача юридической семантики — #222. #93 ждёт именно event contract,
-поскольку её acceptance затрагивает feed/last-change. Новые source families больше не
-отложены «на самый конец»: они начинаются сразу после стабилизации общего source gate.
+- **[#43](https://github.com/arvidsever/Sudrf/issues/43)** — отмена устаревшей генерации при refresh; вернуться вместе с AI-генерацией.
+- **[#43](https://github.com/arvidsever/Sudrf/issues/43) → [#67](https://github.com/arvidsever/Sudrf/issues/67)** — выделение live-case session также отложено, чтобы не переносить
+  известную гонку в новый компонент. Persistence prerequisites [#44](https://github.com/arvidsever/Sudrf/issues/44)/[#64](https://github.com/arvidsever/Sudrf/issues/64) уже выполнены.
+- **CASEAI-7** — после выбора и проверки способа генерации, [#43](https://github.com/arvidsever/Sudrf/issues/43), APPLE-6,
+  event journal и rules engine: сводки изменений, retrieval, digest и command bar.
+- AI-зависимая часть **PUBLIC-8** остаётся отложенной; общий gate сохраняет
+  завершённые CASEAI-7/APPLE-6, production Developer ID/notarization и backend/APNs.
+  BYOK сохраняется; cloud требует proxy, квот, privacy/legal review и отсутствия
+  хранения текстов судебных актов. Независимые работы [#69](https://github.com/arvidsever/Sudrf/issues/69) и [#149](https://github.com/arvidsever/Sudrf/issues/149) продолжаются по своим prerequisites.
 
 ## Правила ведения
 
@@ -348,7 +379,9 @@ semantic diff → append-only CaseEvent journal → projections`
   условия использования.
 - AI не входит в critical path статуса, identity или срока. Typed summary обязана иметь
   существующие paragraph citations и локальную проверку критических реквизитов.
-- Рабочий внешний маршрут — Groq `openai/gpt-oss-120b` до нового benchmark.
+- Ранее реализована интеграция Groq `openai/gpt-oss-120b`; её текущая пригодность
+  не подтверждена. По решению от 8 сентября 2026 года AI-генерация отложена
+  до выбора и проверки подходящего способа; существующая интеграция не означает готовность.
 - Apple direct и Apple через английский — изолированные Experimental routes. Двойной
   перевод выключен по умолчанию; Intel/недоступная модель дают BYOK fallback.
 - Translation сохраняет paragraph/literal IDs; суммы, даты, номера, валюты и нормы права

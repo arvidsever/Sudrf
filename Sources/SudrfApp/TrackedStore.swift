@@ -55,6 +55,7 @@ enum TrackedStorePreparation {
         try migrateMoscowKeyAliases(context: context)
         try bootstrapPersistentIdentity(context: context)
         try bootstrapEventJournals(context: context)
+        try repairKoapPartySnapshots(context: context)
         try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
         guard context.hasChanges else { return false }
         try context.save()
@@ -126,6 +127,28 @@ enum TrackedStorePreparation {
         let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
         for record in records where record.eventJournalData == nil {
             record.eventJournal = CaseEventJournal()
+        }
+    }
+
+    private static func repairKoapPartySnapshots(context: ModelContext) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        for record in records {
+            guard var snapshot = record.snapshot,
+                  let movement = record.movement,
+                  movement.parties.kind == .koap,
+                  !movement.parties.isEmpty else { continue }
+
+            let partiesShort = MovementDerivation.partiesShort(movement.parties)
+            let leadCharges = movement.parties.leadCharges
+            let secondPartyLine = MovementDerivation.partiesSecondLine(movement.parties)
+            guard snapshot.partiesShort != partiesShort
+                    || snapshot.leadCharges != leadCharges
+                    || snapshot.secondPartyLine != secondPartyLine else { continue }
+
+            snapshot.partiesShort = partiesShort
+            snapshot.leadCharges = leadCharges
+            snapshot.secondPartyLine = secondPartyLine
+            record.snapshot = snapshot
         }
     }
 }

@@ -762,7 +762,13 @@ enum MovementDerivation {
     /// Короткая строка сторон для карточек/таблицы.
     static func partiesShort(_ p: CaseParties) -> String {
         switch p.kind {
-        case .koap, .upk, .special:
+        case .koap:
+            let principals = p.koapPrincipalMembers
+            if !principals.isEmpty { return namesShort(principals.map(\.name)) }
+            if let col = p.displayColumns.first, let member = col.members.first {
+                return member.name + (member.sub.map { " · \($0)" } ?? " · \(col.title)")
+            }
+        case .upk, .special:
             if let col = p.displayColumns.first, let m = col.members.first {
                 // Со статьями (подсудимый/привлекаемый) — только ФИО: статьи
                 // рисуются отдельно значком щита в строке «Списком» (leadCharges).
@@ -797,9 +803,10 @@ enum MovementDerivation {
         }
     }
 
-    /// Вторая строка ячейки «Списком» для УПК/КоАП (второй подсудимый или «и N
-    /// других»); nil, когда подсудимый один или это не уголовное/административное.
+    /// Вторая строка ячейки «Списком» для УПК (второй подсудимый или «и N
+    /// других»); nil, когда подсудимый один или это другой вид производства.
     static func partiesSecondLine(_ p: CaseParties) -> PartiesSecondLine? {
+        guard p.kind != .koap else { return nil }
         let charged = p.chargedMembers
         switch charged.count {
         case 0, 1: return nil

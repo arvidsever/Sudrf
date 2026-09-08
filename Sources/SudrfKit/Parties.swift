@@ -162,9 +162,10 @@ public struct CaseParties: Sendable, Equatable, Codable {
             || (lower.contains("государствен") && lower.contains("обвинит")) {
             kind = .upk; return
         }
-        if lower.contains("в отношении которого ведётся")
-            || lower.contains("привлека")
-            || (lower.contains("составив") && lower.contains("протокол")) {
+        let normalized = Self.normalizedPartyText(lower)
+        if normalized.contains("в отношении которого ведется")
+            || normalized.contains("привлека")
+            || (normalized.contains("составив") && normalized.contains("протокол")) {
             kind = .koap; return
         }
         if lower.contains("административн") || lower.contains("заинтересован") {
@@ -202,10 +203,62 @@ public struct CaseParties: Sendable, Equatable, Codable {
         return displayColumns.flatMap { $0.members }.filter { !($0.articles?.isEmpty ?? true) }
     }
 
+    /// Лица, в отношении которых ведётся производство по делу КоАП. Роль
+    /// авторитетнее наличия статей: статьи могут отсутствовать у самого лица
+    /// или быть ошибочно опубликованы у другого участника.
+    public var koapPrincipalMembers: [PartyMember] {
+        guard kind == .koap else { return [] }
+
+        let fromRoles = roleItems.compactMap { item -> PartyMember? in
+            guard Self.isKoapPrincipalRole(item.role) else { return nil }
+            let sub = item.role.trimmingCharacters(in: CharacterSet(charactersIn: " :·—-"))
+            return PartyMember(name: item.name, sub: sub, articles: item.articles)
+        }
+        let members = fromRoles.isEmpty
+            ? columns.flatMap(\.members).filter { Self.isKoapPrincipalRole($0.sub ?? "") }
+            : fromRoles
+        return members.sorted {
+            let lhs = Self.normalizedPartyText($0.name)
+            let rhs = Self.normalizedPartyText($1.name)
+            if lhs != rhs { return lhs < rhs }
+            if $0.name != $1.name { return $0.name < $1.name }
+            let lhsRole = Self.normalizedPartyText($0.sub ?? "")
+            let rhsRole = Self.normalizedPartyText($1.sub ?? "")
+            if lhsRole != rhsRole { return lhsRole < rhsRole }
+            return ($0.articles ?? "") < ($1.articles ?? "")
+        }
+    }
+
+    private static func isKoapPrincipalRole(_ role: String) -> Bool {
+        let normalized = normalizedPartyText(role).replacingOccurrences(of: ",", with: "")
+        guard !["адвокат", "защитник", "представител"].contains(where: {
+            normalized.contains($0)
+        })
+        else { return false }
+        return [
+            "привлекаемое лицо",
+            "лицо привлекаемое к административной ответственности",
+            "лицо в отношении которого ведется производство"
+        ].contains(where: { normalized.contains($0) })
+    }
+
+    private static func normalizedPartyText(_ text: String) -> String {
+        text.lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
     /// Перечень статей ведущего участника (подсудимого/привлекаемого) для
     /// уголовных/административных дел — для строки «Списком» (ФИО ⟨щит⟩ статьи).
     /// nil для остальных видов процесса и когда статей нет.
-    public var leadCharges: String? { chargedMembers.first?.articles }
+    public var leadCharges: String? {
+        if kind == .koap {
+            let principals = koapPrincipalMembers
+            return principals.count == 1 ? principals[0].articles : nil
+        }
+        return chargedMembers.first?.articles
+    }
 
     /// Готовые колонки участников для шапки дела. Если задана явная раскладка
     /// (`columns`) — она и используется; иначе строится из вида процесса.

@@ -381,6 +381,34 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertTrue(prosecution.members.contains { $0.name.contains("Перова") })
     }
 
+    func testKoapPrincipalDoesNotDependOnPublishedRowOrder() throws {
+        let defender = """
+            <tr><td>ЗАЩИТНИК (АДВОКАТ)</td><td>Адвокат А. А.</td><td>ст. 99 КоАП РФ</td></tr>
+            """
+        let principal = """
+            <tr><td>ЛИЦО, В ОТНОШЕНИИ КОТОРОГО ВЕДЕТСЯ ПРОИЗВОДСТВО</td><td>ООО «Ответ»</td><td></td></tr>
+            """
+        for rows in [defender + principal, principal + defender] {
+            let html = """
+                <html><body>
+                  <div class="casenumber">ДЕЛО № 16-5133/2026</div>
+                  <table>
+                    <tr><th colspan="3">СТОРОНЫ ПО ДЕЛУ</th></tr>
+                    <tr><td>Вид лица</td><td>ФИО (наименование)</td><td>Перечень статей</td></tr>
+                    \(rows)
+                  </table>
+                </body></html>
+                """
+            let parties = try CaseCardParser.parse(html: html).parties
+            XCTAssertEqual(parties.kind, .koap)
+            XCTAssertEqual(parties.koapPrincipalMembers.map(\.name), ["ООО «Ответ»"])
+            XCTAssertNil(parties.leadCharges)
+            XCTAssertTrue(parties.displayColumns.flatMap(\.members).contains {
+                $0.name == "Адвокат А. А." && $0.sub == "ЗАЩИТНИК (АДВОКАТ)"
+            })
+        }
+    }
+
     func testKoAPCardKeepsPublishedPreviousRegistrationURL() throws {
         let responseURL = try XCTUnwrap(URL(string:
             "https://leninsky--kir.sudrf.ru/modules.php?name=sud_delo&srv_num=9&name_op=case"))

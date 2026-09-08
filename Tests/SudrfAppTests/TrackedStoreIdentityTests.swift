@@ -359,6 +359,87 @@ final class TrackedStoreIdentityTests: XCTestCase {
                       "an unchanged court-act projection must not invoke saveContext")
     }
 
+    func testPreparationRepairsOnlyStoredKoapPartyProjection() throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "5-100/2026", cardID: "koap-card", judicialUID: oldUID)
+        var parties = CaseParties(kind: .koap)
+        parties.add(role: "Защитник (адвокат)", name: "Петров Пётр Петрович")
+        parties.add(role: "Привлекаемое лицо", name: "Иванов Иван Иванович",
+                    articles: "ч. 1 ст. 12.8 КоАП РФ")
+        var cachedMovement = movement(for: value)
+        cachedMovement.parties = parties
+
+        var staleSnapshot = MovementDerivation.snapshot(from: cachedMovement, context: value)
+        staleSnapshot.partiesShort = "Петров Пётр Петрович · Защитник (адвокат)"
+        staleSnapshot.leadCharges = "устаревшие статьи"
+        staleSnapshot.secondPartyLine = PartiesSecondLine(
+            name: "Иванов Иван Иванович", articles: "ч. 1 ст. 12.8 КоАП РФ", more: nil)
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: staleSnapshot, movement: cachedMovement,
+            collections: ["КоАП"], movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let movementData = try XCTUnwrap(record.movementData)
+        let movementFetchedAt = try XCTUnwrap(record.movementFetchedAt)
+        let eventJournalData = try XCTUnwrap(record.eventJournalData)
+        let identityStateData = try XCTUnwrap(record.identityStateData)
+        let logicalCaseID = try XCTUnwrap(record.logicalCaseID)
+
+        XCTAssertTrue(try TrackedStorePreparation.prepare(context: store.container.mainContext))
+
+        var expected = staleSnapshot
+        expected.partiesShort = MovementDerivation.partiesShort(parties)
+        expected.leadCharges = parties.leadCharges
+        expected.secondPartyLine = MovementDerivation.partiesSecondLine(parties)
+        let repaired = try XCTUnwrap(record.snapshot)
+        XCTAssertEqual(repaired, expected)
+        XCTAssertEqual(repaired.partiesShort, "Иванов Иван Иванович")
+        XCTAssertEqual(repaired.leadCharges, "ч. 1 ст. 12.8 КоАП РФ")
+        XCTAssertNil(repaired.secondPartyLine)
+        XCTAssertEqual(record.movementData, movementData)
+        XCTAssertEqual(record.movementFetchedAt, movementFetchedAt)
+        XCTAssertEqual(record.eventJournalData, eventJournalData)
+        XCTAssertEqual(record.identityStateData, identityStateData)
+        XCTAssertEqual(record.logicalCaseID, logicalCaseID)
+
+        XCTAssertFalse(try TrackedStorePreparation.prepare(context: store.container.mainContext))
+    }
+
+    func testPreparationPreservesSnapshotsWithoutUsableKoapMovement() throws {
+        let store = TrackedStore(inMemory: true)
+
+        func insert(_ number: String, cardID: String, kind: ProcessKind) throws
+            -> TrackedCaseRecord {
+            let value = context(number: number, cardID: cardID)
+            var parties = CaseParties(kind: kind)
+            parties.add(role: "Защитник (адвокат)", name: "Петров Пётр Петрович")
+            parties.add(role: "Привлекаемое лицо", name: "Иванов Иван Иванович",
+                        articles: "ч. 1 ст. 12.8 КоАП РФ")
+            var cachedMovement = movement(for: value)
+            cachedMovement.parties = parties
+            cachedMovement.acts = []
+            cachedMovement.actBodies = [:]
+            var snapshot = MovementDerivation.snapshot(from: cachedMovement, context: value)
+            snapshot.partiesShort = "сохранённая строка"
+            snapshot.leadCharges = "сохранённые статьи"
+            snapshot.secondPartyLine = PartiesSecondLine(
+                name: "сохранённая вторая строка", articles: nil, more: nil)
+            return try store.reconcileAndUpsert(
+                context: value, snapshot: snapshot, movement: cachedMovement, collections: [])
+        }
+
+        let missing = try insert("5-101/2026", cardID: "missing-movement", kind: .koap)
+        missing.movementData = nil
+        let corrupt = try insert("5-102/2026", cardID: "corrupt-movement", kind: .koap)
+        corrupt.movementData = Data("not-json".utf8)
+        let otherKind = try insert("1-103/2026", cardID: "upk-movement", kind: .upk)
+        try store.container.mainContext.save()
+        let snapshots = [missing, corrupt, otherKind].map(\.snapshotData)
+        let movements = [missing, corrupt, otherKind].map(\.movementData)
+
+        XCTAssertFalse(try TrackedStorePreparation.prepare(context: store.container.mainContext))
+        XCTAssertEqual([missing, corrupt, otherKind].map(\.snapshotData), snapshots)
+        XCTAssertEqual([missing, corrupt, otherKind].map(\.movementData), movements)
+    }
+
     func testNewTrackingStartsWithEmptySemanticBaseline() throws {
         let store = TrackedStore(inMemory: true)
         let value = context(number: "2-100/2026", cardID: "same-card", judicialUID: oldUID)

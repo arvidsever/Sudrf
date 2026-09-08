@@ -204,6 +204,154 @@ final class CaseCardRecoveryTests: XCTestCase {
         XCTAssertEqual(result.context.cartotekaId, "p2")
     }
 
+    func testKSOYUCompositeFixturesRecoverDirectlyWithoutSearch() async throws {
+        let examples: [(fixture: String, host: String, caseID: String, caseUID: String,
+                        expected: String, published: String, judicialUID: String?)] = [
+            ("kas-4018", "3kas.sudrf.ru", "3304334",
+             "856b772d-bb2d-4960-bd53-fc536bb33450",
+             "88а-4018/2021", "8а-2564/2021 [88а-4018/2021]",
+             "11OS0000-01-2020-000019-50"),
+            ("kas-1001", "3kas.sudrf.ru", "73968",
+             "cc38a8b0-e5fc-4b6e-9996-d143a38d861a",
+             "88а-1001/2019", "8а-1231/2019 [88а-1001/2019]",
+             "78RS0017-01-2019-005288-56"),
+            ("kas-4154", "3kas.sudrf.ru", "110339",
+             "18d78c0e-7435-4eca-82c3-cc5b570bd0db",
+             "88а-4154/2020", "8а-1494/2020 [88а-4154/2020]", nil),
+            ("kas-8501", "2kas.sudrf.ru", "2723657",
+             "576e5fae-ee46-434a-99eb-5956562963b0",
+             "88а-8501/2022", "8а-7078/2022 [88а-8501/2022]",
+             "77RS0030-02-2021-008181-07")
+        ]
+
+        for example in examples {
+            let original = cardURL(
+                host: example.host, number: example.caseID, uid: example.caseUID,
+                delo: "2800001", new: "2800001")
+            let provider = RecoveryProviderStub(htmlByRegister: [
+                "2800001/2800001": try compositeFixture("invalid-format"),
+                "43/0": try compositeFixture(example.fixture)
+            ])
+            let value = context(
+                number: example.expected, uid: example.judicialUID, url: original,
+                host: example.host, level: .cassation, cartotekaID: "p3")
+
+            let result = try await CaseCardRecovery(provider: provider).resolve(context: value)
+
+            XCTAssertEqual(result.reason, .cartotekaParameters, example.fixture)
+            XCTAssertEqual(result.card.caseNumber, example.published, example.fixture)
+            XCTAssertFalse(result.card.sessions.isEmpty, example.fixture)
+            XCTAssertTrue(result.verifiedURL.absoluteString.contains("delo_id=43"))
+            XCTAssertTrue(result.verifiedURL.absoluteString.contains("new=0"))
+            XCTAssertEqual(result.context.cartotekaId, "p3")
+            let calls = await provider.snapshot()
+            XCTAssertEqual(calls.urls.count, 2, example.fixture)
+            XCTAssertTrue(calls.searches.isEmpty, example.fixture)
+
+            let replayProvider = RecoveryProviderStub(cards: [
+                result.verifiedURL.absoluteString: result.card
+            ])
+            let replay = try await CaseCardRecovery(provider: replayProvider).resolve(
+                context: result.context)
+            XCTAssertEqual(replay.reason, .originalURL, example.fixture)
+            let replayCalls = await replayProvider.snapshot()
+            XCTAssertTrue(replayCalls.searches.isEmpty, example.fixture)
+        }
+    }
+
+    func testKSOYUCompositeMatcherCoversAllPublishedNumberFamilies() throws {
+        let cases = [
+            ("8-1/2026 [88-2/2026]", "88-2/2026", "g3"),
+            ("8Г-1/2026 [88-2/2026]", "88-2/2026", "g3"),
+            ("8A-1/2026 [88А-2/2026]", "88а-2/2026", "p3"),
+            ("7-1/2026 [77-2/2026]", "77-2/2026", "u3"),
+            ("7-1/2026 [77У-2/2026]", "77у-2/2026", "u3"),
+            ("7У-1/2026 [77-2/2026]", "77-2/2026", "u3"),
+            ("7У-1/2026 [77У-2/2026]", "77у-2/2026", "u3")
+        ]
+
+        for (published, expected, cartotekaID) in cases {
+            let cartoteka = try XCTUnwrap(
+                CartotekaRegistry.find(level: .cassation, id: cartotekaID))
+            let value = ksoyuContext(number: expected, cartotekaID: cartotekaID)
+            XCTAssertTrue(CaseCardRecovery.matchesRecoveryCaseNumber(
+                published, expected: "№ \(expected.uppercased())",
+                context: value, cartoteka: cartoteka), published)
+            XCTAssertTrue(CaseCardRecovery.matchesRecoveryCaseNumber(
+                published, expected: published,
+                context: value, cartoteka: cartoteka), published)
+        }
+    }
+
+    func testKSOYUCompositeMatcherRejectsMalformedOrContradictoryEvidence() throws {
+        let p3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "p3"))
+        let expected = "88а-2/2026"
+        let value = ksoyuContext(number: expected, cartotekaID: "p3")
+        let rejected = [
+            "8а-1/2026[88а-2/2026]",
+            "8а-1/2026 [88а-2/2026",
+            "8а-1/2026 [88а-2/2026] [88а-2/2026]",
+            "8а-1/2026 [88а-2/2026] продолжение",
+            "8а-1/2026 [88а-3/2026]",
+            "8а-1/2026 [88-2/2026]",
+            "8а-1/2026 [88а-2/26]",
+            "текст 8а-1/2026 [88а-2/2026]"
+        ]
+        for published in rejected {
+            XCTAssertFalse(CaseCardRecovery.matchesRecoveryCaseNumber(
+                published, expected: expected, context: value, cartoteka: p3), published)
+        }
+
+        let g3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
+        XCTAssertFalse(CaseCardRecovery.matchesRecoveryCaseNumber(
+            "8а-1/2026 [88а-2/2026]", expected: expected,
+            context: value, cartoteka: g3))
+        let unknownCourt = context(
+            number: expected, uid: nil,
+            url: cardURL(host: "unknown.sudrf.ru", number: "1", uid: "g",
+                         delo: "43", new: "0"),
+            host: "unknown.sudrf.ru", level: .cassation, cartotekaID: "p3")
+        XCTAssertFalse(CaseCardRecovery.matchesRecoveryCaseNumber(
+            "8а-1/2026 [88а-2/2026]", expected: expected,
+            context: unknownCourt, cartoteka: p3))
+    }
+
+    func testKSOYUCompositeNumberSearchUsesSameStrictMatcher() async throws {
+        let host = "3kas.sudrf.ru"
+        let expected = "88а-4018/2021"
+        let original = cardURL(host: host, number: "old", uid: "old-guid",
+                               delo: "43", new: "0")
+        let first = cardURL(host: host, number: "3304334", uid: "candidate-1",
+                            delo: "43", new: "0")
+        let second = cardURL(host: host, number: "3304335", uid: "candidate-2",
+                             delo: "43", new: "0")
+        let published = "8а-2564/2021 [88а-4018/2021]"
+        let row = CaseSearchResult(caseNumber: published, cardURL: first)
+        let card = CaseCard(rawText: "", actText: nil, caseNumber: published)
+        let context = context(number: expected, uid: nil, url: original,
+                              host: host, level: .cassation, cartotekaID: "p3")
+        let provider = RecoveryProviderStub(
+            cards: [first.absoluteString: card], defaultFailure: .noCard,
+            numberRows: [row])
+
+        let result = try await CaseCardRecovery(provider: provider).resolve(context: context)
+
+        XCTAssertEqual(result.reason, .caseNumber)
+        XCTAssertEqual(result.verifiedURL, first)
+        let searches = await provider.snapshot().searches
+        XCTAssertEqual(searches.map(\.0), ["number"])
+
+        let ambiguous = RecoveryProviderStub(
+            cards: [first.absoluteString: card, second.absoluteString: card],
+            defaultFailure: .noCard,
+            numberRows: [row, CaseSearchResult(caseNumber: published, cardURL: second)])
+        await XCTAssertThrowsErrorAsync(
+            try await CaseCardRecovery(provider: ambiguous).resolve(context: context)
+        ) { error in
+            XCTAssertEqual(error as? CaseCardRecoveryError, .ambiguous)
+        }
+    }
+
     func testUIDSearchUsesSameSrvNumAndRequiresMatchingCardUID() async throws {
         let original = cardURL(host: komiHost, number: "old", uid: "old-guid",
                                delo: "42", new: "0", srvNum: 3)
@@ -388,18 +536,27 @@ final class CaseCardRecoveryTests: XCTestCase {
     }
 
     private func context(number: String, uid: String?, url: URL,
-                         host: String? = nil, level: CourtLevel = .subject) -> MovementContext {
+                         host: String? = nil, level: CourtLevel = .subject,
+                         cartotekaID: String = "p2") -> MovementContext {
         let domain = host ?? komiHost
         var value = MovementContext(
             branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
             searchDomain: domain, displayDomain: SudrfHost.alternate(domain) ?? domain,
             courtTitle: "Верховный Суд Республики Коми", courtLevelRaw: level.rawValue,
-            courtCode: "11", cartotekaId: "p2", cartotekaLevelRaw: level.rawValue,
+            courtCode: "11", cartotekaId: cartotekaID, cartotekaLevelRaw: level.rawValue,
             caseNumber: number, caseID: "old", caseUID: "old-guid",
             cardURLString: url.absoluteString)
         value.judicialUID = uid
         value.baseInstanceLevelRaw = CaseInstance.Level.appeal.rawValue
         return value
+    }
+
+    private func ksoyuContext(number: String, cartotekaID: String) -> MovementContext {
+        context(number: number, uid: nil,
+                url: cardURL(host: "3kas.sudrf.ru", number: "1", uid: "guid",
+                             delo: "43", new: "0"),
+                host: "3kas.sudrf.ru", level: .cassation,
+                cartotekaID: cartotekaID)
     }
 
     private func cardURL(host: String, number: String, uid: String,
@@ -411,6 +568,13 @@ final class CaseCardRecoveryTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(
             forResource: name, withExtension: "html",
             subdirectory: "Fixtures/card-recovery"))
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func compositeFixture(_ name: String) throws -> String {
+        let url = try XCTUnwrap(Bundle.module.url(
+            forResource: name, withExtension: "html",
+            subdirectory: "Fixtures/composite-recovery"))
         return try String(contentsOf: url, encoding: .utf8)
     }
 }

@@ -1,0 +1,38 @@
+[
+  {
+    "file": "kas-4018.html",
+    "url": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=3304334&case_uid=856b772d-bb2d-4960-bd53-fc536bb33450&new=0&delo_id=43",
+    "observed": "2026-09-09",
+    "capture": "Browser DOM, manually minimized",
+    "sha256": "5e99eb00ef481e568fa9a9c3902002e0eac86dadfa77174ffccea0452dab40cf",
+    "retained": "case header, selected metadata rows, final hearing row",
+    "omitted": "site chrome, scripts, styles, parties, lower court, act text, unrelated metadata and earlier hearing rows"
+  },
+  {
+    "file": "kas-1001.html",
+    "url": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&n_c=1&case_id=73968&case_uid=cc38a8b0-e5fc-4b6e-9996-d143a38d861a&delo_id=43&new=0",
+    "observed": "2026-09-09",
+    "capture": "Browser DOM, manually minimized",
+    "sha256": "db65809b40966ad08f774341e7969c59226e9ceb65095e3948310bf06a59276a",
+    "retained": "case header, selected metadata rows, final hearing row",
+    "omitted": "site chrome, scripts, styles, parties, lower court, act text, unrelated metadata and earlier hearing rows"
+  },
+  {
+    "file": "kas-4154.html",
+    "url": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&n_c=1&case_id=110339&case_uid=18d78c0e-7435-4eca-82c3-cc5b570bd0db&delo_id=43&new=0",
+    "observed": "2026-09-09",
+    "capture": "Browser DOM, manually minimized",
+    "sha256": "2302f605f8a39ecbbb12c76bc0c483f803783fbd1925ed898ba9ddb1be4c995a",
+    "retained": "case header, selected metadata rows, final hearing row",
+    "omitted": "site chrome, scripts, styles, parties, lower court, act text, unrelated metadata and earlier hearing rows"
+  },
+  {
+    "file": "kas-8501.html",
+    "url": "https://2kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=2723657&case_uid=576e5fae-ee46-434a-99eb-5956562963b0&new=0&delo_id=43",
+    "observed": "2026-09-09",
+    "capture": "Browser DOM, manually minimized",
+    "sha256": "1d22a719ea23191e61a18983f70d7160907461d88379ddfd136d110d32aaa6bc",
+    "retained": "case header, selected metadata rows, final hearing row",
+    "omitted": "site chrome, scripts, styles, parties, lower court, act text, unrelated metadata and earlier hearing rows"
+  }
+]

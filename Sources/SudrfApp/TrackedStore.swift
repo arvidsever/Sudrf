@@ -955,6 +955,10 @@ final class TrackedStore {
             let mergedGroup = [domainSurvivor] + mergedRecords.filter { $0 !== domainSurvivor }
             let survivor = preferredPersistentSurvivor(in: mergedGroup)
             let previousMovementFetchedAt = survivor.movementFetchedAt
+            let preservesReviewRelationRefreshTime = !updatesMovementFetchedAt
+                && identityObservation?.officialRelations.contains {
+                    $0.kind == .sourceNative && $0.isUsable
+                } == true
             let persistedState = state.logicalCaseID == survivor.logicalCaseID
                 ? state
                 : LogicalCaseState(
@@ -980,7 +984,7 @@ final class TrackedStore {
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: canonical, canonicalCard: nil,
                     identityState: persistedState, saveChanges: false)
-                if !updatesMovementFetchedAt {
+                if preservesReviewRelationRefreshTime {
                     survivor.movementFetchedAt = previousMovementFetchedAt
                 }
             }

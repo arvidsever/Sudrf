@@ -554,6 +554,243 @@ final class DataCatalogTests: XCTestCase {
     }
 
     @MainActor
+    func testActProjectionUsesExactCourtLinksIndependentOfInstanceOrder() throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court-a--msk.sudrf.ru", displayDomain: "court-a.msk.sudrf.ru",
+            courtTitle: "Суд A", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-263/2026")
+        let acts = [
+            CaseAct(id: "act-a", title: "Апелляционное определение", date: "01.08.2025",
+                    courtShort: "Апелляция", instanceLevel: .appeal),
+            CaseAct(id: "act-b", title: "Апелляционное определение", date: "01.08.2026",
+                    courtShort: "Апелляция", instanceLevel: .appeal)
+        ]
+        let instances = [
+            CaseInstance(level: .appeal, court: "Суд A", caseNumber: "33-1/2025",
+                         judge: nil, domain: "court-a--msk.sudrf.ru", foundByUID: true,
+                         result: nil, sessions: [], actID: acts[0].id),
+            CaseInstance(level: .appeal, court: "Суд B", caseNumber: "33-2/2026",
+                         judge: nil, domain: "court-b--msk.sudrf.ru", foundByUID: true,
+                         result: nil, sessions: [], actID: acts[1].id)
+        ]
+        var movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: instances, complaints: [:], acts: acts,
+            actBodies: ["act-a": "Текст A.", "act-b": "Текст B."])
+
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                             collections: [])
+        func projection() throws -> [String: (court: String, semanticKey: String)] {
+            Dictionary(uniqueKeysWithValues: try store.container.mainContext.fetch(
+                FetchDescriptor<CourtActRecord>()).filter { $0.caseKey == context.key }.map {
+                    ($0.sourceActID, ($0.court, $0.semanticKey))
+                })
+        }
+        let initial = try projection()
+        XCTAssertEqual(initial["act-a"]?.court, "Суд A")
+        XCTAssertEqual(initial["act-b"]?.court, "Суд B")
+
+        movement.instances.reverse()
+        movement.acts.reverse()
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                             collections: [])
+        let reordered = try projection()
+        XCTAssertEqual(reordered["act-a"]?.court, "Суд A")
+        XCTAssertEqual(reordered["act-b"]?.court, "Суд B")
+        XCTAssertEqual(reordered["act-a"]?.semanticKey, initial["act-a"]?.semanticKey)
+        XCTAssertEqual(reordered["act-b"]?.semanticKey, initial["act-b"]?.semanticKey)
+    }
+
+    @MainActor
+    func testActProjectionFallsBackOnlyWithUnambiguousCompatibleEvidence() throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court-a--msk.sudrf.ru", displayDomain: "court-a.msk.sudrf.ru",
+            courtTitle: "Суд A", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-264/2026")
+        func provenance(sourceHost: String, finalHost: String) -> PublishedActProvenance {
+            PublishedActProvenance(
+                sourceURL: URL(string: "https://\(sourceHost)/act.pdf")!,
+                finalURL: URL(string: "https://\(finalHost)/act.pdf")!, format: .pdf,
+                contentType: "application/pdf", contentHash: "01", byteCount: 1,
+                fetchedAt: .distantPast, extractorVersion: 1)
+        }
+        let instances = [
+            CaseInstance(
+                level: .appeal, court: "Суд A", caseNumber: "33-1/2025", judge: nil,
+                domain: "court-a--msk.sudrf.ru", foundByUID: true, result: nil, sessions: [],
+                actIDs: ["exact-a", "ambiguous-generic", "ambiguous-own"]),
+            CaseInstance(
+                level: .appeal, court: "Суд B", caseNumber: "33-2/2026", judge: nil,
+                domain: "court-b--msk.sudrf.ru", foundByUID: true, result: nil, sessions: [],
+                actIDs: ["exact-b", "ambiguous-generic", "ambiguous-own"]),
+            CaseInstance(
+                level: .cassation, court: "Третий кассационный суд", caseNumber: "8Г-1/2026",
+                judge: nil, domain: "3kas.sudrf.ru", foundByUID: true,
+                result: nil, sessions: []),
+            CaseInstance(
+                level: .supervisory, court: "Надзорный суд", caseNumber: "4-1/2026",
+                judge: nil, domain: "supervisory.sudrf.ru", foundByUID: true,
+                result: nil, sessions: []),
+            CaseInstance(
+                level: .material, court: "Материальный суд", caseNumber: "13-1/2026",
+                judge: nil, domain: "material--msk.sudrf.ru", foundByUID: true,
+                result: nil, sessions: []),
+            CaseInstance(
+                level: .first, court: "Первый суд", caseNumber: "2-1/2026", judge: nil,
+                domain: "first--msk.sudrf.ru", foundByUID: false, result: nil, sessions: []),
+            CaseInstance(
+                level: .first, court: "—", caseNumber: "2-2/2026", judge: nil,
+                domain: "", foundByUID: false, result: nil, sessions: [])
+        ]
+        let acts = [
+            CaseAct(id: "exact-a", title: "Акт A", date: "01.01.2026",
+                    courtShort: "Апелляция", instanceLevel: .appeal),
+            CaseAct(id: "exact-b", title: "Акт B", date: "02.01.2026",
+                    courtShort: "Апелляция", instanceLevel: .appeal),
+            CaseAct(id: "ambiguous-generic", title: "Акт C", date: "03.01.2026",
+                    courtShort: "  АПЕЛЛЯЦИЯ  ", instanceLevel: .appeal),
+            CaseAct(id: "ambiguous-own", title: "Акт D", date: "04.01.2026",
+                    courtShort: "Суд акта", instanceLevel: .appeal),
+            CaseAct(
+                id: "fallback-multiple", title: "Акт E", date: "05.01.2026",
+                courtShort: "Апелляция", instanceLevel: .appeal,
+                fileProvenance: provenance(
+                    sourceHost: "court-b.msk.sudrf.ru", finalHost: "court-b--msk.sudrf.ru")),
+            CaseAct(id: "fallback-own", title: "Акт F", date: "06.01.2026",
+                    courtShort: "Собственный суд", instanceLevel: .appeal),
+            CaseAct(
+                id: "fallback-compatible", title: "Акт G", date: "07.01.2026",
+                courtShort: "Кассация", instanceLevel: .cassation,
+                fileProvenance: provenance(
+                    sourceHost: "3kas.sudrf.ru", finalHost: "redirect.example")),
+            CaseAct(
+                id: "fallback-mismatch", title: "Акт H", date: "08.01.2026",
+                courtShort: "Надзор", instanceLevel: .supervisory,
+                fileProvenance: provenance(
+                    sourceHost: "other.sudrf.ru", finalHost: "supervisory.sudrf.ru")),
+            CaseAct(id: "vs-own", title: "Акт I", date: "09.01.2026",
+                    courtShort: " ВС РФ ", instanceLevel: .vsCassation),
+            CaseAct(id: "fallback-no-provenance", title: "Акт J", date: "10.01.2026",
+                    courtShort: "Материал", instanceLevel: .material),
+            CaseAct(id: "fallback-empty-peer", title: "Акт K", date: "11.01.2026",
+                    courtShort: "1-я инстанция", instanceLevel: .first)
+        ]
+        let bodies = Dictionary(uniqueKeysWithValues: acts.map { ($0.id, "Текст \($0.id).") })
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: instances, complaints: [:], acts: acts, actBodies: bodies)
+
+        _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                             collections: [])
+        let projected = try store.container.mainContext.fetch(FetchDescriptor<CourtActRecord>())
+            .filter { $0.caseKey == context.key }
+        let courts = Dictionary(uniqueKeysWithValues: projected.map { ($0.sourceActID, $0.court) })
+        XCTAssertEqual(courts["exact-a"], "Суд A")
+        XCTAssertEqual(courts["exact-b"], "Суд B")
+        XCTAssertEqual(courts["ambiguous-generic"], "Суд не установлен")
+        XCTAssertEqual(courts["ambiguous-own"], "Суд акта")
+        XCTAssertEqual(courts["fallback-multiple"], "Суд не установлен")
+        XCTAssertEqual(courts["fallback-own"], "Собственный суд")
+        XCTAssertEqual(courts["fallback-compatible"], "Третий кассационный суд")
+        XCTAssertEqual(courts["fallback-mismatch"], "Суд не установлен")
+        XCTAssertEqual(courts["vs-own"], "ВС РФ")
+        XCTAssertEqual(courts["fallback-no-provenance"], "Материальный суд")
+        XCTAssertEqual(courts["fallback-empty-peer"], "Суд не установлен")
+        XCTAssertTrue(projected.first { $0.sourceActID == "fallback-mismatch" }?
+            .semanticKey.contains("суднеустановлен") == true)
+    }
+
+    @MainActor
+    func testPreparationCorrectsStoredActCourtWithoutReplacingDocumentOrSummary() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SudrfActOwnership-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("default.store")
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court-a--msk.sudrf.ru", displayDomain: "court-a.msk.sudrf.ru",
+            courtTitle: "Суд A", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-265/2026")
+        let act = CaseAct(id: "act-b", title: "Апелляционное определение",
+                          date: "01.08.2026", courtShort: "Апелляция",
+                          instanceLevel: .appeal)
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [
+                CaseInstance(level: .appeal, court: "Суд A", caseNumber: "33-1/2025",
+                             judge: nil, domain: "court-a--msk.sudrf.ru", foundByUID: true,
+                             result: nil, sessions: [], actID: "other"),
+                CaseInstance(level: .appeal, court: "Суд B", caseNumber: "33-2/2026",
+                             judge: nil, domain: "court-b--msk.sudrf.ru", foundByUID: true,
+                             result: nil, sessions: [], actID: act.id)
+            ], complaints: [:], acts: [act], actBodies: [act.id: "Первый.\n\nВторой."])
+        var expectedID = ""
+        var expectedText = ""
+        var expectedHash = ""
+        var expectedParagraphData = Data()
+
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+            let store = try TrackedStore(container: container)
+            _ = try store.upsert(context: context, snapshot: nil, movement: movement,
+                                 collections: [])
+            let record = try XCTUnwrap(try container.mainContext.fetch(
+                FetchDescriptor<CourtActRecord>()).first)
+            expectedID = record.id
+            expectedText = record.sourceText
+            expectedHash = record.sourceHash
+            expectedParagraphData = record.paragraphData
+            container.mainContext.insert(try ActSummaryRecord(
+                documentID: record.id,
+                summary: ActSummary(disposition: [SummaryClaim(text: "Итог", citations: [])]),
+                provider: "test", model: "test", promptVersion: "v1",
+                pipelineVersion: "v1", sourceHash: record.sourceHash))
+            record.court = "Суд A"
+            record.semanticKey = "wrong"
+            try store.save()
+        }
+
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+            let store = try TrackedStore(container: container)
+            let record = try XCTUnwrap(try container.mainContext.fetch(
+                FetchDescriptor<CourtActRecord>()).first)
+            XCTAssertEqual(record.id, expectedID)
+            XCTAssertEqual(record.court, "Суд B")
+            XCTAssertNotEqual(record.semanticKey, "wrong")
+            XCTAssertEqual(record.sourceText, expectedText)
+            XCTAssertEqual(record.sourceHash, expectedHash)
+            XCTAssertEqual(record.paragraphData, expectedParagraphData)
+            XCTAssertEqual(try container.mainContext.fetch(
+                FetchDescriptor<ActSummaryRecord>()).map(\.documentID), [expectedID])
+
+            store.failNextSaveForTesting = true
+            try store.save(projection: .full)
+            XCTAssertTrue(store.failNextSaveForTesting,
+                          "an unchanged repeated projection must not save")
+        }
+
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+            _ = try TrackedStore(container: container)
+            let record = try XCTUnwrap(try container.mainContext.fetch(
+                FetchDescriptor<CourtActRecord>()).first)
+            XCTAssertEqual(record.id, expectedID)
+            XCTAssertEqual(record.court, "Суд B")
+            XCTAssertEqual(try container.mainContext.fetch(
+                FetchDescriptor<ActSummaryRecord>()).map(\.documentID), [expectedID])
+        }
+    }
+
+    @MainActor
     func testProjectionAndCatalogLifecycle() async throws {
         let store = TrackedStore(inMemory: true)
         var context = MovementContext(

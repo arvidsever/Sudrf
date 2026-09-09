@@ -119,7 +119,7 @@ registry сроков обжалования подключён; оставши�
 - **[#261](https://github.com/arvidsever/Sudrf/issues/261) (P1)** — повторяющиеся occurrences событий и полный rollback при ошибке
   журнала до commit. Shadow-журнал уже находится на пути обычного refresh.
 - **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
-  исправить сохранённые реквизиты без потери документа, текста и связанной сводки.
+  исправление сохранённых реквизитов реализовано и принято в `codex/act-court-ownership-263`, ожидает merge; документ, текст и связанная сводка сохраняются.
 - **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,
   сохранив latest-wins; проверить вместе с [#230](https://github.com/arvidsever/Sudrf/issues/230).
 - **[#45](https://github.com/arvidsever/Sudrf/issues/45)** — восстановить оформление однострочных актов с сохранением контракта

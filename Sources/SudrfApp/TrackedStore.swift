@@ -287,21 +287,19 @@ enum CourtActProjectionSynchronizer {
                     }
                     continue
                 }
-                let instance = movement.instances.first {
-                    $0.linkedActIDs.contains(act.id) || $0.level == act.instanceLevel
-                }
+                let court = court(for: act, in: movement.instances)
                 let document = ActDocument(
                     caseKey: trackedRecord.key, sourceActID: act.id,
                     caseNumber: movement.caseNumber.isEmpty
                         ? trackedRecord.caseNumber : movement.caseNumber,
                     judicialUID: trackedRecord.judicialUID
                         ?? (movement.uid.isEmpty ? nil : movement.uid),
-                    court: instance?.court ?? act.courtShort,
+                    court: court,
                     instanceLevel: act.instanceLevel, kind: act.title, date: act.date,
                     sourceText: sourceText)
                 let semanticKey = semanticKey(
                     caseKey: trackedRecord.key, level: act.instanceLevel,
-                    court: instance?.court ?? act.courtShort,
+                    court: court,
                     kind: act.title, date: act.date)
                 func available(_ values: [CourtActRecord]?) -> [CourtActRecord] {
                     (values ?? []).filter { unmatched.contains(ObjectIdentifier($0)) }
@@ -354,6 +352,44 @@ enum CourtActProjectionSynchronizer {
                                           options: .regularExpression)
             }
             .joined(separator: "|")
+    }
+
+    private static func court(for act: CaseAct, in instances: [CaseInstance]) -> String {
+        let ownCourt = substantiveCourt(act.courtShort)
+        let linked = instances.filter { $0.linkedActIDs.contains(act.id) }
+        if linked.count == 1 {
+            return nonemptyCourt(linked[0].court) ?? ownCourt ?? "Суд не установлен"
+        }
+        if !linked.isEmpty {
+            return ownCourt ?? "Суд не установлен"
+        }
+        if let ownCourt { return ownCourt }
+
+        let sameLevel = instances.filter { $0.level == act.instanceLevel }
+        guard sameLevel.count == 1 else {
+            return "Суд не установлен"
+        }
+        if let sourceHost = act.fileProvenance?.sourceURL.host,
+           SudrfHost.moduleHost(sameLevel[0].domain.lowercased())
+            != SudrfHost.moduleHost(sourceHost.lowercased()) {
+            return "Суд не установлен"
+        }
+        return nonemptyCourt(sameLevel[0].court) ?? "Суд не установлен"
+    }
+
+    private static func substantiveCourt(_ value: String) -> String? {
+        guard let court = nonemptyCourt(value) else { return nil }
+        let levelLabels: Set<String> = [
+            "1-я инстанция", "апелляция", "кассация", "надзор", "материал"
+        ]
+        let normalized = court.split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ").lowercased()
+        return levelLabels.contains(normalized) ? nil : court
+    }
+
+    private static func nonemptyCourt(_ value: String) -> String? {
+        let court = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return court.isEmpty || court == "—" ? nil : court
     }
 
     private static func lookupKey(_ caseKey: String, _ value: String) -> String {

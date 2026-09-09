@@ -49,17 +49,27 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
 /// выполняться как production bootstrap в actor с собственным ModelContext.
 enum TrackedStorePreparation {
     @discardableResult
-    static func prepare(context: ModelContext) throws -> Bool {
-        try migrateFolders(context: context)
-        try migrateJudicialUIDs(context: context)
-        try migrateMoscowKeyAliases(context: context)
-        try bootstrapPersistentIdentity(context: context)
-        try bootstrapEventJournals(context: context)
-        try repairKoapPartySnapshots(context: context)
-        try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
-        guard context.hasChanges else { return false }
-        try context.save()
-        return true
+    static func prepare(
+        context: ModelContext,
+        today: Date = DateUtil.today,
+        save: (ModelContext) throws -> Void = { try $0.save() }
+    ) throws -> Bool {
+        do {
+            try migrateFolders(context: context)
+            try migrateJudicialUIDs(context: context)
+            try migrateMoscowKeyAliases(context: context)
+            try bootstrapPersistentIdentity(context: context)
+            try bootstrapEventJournals(context: context)
+            try repairKoapPartySnapshots(context: context)
+            try recalculateStoredDeadlineSnapshots(context: context, today: today)
+            try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
+            guard context.hasChanges else { return false }
+            try save(context)
+            return true
+        } catch {
+            context.rollback()
+            throw error
+        }
     }
 
     private static func migrateFolders(context: ModelContext) throws {
@@ -150,6 +160,76 @@ enum TrackedStorePreparation {
             snapshot.secondPartyLine = secondPartyLine
             record.snapshot = snapshot
         }
+    }
+
+    /// Производственный календарь меняет только локальную интерпретацию уже
+    /// сохранённого движения. Новых сетевых попыток, записей журнала и
+    /// `movementFetchedAt` эта подготовка не создаёт.
+    private static func recalculateStoredDeadlineSnapshots(
+        context: ModelContext,
+        today: Date = DateUtil.today
+    ) throws {
+        let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+        for record in records {
+            guard let old = record.snapshot,
+                  let movement = record.movement,
+                  !movement.instances.isEmpty,
+                  let movementContext = record.context,
+                  old.deadlines.contains(where: \.isActive)
+            else { continue }
+
+            var refreshed = MovementDerivation.snapshot(from: movement,
+                                                        context: movementContext,
+                                                        today: today)
+            let newlyDerived = refreshed.deadlines
+            refreshed.deadlines = refreshed.deadlines.filter { fresh in
+                hasStoredActiveOccurrence(fresh, in: old.deadlines,
+                                          allFresh: newlyDerived)
+            }
+            refreshed = MovementDerivation.preservingConfirmedDeadlines(
+                refreshed, old: old, today: today)
+
+            // Не обновляем весь snapshot на старте: участники, события,
+            // semantic observation и прочие проекции принадлежат refresh.
+            // Здесь меняются лишь сроки и зависимая lifecycle-проекция.
+            var repaired = old
+            repaired.deadlines = refreshed.deadlines
+            repaired.deadlineAssessments = refreshed.deadlineAssessments
+            // Partial cache is still enough to recheck an existing formula,
+            // but not to persist a new lifecycle/stage derived from an
+            // incomplete court response. The normal in-memory projection keeps
+            // rendering from the same snapshot and cached movement.
+            if record.movementFetchedAt != nil {
+                let presentation = MovementDerivation.lifecyclePresentation(
+                    from: movement, snapshot: repaired, context: movementContext, today: today)
+                repaired.stageRaw = presentation.stage.rawValue
+                repaired.stageTag = presentation.stageTag
+                repaired.statusText = presentation.statusText
+                repaired.statusChipRaw = presentation.statusChip.rawValue
+                repaired.nextEvent = presentation.nextEvent
+                repaired.nextChipRaw = presentation.nextChip.rawValue
+                repaired.steps = presentation.steps
+            }
+
+            if repaired != old { record.snapshot = repaired }
+        }
+    }
+
+    /// Startup не открывает новые kinds и не меняет круг trigger-ов: он лишь
+    /// проверяет ранее показанный active occurrence тем же сохранённым
+    /// movement. Это включает manual дату: сохраняем её state/date, но
+    /// обновляем calculation provenance, чтобы показать расхождение.
+    /// Legacy snapshot без occurrence key допускается только при единственном
+    /// новом кандидате того же kind.
+    private static func hasStoredActiveOccurrence(_ fresh: StoredDeadline,
+                                                   in old: [StoredDeadline],
+                                                   allFresh: [StoredDeadline]) -> Bool {
+        let candidates = old.filter(\.isActive)
+        if let key = fresh.occurrenceKey {
+            if candidates.contains(where: { $0.occurrenceKey == key }) { return true }
+        }
+        return candidates.filter { $0.occurrenceKey == nil && $0.kind == fresh.kind }.count == 1
+            && allFresh.filter { $0.kind == fresh.kind }.count == 1
     }
 }
 

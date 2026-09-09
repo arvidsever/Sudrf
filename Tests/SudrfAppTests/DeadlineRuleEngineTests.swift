@@ -43,7 +43,14 @@ final class DeadlineRuleEngineTests: XCTestCase {
     private func evaluation(_ movement: CaseMovement, cartoteka: String = "g",
                             receipt: DeadlineTriggerProvenance? = nil) throws
         -> DeadlineRuleEngine.Evaluation {
-        let registry = try LegalDeadlineRegistry.load()
+        try evaluation(movement, cartoteka: cartoteka, receipt: receipt,
+                       registry: LegalDeadlineRegistry.load())
+    }
+
+    private func evaluation(_ movement: CaseMovement, cartoteka: String = "g",
+                            receipt: DeadlineTriggerProvenance? = nil,
+                            registry: LegalDeadlineRegistry) throws
+        -> DeadlineRuleEngine.Evaluation {
         let production = ProductionType(cartotekaId: cartoteka)
         return DeadlineRuleEngine.evaluate(
             registry: registry, movement: movement,
@@ -182,7 +189,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(deadline.provenance?.trigger.dateRaw, "06.04.2026")
     }
 
-    func testWeekendEndpointIsUnsupportedRatherThanInventingWorkingDay() throws {
+    func testKoAPNonWorkingEndpointMovesUsingPackagedCalendarAndRecordsTrace() throws {
         let mv = movement(cartoteka: "adm", category: "Нарушение правил дорожного движения",
                           sessions: [
                             CaseSession(date: "01.04.2026", event: "Судебное заседание",
@@ -192,13 +199,71 @@ final class DeadlineRuleEngineTests: XCTestCase {
             event: "Вручена копия постановления", result: nil, dateRaw: "09.04.2026",
             court: "Сыктывкарский городской суд", levelRaw: "first", caseNumber: "5-100/2026")
         let evaluated = try evaluation(mv, cartoteka: "adm", receipt: receipt)
-        let assessment = try XCTUnwrap(evaluated.assessments.single(where: {
-            $0.ruleID == "KOAP-APPEAL-INITIAL-GENERAL"
+        let deadline = try XCTUnwrap(evaluated.deadlines.single(where: {
+            $0.kind == "appeal"
         }))
+        let trace = try XCTUnwrap(deadline.provenance?.calendarTrace)
+
+        XCTAssertEqual(deadline.date, DateUtil.parse("20.04.2026"))
+        XCTAssertEqual(evaluated.assessments.single(where: {
+            $0.ruleID == "KOAP-APPEAL-INITIAL-GENERAL"
+        })?.status, .applicable)
+        XCTAssertEqual(trace.result,
+                       try XCTUnwrap(LegalCalendarDate(year: 2026, month: 4, day: 20)))
+        XCTAssertTrue(trace.revisions.contains { $0.year == 2026 })
+        XCTAssertTrue(deadline.provenance?.policyIDs.contains("KOAP-END-NONWORKING-DAY") ?? false)
+    }
+
+    func testCalendarCoverageFailsClosedOutsideConfirmedYears() throws {
+        let mv = movement(cartoteka: "adm", category: "Нарушение правил дорожного движения",
+                          sessions: [
+                            CaseSession(date: "01.01.2012", event: "Судебное заседание",
+                                        result: "Постановление по делу об административном правонарушении"),
+                          ])
+        let receipt = DeadlineTriggerProvenance(
+            event: "Вручена копия постановления", result: nil, dateRaw: "01.01.2012",
+            court: "Сыктывкарский городской суд", levelRaw: "first", caseNumber: "5-100/2012")
+        let evaluated = try evaluation(mv, cartoteka: "adm", receipt: receipt)
 
         XCTAssertTrue(evaluated.deadlines.isEmpty)
-        XCTAssertEqual(assessment.status, .unsupportedCalculation)
-        XCTAssertTrue(assessment.missingPolicyIDs.contains("KOAP-END-NONWORKING-DAY"))
+        XCTAssertEqual(evaluated.assessments.single(where: {
+            $0.ruleID == "KOAP-APPEAL-INITIAL-GENERAL"
+        })?.status, .unsupportedCalculation)
+    }
+
+    func testExistingKoAPBindingUsesWorkingDayCalendarWithoutActivatingAnotherRule() throws {
+        let base = try LegalDeadlineRegistry.load()
+        let original = try XCTUnwrap(base.rule(id: "KOAP-APPEAL-INITIAL-GENERAL"))
+        let workingDayRule = LegalDeadlineRule(
+            ruleID: original.ruleID, stage: original.stage, actContext: original.actContext,
+            duration: LegalDeadlineDuration(kind: .workingDays, value: 3, unit: .workingDays,
+                                            raw: "3 рабочих дня"),
+            durationText: "3 рабочих дня", trigger: original.trigger, source: original.source,
+            priority: original.priority, notes: original.notes, code: original.code,
+            document: original.document, revision: original.revision, sourceHash: original.sourceHash)
+        let fixture = LegalDeadlineRegistry(
+            schemaVersion: base.schemaVersion, sources: base.sources,
+            coreRules: base.coreRules.map {
+                $0.ruleID == workingDayRule.ruleID ? workingDayRule : $0
+            }, policies: base.policies, triggerDependencies: base.triggerDependencies,
+            constraints: base.constraints, exclusions: base.exclusions,
+            openQuestions: base.openQuestions)
+        let mv = movement(cartoteka: "adm", category: "Нарушение правил дорожного движения",
+                          sessions: [CaseSession(date: "01.04.2026", event: "Судебное заседание",
+                                                 result: "Постановление по делу об административном правонарушении")])
+        let receipt = DeadlineTriggerProvenance(
+            event: "Вручена копия постановления", result: nil, dateRaw: "09.04.2026",
+            court: "Сыктывкарский городской суд", levelRaw: "first", caseNumber: "5-100/2026")
+
+        let evaluated = try evaluation(mv, cartoteka: "adm", receipt: receipt, registry: fixture)
+        let deadline = try XCTUnwrap(evaluated.deadlines.single(where: { $0.kind == "appeal" }))
+
+        XCTAssertEqual(deadline.date, DateUtil.parse("14.04.2026"))
+        XCTAssertEqual(deadline.provenance?.ruleID, "KOAP-APPEAL-INITIAL-GENERAL")
+        XCTAssertEqual(deadline.provenance?.calendarTrace?.operation, .addWorkingDays)
+        XCTAssertEqual(deadline.provenance?.calendarTrace?.countedWorkingDays, 3)
+        XCTAssertEqual(evaluated.assessments.count, 1,
+                       "fixture must exercise the already active KoAP binding only")
     }
 
     func testHistoricalCassationDoesNotSuppressNewRoundAppealRule() {
@@ -340,7 +405,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         let tracked = TrackedDeadline(
             id: "record#\(stored.occurrenceKey ?? stored.kind)", recordKey: "record",
             what: stored.what, caseNumber: "2-100/2026", basis: stored.basis,
-            calLabel: stored.calLabel, date: stored.date, status: .overridden,
+            calLabel: stored.calLabel, date: DateUtil.parse("20.05.2026")!, status: .overridden,
             lifecycle: .superseded, provenance: stored.provenance)
         let projection = DeadlineInfoProjection(
             deadline: tracked, registry: try LegalDeadlineRegistry.load())
@@ -351,8 +416,30 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(projection.formula, "1 календарный месяц")
         XCTAssertTrue(projection.trigger.contains("Судебное заседание"))
         XCTAssertTrue(projection.policies.contains("GPK-COUNTING-MONTH-YEAR-CALENDAR"))
+        XCTAssertEqual(projection.calculatedDate, "13 мая")
+        XCTAssertTrue(projection.calendar.contains("Проверена рабочая дата окончания"))
+        let revisionHash = try XCTUnwrap(stored.provenance?.calendarTrace?.revisions.first?.sourceHash)
+        XCTAssertFalse(projection.calendar.contains(revisionHash),
+                       "хеш остаётся в provenance, а не в пользовательском объяснении")
         XCTAssertEqual(projection.status, "Дата изменена пользователем")
         XCTAssertEqual(projection.lifecycle, "Заменён новым trigger")
+    }
+
+    func testDeadlineInfoProjectionMarksOldAutomaticCalendarCalculationUnverified() throws {
+        var stored = try XCTUnwrap(snapshot(qualifiedCivilMovement()).deadlines.first)
+        stored.provenance?.calendarTrace = nil
+        let tracked = TrackedDeadline(
+            id: "record#\(stored.occurrenceKey ?? stored.kind)", recordKey: "record",
+            what: stored.what, caseNumber: "2-100/2026", basis: stored.basis,
+            calLabel: stored.calLabel, date: stored.date, status: .proposed,
+            lifecycle: .active, provenance: stored.provenance)
+
+        let projection = DeadlineInfoProjection(
+            deadline: tracked, registry: try LegalDeadlineRegistry.load())
+
+        XCTAssertEqual(projection.status, "Расчётный")
+        XCTAssertEqual(projection.calendar,
+                       "Производственный календарь для сохранённого расчёта не проверен")
     }
 }
 

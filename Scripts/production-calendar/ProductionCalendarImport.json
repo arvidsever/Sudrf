@@ -1,0 +1,1511 @@
+{
+  "schemaVersion": 1,
+  "weekendReasonID": "five-day-week",
+  "automaticTransferReasonID": "tk-112-transfer",
+  "holidayReasonID": "tk-112-holiday",
+  "shortenedReasonID": "tk-95-shortened",
+  "transferredShortenedReasonID": "transferred-shortened",
+  "sources": [
+    {
+      "id": "consultant-calendar-2013",
+      "title": "Производственный календарь К+ на 2013 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2013/",
+      "sha256": "bef680ddaaebcbb79d01b0c0157937b9c8f2d927c8011cae11ce075ae96b2ba1"
+    },
+    {
+      "id": "transfer-2013-npa",
+      "title": "Постановление Правительства РФ от 15.10.2012 N 1048",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_136654/",
+      "document": "Постановление Правительства РФ от 15.10.2012 N 1048",
+      "documentDate": {
+        "year": 2012,
+        "month": 10,
+        "day": 15
+      },
+      "sha256": "f3d77951522b3625fbd52de38ea9c2fbd43df5e642eb53cc4150d83e078af9a5"
+    },
+    {
+      "id": "transfer-2013-official",
+      "title": "Источник на сайте Минтруда: Постановление Правительства РФ от 15.10.2012 N 1048",
+      "url": "https://mintrud.gov.ru/labour/relationship/118",
+      "document": "Постановление Правительства РФ от 15.10.2012 N 1048",
+      "documentDate": {
+        "year": 2012,
+        "month": 10,
+        "day": 15
+      }
+    },
+    {
+      "id": "consultant-calendar-2014",
+      "title": "Производственный календарь К+ на 2014 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2014/",
+      "sha256": "febe535949f4a9c4a5ec5efda22d8b7c7a6e4af31270a656f0bf28045e694d74"
+    },
+    {
+      "id": "transfer-2014-npa",
+      "title": "Постановление Правительства РФ от 28.05.2013 N 444",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_146983/",
+      "document": "Постановление Правительства РФ от 28.05.2013 N 444",
+      "documentDate": {
+        "year": 2013,
+        "month": 5,
+        "day": 28
+      },
+      "sha256": "f6dfa01628b0cc0359efdb85c5fa96acb1bf300979882de774e110a9698e95d8"
+    },
+    {
+      "id": "transfer-2014-official",
+      "title": "Источник на сайте Минтруда: Постановление Правительства РФ от 28.05.2013 N 444",
+      "url": "https://mintrud.gov.ru/docs/government/115",
+      "document": "Постановление Правительства РФ от 28.05.2013 N 444",
+      "documentDate": {
+        "year": 2013,
+        "month": 5,
+        "day": 28
+      }
+    },
+    {
+      "id": "consultant-calendar-2015",
+      "title": "Производственный календарь К+ на 2015 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2015/",
+      "sha256": "95424f334eb0f4bf36d8fe57f5e008964e56b45853810263524e459459dff881"
+    },
+    {
+      "id": "transfer-2015-npa",
+      "title": "Постановление Правительства РФ от 27.08.2014 N 860",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_167928/",
+      "document": "Постановление Правительства РФ от 27.08.2014 N 860",
+      "documentDate": {
+        "year": 2014,
+        "month": 8,
+        "day": 27
+      },
+      "sha256": "30432c60619a65b9bdaecfbc47b669bc13cfe915139acf372a74717fb72718f4"
+    },
+    {
+      "id": "consultant-calendar-2016",
+      "title": "Производственный календарь К+ на 2016 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2016/",
+      "sha256": "34beddcc3f800a41ee4775350b8a10d8df8a8768978958255c9cf6f5eed4f77e"
+    },
+    {
+      "id": "transfer-2016-npa",
+      "title": "Постановление Правительства РФ от 24.09.2015 N 1017",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_186505/",
+      "document": "Постановление Правительства РФ от 24.09.2015 N 1017",
+      "documentDate": {
+        "year": 2015,
+        "month": 9,
+        "day": 24
+      },
+      "sha256": "b7d8d643529986dfc1e47218d29e5bd8fee3ff3880c2ebe121074e11ddf16a97"
+    },
+    {
+      "id": "transfer-2016-official",
+      "title": "Источник на сайте Правительства РФ: Постановление Правительства РФ от 24.09.2015 N 1017",
+      "url": "https://government.ru/docs/19824/",
+      "document": "Постановление Правительства РФ от 24.09.2015 N 1017",
+      "documentDate": {
+        "year": 2015,
+        "month": 9,
+        "day": 24
+      }
+    },
+    {
+      "id": "consultant-calendar-2017",
+      "title": "Производственный календарь К+ на 2017 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2017/",
+      "sha256": "1c91353fdad4649d17a8172a62692c230b17780e58c47131ad67d5bd3ee85d4d"
+    },
+    {
+      "id": "transfer-2017-npa",
+      "title": "Постановление Правительства РФ от 04.08.2016 N 756",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_202871/",
+      "document": "Постановление Правительства РФ от 04.08.2016 N 756",
+      "documentDate": {
+        "year": 2016,
+        "month": 8,
+        "day": 4
+      },
+      "sha256": "0a40289d285153eeac1840babdafeba2eb3f53a12f20ce404e56676d2411f403"
+    },
+    {
+      "id": "consultant-calendar-2018",
+      "title": "Производственный календарь К+ на 2018 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2018/",
+      "sha256": "3a9b9de100cd89a1907306b1cb5bb05863efe2e35b8fa03b0b20ac7feb0202ee"
+    },
+    {
+      "id": "transfer-2018-npa",
+      "title": "Постановление Правительства РФ от 14.10.2017 N 1250",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_280526/",
+      "document": "Постановление Правительства РФ от 14.10.2017 N 1250",
+      "documentDate": {
+        "year": 2017,
+        "month": 10,
+        "day": 14
+      },
+      "sha256": "6eb3cfc0d2b2246a0503cdb440e7e5a60722051ace6745e3d26d135ef19a6537"
+    },
+    {
+      "id": "consultant-calendar-2019",
+      "title": "Производственный календарь К+ на 2019 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2019/",
+      "sha256": "5e73acdd83e26c58b956e0346134c9e33ee14ca0f83b5383585ad8bbd3aae138"
+    },
+    {
+      "id": "transfer-2019-npa",
+      "title": "Постановление Правительства РФ от 01.10.2018 N 1163",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_307996/",
+      "document": "Постановление Правительства РФ от 01.10.2018 N 1163",
+      "documentDate": {
+        "year": 2018,
+        "month": 10,
+        "day": 1
+      },
+      "sha256": "11bf3c6e2b391420583cfbc6145aca537e6301af61ea633476d9e956c83e6f30"
+    },
+    {
+      "id": "consultant-calendar-2020",
+      "title": "Производственный календарь К+ на 2020 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2020b/",
+      "sha256": "718665b4433ab6839f09469e2f0d3f4a7e255180d0f4ae3ad02e8284053f1328"
+    },
+    {
+      "id": "transfer-2020-npa",
+      "title": "Постановление Правительства РФ от 10.07.2019 N 875",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_328918/",
+      "document": "Постановление Правительства РФ от 10.07.2019 N 875",
+      "documentDate": {
+        "year": 2019,
+        "month": 7,
+        "day": 10
+      },
+      "sha256": "52f815140e5c5f46b92d6f422d389ff1edbe02266f65ce9ca20445c30a4ea98f"
+    },
+    {
+      "id": "consultant-calendar-2021",
+      "title": "Производственный календарь К+ на 2021 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2021/",
+      "sha256": "79a01aee86edb658267a3990cda32de7d1638f9e59a7c95c6ff37d0982808ad2"
+    },
+    {
+      "id": "transfer-2021-npa",
+      "title": "Постановление Правительства РФ от 10.10.2020 N 1648",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_365179/",
+      "document": "Постановление Правительства РФ от 10.10.2020 N 1648",
+      "documentDate": {
+        "year": 2020,
+        "month": 10,
+        "day": 10
+      },
+      "sha256": "3abaf27436de1bb7a69803ecdde12aba10861a368e27eb3cb25c165556a6a6f4"
+    },
+    {
+      "id": "transfer-2021-official",
+      "title": "Источник на сайте Правительства РФ: Постановление Правительства РФ от 10.10.2020 N 1648",
+      "url": "https://government.ru/dep_news/40620/",
+      "document": "Постановление Правительства РФ от 10.10.2020 N 1648",
+      "documentDate": {
+        "year": 2020,
+        "month": 10,
+        "day": 10
+      }
+    },
+    {
+      "id": "consultant-calendar-2022",
+      "title": "Производственный календарь К+ на 2022 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2022/",
+      "sha256": "e870dd4f7e9eb77967151b7f7982c8671ae9f0b407ce9c7c674b200807d44e73"
+    },
+    {
+      "id": "transfer-2022-npa",
+      "title": "Постановление Правительства РФ от 16.09.2021 N 1564",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_395538/",
+      "document": "Постановление Правительства РФ от 16.09.2021 N 1564",
+      "documentDate": {
+        "year": 2021,
+        "month": 9,
+        "day": 16
+      },
+      "sha256": "f0910ace01c0aa70811610411b42ecaf13bab761f40830bf6c3cc1e13aa51548"
+    },
+    {
+      "id": "transfer-2022-official",
+      "title": "Источник на сайте Правительства РФ: Постановление Правительства РФ от 16.09.2021 N 1564",
+      "url": "https://government.ru/docs/43282/",
+      "document": "Постановление Правительства РФ от 16.09.2021 N 1564",
+      "documentDate": {
+        "year": 2021,
+        "month": 9,
+        "day": 16
+      }
+    },
+    {
+      "id": "consultant-calendar-2023",
+      "title": "Производственный календарь К+ на 2023 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2023/",
+      "sha256": "8fd972e711ecc2c36543296787ee637087901238d8f3b3e4b810cd8b4b2b5a7f"
+    },
+    {
+      "id": "transfer-2023-npa",
+      "title": "Постановление Правительства РФ от 29.08.2022 N 1505",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_425407/",
+      "document": "Постановление Правительства РФ от 29.08.2022 N 1505",
+      "documentDate": {
+        "year": 2022,
+        "month": 8,
+        "day": 29
+      },
+      "sha256": "9ff3a1aff13e57f5e7b349105cf9170ee76d941665217568b26cb279edba7e38"
+    },
+    {
+      "id": "transfer-2023-official",
+      "title": "Официальное опубликование: Постановление Правительства РФ от 29.08.2022 N 1505",
+      "url": "https://publication.pravo.gov.ru/document/0001202208300023",
+      "document": "Постановление Правительства РФ от 29.08.2022 N 1505",
+      "documentDate": {
+        "year": 2022,
+        "month": 8,
+        "day": 29
+      }
+    },
+    {
+      "id": "consultant-calendar-2024",
+      "title": "Производственный календарь К+ на 2024 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2024b/",
+      "sha256": "5194ab080c2e63c7dc260455dc64a026c9c674666a4b45d284ee05aa054c6a56"
+    },
+    {
+      "id": "transfer-2024-npa",
+      "title": "Постановление Правительства РФ от 10.08.2023 N 1314",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_455140/",
+      "document": "Постановление Правительства РФ от 10.08.2023 N 1314",
+      "documentDate": {
+        "year": 2023,
+        "month": 8,
+        "day": 10
+      },
+      "sha256": "82a4fb396c3d5cb85b0b29fe6d97e7429e77522ca4b49add316f2ebf36a69584"
+    },
+    {
+      "id": "transfer-2024-official",
+      "title": "Официальное опубликование: Постановление Правительства РФ от 10.08.2023 N 1314",
+      "url": "https://publication.pravo.gov.ru/document/0001202308180053",
+      "document": "Постановление Правительства РФ от 10.08.2023 N 1314",
+      "documentDate": {
+        "year": 2023,
+        "month": 8,
+        "day": 10
+      }
+    },
+    {
+      "id": "consultant-calendar-2025",
+      "title": "Производственный календарь К+ на 2025 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2025/",
+      "sha256": "4a229e7cbb819288d352f53de2adb91b15640fbd3bc7522ae572609f8f715e50"
+    },
+    {
+      "id": "transfer-2025-npa",
+      "title": "Постановление Правительства РФ от 04.10.2024 N 1335",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_487367/",
+      "document": "Постановление Правительства РФ от 04.10.2024 N 1335",
+      "documentDate": {
+        "year": 2024,
+        "month": 10,
+        "day": 4
+      },
+      "sha256": "95a0ef43972a637223d97cdfc6c87fd636da3a7ef6d2b0977d7104e80ec70ff0"
+    },
+    {
+      "id": "transfer-2025-official",
+      "title": "Официальное опубликование: Постановление Правительства РФ от 04.10.2024 N 1335",
+      "url": "https://publication.pravo.gov.ru/document/0001202410040023",
+      "document": "Постановление Правительства РФ от 04.10.2024 N 1335",
+      "documentDate": {
+        "year": 2024,
+        "month": 10,
+        "day": 4
+      }
+    },
+    {
+      "id": "consultant-calendar-2026",
+      "title": "Производственный календарь К+ на 2026 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2026/",
+      "sha256": "9e5787f70899055470fbfb9f41c13d45a3182fdbfba555351ed7c0333e31bc8d"
+    },
+    {
+      "id": "transfer-2026-npa",
+      "title": "Постановление Правительства РФ от 24.09.2025 N 1466",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_515170/",
+      "document": "Постановление Правительства РФ от 24.09.2025 N 1466",
+      "documentDate": {
+        "year": 2025,
+        "month": 9,
+        "day": 24
+      },
+      "sha256": "eaf07cc607a3d664e2ef9e2d40bcca4c9cfde5e01edf8aad626f8d5716b391b2"
+    },
+    {
+      "id": "transfer-2026-official",
+      "title": "Официальное опубликование: Постановление Правительства РФ от 24.09.2025 N 1466",
+      "url": "https://publication.pravo.gov.ru/document/0001202509240023",
+      "document": "Постановление Правительства РФ от 24.09.2025 N 1466",
+      "documentDate": {
+        "year": 2025,
+        "month": 9,
+        "day": 24
+      }
+    },
+    {
+      "id": "tk-111",
+      "title": "Трудовой кодекс РФ, статья 111",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_34683/57d0380478e89e33fc2a3d64af96b7d7793be7c6/",
+      "sha256": "bd8853da859b34cd33167250714b39a730c60dceb27e6c6097b74c0dfe2a92e2"
+    },
+    {
+      "id": "tk-112",
+      "title": "Трудовой кодекс РФ, статья 112",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_34683/98ef2900507766e70ff29c0b9d8e2353ea80a1cf/",
+      "sha256": "d90f8e4edf2db7887e5531e94a77af13c8552504764938ee0c1be42f221b5624"
+    },
+    {
+      "id": "tk-95",
+      "title": "Трудовой кодекс РФ, статья 95",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_34683/86287a710c97a09cdcebbbf1434ea8ee3f5cdf50/",
+      "sha256": "ee92b72da48109586cd433dd09df99aafc626ea01a251f70dd59e76de815bf55"
+    },
+    {
+      "id": "mintrud-shortened-transfer",
+      "title": "Разъяснение Минтруда России от 24.02.2014 о продолжительности перенесённого рабочего дня",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_160729/",
+      "document": "Разъяснение Минтруда России от 24.02.2014",
+      "documentDate": {
+        "year": 2014,
+        "month": 2,
+        "day": 24
+      },
+      "sha256": "655c02b1e60940e5688cf46b0e29ba93a1a6df7c3d07b6f16bbf6aa626796bad"
+    },
+    {
+      "id": "special-2020-206",
+      "title": "Указ Президента РФ от 25.03.2020 N 206",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_348485/",
+      "document": "Указ Президента РФ от 25.03.2020 N 206",
+      "documentDate": {
+        "year": 2020,
+        "month": 3,
+        "day": 25
+      },
+      "sha256": "938c679d5ac085cd1935845854d356b7b0d828ca9d60c219dc4e83275bfef5a3"
+    },
+    {
+      "id": "special-2020-239",
+      "title": "Указ Президента РФ от 02.04.2020 N 239",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_349217/",
+      "document": "Указ Президента РФ от 02.04.2020 N 239",
+      "documentDate": {
+        "year": 2020,
+        "month": 4,
+        "day": 2
+      },
+      "sha256": "4c7ebcc93e6600e5dde19babdc34d19cbcebf9db7b8893d219d99eb850dea86f"
+    },
+    {
+      "id": "special-2020-294",
+      "title": "Указ Президента РФ от 28.04.2020 N 294",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_351539/",
+      "document": "Указ Президента РФ от 28.04.2020 N 294",
+      "documentDate": {
+        "year": 2020,
+        "month": 4,
+        "day": 28
+      },
+      "sha256": "b5eddbedb57f6d3f49672183541f18df8523c4b7d84ffadaeb7fe5205baf1b1e"
+    },
+    {
+      "id": "special-2020-345",
+      "title": "Указ Президента РФ от 29.05.2020 N 345",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_353848/",
+      "document": "Указ Президента РФ от 29.05.2020 N 345",
+      "documentDate": {
+        "year": 2020,
+        "month": 5,
+        "day": 29
+      },
+      "sha256": "af4d89b326ee2ceedfdc797111f1e9268486acefa2fce229440be6266b8c38d5"
+    },
+    {
+      "id": "special-2020-354",
+      "title": "Указ Президента РФ от 01.06.2020 N 354",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_353972/",
+      "document": "Указ Президента РФ от 01.06.2020 N 354",
+      "documentDate": {
+        "year": 2020,
+        "month": 6,
+        "day": 1
+      },
+      "sha256": "6f5abe155ded14d16023226252f3c1fb76f351478979fc8d839be83b7f703efa"
+    },
+    {
+      "id": "special-2021-242",
+      "title": "Указ Президента РФ от 23.04.2021 N 242",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_382845/",
+      "document": "Указ Президента РФ от 23.04.2021 N 242",
+      "documentDate": {
+        "year": 2021,
+        "month": 4,
+        "day": 23
+      },
+      "sha256": "82b78997d3125df591d396a4a8d15ec5e1aa88074fc2ddca408613f1885f045f"
+    },
+    {
+      "id": "special-2021-595",
+      "title": "Указ Президента РФ от 20.10.2021 N 595",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_398714/",
+      "document": "Указ Президента РФ от 20.10.2021 N 595",
+      "documentDate": {
+        "year": 2021,
+        "month": 10,
+        "day": 20
+      },
+      "sha256": "d5eed98579d1b066f57f3a63b0df3cf74b7ea69452629ab5b4241bf26429ac5e"
+    },
+    {
+      "id": "vs-review-2020-1",
+      "title": "Обзор Верховного Суда РФ N 1 по вопросам COVID-19",
+      "url": "https://www.vsrf.ru/files/28856/",
+      "sha256": "9b4ae0308542dca329f81675d1fdcd933fdaebe8b2dc4c41fa154bbe8e996232"
+    },
+    {
+      "id": "vs-review-2020-2",
+      "title": "Обзор Верховного Суда РФ N 2 по вопросам COVID-19",
+      "url": "https://www.vsrf.ru/files/28881/",
+      "sha256": "ccdf790638f74c677a4f52c6187eb909b1539e584489e14dbaf970c525bc9ee3"
+    },
+    {
+      "id": "vs-answer-2021-may",
+      "title": "Ответ Президиума Верховного Суда РФ от 28.04.2021",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_383108/",
+      "documentDate": {
+        "year": 2021,
+        "month": 4,
+        "day": 28
+      },
+      "sha256": "6d0b3a774964d06debeb7e0c30c08be483012a1045dbfbca105f9375b47d9b7c"
+    },
+    {
+      "id": "vs-answer-2021-october",
+      "title": "Ответ Президиума Верховного Суда РФ от 26.10.2021",
+      "url": "https://www.vsrf.ru/files/30468/",
+      "documentDate": {
+        "year": 2021,
+        "month": 10,
+        "day": 26
+      },
+      "sha256": "f00d8789ca7112830b6e2a0b28025bc2180fc300995b59f7c0591b2db354a6a5"
+    }
+  ],
+  "reasons": [
+    {
+      "id": "five-day-week",
+      "title": "Выходной при пятидневной рабочей неделе",
+      "sourceIDs": [
+        "tk-111"
+      ]
+    },
+    {
+      "id": "tk-112-holiday",
+      "title": "Нерабочий праздничный день по статье 112 ТК РФ",
+      "sourceIDs": [
+        "tk-112"
+      ]
+    },
+    {
+      "id": "tk-112-transfer",
+      "title": "Перенос выходного дня по части второй статьи 112 ТК РФ",
+      "sourceIDs": [
+        "tk-112"
+      ]
+    },
+    {
+      "id": "tk-95-shortened",
+      "title": "Предпраздничный день, сокращённый на один час",
+      "sourceIDs": [
+        "tk-95"
+      ]
+    },
+    {
+      "id": "transferred-shortened",
+      "title": "Продолжительность перенесённого рабочего дня соответствует исходному рабочему дню",
+      "sourceIDs": [
+        "mintrud-shortened-transfer",
+        "tk-95"
+      ]
+    },
+    {
+      "id": "transfer-2013",
+      "title": "Перенос выходных дней в 2013 году",
+      "sourceIDs": [
+        "transfer-2013-npa",
+        "transfer-2013-official"
+      ]
+    },
+    {
+      "id": "transfer-2014",
+      "title": "Перенос выходных дней в 2014 году",
+      "sourceIDs": [
+        "transfer-2014-npa",
+        "transfer-2014-official"
+      ]
+    },
+    {
+      "id": "transfer-2015",
+      "title": "Перенос выходных дней в 2015 году",
+      "sourceIDs": [
+        "transfer-2015-npa"
+      ]
+    },
+    {
+      "id": "transfer-2016",
+      "title": "Перенос выходных дней в 2016 году",
+      "sourceIDs": [
+        "transfer-2016-npa",
+        "transfer-2016-official"
+      ]
+    },
+    {
+      "id": "transfer-2017",
+      "title": "Перенос выходных дней в 2017 году",
+      "sourceIDs": [
+        "transfer-2017-npa"
+      ]
+    },
+    {
+      "id": "transfer-2018",
+      "title": "Перенос выходных дней в 2018 году",
+      "sourceIDs": [
+        "transfer-2018-npa"
+      ]
+    },
+    {
+      "id": "transfer-2019",
+      "title": "Перенос выходных дней в 2019 году",
+      "sourceIDs": [
+        "transfer-2019-npa"
+      ]
+    },
+    {
+      "id": "transfer-2020",
+      "title": "Перенос выходных дней в 2020 году",
+      "sourceIDs": [
+        "transfer-2020-npa"
+      ]
+    },
+    {
+      "id": "transfer-2021",
+      "title": "Перенос выходных дней в 2021 году",
+      "sourceIDs": [
+        "transfer-2021-npa",
+        "transfer-2021-official"
+      ]
+    },
+    {
+      "id": "transfer-2022",
+      "title": "Перенос выходных дней в 2022 году",
+      "sourceIDs": [
+        "transfer-2022-npa",
+        "transfer-2022-official"
+      ]
+    },
+    {
+      "id": "transfer-2023",
+      "title": "Перенос выходных дней в 2023 году",
+      "sourceIDs": [
+        "transfer-2023-npa",
+        "transfer-2023-official"
+      ]
+    },
+    {
+      "id": "transfer-2024",
+      "title": "Перенос выходных дней в 2024 году",
+      "sourceIDs": [
+        "transfer-2024-npa",
+        "transfer-2024-official"
+      ]
+    },
+    {
+      "id": "transfer-2025",
+      "title": "Перенос выходных дней в 2025 году",
+      "sourceIDs": [
+        "transfer-2025-npa",
+        "transfer-2025-official"
+      ]
+    },
+    {
+      "id": "transfer-2026",
+      "title": "Перенос выходных дней в 2026 году",
+      "sourceIDs": [
+        "transfer-2026-npa",
+        "transfer-2026-official"
+      ]
+    },
+    {
+      "id": "special-2020-covid-spring",
+      "title": "Нерабочие дни с сохранением заработной платы",
+      "sourceIDs": [
+        "special-2020-206",
+        "special-2020-239",
+        "special-2020-294"
+      ],
+      "note": "Производственный статус сам по себе не определяет процессуальный расчёт; применение проверено отдельно для ГПК, КАС и УПК."
+    },
+    {
+      "id": "special-2020-june-24",
+      "title": "Нерабочий день 24 июня 2020 года",
+      "sourceIDs": [
+        "special-2020-345"
+      ],
+      "note": "Применение этого статуса к процессуальным срокам не подтверждено."
+    },
+    {
+      "id": "special-2020-july-1",
+      "title": "Нерабочий день 1 июля 2020 года",
+      "sourceIDs": [
+        "special-2020-354"
+      ],
+      "note": "Применение этого статуса к процессуальным срокам не подтверждено."
+    },
+    {
+      "id": "special-2021-may",
+      "title": "Нерабочие дни с 4 по 7 мая 2021 года",
+      "sourceIDs": [
+        "special-2021-242"
+      ],
+      "note": "Производственный статус сам по себе не определяет процессуальный расчёт; применение проверено отдельно для ГПК, КАС и УПК."
+    },
+    {
+      "id": "special-2021-november",
+      "title": "Нерабочие дни с 30 октября по 7 ноября 2021 года",
+      "sourceIDs": [
+        "special-2021-595"
+      ],
+      "note": "3 ноября сокращён только для организаций, где он оставался рабочим. Для остальных организаций день обозначен как специальный нерабочий. Процессуальное применение проверено отдельно для ГПК, КАС и УПК."
+    }
+  ],
+  "years": [
+    {
+      "year": 2013,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2013",
+        "transfer-2013-npa",
+        "transfer-2013-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2013",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2013/",
+      "transferReasonID": "transfer-2013",
+      "decreeReasonDates": [
+        {
+          "year": 2013,
+          "month": 2,
+          "day": 25
+        },
+        {
+          "year": 2013,
+          "month": 5,
+          "day": 2
+        },
+        {
+          "year": 2013,
+          "month": 5,
+          "day": 3
+        },
+        {
+          "year": 2013,
+          "month": 5,
+          "day": 10
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2014,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2014",
+        "transfer-2014-npa",
+        "transfer-2014-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2014",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2014/",
+      "transferReasonID": "transfer-2014",
+      "decreeReasonDates": [
+        {
+          "year": 2014,
+          "month": 2,
+          "day": 24
+        },
+        {
+          "year": 2014,
+          "month": 5,
+          "day": 2
+        },
+        {
+          "year": 2014,
+          "month": 6,
+          "day": 13
+        },
+        {
+          "year": 2014,
+          "month": 11,
+          "day": 3
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2014,
+          "month": 2,
+          "day": 24
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2015,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2015",
+        "transfer-2015-npa"
+      ],
+      "calendarSourceID": "consultant-calendar-2015",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2015/",
+      "transferReasonID": "transfer-2015",
+      "decreeReasonDates": [
+        {
+          "year": 2015,
+          "month": 1,
+          "day": 9
+        },
+        {
+          "year": 2015,
+          "month": 5,
+          "day": 4
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2016,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2016",
+        "transfer-2016-npa",
+        "transfer-2016-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2016",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2016/",
+      "transferReasonID": "transfer-2016",
+      "decreeReasonDates": [
+        {
+          "year": 2016,
+          "month": 2,
+          "day": 20
+        },
+        {
+          "year": 2016,
+          "month": 2,
+          "day": 22
+        },
+        {
+          "year": 2016,
+          "month": 3,
+          "day": 7
+        },
+        {
+          "year": 2016,
+          "month": 5,
+          "day": 3
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2016,
+          "month": 2,
+          "day": 20
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2017,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2017",
+        "transfer-2017-npa"
+      ],
+      "calendarSourceID": "consultant-calendar-2017",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2017/",
+      "transferReasonID": "transfer-2017",
+      "decreeReasonDates": [
+        {
+          "year": 2017,
+          "month": 2,
+          "day": 24
+        },
+        {
+          "year": 2017,
+          "month": 5,
+          "day": 8
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2018,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2018",
+        "transfer-2018-npa"
+      ],
+      "calendarSourceID": "consultant-calendar-2018",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2018/",
+      "transferReasonID": "transfer-2018",
+      "decreeReasonDates": [
+        {
+          "year": 2018,
+          "month": 3,
+          "day": 9
+        },
+        {
+          "year": 2018,
+          "month": 4,
+          "day": 28
+        },
+        {
+          "year": 2018,
+          "month": 4,
+          "day": 30
+        },
+        {
+          "year": 2018,
+          "month": 5,
+          "day": 2
+        },
+        {
+          "year": 2018,
+          "month": 6,
+          "day": 9
+        },
+        {
+          "year": 2018,
+          "month": 6,
+          "day": 11
+        },
+        {
+          "year": 2018,
+          "month": 12,
+          "day": 29
+        },
+        {
+          "year": 2018,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2018,
+          "month": 4,
+          "day": 28
+        },
+        {
+          "year": 2018,
+          "month": 6,
+          "day": 9
+        },
+        {
+          "year": 2018,
+          "month": 12,
+          "day": 29
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2019,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2019",
+        "transfer-2019-npa"
+      ],
+      "calendarSourceID": "consultant-calendar-2019",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2019/",
+      "transferReasonID": "transfer-2019",
+      "decreeReasonDates": [
+        {
+          "year": 2019,
+          "month": 5,
+          "day": 2
+        },
+        {
+          "year": 2019,
+          "month": 5,
+          "day": 3
+        },
+        {
+          "year": 2019,
+          "month": 5,
+          "day": 10
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2020,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2020",
+        "transfer-2020-npa",
+        "special-2020-206",
+        "special-2020-239",
+        "special-2020-294",
+        "vs-review-2020-1",
+        "vs-review-2020-2",
+        "special-2020-345",
+        "special-2020-354"
+      ],
+      "calendarSourceID": "consultant-calendar-2020",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2020b/",
+      "transferReasonID": "transfer-2020",
+      "decreeReasonDates": [
+        {
+          "year": 2020,
+          "month": 5,
+          "day": 4
+        },
+        {
+          "year": 2020,
+          "month": 5,
+          "day": 5
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": [
+        {
+          "start": {
+            "year": 2020,
+            "month": 3,
+            "day": 30
+          },
+          "end": {
+            "year": 2020,
+            "month": 4,
+            "day": 30
+          },
+          "reasonID": "special-2020-covid-spring",
+          "proceduralRules": [
+            {
+              "code": "GPK",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-1-Q2",
+              "sourceIDs": [
+                "vs-review-2020-1"
+              ]
+            },
+            {
+              "code": "KAS",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-1-Q2",
+              "sourceIDs": [
+                "vs-review-2020-1"
+              ]
+            },
+            {
+              "code": "UPK",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-1-Q2",
+              "sourceIDs": [
+                "vs-review-2020-1"
+              ]
+            }
+          ]
+        },
+        {
+          "start": {
+            "year": 2020,
+            "month": 5,
+            "day": 6
+          },
+          "end": {
+            "year": 2020,
+            "month": 5,
+            "day": 8
+          },
+          "reasonID": "special-2020-covid-spring",
+          "proceduralRules": [
+            {
+              "code": "GPK",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-2-Q1",
+              "sourceIDs": [
+                "vs-review-2020-2"
+              ]
+            },
+            {
+              "code": "KAS",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-2-Q1",
+              "sourceIDs": [
+                "vs-review-2020-2"
+              ]
+            },
+            {
+              "code": "UPK",
+              "status": "working",
+              "policyID": "VS-2020-REVIEW-2-Q1",
+              "sourceIDs": [
+                "vs-review-2020-2"
+              ]
+            }
+          ]
+        },
+        {
+          "start": {
+            "year": 2020,
+            "month": 6,
+            "day": 24
+          },
+          "end": {
+            "year": 2020,
+            "month": 6,
+            "day": 24
+          },
+          "reasonID": "special-2020-june-24",
+          "proceduralRules": []
+        },
+        {
+          "start": {
+            "year": 2020,
+            "month": 7,
+            "day": 1
+          },
+          "end": {
+            "year": 2020,
+            "month": 7,
+            "day": 1
+          },
+          "reasonID": "special-2020-july-1",
+          "proceduralRules": []
+        }
+      ]
+    },
+    {
+      "year": 2021,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2021",
+        "transfer-2021-npa",
+        "transfer-2021-official",
+        "special-2021-242",
+        "vs-answer-2021-may",
+        "special-2021-595",
+        "vs-answer-2021-october"
+      ],
+      "calendarSourceID": "consultant-calendar-2021",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2021/",
+      "transferReasonID": "transfer-2021",
+      "decreeReasonDates": [
+        {
+          "year": 2021,
+          "month": 2,
+          "day": 20
+        },
+        {
+          "year": 2021,
+          "month": 2,
+          "day": 22
+        },
+        {
+          "year": 2021,
+          "month": 11,
+          "day": 5
+        },
+        {
+          "year": 2021,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2021,
+          "month": 2,
+          "day": 20
+        }
+      ],
+      "specialRanges": [
+        {
+          "start": {
+            "year": 2021,
+            "month": 5,
+            "day": 4
+          },
+          "end": {
+            "year": 2021,
+            "month": 5,
+            "day": 7
+          },
+          "reasonID": "special-2021-may",
+          "proceduralRules": [
+            {
+              "code": "GPK",
+              "status": "working",
+              "policyID": "VS-2021-05-04-07",
+              "sourceIDs": [
+                "vs-answer-2021-may"
+              ]
+            },
+            {
+              "code": "KAS",
+              "status": "working",
+              "policyID": "VS-2021-05-04-07",
+              "sourceIDs": [
+                "vs-answer-2021-may"
+              ]
+            },
+            {
+              "code": "UPK",
+              "status": "working",
+              "policyID": "VS-2021-05-04-07",
+              "sourceIDs": [
+                "vs-answer-2021-may"
+              ]
+            }
+          ]
+        },
+        {
+          "start": {
+            "year": 2021,
+            "month": 11,
+            "day": 1
+          },
+          "end": {
+            "year": 2021,
+            "month": 11,
+            "day": 3
+          },
+          "reasonID": "special-2021-november",
+          "proceduralRules": [
+            {
+              "code": "GPK",
+              "status": "working",
+              "policyID": "VS-2021-10-30-11-07",
+              "sourceIDs": [
+                "vs-answer-2021-october"
+              ]
+            },
+            {
+              "code": "KAS",
+              "status": "working",
+              "policyID": "VS-2021-10-30-11-07",
+              "sourceIDs": [
+                "vs-answer-2021-october"
+              ]
+            },
+            {
+              "code": "UPK",
+              "status": "working",
+              "policyID": "VS-2021-10-30-11-07",
+              "sourceIDs": [
+                "vs-answer-2021-october"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "year": 2022,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2022",
+        "transfer-2022-npa",
+        "transfer-2022-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2022",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2022/",
+      "transferReasonID": "transfer-2022",
+      "decreeReasonDates": [
+        {
+          "year": 2022,
+          "month": 3,
+          "day": 5
+        },
+        {
+          "year": 2022,
+          "month": 3,
+          "day": 7
+        },
+        {
+          "year": 2022,
+          "month": 5,
+          "day": 3
+        },
+        {
+          "year": 2022,
+          "month": 5,
+          "day": 10
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2022,
+          "month": 3,
+          "day": 5
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2023,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2023",
+        "transfer-2023-npa",
+        "transfer-2023-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2023",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2023/",
+      "transferReasonID": "transfer-2023",
+      "decreeReasonDates": [
+        {
+          "year": 2023,
+          "month": 2,
+          "day": 24
+        },
+        {
+          "year": 2023,
+          "month": 5,
+          "day": 8
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2024,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2024",
+        "transfer-2024-npa",
+        "transfer-2024-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2024",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2024b/",
+      "transferReasonID": "transfer-2024",
+      "decreeReasonDates": [
+        {
+          "year": 2024,
+          "month": 4,
+          "day": 27
+        },
+        {
+          "year": 2024,
+          "month": 4,
+          "day": 29
+        },
+        {
+          "year": 2024,
+          "month": 4,
+          "day": 30
+        },
+        {
+          "year": 2024,
+          "month": 5,
+          "day": 10
+        },
+        {
+          "year": 2024,
+          "month": 11,
+          "day": 2
+        },
+        {
+          "year": 2024,
+          "month": 12,
+          "day": 28
+        },
+        {
+          "year": 2024,
+          "month": 12,
+          "day": 30
+        },
+        {
+          "year": 2024,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2024,
+          "month": 11,
+          "day": 2
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2025,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2025",
+        "transfer-2025-npa",
+        "transfer-2025-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2025",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2025/",
+      "transferReasonID": "transfer-2025",
+      "decreeReasonDates": [
+        {
+          "year": 2025,
+          "month": 5,
+          "day": 2
+        },
+        {
+          "year": 2025,
+          "month": 5,
+          "day": 8
+        },
+        {
+          "year": 2025,
+          "month": 6,
+          "day": 13
+        },
+        {
+          "year": 2025,
+          "month": 11,
+          "day": 1
+        },
+        {
+          "year": 2025,
+          "month": 11,
+          "day": 3
+        },
+        {
+          "year": 2025,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2025,
+          "month": 11,
+          "day": 1
+        }
+      ],
+      "specialRanges": []
+    },
+    {
+      "year": 2026,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 9,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2026",
+        "transfer-2026-npa",
+        "transfer-2026-official"
+      ],
+      "calendarSourceID": "consultant-calendar-2026",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2026/",
+      "transferReasonID": "transfer-2026",
+      "decreeReasonDates": [
+        {
+          "year": 2026,
+          "month": 1,
+          "day": 9
+        },
+        {
+          "year": 2026,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [],
+      "specialRanges": []
+    }
+  ]
+}

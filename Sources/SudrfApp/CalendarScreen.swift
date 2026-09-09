@@ -51,14 +51,87 @@ private struct CalEvent: Identifiable {
     }
 }
 
+/// Представление федерального производственного дня для всех режимов
+/// календаря. Оно отделено от SwiftUI, чтобы месяц, неделя и карточка дня
+/// говорили об одном и том же основании без повторного разбора ресурсов.
+struct ProductionCalendarDayPresentation: Equatable {
+    let kind: LegalDayKind?
+    let isShortened: Bool
+    let title: String
+    let symbol: String
+    let accessibilityLabel: String
+    let reasons: [LegalCalendarReason]
+    let sources: [LegalCalendarSource]
+
+    init(date: Date, calendar: LegalCalendar?, timeZone: TimeZone) {
+        guard let calendar, let day = calendar.day(on: date, timeZone: timeZone) else {
+            kind = nil
+            isShortened = false
+            title = "Производственный календарь не подтверждён"
+            symbol = "?"
+            accessibilityLabel = title
+            reasons = []
+            sources = []
+            return
+        }
+
+        kind = day.kind
+        isShortened = day.isShortened
+        let base: String
+        let marker: String
+        switch day.kind {
+        case .working:
+            base = "Рабочий день"
+            marker = "•"
+        case .weekend:
+            base = "Выходной день"
+            marker = "◦"
+        case .holiday:
+            base = "Нерабочий праздничный день"
+            marker = "✦"
+        case .transferredDayOff:
+            base = "Перенесённый выходной"
+            marker = "↷"
+        case .transferredWorkingDay:
+            base = "Рабочий день по переносу"
+            marker = "↺"
+        case .specialNonWorking:
+            base = "Специальный нерабочий день"
+            marker = "!"
+        }
+        title = day.isShortened ? "\(base) · сокращённый" : base
+        // Сокращённость видна и в сетке, где подробная подпись дня ещё не
+        // открыта; для VoiceOver она разворачивается в `accessibilityLabel`.
+        symbol = day.isShortened ? "\(marker)½" : marker
+        accessibilityLabel = "Производственный календарь: \(title)"
+        reasons = day.reasonIDs.compactMap(calendar.reason(id:))
+        let reasonSourceIDs = reasons.flatMap(\.sourceIDs)
+        let calendarSourceID = calendar.revision(for: day.date.year)?.calendarSourceID
+        let sourceIDs = reasonSourceIDs + (calendarSourceID.map { [$0] } ?? [])
+        var seen = Set<String>()
+        sources = sourceIDs.filter { seen.insert($0).inserted }.compactMap(calendar.source(id:))
+    }
+
+    var isNonWorking: Bool {
+        guard let kind else { return false }
+        switch kind {
+        case .working, .transferredWorkingDay: return false
+        case .weekend, .holiday, .transferredDayOff, .specialNonWorking: return true
+        }
+    }
+
+    var isConfirmed: Bool { kind != nil }
+}
+
 struct CalendarScreen: View {
     @EnvironmentObject var router: AppRouter
+    /// Встроенный архив неизменен до перезапуска приложения; его декодирование
+    /// не должно повторяться для каждой ячейки и каждого досье.
+    private static let legalCalendar: LegalCalendar? = try? LegalCalendar.load()
 
     var body: some View {
         Group {
-            if router.isEmpty {
-                EmptyTrackingNote()
-            } else if router.calMode == .month {
+            if router.calMode == .month {
                 monthMode
             } else if router.calMode == .week {
                 weekMode
@@ -128,6 +201,33 @@ struct CalendarScreen: View {
         events.filter { DateUtil.sameDay($0.date, date) }.sorted { $0.sortTime < $1.sortTime }
     }
 
+    private func productionDay(_ date: Date) -> ProductionCalendarDayPresentation {
+        ProductionCalendarDayPresentation(date: date, calendar: Self.legalCalendar,
+                                          timeZone: DateUtil.cal.timeZone)
+    }
+
+    private var calendarCoverage: String {
+        guard let calendar = Self.legalCalendar else {
+            return "Производственный календарь не подтверждён"
+        }
+        let years = calendar.archive.revisions.map(\.year)
+        guard let first = years.min(), let last = years.max() else {
+            return "Производственный календарь не подтверждён"
+        }
+        return "Федеральный производственный календарь \(first)–\(last) · региональные праздники не учитываются"
+    }
+
+    private var productionCalendarNotice: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "calendar")
+            Text(calendarCoverage)
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+        .accessibilityLabel(calendarCoverage)
+        .padding(.horizontal, 3)
+    }
+
     // MARK: Сетка месяца (произвольный месяц)
 
     private var weeks: [[Date?]] {
@@ -168,6 +268,7 @@ struct CalendarScreen: View {
                 calendarModePicker
             }
             .padding(.horizontal, 2)
+            productionCalendarNotice
 
             HStack(alignment: .top, spacing: 12) {
                 monthGrid.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -261,9 +362,14 @@ struct CalendarScreen: View {
             let isToday = DateUtil.isToday(day)
             let isSel = router.calSelectedDate.map { DateUtil.sameDay($0, day) } ?? false
             let evs = events(on: day)
+            let production = productionDay(day)
             Button { router.calSelectedDate = day } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
+                        Text(production.symbol)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(productionTint(production))
+                            .accessibilityHidden(true)
                         Spacer()
                         Text("\(DateUtil.cal.component(.day, from: day))")
                             .font(.system(size: 11.5, weight: isToday || isSel ? .bold : .medium))
@@ -278,11 +384,13 @@ struct CalendarScreen: View {
                 }
                 .padding(.horizontal, 6).padding(.top, 5)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(isSel ? Color.accentColor.opacity(0.06) : .clear)
+                .background(isSel ? Color.accentColor.opacity(0.06)
+                            : productionBackground(production))
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(DateUtil.fmt(day)). \(production.accessibilityLabel). \(summary(evs.filter { $0.kind == .hearing }.count, evs.filter { $0.kind != .hearing }.count))")
         } else {
             Color.primary.opacity(0.02)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -310,6 +418,7 @@ struct CalendarScreen: View {
         let evs = events(on: day)
         let hearings = evs.filter { $0.kind == .hearing }
         let deadlines = evs.filter { $0.kind != .hearing }
+        let production = productionDay(day)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -324,6 +433,7 @@ struct CalendarScreen: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
+                    productionDayCard(production)
                     if evs.isEmpty {
                         Text("На этот день нет заседаний и сроков")
                             .font(.system(size: 12)).foregroundStyle(.tertiary)
@@ -346,6 +456,47 @@ struct CalendarScreen: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.white.opacity(0.4), lineWidth: 0.5))
+    }
+
+    private func productionDayCard(_ production: ProductionCalendarDayPresentation) -> some View {
+        CardBox {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text(production.symbol).font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(productionTint(production))
+                    Text(production.title).font(.system(size: 11.5, weight: .semibold))
+                }
+                ForEach(production.reasons, id: \.id) { reason in
+                    Text(reason.title).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    if let note = reason.note, !note.isEmpty {
+                        Text(note).font(.system(size: 10)).foregroundStyle(.tertiary)
+                    }
+                }
+                ForEach(production.sources, id: \.id) { source in
+                    Link(source.title, destination: source.url)
+                        .font(.system(size: 10.5))
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(production.accessibilityLabel)
+    }
+
+    private func productionTint(_ production: ProductionCalendarDayPresentation) -> Color {
+        guard let kind = production.kind else { return .secondary }
+        switch kind {
+        case .working: return .secondary
+        case .transferredWorkingDay: return Palette.green
+        case .weekend, .holiday, .transferredDayOff: return Palette.confirmed
+        case .specialNonWorking: return Color.orange
+        }
+    }
+
+    private func productionBackground(_ production: ProductionCalendarDayPresentation) -> Color {
+        production.isNonWorking ? Palette.confirmed.opacity(0.035) : .clear
     }
 
     private func hearingCard(_ ev: CalEvent) -> some View {
@@ -414,6 +565,7 @@ struct CalendarScreen: View {
                 calendarModePicker
             }
             .padding(.horizontal, 2)
+            productionCalendarNotice
 
             weekGrid.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -451,25 +603,39 @@ struct CalendarScreen: View {
 
     private func weekHeaderCell(_ day: Date, index: Int) -> some View {
         let isToday = DateUtil.isToday(day)
-        let isWeekend = index >= 5
-        let weekdayColor: Color = isToday ? .accentColor : (isWeekend ? Color.primary.opacity(0.34) : .secondary)
-        let numberColor: Color = isToday ? .white : (isWeekend ? Color.primary.opacity(0.38) : .primary)
+        let production = productionDay(day)
+        let isNonWorking = production.isNonWorking
+        let weekdayColor: Color = isToday ? .accentColor : (isNonWorking ? Color.primary.opacity(0.34) : .secondary)
+        let numberColor: Color = isToday ? .white : (isNonWorking ? Color.primary.opacity(0.38) : .primary)
         let numberBackground: Color = isToday ? .accentColor : .clear
-        return VStack(spacing: 5) {
-            Text(DateUtil.weekdayShort[index])
-                .font(.system(size: 10, weight: .bold))
-                .kerning(0.4)
-                .foregroundStyle(weekdayColor)
-            Text("\(DateUtil.cal.component(.day, from: day))")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(numberColor)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(numberBackground))
+        return Button {
+            router.calSelectedDate = day
+            router.setCalMode(.month)
+        } label: {
+            VStack(spacing: 5) {
+                Text(DateUtil.weekdayShort[index])
+                    .font(.system(size: 10, weight: .bold))
+                    .kerning(0.4)
+                    .foregroundStyle(weekdayColor)
+                Text("\(DateUtil.cal.component(.day, from: day))")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(numberColor)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(numberBackground))
+                Text(production.symbol)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(productionTint(production))
+                    .accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 64)
+            .background(weekColumnTint(day, index: index))
+            .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 58)
-        .background(weekColumnTint(day, index: index))
-        .overlay(Rectangle().fill(Color.primary.opacity(0.05)).frame(width: 1), alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(DateUtil.weekday(day)), \(DateUtil.fmt(day)). \(production.accessibilityLabel)")
+        .help("Открыть сведения за \(DateUtil.fmt(day))")
     }
 
     private var weekDeadlineLane: some View {
@@ -561,7 +727,7 @@ struct CalendarScreen: View {
 
     private func weekColumnTint(_ day: Date, index: Int) -> Color {
         if DateUtil.isToday(day) { return Color.accentColor.opacity(0.05) }
-        if index >= 5 { return Color.black.opacity(0.015) }
+        if productionDay(day).isNonWorking { return Palette.confirmed.opacity(0.025) }
         return .clear
     }
 
@@ -776,6 +942,7 @@ struct CalendarScreen: View {
                 calendarModePicker
             }
             .padding(.horizontal, 2)
+            productionCalendarNotice
 
             HStack(alignment: .top, spacing: 12) {
                 VStack(spacing: 12) {
@@ -827,13 +994,20 @@ struct CalendarScreen: View {
             let isToday = DateUtil.isToday(day)
             let evs = events(on: day)
             let count = evs.count
+            let production = productionDay(day)
             Button { router.calSelectedDate = day; router.setCalMode(.month) } label: {
                 VStack(spacing: 2) {
-                    Text("\(DateUtil.cal.component(.day, from: day))")
-                        .font(.system(size: 10.5, weight: isToday ? .bold : .regular))
-                        .foregroundStyle(isToday ? .white : .primary)
-                        .frame(width: 21, height: 21)
-                        .background(Circle().fill(isToday ? Color.accentColor : .clear))
+                    HStack(spacing: 1) {
+                        Text("\(DateUtil.cal.component(.day, from: day))")
+                            .font(.system(size: 10.5, weight: isToday ? .bold : .regular))
+                            .foregroundStyle(isToday ? .white : .primary)
+                            .frame(width: 21, height: 21)
+                            .background(Circle().fill(isToday ? Color.accentColor : .clear))
+                        Text(production.symbol)
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundStyle(productionTint(production))
+                            .accessibilityHidden(true)
+                    }
                     HStack(spacing: 2.5) {
                         ForEach(Array(miniDots(evs).enumerated()), id: \.offset) { _, c in
                             Circle().fill(c).frame(width: 4, height: 4)
@@ -851,6 +1025,7 @@ struct CalendarScreen: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("\(DateUtil.fmt(day)). \(production.accessibilityLabel)")
         } else {
             Color.clear.frame(height: 36).frame(maxWidth: .infinity)
         }

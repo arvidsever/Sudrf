@@ -43,6 +43,9 @@ struct DeadlineProvenance: Codable, Equatable {
     var formula: String
     var source: String
     var calculatedDateRef: Double
+    /// Версии производственного календаря и точный путь календарной
+    /// арифметики. Optional сохраняет декодирование уже сохранённых сроков.
+    var calendarTrace: LegalCalendarTrace? = nil
 }
 
 /// Результат рассмотрения известного registry rule. Он сохраняется в snapshot,
@@ -154,6 +157,10 @@ enum DeadlineRuleEngine {
 
         var deadlines: [StoredDeadline] = []
         var assessments: [DeadlineRuleAssessment] = []
+        // Bundled calendar is immutable for a running app. Decode it once:
+        // store preparation may re-evaluate hundreds of cached dossiers.
+        // Its absence blocks only rules needing calendar arithmetic.
+        let calendar = packagedCalendar
         for binding in bindings where binding.production == production {
             guard let rule = registry.rule(id: binding.ruleID) else {
                 assessments.append(assessment(ruleID: binding.ruleID, kind: binding.kind,
@@ -163,7 +170,7 @@ enum DeadlineRuleEngine {
 
             let result = evaluate(binding: binding, rule: rule, registry: registry,
                                   movement: movement, context: context, timeline: timeline,
-                                  today: today)
+                                  today: today, calendar: calendar)
             assessments.append(result.assessment)
             if let deadline = result.deadline { deadlines.append(deadline) }
         }
@@ -186,7 +193,8 @@ enum DeadlineRuleEngine {
     private static func evaluate(binding: Binding, rule: LegalDeadlineRule,
                                  registry: LegalDeadlineRegistry, movement: CaseMovement,
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
-                                 today: Date) -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
+                                 today: Date, calendar: LegalCalendar?)
+        -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
         switch binding.kind {
         case "appeal":
             // A real higher-court card in the current round proves that this
@@ -302,7 +310,8 @@ enum DeadlineRuleEngine {
                                     status: .needsLegalReview))
         }
 
-        switch calculate(rule: rule, triggerDate: DateUtil.parse(trigger.dateRaw), registry: registry) {
+        switch calculate(rule: rule, triggerDate: DateUtil.parse(trigger.dateRaw),
+                         registry: registry, calendar: calendar) {
         case .unsupported(let missingPolicies):
             return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
                                     status: .unsupportedCalculation,
@@ -313,7 +322,8 @@ enum DeadlineRuleEngine {
                 ruleID: rule.ruleID, registryRevision: rule.revision,
                 sourceHash: rule.sourceHash, trigger: trigger,
                 policyIDs: calculation.policyIDs, formula: formula, source: rule.source,
-                calculatedDateRef: calculation.date.timeIntervalSinceReferenceDate)
+                calculatedDateRef: calculation.date.timeIntervalSinceReferenceDate,
+                calendarTrace: calculation.calendarTrace)
             let deadline = StoredDeadline(
                 kind: binding.kind, what: rule.stage,
                 basis: "\(formula) · \(rule.trigger)",
@@ -331,13 +341,14 @@ enum DeadlineRuleEngine {
     private struct Calculation {
         var date: Date
         var policyIDs: [String]
+        var calendarTrace: LegalCalendarTrace?
     }
 
     /// `failure` means the registry requires a policy that this app does not
-    /// implement yet. It never falls back to a day count for months or working
-    /// days.
+    /// implement yet. It never falls back to a weekday-only approximation.
     private static func calculate(rule: LegalDeadlineRule, triggerDate: Date?,
-                                  registry: LegalDeadlineRegistry)
+                                  registry: LegalDeadlineRegistry,
+                                  calendar: LegalCalendar?)
         -> DateCalculation {
         guard let triggerDate, let value = rule.duration.value, value >= 0 else {
             return .unsupported([])
@@ -352,6 +363,7 @@ enum DeadlineRuleEngine {
         let result: Date
         let policyIDs: [String]
         let endNonworking: String?
+        var calendarTrace: LegalCalendarTrace?
         switch rule.duration.kind {
         case .months:
             guard let date = DateUtil.cal.date(byAdding: .month, value: value, to: triggerDate) else {
@@ -380,19 +392,56 @@ enum DeadlineRuleEngine {
                             policy(["END", "DAY", "24H"]))
             endNonworking = policy(["END", "NONWORKING"])
         case .workingDays:
-            return .unsupported(ids(policy(["COUNTING", "DAY"])))
+            guard let calendar,
+                  let start = LegalCalendarDate(date: triggerDate,
+                                                timeZone: proceduralTimeZone),
+                  let calculated = calendar.addingWorkingDays(value, to: start,
+                                                              forCode: rule.code),
+                  let date = calculated.date.date(timeZone: proceduralTimeZone)
+            else {
+                return .unsupported(ids(policy(["COUNTING", "DAY"])))
+            }
+            return .calculated(Calculation(
+                date: date,
+                policyIDs: ids(policy(["COUNTING", "START", "NEXT", "DAY"]),
+                               policy(["COUNTING", "DAY"]))
+                    + calculated.trace.proceduralPolicyIDs,
+                calendarTrace: calculated.trace))
         case .relative, .none:
             return .unsupported([])
         }
 
-        // A future LegalCalendar (#224) is required only when the observable
-        // endpoint needs a non-working-day rollover. Weekday endpoints retain
-        // calendar-unit arithmetic without pretending that months are 30 days.
-        if DateUtil.cal.isDateInWeekend(result) {
-            return .unsupported(ids(endNonworking))
+        // Перенос конца срока применяется только когда его требует policy
+        // конкретного правила. Без покрытого календаря не подменяем праздники
+        // проверкой выходных.
+        if let endNonworking {
+            guard let calendar,
+                  let start = LegalCalendarDate(date: triggerDate,
+                                                timeZone: proceduralTimeZone),
+                  let endpoint = LegalCalendarDate(date: result,
+                                                   timeZone: proceduralTimeZone),
+                  calendar.day(on: start) != nil,
+                  calendar.day(on: endpoint) != nil,
+                  let moved = calendar.movingToNextWorkingDay(endpoint, forCode: rule.code),
+                  let date = moved.date.date(timeZone: proceduralTimeZone)
+            else {
+                return .unsupported([endNonworking])
+            }
+            calendarTrace = moved.trace
+            return .calculated(Calculation(date: date,
+                                           policyIDs: policyIDs + [endNonworking]
+                                               + moved.trace.proceduralPolicyIDs,
+                                           calendarTrace: calendarTrace))
         }
-        return .calculated(Calculation(date: result, policyIDs: policyIDs + ids(endNonworking)))
+        return .calculated(Calculation(date: result, policyIDs: policyIDs,
+                                       calendarTrace: calendarTrace))
     }
+
+    /// Одна и та же явно переданная зона используется для разбора даты суда и
+    /// преобразования date-only результата обратно в `Date`.
+    private static var proceduralTimeZone: TimeZone { DateUtil.cal.timeZone }
+
+    private static let packagedCalendar: LegalCalendar? = try? LegalCalendar.load()
 
     private static func insufficient(_ rule: LegalDeadlineRule, binding: Binding,
                                      _ requirements: [DeadlineEvidenceRequirement])

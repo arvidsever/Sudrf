@@ -5,7 +5,7 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.58.0**, build 170, 1224 XCTest (5 пропущены) и 14 Swift Testing. Полный
+Текущий baseline: **main 0.58.1**, build 171, 1227 XCTest (5 пропущены) и 14 Swift Testing. Полный
 registry сроков обжалования подключён; оставшиеся typed rules относятся к #222.
 
 | Версия | Результат |
@@ -176,8 +176,9 @@ registry сроков обжалования подключён; оставши�
   и терять изменения; baseline и журнал должны переживать relaunch согласованно.
 - **[#179](https://github.com/arvidsever/Sudrf/issues/179)** — после исправлений и фактической shadow-сверки перевести ленту,
   уведомления и badges на единый журнал без повторных уведомлений.
-- **[#179](https://github.com/arvidsever/Sudrf/issues/179) → [#93](https://github.com/arvidsever/Sudrf/issues/93) + [#101](https://github.com/arvidsever/Sudrf/issues/101) + [#133](https://github.com/arvidsever/Sudrf/issues/133)** — движение жалоб в общем event/feed contract,
-  стороны и суд в уведомлениях, понятные названия дел в центральных панелях «Обзора».
+- **[#179](https://github.com/arvidsever/Sudrf/issues/179) → [#93](https://github.com/arvidsever/Sudrf/issues/93) + [#101](https://github.com/arvidsever/Sudrf/issues/101)** — движение жалоб в общем event/feed contract,
+  стороны и суд в уведомлениях.
+- **[#133](https://github.com/arvidsever/Sudrf/issues/133)** — названия дел в сроках и обоих видах ленты «Обзора»; отдельное представление из текущего `TrackedCase.partiesShort` по `recordKey`, без зависимости от #179. Выпущено в 0.58.1; #101 и #273 остаются отдельными задачами.
 - **[#148](https://github.com/arvidsever/Sudrf/issues/148)** — односторонняя проекция в Apple Calendar после event identity и
   deadline semantics; правка `EKEvent` не меняет судебное состояние.
 - **[#149](https://github.com/arvidsever/Sudrf/issues/149)** — backend/APNs после проверенного event contract, базовой надёжности

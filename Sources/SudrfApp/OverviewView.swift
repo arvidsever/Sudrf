@@ -6,11 +6,44 @@ import SudrfKit
 
 private enum OverviewTone { case neutral, blue, red }
 
+struct OverviewCaseTitles {
+    private let cases: [TrackedCase]
+
+    init(cases: [TrackedCase]) {
+        self.cases = cases
+    }
+
+    func title(for recordKey: String) -> String {
+        guard let raw = cases.first(where: { $0.recordKey == recordKey })?.partiesShort
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              raw != "—",
+              raw.caseInsensitiveCompare("стороны не опубликованы") != .orderedSame else {
+            return "Стороны не опубликованы"
+        }
+        return raw
+    }
+
+    func secondaryClient(_ client: String, for recordKey: String) -> String? {
+        let client = client.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = title(for: recordKey)
+        let firstParty = title.components(separatedBy: " ⚔ ").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? title
+        guard !client.isEmpty,
+              client.caseInsensitiveCompare(title) != .orderedSame,
+              client.caseInsensitiveCompare(firstParty) != .orderedSame else {
+            return nil
+        }
+        return client
+    }
+}
+
 struct OverviewView: View {
     @EnvironmentObject var router: AppRouter
 
     private var today: Date { DateUtil.today }
     private var sidePadding: CGFloat { router.overviewRoute == .fullFeed ? 190 : 18 }
+    private var caseTitles: OverviewCaseTitles { OverviewCaseTitles(cases: router.cases) }
 
     var body: some View {
         Group {
@@ -246,10 +279,16 @@ struct OverviewView: View {
     }
 
     private func deadlineBody(_ d: TrackedDeadline) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let title = caseTitles.title(for: d.recordKey)
+        return VStack(alignment: .leading, spacing: 2) {
             Text("\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))")
                 .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
+            Text(title)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .help(title)
             Text(d.basis)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.tertiary)
@@ -424,7 +463,9 @@ struct OverviewView: View {
     }
 
     private func feedRow(_ f: FeedEntry, full: Bool) -> some View {
-        HStack(alignment: .top, spacing: full ? 11 : 10) {
+        let title = caseTitles.title(for: f.recordKey)
+        let client = caseTitles.secondaryClient(f.client, for: f.recordKey)
+        return HStack(alignment: .top, spacing: full ? 11 : 10) {
             Circle()
                 .fill(f.isUnread ? Color.accentColor : Color.clear)
                 .overlay(Circle().strokeBorder(Color.primary.opacity(f.isUnread ? 0 : 0.18), lineWidth: 1.5))
@@ -440,10 +481,12 @@ struct OverviewView: View {
                 HStack(spacing: 7) {
                     Text("№ \(CaseNumberPresentation.primary(f.caseNumber))")
                         .font(.system(size: full ? 12.5 : 12, weight: .semibold))
-                    if full {
-                        Text(f.client)
+                    if full, let client {
+                        Text(client)
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
+                    }
+                    if full {
                         typeTag(f.kind)
                     } else {
                         Text(f.time)
@@ -457,6 +500,11 @@ struct OverviewView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Text(title)
+                    .font(.system(size: full ? 12 : 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help(title)
                 Text(f.text)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

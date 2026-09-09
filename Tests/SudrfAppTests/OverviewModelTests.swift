@@ -30,6 +30,59 @@ final class OverviewModelTests: XCTestCase {
                   actID: kind == .act ? "act-\(id)" : nil, isUnread: unread)
     }
 
+    private func trackedCase(key: String, parties: String) -> TrackedCase {
+        TrackedCase(
+            recordKey: key, caseNumber: "2-1/2026", collections: [],
+            stage: .first, stageTag: "1-я инст.", subject: "—", court: "СГС",
+            recordCourt: "СГС", courtTier: .district, production: .civil,
+            partiesShort: parties, leadCharges: nil, secondPartyLine: nil,
+            statusText: "В производстве", statusChip: .blue, last: "—", next: "—",
+            nextChip: .gray, isNew: false, steps: [], newDot: false,
+            lastEventDate: nil, nextEventDate: nil)
+    }
+
+    func testOverviewCaseTitlesUseExactRecordKeyAndCanonicalFallback() {
+        let titles = OverviewCaseTitles(cases: [
+            trackedCase(key: "court/2-1/2026", parties: "Иванов И. ⚔ ООО «Право»"),
+            trackedCase(key: "other/2-1/2026", parties: "Петров П.")
+        ])
+
+        XCTAssertEqual(titles.title(for: "court/2-1/2026"), "Иванов И. ⚔ ООО «Право»")
+        XCTAssertEqual(titles.title(for: "missing/2-1/2026"), "Стороны не опубликованы")
+
+        let unavailable = OverviewCaseTitles(cases: [
+            trackedCase(key: "blank", parties: "  "),
+            trackedCase(key: "dash", parties: "—"),
+            trackedCase(key: "legacy", parties: "стороны не опубликованы")
+        ])
+        XCTAssertEqual(unavailable.title(for: "blank"), "Стороны не опубликованы")
+        XCTAssertEqual(unavailable.title(for: "dash"), "Стороны не опубликованы")
+        XCTAssertEqual(unavailable.title(for: "legacy"), "Стороны не опубликованы")
+    }
+
+    func testOverviewCaseTitlesKeepCollectionContextButDropDuplicateClient() {
+        let titles = OverviewCaseTitles(cases: [
+            trackedCase(key: "court/2-1/2026", parties: "Иванов Иван Иванович ⚔ ООО «Право»")
+        ])
+
+        XCTAssertNil(titles.secondaryClient(" иванов иван иванович ", for: "court/2-1/2026"))
+        XCTAssertNil(titles.secondaryClient("Иванов Иван Иванович ⚔ ООО «Право»",
+                                            for: "court/2-1/2026"))
+        XCTAssertEqual(titles.secondaryClient("Импорт 03.09.2026", for: "court/2-1/2026"),
+                       "Импорт 03.09.2026")
+        XCTAssertNil(titles.secondaryClient("  ", for: "court/2-1/2026"))
+    }
+
+    func testOverviewCaseTitlesReflectCurrentLongTitleWithoutStoredFeedChanges() {
+        let key = "court/2-1/2026"
+        let old = OverviewCaseTitles(cases: [trackedCase(key: key, parties: "Иванов И.")])
+        let longTitle = "Иванов Иван Иванович и Петров Пётр Петрович ⚔ Министерство имущественных отношений Республики Коми"
+        let updated = OverviewCaseTitles(cases: [trackedCase(key: key, parties: longTitle)])
+
+        XCTAssertEqual(old.title(for: key), "Иванов И.")
+        XCTAssertEqual(updated.title(for: key), longTitle)
+    }
+
     func testHearingBucketsKeepNextSevenDaysPinned() {
         let buckets = AppRouter.hearingBuckets([
             hearing("2-1/2026", plus: 2),

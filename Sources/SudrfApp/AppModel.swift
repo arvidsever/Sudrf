@@ -696,14 +696,14 @@ final class AppRouter: ObservableObject {
         }
     }
 
-    func intentUpcomingHearings(limit: Int = 10) -> String {
-        let today = DateUtil.startOfDay(Date())
+    func intentUpcomingHearings(limit: Int = 10, today: Date = DateUtil.today) -> String {
         let values = hearings.filter { $0.date >= today }
             .sorted { ($0.date, $0.time) < ($1.date, $1.time) }
             .prefix(limit)
         guard !values.isEmpty else { return "Ближайших заседаний нет." }
         return values.map {
-            "\($0.dateLabel), \($0.time) — дело № \($0.caseNumber), \($0.court)"
+            let material = $0.materialNumber.map { ", материал № \($0)" } ?? ""
+            return "\($0.dateLabel), \($0.time) — дело № \($0.caseNumber)\(material), \($0.court)"
         }.joined(separator: "\n")
     }
 
@@ -1815,14 +1815,15 @@ final class AppRouter: ObservableObject {
 
     func reload(notifyNew: Bool = false,
                 spotlightScope: SpotlightSyncScope? = nil,
-                changedCaseKeys: Set<String>? = nil) {
+                changedCaseKeys: Set<String>? = nil,
+                today: Date = DateUtil.today) {
         let recs = store.all()
-        let today = DateUtil.today
         lifecyclePresentationCache.prepare(for: today, changedCaseKeys: changedCaseKeys)
 
         var cs: [TrackedCase] = []
         var hs: [TrackedHearing] = []
         var calendarHs: [TrackedHearing] = []
+        var hearingIDs = Set<String>()
         var calendarHearingIDs = Set<String>()
         var dls: [TrackedDeadline] = []
         var inactiveDls: [TrackedDeadline] = []
@@ -1865,15 +1866,39 @@ final class AppRouter: ObservableObject {
 
             guard let snap else { continue }
 
+            let materialInstancesBySourceID: [String: CaseInstance] = {
+                guard let movement = rec.movement, let context = rec.context else { return [:] }
+                let pairs = movement.instances.compactMap { instance -> (String, CaseInstance)? in
+                    guard instance.level == .material,
+                          instance.captchaFormURL == nil,
+                          instance.transientError != true,
+                          let sourceID = CaseSnapshotSourceIdentity.sourceCardID(
+                            for: instance, context: context)
+                    else { return nil }
+                    return (sourceID, instance)
+                }
+                return Dictionary(grouping: pairs, by: \.0).compactMapValues {
+                    $0.count == 1 ? $0[0].1 : nil
+                }
+            }()
+
             func trackedHearing(_ session: StoredSession) -> TrackedHearing? {
                 guard let date = session.date else { return nil }
+                let material = session.level == .material
+                    ? session.sourceCardID.flatMap { materialInstancesBySourceID[$0] }
+                    : nil
+                let instanceNumber = session.caseNumber ?? material?.caseNumber
+                let sourceIdentity = session.level == .material
+                    ? (session.sourceCardID ?? instanceNumber ?? "") : ""
                 return TrackedHearing(recordKey: rec.key, date: date,
                     time: session.time ?? "", caseNumber: rec.caseNumber,
                     parties: snap.partiesShort, court: session.court,
                     room: session.room ?? "", dateLabel: DateUtil.dateLabel(date),
-                    judge: session.judge ?? "",
-                    identitySuffix: "\(session.event)#\(session.result ?? "")",
-                    instanceCaseNumber: session.caseNumber)
+                    judge: session.judge ?? material?.judge ?? "",
+                    identitySuffix: "\(session.event)#\(session.result ?? "")"
+                        + (sourceIdentity.isEmpty ? "" : "#\(sourceIdentity)"),
+                    instanceCaseNumber: instanceNumber,
+                    instanceLevel: session.level)
             }
 
             // Календарь сохраняет всю историю, включая завершённые дела.
@@ -1885,11 +1910,21 @@ final class AppRouter: ObservableObject {
                 calendarHs.append(hearing)
             }
 
-            // Future-only проекция остаётся прежней для lifecycle и App Intent.
-            if stage != .done {
-                for s in MovementDerivation.futureHearings(snap.sessions, today: today) {
-                    if let hearing = trackedHearing(s) { hs.append(hearing) }
+            // Завершение основного дела не скрывает будущее заседание связанного
+            // материала: у материала собственный процессуальный результат.
+            for s in MovementDerivation.futureHearings(snap.sessions, today: today)
+                where stage != .done || s.level == .material {
+                if s.level == .material,
+                   let sourceID = s.sourceCardID,
+                   let materialResult = materialInstancesBySourceID[sourceID]?.result,
+                   !CaseLifecycleResolver.isHearing(
+                    event: s.event,
+                    result: [s.result, materialResult].compactMap { $0 }.joined(separator: " ")) {
+                    continue
                 }
+                guard let hearing = trackedHearing(s),
+                      hearingIDs.insert(hearing.id).inserted else { continue }
+                hs.append(hearing)
             }
             // Сроки: active occurrences обслуживают Overview; исторические
             // остаются отдельной календарной проекцией.

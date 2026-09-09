@@ -116,7 +116,7 @@ registry сроков обжалования подключён; оставши�
   журнала до commit. Shadow-журнал уже находится на пути обычного refresh.
 - **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
   исправить сохранённые реквизиты без потери документа, текста и связанной сводки.
-- **[#257](https://github.com/arvidsever/Sudrf/issues/257)** — заседания связанных материалов в «Обзоре» из той же нормализованной
+- **[#257](https://github.com/arvidsever/Sudrf/issues/257)** — в работе в `codex/overview-material-hearings-257`: заседания связанных материалов в «Обзоре» из той же нормализованной
   модели, что и календарь; не ждать [#179](https://github.com/arvidsever/Sudrf/issues/179) и не создавать второй diff-путь.
 - **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,
   сохранив latest-wins; проверить вместе с [#230](https://github.com/arvidsever/Sudrf/issues/230).

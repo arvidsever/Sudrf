@@ -133,7 +133,12 @@ struct OverviewView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("№ \(CaseNumberPresentation.primary(h.caseNumber))")
                         .font(.system(size: 13, weight: .semibold))
-                    if let review = h.reviewNumber {
+                    if let material = h.materialNumber {
+                        Text("Материал № \(material)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let review = h.reviewNumber {
                         Text(review)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
@@ -160,6 +165,7 @@ struct OverviewView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(h.judge.isEmpty ? "" : "Судья: \(h.judge)")
         .background(DateUtil.isToday(h.date) ? Color.accentColor.opacity(0.05) : .clear)
         .overlay(Divider(), alignment: .top)
     }

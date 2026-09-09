@@ -74,6 +74,73 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         return record
     }
 
+    private func completedCaseWithMaterials(today: Date,
+                                            sameSchedule: Bool = false,
+                                            duplicateFirstMaterialSession: Bool = false,
+                                            firstMaterialResult: String? = nil) throws
+        -> TrackedCaseRecord {
+        let baseNumber = "2-9143/2025"
+        var context = MovementContext(
+            branchRaw: "general", region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: "district", courtCode: "11RS0001",
+            cartotekaId: "g1", cartotekaLevelRaw: "district",
+            caseNumber: baseNumber, caseID: "base-card")
+        context.sourceKnownCard = KnownCard(
+            domain: context.searchDomain, courtTitle: context.courtTitle,
+            caseID: "base-card", caseUID: "base-guid", deloID: "1540005", new: "5",
+            caseNumber: baseNumber, levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: "g1")
+        context.knownCards = [
+            KnownCard(domain: context.searchDomain, courtTitle: context.courtTitle,
+                      caseID: "37314485", caseUID: "material-guid-1",
+                      deloID: "1610001", new: "0", caseNumber: "13-2471/2026",
+                      levelRaw: CaseInstance.Level.material.rawValue, cartotekaID: "m"),
+            KnownCard(domain: context.searchDomain, courtTitle: context.courtTitle,
+                      caseID: "39809037", caseUID: "material-guid-2",
+                      deloID: "1610001", new: "0", caseNumber: "13-3241/2026",
+                      levelRaw: CaseInstance.Level.material.rawValue, cartotekaID: "m"),
+        ]
+
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: baseNumber,
+            judge: "Судья основного дела", domain: context.displayDomain,
+            foundByUID: false, result: "Решение вступило в законную силу",
+            sessions: [CaseSession(date: "01.09.2026", time: "10:00",
+                                   event: "Судебное заседание",
+                                   result: "Решение вступило в законную силу")])
+        let firstMaterialSession = CaseSession(
+            date: "07.09.2026", time: "14:00", room: "215",
+            event: "Судебное заседание")
+        let firstMaterialSessions = duplicateFirstMaterialSession
+            ? [firstMaterialSession, firstMaterialSession] : [firstMaterialSession]
+        let firstMaterial = CaseInstance(
+            level: .material, court: context.courtTitle, caseNumber: "13-2471/2026",
+            judge: "Судья первого материала", domain: context.displayDomain,
+            foundByUID: true, result: firstMaterialResult, sessions: firstMaterialSessions)
+        let secondMaterial = CaseInstance(
+            level: .material, court: context.courtTitle, caseNumber: "13-3241/2026",
+            judge: "Судья второго материала", domain: context.displayDomain,
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: sameSchedule ? "07.09.2026" : "09.09.2026",
+                                   time: sameSchedule ? "14:00" : "16:30", room: "304",
+                                   event: "Судебное заседание")])
+        let movement = CaseMovement(
+            uid: "11RS0001-01-2025-000001-00", caseNumber: baseNumber, inForce: true,
+            instances: [first, firstMaterial, secondMaterial], complaints: [:], acts: [])
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        let record = TrackedCaseRecord(
+            key: context.key, collections: ["Импорт"], caseNumber: baseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        record.movement = movement
+        record.movementFetchedAt = Date(timeIntervalSince1970: 1_777_777_777)
+        return record
+    }
+
     @MainActor
     private func projection(_ router: AppRouter) -> PublishedProjection {
         PublishedProjection(
@@ -288,6 +355,102 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         let firstReloadIDs = router.calendarHearings.map(\.id)
         router.reload()
         XCTAssertEqual(router.calendarHearings.map(\.id), firstReloadIDs)
+    }
+
+    @MainActor
+    func testCompletedCasePublishesFutureMaterialHearingsFromCachedMovement() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("03.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(today: fixedToday)
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let storedSnapshot = rec.snapshot
+        let storedMovement = rec.movement
+        let fetchedAt = rec.movementFetchedAt
+        router.reload(today: fixedToday)
+
+        XCTAssertEqual(router.cases.first?.stage, .done)
+        XCTAssertTrue(rec.snapshot?.sessions.filter { $0.level == .material }
+            .allSatisfy { $0.caseNumber == nil } == true,
+            "legacy-compatible snapshot deliberately lacks material numbers")
+        XCTAssertEqual(router.hearings.map(\.materialNumber),
+                       ["13-2471/2026", "13-3241/2026"])
+        XCTAssertEqual(router.hearings.map(\.judge),
+                       ["Судья первого материала", "Судья второго материала"])
+        XCTAssertEqual(router.hearings.map(\.room), ["215", "304"])
+        XCTAssertEqual(router.calendarHearings.compactMap(\.materialNumber),
+                       ["13-2471/2026", "13-3241/2026"])
+        let intent = router.intentUpcomingHearings(today: fixedToday)
+        XCTAssertTrue(intent.contains("дело № 2-9143/2025, материал № 13-2471/2026"))
+        XCTAssertTrue(intent.contains("дело № 2-9143/2025, материал № 13-3241/2026"))
+
+        let firstIDs = router.hearings.map(\.id)
+        router.reload(today: fixedToday)
+        XCTAssertEqual(router.hearings.map(\.id), firstIDs)
+        XCTAssertEqual(rec.snapshot, storedSnapshot)
+        XCTAssertEqual(rec.movement, storedMovement)
+        XCTAssertEqual(rec.movementFetchedAt, fetchedAt)
+        XCTAssertEqual(rec.collectionNames, ["Импорт"])
+    }
+
+    @MainActor
+    func testMaterialSourceIdentityDeduplicatesRowsWithoutMergingDifferentMaterials() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("03.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(
+            today: fixedToday, sameSchedule: true, duplicateFirstMaterialSession: true)
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+
+        XCTAssertEqual(router.hearings.count, 2)
+        XCTAssertEqual(router.calendarHearings.filter { $0.instanceLevel == .material }.count, 2)
+        XCTAssertEqual(Set(router.hearings.map(\.id)).count, 2)
+        XCTAssertEqual(Set(router.calendarHearings.map(\.id)).count,
+                       router.calendarHearings.count)
+    }
+
+    @MainActor
+    func testCompletedMaterialResultIsNotUpcomingButRemainsInCalendar() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("03.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(
+            today: fixedToday, firstMaterialResult: "Жалоба удовлетворена")
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+
+        XCTAssertEqual(router.hearings.compactMap(\.materialNumber), ["13-3241/2026"])
+        XCTAssertEqual(router.calendarHearings.compactMap(\.materialNumber),
+                       ["13-2471/2026", "13-3241/2026"])
+        XCTAssertFalse(router.hearings.contains { $0.instanceLevel != .material },
+                       "ordinary completed instances must stay out of Overview")
+    }
+
+    @MainActor
+    func testAmbiguousCachedMaterialSourceDoesNotGuessItsNumber() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("03.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(today: fixedToday)
+        var movement = try XCTUnwrap(rec.movement)
+        movement.instances.append(movement.instances[1])
+        rec.movement = movement
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+
+        let first = try XCTUnwrap(router.hearings.first {
+            DateUtil.sameDay($0.date, DateUtil.parse("07.09.2026")!)
+        })
+        XCTAssertNil(first.materialNumber)
+        XCTAssertEqual(router.hearings.last?.materialNumber, "13-3241/2026")
     }
 
     @MainActor

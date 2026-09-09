@@ -15,3 +15,11 @@ including court-page test fixtures, Russian trusted CA certificates from
 [`tochno-st/sudrfscraper`](https://github.com/tochno-st/sudrfscraper). Rights in
 those materials remain with their respective rightsholders and are unaffected
 by the repository license.
+
+Federal production-calendar facts and minimized parser fixtures use the
+[ConsultantPlus production calendars](https://www.consultant.ru/law/ref/calendar/proizvodstvennye/)
+for extraction and cross-checking. Holiday and transfer reasons are recorded
+separately from the applicable Russian normative acts. Source URLs, verification
+dates and hashes accompany the calendar data; see [Docs/legal-calendar.md](Docs/legal-calendar.md).
+The repository license does not relicense ConsultantPlus source pages or
+third-party explanatory text. The app does not bundle the site's full pages.

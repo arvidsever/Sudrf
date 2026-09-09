@@ -717,10 +717,16 @@ private struct DeadlineInfoPopover: View {
                 infoRow("Правило", projection.rule)
                 infoRow("Норма", projection.source)
                 infoRow("Дата срока", projection.date)
+                if !projection.calculatedDate.isEmpty {
+                    infoRow("Расчётная дата", projection.calculatedDate)
+                }
                 infoRow("Формула", projection.formula)
                 infoRow("Trigger", projection.trigger)
                 if !projection.policies.isEmpty {
                     infoRow("Policies", projection.policies)
+                }
+                if !projection.calendar.isEmpty {
+                    infoRow("Производственный календарь", projection.calendar)
                 }
                 infoRow("Registry", projection.registry)
             } else {
@@ -757,9 +763,13 @@ struct DeadlineInfoProjection: Equatable {
     var rule: String
     var source: String
     var date: String
+    /// Показывается только когда пользователь оставил собственную дату, а
+    /// packaged calendar пересчитал исходную automatic дату.
+    var calculatedDate: String
     var formula: String
     var trigger: String
     var policies: String
+    var calendar: String
     var registry: String
     var status: String
     var lifecycle: String
@@ -771,6 +781,13 @@ struct DeadlineInfoProjection: Equatable {
         rule = provenance.map { catalogRule.map { "\($0.ruleID) · \($0.stage)" } ?? $0.ruleID } ?? "—"
         source = catalogRule?.source ?? provenance?.source ?? "—"
         date = DateUtil.fmt(deadline.date)
+        if let calculatedRef = provenance?.calculatedDateRef {
+            let calculated = Date(timeIntervalSinceReferenceDate: calculatedRef)
+            calculatedDate = DateUtil.sameDay(calculated, deadline.date)
+                ? "" : DateUtil.fmt(calculated)
+        } else {
+            calculatedDate = ""
+        }
         formula = provenance?.formula ?? "—"
         if let trigger = provenance?.trigger {
             self.trigger = [trigger.event, trigger.result, trigger.dateRaw, trigger.court,
@@ -787,6 +804,35 @@ struct DeadlineInfoProjection: Equatable {
             guard let policy = registry?.policy(id: id) else { return id }
             return "\(id): \(policy.rule)"
         }.joined(separator: "\n") ?? ""
+        calendar = provenance?.calendarTrace.map { trace in
+            let start = trace.start.date(timeZone: DateUtil.cal.timeZone).map(DateUtil.fmt)
+                ?? trace.start.iso8601
+            let headline: String
+            switch trace.operation {
+            case .addWorkingDays:
+                headline = "Срок исчислен рабочими днями"
+            case .moveToNextWorkingDay:
+                headline = trace.start == trace.result
+                    ? "Проверена рабочая дата окончания"
+                    : "Окончание перенесено на рабочий день"
+            }
+            var lines = [headline, "Исходная дата: \(start)"]
+            if let counted = trace.countedWorkingDays {
+                lines.append("Учтено рабочих дней: \(counted)")
+            }
+            if !trace.skipped.isEmpty {
+                let dates = trace.skipped.compactMap { $0.date(timeZone: DateUtil.cal.timeZone) }
+                    .map(DateUtil.fmt)
+                if !dates.isEmpty { lines.append("Пропущены нерабочие: \(dates.joined(separator: ", "))") }
+            }
+            if !trace.revisions.isEmpty {
+                let revisions = trace.revisions.map {
+                    "\($0.year) · редакция \($0.revision)"
+                }
+                lines.append("Данные: \(revisions.joined(separator: "; "))")
+            }
+            return lines.joined(separator: "\n")
+        } ?? Self.unverifiedCalendarMessage(for: deadline, provenance: provenance)
         self.registry = provenance.map { "revision \($0.registryRevision)" } ?? "—"
         switch deadline.status {
         case .proposed: status = "Расчётный"
@@ -798,5 +844,16 @@ struct DeadlineInfoProjection: Equatable {
         case .expiredUnconfirmed: lifecycle = "Истёк без подтверждения"
         case .superseded: lifecycle = "Заменён новым trigger"
         }
+    }
+
+    private static func unverifiedCalendarMessage(for deadline: TrackedDeadline,
+                                                   provenance: DeadlineProvenance?) -> String {
+        guard deadline.lifecycle == .active,
+              deadline.status == .proposed,
+              let provenance,
+              provenance.policyIDs.contains(where: {
+                  $0.contains("END-NONWORKING") || $0.contains("COUNTING-WORKING")
+              }) else { return "" }
+        return "Производственный календарь для сохранённого расчёта не проверен"
     }
 }

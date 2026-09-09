@@ -5,7 +5,7 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.57.8**, build 169, 1196 XCTest (5 пропущены) и 14 Swift Testing. Полный
+Текущий baseline: **main 0.58.0**, build 170, 1224 XCTest (5 пропущены) и 14 Swift Testing. Полный
 registry сроков обжалования подключён; оставшиеся typed rules относятся к #222.
 
 | Версия | Результат |
@@ -187,8 +187,8 @@ registry сроков обжалования подключён; оставши�
 
 - Завершённые **[#56](https://github.com/arvidsever/Sudrf/issues/56) + [#70](https://github.com/arvidsever/Sudrf/issues/70)** позволяют активировать оставшиеся typed rules **[#222](https://github.com/arvidsever/Sudrf/issues/222)**
   поверх полного registry. Это не равнозначно завершению всей пользовательской функции.
-- **[#224](https://github.com/arvidsever/Sudrf/issues/224)** — единый исторический LegalCalendar 2002+; **[#129](https://github.com/arvidsever/Sudrf/issues/129)** — месяцы и годы,
-  **[#111](https://github.com/arvidsever/Sudrf/issues/111)** — нерабочие дни и перенос окончания, **[#125](https://github.com/arvidsever/Sudrf/issues/125)** — различение решения и
+- **[#224](https://github.com/arvidsever/Sudrf/issues/224)** — в 0.58.0 реализован и принят федеральный LegalCalendar 2013–2026 с расчётом и UI. [Источники и обновление](legal-calendar.md), [проверки](../changelog/changelog-v0.58.00.md). Годы до 2013, региональные особенности и исторические редакции процессуальных норм остаются последующими этапами; issue не закрывается. **[#129](https://github.com/arvidsever/Sudrf/issues/129)** — месяцы и годы,
+  **[#111](https://github.com/arvidsever/Sudrf/issues/111)** — федеральные нерабочие дни и перенос окончания подключены в 0.58.0 (#224); полная приёмка и региональные исключения остаются, **[#125](https://github.com/arvidsever/Sudrf/issues/125)** — различение решения и
   определения с правильной counting policy. Календарные политики используют [#224](https://github.com/arvidsever/Sudrf/issues/224),
   а не локальные списки праздников; арифметику можно проверять независимо.
 - Полная приёмка **[#222](https://github.com/arvidsever/Sudrf/issues/222)** требует [#224](https://github.com/arvidsever/Sudrf/issues/224), [#129](https://github.com/arvidsever/Sudrf/issues/129), [#111](https://github.com/arvidsever/Sudrf/issues/111) и [#125](https://github.com/arvidsever/Sudrf/issues/125), объяснения расчёта в UI

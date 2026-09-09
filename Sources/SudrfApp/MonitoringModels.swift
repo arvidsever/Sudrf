@@ -306,10 +306,17 @@ struct TrackedHearing: Identifiable {
     /// При времени «—» несколько событий одного дня иначе имеют одинаковый id.
     /// Источник сохраняется только в UI-идентификаторе, формат снимка не меняется.
     var identitySuffix: String = ""
-    /// Номер инстанции именно этого заседания; не участвует в устойчивом id.
+    /// Номер карточки именно этого заседания. У обычных инстанций не участвует
+    /// в устойчивом id; у материала служит запасной identity, если sourceCardID отсутствует.
     var instanceCaseNumber: String? = nil
+    /// Уровень карточки-источника нужен только проекциям интерфейса.
+    var instanceLevel: CaseInstance.Level = .first
     var reviewNumber: String? {
         CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+    }
+    var materialNumber: String? {
+        guard instanceLevel == .material else { return nil }
+        return reviewNumber
     }
 }
 

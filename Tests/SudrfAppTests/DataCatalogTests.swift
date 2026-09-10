@@ -4,6 +4,8 @@ import SwiftData
 @testable import SudrfApp
 
 final class DataCatalogTests: XCTestCase {
+    private enum ForcedPreparationSaveError: Error { case forced }
+
     /// Смена prompt или pipeline делает сохранённую сводку устаревшей: показывать
     /// результат прежнего prompt как актуальный нельзя. Без текущей конфигурации
     /// (нет ключа или согласия) сводку всё равно нельзя перегенерировать, поэтому
@@ -17,7 +19,8 @@ final class DataCatalogTests: XCTestCase {
             documentID: document.id, summary: ActSummary(), provider: "groq",
             model: "openai/gpt-oss-120b", promptVersion: "groq-act-summary-v1",
             pipelineVersion: "summary-pipeline-v1",
-            sourceHash: document.sourceHash, generatedAt: .now)
+            sourceHash: document.sourceHash, generatedAt: .now,
+            paragraphizerVersion: document.paragraphizerVersion)
 
         XCTAssertFalse(snapshot.isStale(for: document))
         XCTAssertFalse(snapshot.isStale(for: document, identity: SummaryIdentity(
@@ -58,6 +61,191 @@ final class DataCatalogTests: XCTestCase {
         record.update(from: revised, semanticKey: "semantic", fetchedAt: .now)
         XCTAssertEqual(record.document?.paragraphizerVersion, ActParagraphizer.currentVersion)
         XCTAssertEqual(record.document?.paragraphs.map(\.id), ["¶1", "¶2", "¶3"])
+    }
+
+    @MainActor
+    func testPreparationMigratesLegacyParagraphSnapshotTransactionallyAndIdempotently() throws {
+        XCTAssertGreaterThan(ActParagraphizer.currentVersion, 1)
+        let store = TrackedStore(inMemory: true)
+        let sourceText = "Дело № 2-1/2026 РЕШЕНИЕ Суд установил: иск подтверждён. решил: иск удовлетворить."
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-1/2026")
+        let act = CaseAct(id: "act-1", title: "Решение", date: "01.07.2026",
+                          courtShort: "Тестовый суд", instanceLevel: .first)
+        let secondAct = CaseAct(id: "act-2", title: "Определение", date: "02.07.2026",
+                                courtShort: "Тестовый суд", instanceLevel: .first)
+        let secondSourceText = "Дело № 2-1/2026 ОПРЕДЕЛЕНИЕ Суд определил: заявление вернуть."
+        _ = try store.upsert(
+            context: context, snapshot: nil,
+            movement: CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
+                                   instances: [], complaints: [:], acts: [act, secondAct],
+                                   actBodies: [act.id: sourceText, secondAct.id: secondSourceText]),
+            collections: [])
+        let records = try store.container.mainContext.fetch(FetchDescriptor<CourtActRecord>())
+        XCTAssertEqual(records.count, 2)
+        let record = try XCTUnwrap(records.first(where: { $0.sourceActID == act.id }))
+        let document = try XCTUnwrap(record.document)
+        var legacyDataByID = [String: Data]()
+        for candidate in records {
+            candidate.paragraphizerVersion = 1
+            candidate.paragraphData = try JSONEncoder().encode([
+                ActParagraph(ordinal: 1, text: candidate.sourceText)
+            ])
+            legacyDataByID[candidate.id] = candidate.paragraphData
+        }
+        let legacyParagraphs = [ActParagraph(ordinal: 1, text: document.sourceText)]
+        try store.container.mainContext.save()
+        let expectedID = record.id
+        let expectedCaseKey = record.caseKey
+        let expectedSourceActID = record.sourceActID
+        let expectedCaseNumber = record.caseNumber
+        let expectedUID = record.judicialUID
+        let expectedCourt = record.court
+        let expectedLevel = record.instanceLevel
+        let expectedKind = record.kind
+        let expectedDate = record.actDate
+        let expectedText = record.sourceText
+        let expectedHash = record.sourceHash
+        let expectedSemanticKey = record.semanticKey
+        let expectedFetchedAt = record.fetchedAt
+
+        XCTAssertThrowsError(try TrackedStorePreparation.prepare(
+            context: store.container.mainContext, save: { _ in throw ForcedPreparationSaveError.forced }))
+        for candidate in records {
+            XCTAssertEqual(candidate.paragraphizerVersion, 1)
+            XCTAssertEqual(candidate.paragraphData, legacyDataByID[candidate.id])
+        }
+        XCTAssertFalse(store.container.mainContext.hasChanges)
+
+        let verificationContext = ModelContext(store.container)
+        verificationContext.autosaveEnabled = false
+        let persisted = try verificationContext.fetch(FetchDescriptor<CourtActRecord>())
+        XCTAssertEqual(persisted.count, 2)
+        for candidate in persisted {
+            XCTAssertEqual(candidate.paragraphizerVersion, 1)
+            XCTAssertEqual(candidate.paragraphData, legacyDataByID[candidate.id])
+        }
+
+        XCTAssertTrue(try TrackedStorePreparation.prepare(context: store.container.mainContext))
+        XCTAssertEqual(record.paragraphizerVersion, ActParagraphizer.currentVersion)
+        XCTAssertEqual(record.document?.paragraphs,
+                       ActParagraphizer.paragraphs(in: document.sourceText))
+        XCTAssertNotEqual(record.document?.paragraphs, legacyParagraphs)
+        XCTAssertEqual(record.id, expectedID)
+        XCTAssertEqual(record.caseKey, expectedCaseKey)
+        XCTAssertEqual(record.sourceActID, expectedSourceActID)
+        XCTAssertEqual(record.caseNumber, expectedCaseNumber)
+        XCTAssertEqual(record.judicialUID, expectedUID)
+        XCTAssertEqual(record.court, expectedCourt)
+        XCTAssertEqual(record.instanceLevel, expectedLevel)
+        XCTAssertEqual(record.kind, expectedKind)
+        XCTAssertEqual(record.actDate, expectedDate)
+        XCTAssertEqual(record.sourceText, expectedText)
+        XCTAssertEqual(record.sourceHash, expectedHash)
+        XCTAssertEqual(record.semanticKey, expectedSemanticKey)
+        XCTAssertEqual(record.fetchedAt, expectedFetchedAt)
+        XCTAssertFalse(try TrackedStorePreparation.prepare(context: store.container.mainContext))
+    }
+
+    @MainActor
+    func testPreparationDoesNotDowngradeFutureParagraphSnapshot() throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-1/2026")
+        let act = CaseAct(id: "act-1", title: "Решение", date: "01.07.2026",
+                          courtShort: "Тестовый суд", instanceLevel: .first)
+        _ = try store.upsert(
+            context: context, snapshot: nil,
+            movement: CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
+                                   instances: [], complaints: [:], acts: [act],
+                                   actBodies: [act.id: "Текст."]),
+            collections: [])
+        let record = try XCTUnwrap(try store.container.mainContext.fetch(
+            FetchDescriptor<CourtActRecord>()).first)
+        let futureParagraphs = [ActParagraph(ordinal: 99, text: "Будущая граница.")]
+        record.paragraphizerVersion = ActParagraphizer.currentVersion + 1
+        record.paragraphData = try JSONEncoder().encode(futureParagraphs)
+        try store.container.mainContext.save()
+
+        _ = try TrackedStorePreparation.prepare(context: store.container.mainContext)
+        XCTAssertEqual(record.paragraphizerVersion, ActParagraphizer.currentVersion + 1)
+        XCTAssertEqual(record.document?.paragraphs, futureParagraphs)
+    }
+
+    @MainActor
+    func testCourtActDocumentResolvesLegacyCaseLocator() throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: "court--msk.sudrf.ru", displayDomain: "court.msk.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "77", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-1/2026")
+        let act = CaseAct(id: "act-1", title: "Решение", date: "01.07.2026",
+                          courtShort: "Тестовый суд", instanceLevel: .first)
+        let record = try store.upsert(
+            context: context, snapshot: nil,
+            movement: CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
+                                   instances: [], complaints: [:], acts: [act],
+                                   actBodies: [act.id: "Текст акта."]),
+            collections: [])
+        record.addLegacyKeyAlias("legacy/case")
+        try store.save()
+
+        let document = try XCTUnwrap(
+            store.courtActDocument(caseKey: "legacy/case", sourceActID: act.id))
+        XCTAssertEqual(document.id, "\(record.key)#\(act.id)")
+        XCTAssertEqual(document.paragraphs, ActParagraphizer.paragraphs(in: "Текст акта."))
+    }
+
+    @MainActor
+    func testLegacySummaryDataReadsAsVersionOneAndIsStaleForNewParagraphs() async throws {
+        XCTAssertGreaterThan(ActParagraphizer.currentVersion, 1)
+        let store = TrackedStore(inMemory: true)
+        let document = ActDocument(
+            caseKey: "court/2-1/2026", sourceActID: "act-1", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Тестовый суд", instanceLevel: .first,
+            kind: "Решение", date: "01.07.2026", sourceText: "Текст.")
+        let summary = ActSummary(disposition: [SummaryClaim(text: "Итог", citations: [])])
+        let record = try ActSummaryRecord(documentID: document.id, summary: summary,
+                                          provider: "test", model: "test", promptVersion: "v1",
+                                          pipelineVersion: "v1", sourceHash: document.sourceHash)
+        record.summaryData = try JSONEncoder().encode(summary)
+        store.container.mainContext.insert(record)
+        try store.container.mainContext.save()
+
+        XCTAssertEqual(record.summary?.disposition.map(\.text), summary.disposition.map(\.text))
+        XCTAssertEqual(record.paragraphizerVersion, 1)
+        XCTAssertTrue(record.isStale(for: document))
+        let snapshot = try await CaseCatalog(container: store.container).summary(documentID: document.id)
+        XCTAssertEqual(snapshot?.paragraphizerVersion, 1)
+        XCTAssertTrue(snapshot?.isStale(for: document) == true)
+    }
+
+    @MainActor
+    func testSaveSummaryStampsDocumentParagraphizerVersion() async throws {
+        let store = TrackedStore(inMemory: true)
+        let document = ActDocument(
+            caseKey: "court/2-1/2026", sourceActID: "act-1", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Тестовый суд", instanceLevel: .first,
+            kind: "Решение", date: "01.07.2026", sourceText: "Текст.")
+        let catalog = CaseCatalog(container: store.container)
+        try await catalog.saveSummary(document: document, summary: ActSummary(), provider: "test",
+                                      model: "test", promptVersion: "v1", pipelineVersion: "v1")
+
+        let record = try XCTUnwrap(try store.container.mainContext.fetch(
+            FetchDescriptor<ActSummaryRecord>()).first)
+        XCTAssertEqual(record.paragraphizerVersion, document.paragraphizerVersion)
+        XCTAssertEqual(try JSONDecoder().decode(SummaryData.self, from: record.summaryData)
+            .paragraphizerVersion, document.paragraphizerVersion)
     }
 
     @MainActor

@@ -148,7 +148,8 @@ struct CourtActEntity: IndexedEntity, Sendable, Hashable {
     var fingerprint: String {
         ActParagraphizer.sourceHash(for: [document.sourceHash, document.caseNumber,
                                           document.judicialUID, document.court,
-                                          document.kind, document.date]
+                                          document.kind, document.date,
+                                          String(document.paragraphizerVersion)]
             .compactMap { $0 }
             .joined(separator: "\n"))
     }

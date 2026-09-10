@@ -81,24 +81,30 @@ public struct ActDocument: Sendable, Codable, Hashable, Identifiable {
 /// locale и системных NLP-моделей: одинаковый текст получает те же ¶ID и hash
 /// на любом поддерживаемом Mac.
 public enum ActParagraphizer {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
+    private static let structuralVerbs = [
+        "установил", "решил", "постановил", "определил", "приговорил",
+    ]
+    private static let inlineWhitespacePattern = "[\\p{Zs}\\t]*"
 
     public static func paragraphs(in sourceText: String) -> [ActParagraph] {
         let normalized = normalizedText(sourceText)
         guard !normalized.isEmpty else { return [] }
 
-        var chunks = normalized
+        let sourceLines = normalized
             .components(separatedBy: "\n")
             .map(normalizeInlineWhitespace)
             .filter { !$0.isEmpty }
 
         // Некоторые суды публикуют весь акт одной строкой. Структурные глаголы
-        // дают надёжные границы; оставшиеся большие блоки режутся только по
+        // с двоеточием и реквизиты начала документа дают надёжные границы даже
+        // у короткого акта; оставшиеся большие блоки режутся только по
         // завершённым предложениям, без потери или перестановки текста.
-        if chunks.count == 1, let only = chunks.first, only.count > 1_200 {
+        let chunks: [String]
+        if sourceLines.count == 1, let only = sourceLines.first {
             chunks = structuralChunks(only).flatMap(sentenceChunks)
         } else {
-            chunks = chunks.flatMap { $0.count > 2_400 ? sentenceChunks($0) : [$0] }
+            chunks = sourceLines.flatMap { $0.count > 2_400 ? sentenceChunks($0) : [$0] }
         }
 
         return chunks.enumerated().map { ActParagraph(ordinal: $0.offset + 1, text: $0.element) }
@@ -120,16 +126,138 @@ public enum ActParagraphizer {
     }
 
     private static func normalizeInlineWhitespace(_ text: String) -> String {
-        text.replacingOccurrences(of: "[\\t ]+", with: " ", options: .regularExpression)
+        text.replacingOccurrences(of: "[\\p{Zs}\\t]+", with: " ", options: .regularExpression)
     }
 
     private static func structuralChunks(_ text: String) -> [String] {
-        let pattern = "(?i)\\s+(?=(установил|решил|постановил|определил|приговорил)\\s*:?)"
-        return text
-            .replacingOccurrences(of: pattern, with: "\n", options: .regularExpression)
-            .components(separatedBy: "\n")
-            .map(normalizeInlineWhitespace)
-            .filter { !$0.isEmpty }
+        let nsText = text as NSString
+        let spacedVerbs = structuralVerbs.map { verb in
+            verb.map(String.init)
+                .map { NSRegularExpression.escapedPattern(for: $0) }
+                .joined(separator: inlineWhitespacePattern)
+        }.joined(separator: "|")
+        let verbPattern = "(?i)(?<![\\p{L}\\p{N}])(?:\(spacedVerbs))\(inlineWhitespacePattern):"
+        let verbMatches = matches(pattern: verbPattern, in: text)
+        let firstVerb = verbMatches.first?.location ?? nsText.length
+
+        // Заголовки и реквизиты являются структурными маркерами только в
+        // преамбуле. Так слово «РЕШЕНИЕ» внутри мотивировки не становится
+        // заголовком из-за одного лишь регистра.
+        let preambleLength = min(firstVerb, min(nsText.length, 1_200))
+        let preambleRange = NSRange(location: 0, length: preambleLength)
+        let titlePatterns = [
+            "(?<![\\p{L}])З\\s*А\\s*О\\s*Ч\\s*Н\\s*О\\s*Е\\s+Р\\s*Е\\s*Ш\\s*Е\\s*Н\\s*И\\s*Е(?![\\p{L}])",
+            "(?<![\\p{L}])Р\\s*Е\\s*Ш\\s*Е\\s*Н\\s*И\\s*Е(?![\\p{L}])",
+            "(?<![\\p{L}])П\\s*О\\s*С\\s*Т\\s*А\\s*Н\\s*О\\s*В\\s*Л\\s*Е\\s*Н\\s*И\\s*Е(?![\\p{L}])",
+            "(?<![\\p{L}])О\\s*П\\s*Р\\s*Е\\s*Д\\s*Е\\s*Л\\s*Е\\s*Н\\s*И\\s*Е(?![\\p{L}])",
+            "(?<![\\p{L}])П\\s*Р\\s*И\\s*Г\\s*О\\s*В\\s*О\\s*Р(?![\\p{L}])",
+        ]
+        let metadataPatterns = [
+            "(?i)(?<![\\p{L}])Дело[\\p{Zs}\\t]*№[\\p{Zs}\\t]*[^\\s]+",
+            "(?i)(?<![\\p{L}])УИД[\\p{Zs}\\t]*(?:[:№][\\p{Zs}\\t]*)?[0-9][A-ZА-ЯЁ0-9-]{7,}",
+        ]
+        let subtitlePattern = "(?i)(?<![\\p{L}])Именем[\\p{Zs}\\t]+Российской[\\p{Zs}\\t]+Федерации(?![\\p{L}])"
+        let subtitleMatches = matches(pattern: subtitlePattern, in: text,
+                                      range: preambleRange)
+
+        var boundaries = verbMatches
+        for pattern in metadataPatterns {
+            boundaries.append(contentsOf: matches(pattern: pattern, in: text, range: preambleRange)
+                .filter { markerHasOnlyKnownPreambleBeforeIt(
+                    $0, in: text,
+                    allowedPatterns: metadataPatterns + titlePatterns + [subtitlePattern]) })
+        }
+        var acceptedTitleRanges: [NSRange] = []
+        for pattern in titlePatterns {
+            acceptedTitleRanges.append(contentsOf:
+                matches(pattern: pattern, in: text, range: preambleRange)
+                    .filter {
+                        markerHasOnlyKnownPreambleBeforeIt(
+                            $0, in: text, allowedPatterns: metadataPatterns)
+                        || isImmediatelyFollowed($0, byAny: subtitleMatches, in: text)
+                    })
+        }
+        boundaries.append(contentsOf: acceptedTitleRanges)
+        boundaries.append(contentsOf: subtitleMatches
+            .filter { markerHasOnlyKnownPreambleBeforeIt(
+                $0, in: text, allowedPatterns: metadataPatterns + titlePatterns)
+                || isImmediatelyPreceded($0, byAny: acceptedTitleRanges, in: text) })
+        boundaries.sort {
+            $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location
+        }
+
+        var nonOverlapping: [NSRange] = []
+        for range in boundaries where range.length > 0 {
+            guard nonOverlapping.last.map({ NSMaxRange($0) <= range.location }) ?? true else { continue }
+            nonOverlapping.append(range)
+        }
+        guard !nonOverlapping.isEmpty else { return [text] }
+
+        var result: [String] = []
+        var cursor = 0
+        for range in nonOverlapping {
+            appendChunk(nsText.substring(with: NSRange(location: cursor,
+                                                        length: range.location - cursor)),
+                        to: &result)
+            appendChunk(nsText.substring(with: range), to: &result)
+            cursor = NSMaxRange(range)
+        }
+        appendChunk(nsText.substring(from: cursor), to: &result)
+        return result
+    }
+
+    private static func matches(pattern: String, in text: String,
+                                range: NSRange? = nil) -> [NSRange] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        return regex.matches(in: text, range: range ?? fullRange).map(\.range)
+    }
+
+    private static func markerHasOnlyKnownPreambleBeforeIt(
+        _ markerRange: NSRange, in text: String, allowedPatterns: [String]
+    ) -> Bool {
+        guard markerRange.location > 0 else { return true }
+        let nsText = text as NSString
+        let prefix = nsText.substring(to: markerRange.location)
+        var uncovered = prefix
+        for pattern in allowedPatterns {
+            uncovered = uncovered.replacingOccurrences(
+                of: pattern, with: "", options: .regularExpression)
+        }
+        return uncovered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func isImmediatelyFollowed(
+        _ range: NSRange, byAny candidates: [NSRange], in text: String
+    ) -> Bool {
+        candidates.contains { candidate in
+            guard candidate.location >= NSMaxRange(range) else { return false }
+            return containsOnlyWhitespace(from: NSMaxRange(range), to: candidate.location,
+                                          in: text)
+        }
+    }
+
+    private static func isImmediatelyPreceded(
+        _ range: NSRange, byAny candidates: [NSRange], in text: String
+    ) -> Bool {
+        candidates.contains { candidate in
+            guard NSMaxRange(candidate) <= range.location else { return false }
+            return containsOnlyWhitespace(from: NSMaxRange(candidate), to: range.location,
+                                          in: text)
+        }
+    }
+
+    private static func containsOnlyWhitespace(from start: Int, to end: Int,
+                                               in text: String) -> Bool {
+        let gap = (text as NSString).substring(
+            with: NSRange(location: start, length: end - start))
+        return gap.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func appendChunk(_ text: String, to chunks: inout [String]) {
+        let normalized = normalizeInlineWhitespace(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalized.isEmpty { chunks.append(normalized) }
     }
 
     private static func sentenceChunks(_ text: String) -> [String] {

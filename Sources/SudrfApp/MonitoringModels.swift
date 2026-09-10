@@ -312,11 +312,17 @@ struct TrackedHearing: Identifiable {
     /// Уровень карточки-источника нужен только проекциям интерфейса.
     var instanceLevel: CaseInstance.Level = .first
     var reviewNumber: String? {
-        CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+        guard instanceLevel != .material else { return nil }
+        return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
     }
     var materialNumber: String? {
         guard instanceLevel == .material else { return nil }
-        return reviewNumber
+        return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: "")
+    }
+    var secondaryLabel: String? {
+        guard instanceLevel == .material else { return reviewNumber }
+        return materialNumber.map { "Материал № \($0)" }
+            ?? "Материал · номер не опубликован"
     }
 }
 
@@ -332,12 +338,32 @@ struct FeedEntry: Identifiable {
     var text: String
     var actID: String?
     var isUnread: Bool
-    /// Номер инстанции именно этого события; id ленты от него не зависит.
+    /// Номер инстанции именно этого события; для материала id строится по
+    /// `sourceCardID`, поэтому поздняя публикация номера его не меняет.
     var instanceCaseNumber: String? = nil
+    /// Уровень и точная identity карточки-источника нужны проекциям интерфейса
+    /// и переходу к материалу; в хранилище не записываются.
+    var instanceLevel: CaseInstance.Level = .first
+    var sourceCardID: String? = nil
+    var sourceInstanceID: String? = nil
 
     var hasAct: Bool { actID != nil }
     var reviewNumber: String? {
-        CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+        guard instanceLevel != .material else { return nil }
+        return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
+    }
+    var materialNumber: String? {
+        guard instanceLevel == .material else { return nil }
+        return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: "")
+    }
+    var secondaryLabel: String? {
+        guard instanceLevel == .material else { return reviewNumber }
+        return materialNumber.map { "Материал № \($0)" }
+            ?? "Материал · номер не опубликован"
+    }
+    var notificationSubtitle: String {
+        guard instanceLevel == .material, let secondaryLabel else { return caseNumber }
+        return "\(caseNumber) · \(secondaryLabel)"
     }
 }
 

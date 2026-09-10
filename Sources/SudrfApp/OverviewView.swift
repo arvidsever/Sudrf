@@ -166,13 +166,8 @@ struct OverviewView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("№ \(CaseNumberPresentation.primary(h.caseNumber))")
                         .font(.system(size: 13, weight: .semibold))
-                    if let material = h.materialNumber {
-                        Text("Материал № \(material)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else if let review = h.reviewNumber {
-                        Text(review)
+                    if let label = h.secondaryLabel {
+                        Text(label)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -494,8 +489,8 @@ struct OverviewView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
-                if let review = f.reviewNumber {
-                    Text(review)
+                if let label = f.secondaryLabel {
+                    Text(label)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

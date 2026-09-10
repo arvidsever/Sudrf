@@ -28,6 +28,17 @@ struct CaseEventDeriverTests {
         #expect(result.events.isEmpty)
     }
 
+    @Test func fillingOnlyMaterialNumberOnOldSessionIsSilent() {
+        var oldSession = session("10.03.2027")
+        oldSession.levelRaw = CaseInstance.Level.material.rawValue
+        oldSession.caseNumber = nil
+        var enrichedSession = oldSession
+        enrichedSession.caseNumber = "13а-3091/2027"
+
+        #expect(derive(snapshot(sessions: [oldSession]),
+                       snapshot(sessions: [enrichedSession])).events.isEmpty)
+    }
+
     @Test func newStableInstanceHearingAndActProduceOneEventEach() {
         let secondCard = "sudrf|11rs0002|g2|67890"
         var new = snapshot(sessions: [session("10.03.2027", source: secondCard)])

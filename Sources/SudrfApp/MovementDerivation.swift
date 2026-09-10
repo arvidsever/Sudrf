@@ -21,7 +21,8 @@ struct StoredSession: Codable, Equatable {
     var court: String
     var judge: String? = nil
     var levelRaw: String       // CaseInstance.Level.rawValue
-    /// Номер производства инстанции пересмотра, из которой пришло событие.
+    /// Номер производства инстанции пересмотра или материала, из которого
+    /// пришло событие.
     /// Optional сохраняет декодирование старых snapshots.
     var caseNumber: String? = nil
     /// Stable source-card identity used only by the shadow semantic journal.
@@ -164,18 +165,17 @@ enum MovementDerivation {
 
         // Сессии всех инстанций.
         var sessions: [StoredSession] = []
-        var sourceIDsByInstance = [String: String]()
         for inst in mv.instances {
             let sourceCardID = CaseSnapshotSourceIdentity.sourceCardID(
                 for: inst, context: context)
-            if let sourceCardID { sourceIDsByInstance[inst.id] = sourceCardID }
             for s in inst.sessions {
                 // CaseSession does not carry a per-session judge; use the instance judge as the closest source.
                 sessions.append(StoredSession(
                     dateRaw: s.date, time: s.time, room: s.room,
                     event: s.event, result: s.result,
                     court: inst.court, judge: inst.judge, levelRaw: inst.level.rawValue,
-                    caseNumber: reviewNumber(for: inst), sourceCardID: sourceCardID))
+                    caseNumber: materialNumber(for: inst) ?? reviewNumber(for: inst),
+                    sourceCardID: sourceCardID))
             }
         }
         sessions.sort { (DateUtil.parse($0.dateRaw) ?? .distantPast)
@@ -204,7 +204,8 @@ enum MovementDerivation {
         }.sorted()
         let instanceObservations = mv.instances.map { instance in
             StoredInstanceObservation(
-                sourceCardID: sourceIDsByInstance[instance.id],
+                sourceCardID: CaseSnapshotSourceIdentity.sourceCardID(
+                    for: instance, context: context),
                 levelRaw: instance.level.rawValue, court: instance.court,
                 caseNumber: instance.caseNumber, judge: instance.judge,
                 result: instance.result)
@@ -214,21 +215,27 @@ enum MovementDerivation {
         }
         let actObservations = mv.acts.map { act -> StoredActObservation in
             let linked = mv.instances.filter { $0.linkedActIDs.contains(act.id) }
-            let candidates = linked.isEmpty
+            let candidates = linked.isEmpty && act.instanceLevel != .material
                 ? mv.instances.filter { $0.level == act.instanceLevel }
                 : linked
             let owner = candidates.count == 1 ? candidates[0] : nil
             return StoredActObservation(
-                sourceCardID: owner.flatMap { sourceIDsByInstance[$0.id] },
+                sourceCardID: owner.flatMap {
+                    CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
+                },
                 sourceActID: act.id, title: act.title, dateRaw: act.date,
-                court: act.courtShort, levelRaw: act.instanceLevel.rawValue)
+                court: act.courtShort,
+                levelRaw: (owner?.level ?? act.instanceLevel).rawValue)
         }.sorted { $0.sourceActID < $1.sourceActID }
         let complaintObservations = mv.complaints.values.map { complaint in
-            let owner = mv.instances.first {
+            let candidates = mv.instances.filter {
                 $0.court == complaint.court && $0.caseNumber == complaint.caseNumber
             }
+            let owner = candidates.count == 1 ? candidates[0] : nil
             return StoredComplaintObservation(
-                sourceCardID: owner.flatMap { sourceIDsByInstance[$0.id] },
+                sourceCardID: owner.flatMap {
+                    CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
+                },
                 sourceComplaintID: complaint.id, label: complaint.label,
                 court: complaint.court, caseNumber: complaint.caseNumber)
         }.sorted { $0.sourceComplaintID < $1.sourceComplaintID }
@@ -461,6 +468,17 @@ enum MovementDerivation {
                              baseCaseNumber: String) -> String? {
         guard let number = reviewNumber(for: instance) else { return nil }
         return CaseNumberPresentation.secondary(number, distinctFrom: baseCaseNumber)
+    }
+
+    /// Возвращает только опубликованный номер реальной карточки материала.
+    /// Заглушки CAPTCHA/сети и технические значения не становятся подписью.
+    static func materialNumber(for instance: CaseInstance?) -> String? {
+        guard let instance,
+              instance.level == .material,
+              instance.captchaFormURL == nil,
+              instance.transientError != true else { return nil }
+        return CaseNumberPresentation.secondary(
+            CaseNumberPresentation.displayedNumber(for: instance), distinctFrom: "")
     }
 
     /// Классификация намеренно живёт в presentation: она зависит от текущего

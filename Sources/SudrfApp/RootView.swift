@@ -956,7 +956,8 @@ private struct CaseCardHost: View {
                     isRefreshingEnforcement: router.isRefreshingOpenEnforcement,
                     enforcementError: router.openEnforcementError,
                     onRefreshEnforcement: { router.refreshOpenEnforcement() },
-                    onSolveFSSPCaptcha: { router.beginFSSPCaptcha(for: $0) })
+                    onSolveFSSPCaptcha: { router.beginFSSPCaptcha(for: $0) },
+                    focusInstanceID: router.focusedMaterialInstanceID)
                     .frame(maxWidth: .infinity)
                 if !mv.acts.isEmpty {
                     LiveActsPane().frame(width: 400)

@@ -81,7 +81,7 @@ final class FeedNotifier: NSObject, UNUserNotificationCenterDelegate {
         for entry in entries {
             let content = UNMutableNotificationContent()
             content.title = entry.client.isEmpty ? "Дело \(entry.caseNumber)" : entry.client
-            content.subtitle = entry.caseNumber
+            content.subtitle = entry.notificationSubtitle
             content.body = entry.text
             content.sound = .default
             content.userInfo = ["recordKey": entry.recordKey]

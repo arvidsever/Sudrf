@@ -138,6 +138,85 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertNil(unknown.reviewNumber)
     }
 
+    func testMaterialLabelsStayExplicitAndDoNotBecomeReviewNumbers() {
+        let known = FeedEntry(
+            id: "known", dayHead: nil, date: today, time: "14:00",
+            recordKey: "court/13а-3091/2026", caseNumber: "13а-3091/2026",
+            client: "", kind: .movement, text: "Принято к производству",
+            actID: nil, isUnread: false, instanceCaseNumber: "13а-3091/2026",
+            instanceLevel: .material)
+        let unknown = FeedEntry(
+            id: "unknown-material", dayHead: nil, date: today, time: "14:00",
+            recordKey: "court/2а-1610/2026", caseNumber: "2а-1610/2026",
+            client: "", kind: .movement, text: "Принято к производству",
+            actID: nil, isUnread: false, instanceLevel: .material)
+
+        XCTAssertNil(known.reviewNumber)
+        XCTAssertEqual(known.secondaryLabel, "Материал № 13а-3091/2026")
+        XCTAssertEqual(known.notificationSubtitle,
+                       "13а-3091/2026 · Материал № 13а-3091/2026")
+        XCTAssertEqual(unknown.secondaryLabel, "Материал · номер не опубликован")
+        XCTAssertEqual(unknown.notificationSubtitle,
+                       "2а-1610/2026 · Материал · номер не опубликован")
+    }
+
+    func testMaterialFeedReadAndKnownMigrationIsConsumedAfterSplit() {
+        let legacy = "case#feed#1#14:00#Принято к производству"
+        let first = AppRouter.materialFeedID(legacyID: legacy, sourceCardID: "material-1")
+        let second = AppRouter.materialFeedID(legacyID: legacy, sourceCardID: "material-2")
+        var state = MaterialFeedMigrationState()
+        let transitions = [legacy: Set([first, second])]
+        let eligible = AppRouter.materialFeedTransitionsToMigrate(
+            transitions: transitions, unresolvedCounts: [:],
+            readIDs: [legacy], knownIDs: [legacy],
+            state: &state)
+
+        XCTAssertEqual(eligible, transitions)
+        XCTAssertEqual(AppRouter.migratedFeedIDs(
+            [legacy], transitions: eligible, currentIDs: [first, second]),
+            Set([first, second]))
+        XCTAssertTrue(state.consumedLegacyIDs.contains(legacy))
+
+        let future = AppRouter.materialFeedID(legacyID: legacy, sourceCardID: "material-3")
+        let afterRelaunch = AppRouter.materialFeedTransitionsToMigrate(
+            transitions: [legacy: [first, second, future]], unresolvedCounts: [:],
+            readIDs: [legacy, first, second], knownIDs: [legacy, first, second],
+            state: &state)
+        XCTAssertTrue(afterRelaunch.isEmpty,
+                      "сохранённый legacy id обычной строки не должен стать wildcard")
+    }
+
+    func testLateMaterialSourceEnrichmentMigratesOnlyDisappearingLegacyRow() {
+        let legacy = "case#feed#1#14:00#Принято к производству"
+        let resolved = AppRouter.materialFeedID(legacyID: legacy, sourceCardID: "material-1")
+        var state = MaterialFeedMigrationState()
+        XCTAssertTrue(AppRouter.materialFeedTransitionsToMigrate(
+            transitions: [:], unresolvedCounts: [legacy: 1],
+            readIDs: [legacy], knownIDs: [legacy],
+            state: &state).isEmpty)
+
+        let eligible = AppRouter.materialFeedTransitionsToMigrate(
+            transitions: [legacy: [resolved]], unresolvedCounts: [:],
+            readIDs: [legacy], knownIDs: [legacy],
+            state: &state)
+        XCTAssertEqual(eligible, [legacy: [resolved]])
+        XCTAssertTrue(state.consumedLegacyIDs.contains(legacy))
+    }
+
+    func testMaterialMigrationStateFollowsCaseKeyRemapsAndMergesPendingCounts() {
+        let first = "old#feed#1#14:00#event"
+        let second = "survivor#feed#1#14:00#event"
+        let state = MaterialFeedMigrationState(
+            consumedLegacyIDs: [first],
+            pendingUnresolvedCounts: [first: 1, second: 2])
+
+        let remapped = AppRouter.remappedMaterialFeedMigrationState(
+            state, keyRemaps: ["old": "middle", "middle": "survivor"])
+
+        XCTAssertEqual(remapped.consumedLegacyIDs, [second])
+        XCTAssertEqual(remapped.pendingUnresolvedCounts, [second: 3])
+    }
+
     func testActReviewNumberPrefersLinkedInstanceAndRejectsAmbiguousLevel() {
         let linkedAppeal = CaseInstance(
             level: .appeal, court: "ВС Коми", caseNumber: "33-2267/2026", judge: nil,

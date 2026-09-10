@@ -154,6 +154,24 @@ final class MovementDerivationTests: XCTestCase {
         )
     }
 
+    func testMaterialSessionsKeepPublishedKASCivilAndCriminalNumbers() {
+        let materials = ["13а-3091/2026", "13-2471/2026", "3/12-85/2026"].map { number in
+            CaseInstance(
+                level: .material, court: "СГС", caseNumber: number, judge: nil,
+                domain: "syktsud.komi.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [CaseSession(date: "30.04.2026", event: "Принято к производству")])
+        }
+
+        let snapshot = MovementDerivation.snapshot(
+            from: movement(sessions: [], instances: materials),
+            context: context(), today: today)
+
+        XCTAssertEqual(snapshot.sessions.map(\.caseNumber),
+                       ["13а-3091/2026", "13-2471/2026", "3/12-85/2026"])
+        XCTAssertTrue(snapshot.sessions.allSatisfy { $0.level == .material })
+        XCTAssertNil(MovementDerivation.reviewNumber(for: materials[0]))
+    }
+
     func testLegacySessionNumberIsMigrationSafeButDifferentKnownNumbersAreChanges() throws {
         let appeal = CaseInstance(
             level: .appeal, court: "Верховный суд Республики Коми",
@@ -1820,17 +1838,35 @@ final class MovementDerivationTests: XCTestCase {
             domain: ctx.searchDomain, courtTitle: "СГС", caseID: "card-2",
             caseUID: "uid-2", deloID: "1540005", new: "5",
             caseNumber: "2-200/2026", levelRaw: CaseInstance.Level.first.rawValue,
-            cartotekaID: "g")]
+            cartotekaID: "g"), KnownCard(
+                domain: ctx.searchDomain, courtTitle: "СГС", caseID: "material-card",
+                caseUID: "material-uid", deloID: "1610001", new: "0",
+                caseNumber: "13а-3091/2026",
+                levelRaw: CaseInstance.Level.material.rawValue, cartotekaID: "m")]
         let second = CaseInstance(
             level: .first, court: "СГС", caseNumber: "2-200/2026", judge: nil,
             domain: ctx.searchDomain, foundByUID: true, result: nil, sessions: [],
             actIDs: ["linked-act"])
-        var source = movement(sessions: [], instances: [second])
+        let material = CaseInstance(
+            level: .material, court: "СГС", caseNumber: "13а-3091/2026", judge: nil,
+            domain: ctx.searchDomain, foundByUID: true, result: nil, sessions: [],
+            actIDs: ["material-act"])
+        var ambiguousSecond = second
+        ambiguousSecond.actIDs = (ambiguousSecond.actIDs ?? []) + ["ambiguous-act"]
+        var ambiguousMaterial = material
+        ambiguousMaterial.actIDs = (ambiguousMaterial.actIDs ?? []) + ["ambiguous-act"]
+        var source = movement(sessions: [], instances: [ambiguousSecond, ambiguousMaterial])
         source.acts = [
             CaseAct(id: "linked-act", title: "Решение", date: "10.04.2026",
                     courtShort: "СГС", instanceLevel: .first),
             CaseAct(id: "legacy-act", title: "Определение", date: "11.04.2026",
                     courtShort: "СГС", instanceLevel: .first),
+            CaseAct(id: "material-act", title: "Определение", date: "12.04.2026",
+                    courtShort: "СГС", instanceLevel: .first),
+            CaseAct(id: "unlinked-material-act", title: "Определение", date: "13.04.2026",
+                    courtShort: "СГС", instanceLevel: .material),
+            CaseAct(id: "ambiguous-act", title: "Определение", date: "14.04.2026",
+                    courtShort: "СГС", instanceLevel: .material),
         ]
 
         let snapshot = MovementDerivation.snapshot(from: source, context: ctx, today: today)
@@ -1843,6 +1879,20 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(linked.sourceCardID, secondIdentity)
         XCTAssertNil(snapshot.actObservations?.first {
             $0.sourceActID == "legacy-act"
+        }?.sourceCardID)
+        XCTAssertEqual(snapshot.actObservations?.first {
+            $0.sourceActID == "material-act"
+        }?.sourceCardID, snapshot.instanceObservations?.first {
+            $0.caseNumber == "13а-3091/2026"
+        }?.sourceCardID)
+        XCTAssertEqual(snapshot.actObservations?.first {
+            $0.sourceActID == "material-act"
+        }?.levelRaw, CaseInstance.Level.material.rawValue)
+        XCTAssertNil(snapshot.actObservations?.first {
+            $0.sourceActID == "unlinked-material-act"
+        }?.sourceCardID)
+        XCTAssertNil(snapshot.actObservations?.first {
+            $0.sourceActID == "ambiguous-act"
         }?.sourceCardID)
     }
 

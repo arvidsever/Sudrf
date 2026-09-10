@@ -130,7 +130,11 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         let movement = CaseMovement(
             uid: "11RS0001-01-2025-000001-00", caseNumber: baseNumber, inForce: true,
             instances: [first, firstMaterial, secondMaterial], complaints: [:], acts: [])
-        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        var snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        for index in snapshot.sessions.indices
+            where snapshot.sessions[index].level == .material {
+            snapshot.sessions[index].caseNumber = nil
+        }
         let record = TrackedCaseRecord(
             key: context.key, collections: ["Импорт"], caseNumber: baseNumber,
             courtTitle: context.courtTitle, displayDomain: context.displayDomain,
@@ -411,6 +415,168 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         XCTAssertEqual(Set(router.hearings.map(\.id)).count, 2)
         XCTAssertEqual(Set(router.calendarHearings.map(\.id)).count,
                        router.calendarHearings.count)
+    }
+
+    @MainActor
+    func testOldMaterialFeedRowsEnrichFromExactCachedSourcesAndKeepDistinctIDs() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("10.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(
+            today: fixedToday, sameSchedule: true, duplicateFirstMaterialSession: true)
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+        let materials = router.feed.filter { $0.instanceLevel == .material }
+
+        XCTAssertEqual(materials.count, 2, "точный дубль одной строки должен схлопнуться")
+        XCTAssertEqual(Set(materials.map(\.id)).count, 2)
+        XCTAssertEqual(Set(materials.compactMap(\.secondaryLabel)),
+                       ["Материал № 13-2471/2026", "Материал № 13-3241/2026"])
+        XCTAssertTrue(materials.allSatisfy {
+            $0.id.contains("#material#") && $0.sourceCardID != nil
+                && $0.sourceInstanceID != nil
+        })
+    }
+
+    @MainActor
+    func testIssue273RealCardEnrichesExactMaterialWithoutChoosingNeighbour() throws {
+        // Provenance: read-only extraction from
+        // .reference/issue-261/post-acceptance-backup/default.store.
+        // The 08.09.2026 14:00 row belongs to source card 39270473.
+        let fixedToday = try XCTUnwrap(DateUtil.parse("10.09.2026"))
+        let baseNumber = "2а-1610/2026"
+        var context = MovementContext(
+            branchRaw: "general", region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: "district", courtCode: "11RS0001",
+            cartotekaId: "p1", cartotekaLevelRaw: "district",
+            caseNumber: baseNumber, caseID: "base-card")
+        context.knownCards = [
+            KnownCard(domain: context.searchDomain, courtTitle: context.courtTitle,
+                      caseID: "39270473", caseUID: "", deloID: "1610001", new: "0",
+                      caseNumber: "13а-3091/2026",
+                      levelRaw: CaseInstance.Level.material.rawValue, cartotekaID: "m"),
+            KnownCard(domain: context.searchDomain, courtTitle: context.courtTitle,
+                      caseID: "neighbour-material", caseUID: "",
+                      deloID: "1610001", new: "0", caseNumber: "13а-3000/2026",
+                      levelRaw: CaseInstance.Level.material.rawValue, cartotekaID: "m"),
+        ]
+        let event = CaseSession(
+            date: "08.09.2026", time: "14:00",
+            event: "Решение вопроса о принятии к производству",
+            result: "Принято к производству")
+        let movement = CaseMovement(
+            uid: "", caseNumber: baseNumber, inForce: true,
+            instances: [
+                CaseInstance(level: .material, court: context.courtTitle,
+                             caseNumber: "13а-3091/2026", judge: nil,
+                             domain: context.displayDomain, foundByUID: true,
+                             result: nil, sessions: [event]),
+                CaseInstance(level: .material, court: context.courtTitle,
+                             caseNumber: "13а-3000/2026", judge: nil,
+                             domain: context.displayDomain, foundByUID: true,
+                             result: nil, sessions: [event]),
+            ], complaints: [:], acts: [])
+        var snapshot = MovementDerivation.snapshot(
+            from: movement, context: context, today: fixedToday)
+        for index in snapshot.sessions.indices { snapshot.sessions[index].caseNumber = nil }
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: baseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        record.movement = movement
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+        let materials = router.feed.filter { $0.instanceLevel == .material }
+        let target = try XCTUnwrap(materials.first {
+            $0.sourceCardID?.hasSuffix("|39270473") == true
+        })
+
+        XCTAssertEqual(materials.count, 2)
+        XCTAssertEqual(target.caseNumber, baseNumber)
+        XCTAssertEqual(target.secondaryLabel, "Материал № 13а-3091/2026")
+        XCTAssertEqual(target.text, "Принято к производству")
+        XCTAssertNotEqual(target.sourceCardID,
+                          materials.first { $0.id != target.id }?.sourceCardID)
+    }
+
+    @MainActor
+    func testBadOrConflictingMaterialSourceDoesNotGuessFeedNumberOrFocus() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("10.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(today: fixedToday)
+        var snapshot = try XCTUnwrap(rec.snapshot)
+        let indexes = snapshot.sessions.indices.filter {
+            snapshot.sessions[$0].level == .material
+        }
+        snapshot.sessions[indexes[0]].sourceCardID = "missing-source"
+        snapshot.sessions[indexes[1]].caseNumber = "13-9999/2026"
+        snapshot.sessions[indexes[0]].judge = nil
+        snapshot.sessions[indexes[1]].judge = nil
+        rec.snapshot = snapshot
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+        let materials = router.feed.filter { $0.instanceLevel == .material }
+
+        XCTAssertEqual(materials.count, 2)
+        XCTAssertTrue(materials.allSatisfy {
+            $0.secondaryLabel == "Материал · номер не опубликован"
+                && $0.sourceInstanceID == nil
+        })
+        let materialHearings = router.calendarHearings.filter {
+            $0.instanceLevel == .material
+        }
+        XCTAssertEqual(materialHearings.count, 2)
+        XCTAssertTrue(materialHearings.allSatisfy {
+            $0.secondaryLabel == "Материал · номер не опубликован"
+                && $0.judge.isEmpty
+        })
+        for entry in materials {
+            XCTAssertNil(AppRouter.materialInstance(
+                for: entry, movement: try XCTUnwrap(rec.movement),
+                context: try XCTUnwrap(rec.context)))
+        }
+    }
+
+    @MainActor
+    func testMaterialActUsesOnlyUniqueExactLinkEvenWithStaleActLevel() throws {
+        let fixedToday = try XCTUnwrap(DateUtil.parse("10.09.2026"))
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let rec = try completedCaseWithMaterials(today: fixedToday)
+        var movement = try XCTUnwrap(rec.movement)
+        movement.instances[1].actIDs = ["linked-material-act"]
+        movement.acts = [
+            CaseAct(id: "linked-material-act", title: "Определение", date: "08.09.2026",
+                    courtShort: "СГС", instanceLevel: .first),
+            CaseAct(id: "unlinked-material-act", title: "Определение", date: "08.09.2026",
+                    courtShort: "СГС", instanceLevel: .material),
+        ]
+        rec.movement = movement
+        container.mainContext.insert(rec)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: fixedToday)
+        let linked = try XCTUnwrap(router.feed.first { $0.actID == "linked-material-act" })
+        let unlinked = try XCTUnwrap(router.feed.first { $0.actID == "unlinked-material-act" })
+
+        XCTAssertEqual(linked.instanceLevel, .material)
+        XCTAssertEqual(linked.secondaryLabel, "Материал № 13-2471/2026")
+        XCTAssertNotNil(linked.sourceCardID)
+        XCTAssertEqual(unlinked.secondaryLabel, "Материал · номер не опубликован")
+        XCTAssertNil(unlinked.sourceCardID)
     }
 
     @MainActor

@@ -5,6 +5,8 @@ struct CalendarWeekHearingLayoutInput: Identifiable, Equatable {
     var caseNumber: String
     /// Номер для интерфейса; `caseNumber` остаётся сырым ключом навигации.
     var displayCaseNumber: String? = nil
+    /// Явная подпись связанного материала; не участвует в раскладке.
+    var secondaryLabel: String? = nil
     var parties: String
     var court: String
     var room: String

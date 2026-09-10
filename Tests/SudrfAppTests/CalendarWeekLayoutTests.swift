@@ -7,9 +7,11 @@ final class CalendarWeekLayoutTests: XCTestCase {
                          court: String = "Сыктывкарский городской суд",
                          room: String = "каб. 605",
                          judge: String = "Колосова Н. Е.",
-                         displayNumber: String? = nil) -> CalendarWeekHearingLayoutInput {
+                         displayNumber: String? = nil,
+                         secondaryLabel: String? = nil) -> CalendarWeekHearingLayoutInput {
         CalendarWeekHearingLayoutInput(id: number, caseNumber: number,
                                        displayCaseNumber: displayNumber,
+                                       secondaryLabel: secondaryLabel,
                                        parties: "Иванов А. А. ⚔ ООО «Ромашка»",
                                        court: court, room: room, judge: judge,
                                        time: time)
@@ -23,6 +25,23 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         XCTAssertEqual(blocks.first?.hearings.first?.caseNumber, raw)
         XCTAssertEqual(blocks.first?.hearings.first?.displayCaseNumber, "77-762/2024")
+    }
+
+    func testMaterialCaptionSurvivesWeekLayout() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("2-8236/2025", time: "09:30",
+                    secondaryLabel: "Материал № 13-2471/2026")
+        ])
+
+        XCTAssertEqual(blocks.first?.hearings.first?.caseNumber, "2-8236/2025")
+        XCTAssertEqual(blocks.first?.hearings.first?.secondaryLabel,
+                       "Материал № 13-2471/2026")
+    }
+
+    func testNormalHearingHasNoSecondaryCaption() {
+        let blocks = CalendarWeekLayout.blocks(for: [hearing("2-8236/2025", time: "09:30")])
+
+        XCTAssertNil(blocks.first?.hearings.first?.secondaryLabel)
     }
 
     func testSingleHearingUsesGridPositionAndMinimumHeight() {

@@ -34,6 +34,8 @@ private struct CalEvent: Identifiable {
     var caseNumber: String?
     /// Подпись номера для UI; `caseNumber` остаётся сырым значением для открытия дела.
     var displayCaseNumber: String?
+    /// Вторая строка для связанного материала; у обычного заседания отсутствует.
+    var secondaryLabel: String?
     var deadlineId: String?
     var parties: String = ""
     var court: String = ""
@@ -155,13 +157,18 @@ struct CalendarScreen: View {
             return seen == 0 ? base : "\(base)#\(seen + 1)"
         }
         for h in router.calendarHearings {
-            let displayCaseNumber = h.reviewNumber ?? CaseNumberPresentation.primary(h.caseNumber)
+            let primaryCaseNumber = CaseNumberPresentation.primary(h.caseNumber)
+            let secondaryLabel = h.instanceLevel == .material ? h.secondaryLabel : nil
+            let displayCaseNumber = secondaryLabel == nil
+                ? h.reviewNumber ?? primaryCaseNumber
+                : primaryCaseNumber
             out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
                 date: h.date, sortTime: h.time, kind: .hearing,
                 chip: "\(h.time) заседание · \(displayCaseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
                 title: "№ \(displayCaseNumber) — \(h.parties)",
                 sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
                 caseNumber: h.caseNumber, displayCaseNumber: displayCaseNumber,
+                secondaryLabel: secondaryLabel,
                 deadlineId: nil,
                 parties: h.parties, court: h.court, room: h.room, judge: h.judge))
         }
@@ -193,6 +200,7 @@ struct CalendarScreen: View {
                 time: "срок", heading: heading,
                 title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
                 caseNumber: d.caseNumber, displayCaseNumber: CaseNumberPresentation.primary(d.caseNumber),
+                secondaryLabel: nil,
                 deadlineId: d.id))
         }
         return out
@@ -399,10 +407,17 @@ struct CalendarScreen: View {
     }
 
     private func chip(_ ev: CalEvent) -> some View {
-        Text(ev.chip)
-            .font(.system(size: 10, weight: .semibold))
+        VStack(alignment: .leading, spacing: 1) {
+            Text(ev.chip)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+            if let label = ev.secondaryLabel {
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+            }
+        }
             .foregroundStyle(ev.accent)
-            .lineLimit(1)
             .padding(.horizontal, 6).padding(.vertical, 2.5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 5).fill(ev.accent.opacity(0.12)))
@@ -508,6 +523,9 @@ struct CalendarScreen: View {
                 }
                 Text(ev.title).font(.system(size: 12.5, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
+                if let label = ev.secondaryLabel {
+                    Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                }
                 Text(ev.sub).font(.system(size: 11)).foregroundStyle(.tertiary)
                 if let num = ev.caseNumber {
                     Button("Открыть дело") { router.openCase(num) }.buttonStyle(.glass).controlSize(.small)
@@ -737,6 +755,7 @@ struct CalendarScreen: View {
         }.map { ev in
             CalendarWeekHearingLayoutInput(id: ev.id, caseNumber: ev.caseNumber ?? "",
                                            displayCaseNumber: ev.displayCaseNumber,
+                                           secondaryLabel: ev.secondaryLabel,
                                            parties: ev.parties, court: ev.court,
                                            room: ev.room, judge: ev.judge, time: ev.time)
         }
@@ -765,6 +784,12 @@ struct CalendarScreen: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let label = item.secondaryLabel {
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(item.parties)
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(Color.primary.opacity(0.72))
@@ -813,6 +838,12 @@ struct CalendarScreen: View {
                             .foregroundStyle(conflict ? Palette.confirmed : .primary)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let label = item.secondaryLabel {
+                            Text(label)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(Color.primary.opacity(0.60))
+                                .lineLimit(1)
+                        }
                         let details = CalendarWeekLayout.itemDetails(item, conflict: conflict, common: first)
                         if !details.isEmpty {
                             Text(details)
@@ -918,10 +949,17 @@ struct CalendarScreen: View {
         return Button {
             if let num = ev.caseNumber { router.openCase(num) }
         } label: {
-            Text("\(timePrefix)ЗАСЕДАНИЕ · № \(displayCaseNumber)")
-                .font(.system(size: 8.5, weight: .bold))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(timePrefix)ЗАСЕДАНИЕ · № \(displayCaseNumber)")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .lineLimit(1)
+                if let label = ev.secondaryLabel {
+                    Text(label)
+                        .font(.system(size: 8, weight: .medium))
+                        .lineLimit(1)
+                }
+            }
                 .foregroundStyle(Color.accentColor)
-                .lineLimit(1)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1142,6 +1180,9 @@ struct CalendarScreen: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(ev.heading).font(.system(size: 9.5, weight: .bold)).kerning(0.5).foregroundStyle(ev.accent)
                     Text(ev.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+                    if let label = ev.secondaryLabel {
+                        Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Text(ev.sub).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
                 }
                 Spacer(minLength: 8)

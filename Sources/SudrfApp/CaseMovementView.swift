@@ -65,67 +65,76 @@ struct CaseMovementView: View {
     /// Открыть свежую задачу CAPTCHA ФССП для конкретного документа. Фоновый
     /// refresh этот callback не вызывает: он лишь сохраняет `.captchaRequired`.
     var onSolveFSSPCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
+    var focusInstanceID: String? = nil
     @State private var confirmingUntrack = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
-                // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
-                // отдельной секцией в конце: они идут в рамках дела, но инстанциями
-                // не являются.
-                ForEach(movement.instances.filter { $0.level != .material }) { inst in
-                    InstanceBlock(instance: inst, complaints: movement.complaints,
-                                  expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
-                                  onRefresh: onRefresh)
-                }
-                let materials = Self.materialInstances(in: movement)
-                if !materials.isEmpty {
-                    Text("Материалы")
-                        .font(.system(size: 12.5, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 4)
-                        .padding(.top, 6)
-                    ForEach(materials) { inst in
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 10) {
+                    // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
+                    // отдельной секцией в конце: они идут в рамках дела, но инстанциями
+                    // не являются.
+                    ForEach(movement.instances.filter { $0.level != .material }) { inst in
                         InstanceBlock(instance: inst, complaints: movement.complaints,
                                       expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
                                       onRefresh: onRefresh)
                     }
+                    let materials = Self.materialInstances(in: movement)
+                    if !materials.isEmpty {
+                        Text("Материалы")
+                            .font(.system(size: 12.5, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
+                            .padding(.top, 6)
+                        ForEach(materials) { inst in
+                            InstanceBlock(instance: inst, complaints: movement.complaints,
+                                          expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                                          onRefresh: onRefresh)
+                                .id(inst.id)
+                        }
+                    }
+                    Text("Чип «обжаловано · ЧЖ» — частная жалоба на определение; "
+                       + "клик раскрывает её движение на месте.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                    if let documents = movement.executionDocuments, !documents.isEmpty {
+                        EnforcementBlock(documents: documents, records: enforcementRecords,
+                                         isRefreshing: isRefreshingEnforcement,
+                                         error: enforcementError,
+                                         onRefresh: onRefreshEnforcement,
+                                         onSolveCaptcha: onSolveFSSPCaptcha)
+                    }
                 }
-                Text("Чип «обжаловано · ЧЖ» — частная жалоба на определение; "
-                   + "клик раскрывает её движение на месте.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-                if let documents = movement.executionDocuments, !documents.isEmpty {
-                    EnforcementBlock(documents: documents, records: enforcementRecords,
-                                     isRefreshing: isRefreshingEnforcement,
-                                     error: enforcementError,
-                                     onRefresh: onRefreshEnforcement,
-                                     onSolveCaptcha: onSolveFSSPCaptcha)
-                }
+                .padding(16)
             }
-            .padding(16)
-        }
-        // Шапка — поверх списка: блоки растворяются под ней (.soft), а не
-        // срезаются по жёсткой кромке. Растворение осталось, но у шапки теперь
-        // есть стеклянная подложка: без неё прокручиваемые блоки читались
-        // сквозь заголовок, чип силы и строку УИД — две плоскости текста в
-        // одной координате (#85). Стекло размывает контент под собой, поэтому
-        // эффект сохранён, а шапка остаётся читаемой.
-        .safeAreaInset(edge: .top, spacing: 0) { header }
-        .scrollEdgeEffectStyle(.soft, for: .top)
-        .background(Color(nsColor: .sudrfContent))
-        .confirmationDialog(
-            "Убрать дело из отслеживания?",
-            isPresented: $confirmingUntrack,
-            titleVisibility: .visible
-        ) {
-            Button("Убрать", role: .destructive) { onUntrack?() }
-            Button("Отмена", role: .cancel) {}
-        } message: {
-            Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
+            // Шапка — поверх списка: блоки растворяются под ней (.soft), а не
+            // срезаются по жёсткой кромке. Растворение осталось, но у шапки теперь
+            // есть стеклянная подложка: без неё прокручиваемые блоки читались
+            // сквозь заголовок, чип силы и строку УИД — две плоскости текста в
+            // одной координате (#85). Стекло размывает контент под собой, поэтому
+            // эффект сохранён, а шапка остаётся читаемой.
+            .safeAreaInset(edge: .top, spacing: 0) { header }
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .background(Color(nsColor: .sudrfContent))
+            .confirmationDialog(
+                "Убрать дело из отслеживания?",
+                isPresented: $confirmingUntrack,
+                titleVisibility: .visible
+            ) {
+                Button("Убрать", role: .destructive) { onUntrack?() }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
+            }
+            .onChange(of: focusInstanceID, initial: true) { _, target in
+                guard let target,
+                      Self.materialInstances(in: movement).contains(where: { $0.id == target }) else { return }
+                proxy.scrollTo(target, anchor: .top)
+            }
         }
     }
 

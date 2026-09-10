@@ -60,6 +60,7 @@ enum TrackedStorePreparation {
         today: Date = DateUtil.today,
         save: (ModelContext) throws -> Void = { try $0.save() }
     ) throws -> Bool {
+        var paragraphSnapshots: [(record: CourtActRecord, version: Int, data: Data)] = []
         do {
             try migrateFolders(context: context)
             try migrateJudicialUIDs(context: context)
@@ -68,12 +69,22 @@ enum TrackedStorePreparation {
             try bootstrapEventJournals(context: context)
             try repairKoapPartySnapshots(context: context)
             try recalculateStoredDeadlineSnapshots(context: context, today: today)
-            try migrateStoredActParagraphSnapshots(context: context)
+            try migrateStoredActParagraphSnapshots(
+                context: context, rollbackSnapshots: &paragraphSnapshots)
             try CourtActProjectionSynchronizer.synchronize(context: context, scope: .full)
             guard context.hasChanges else { return false }
             try save(context)
             return true
         } catch {
+            // A retained SwiftData model object may still expose values from
+            // the failed transaction even though the store was not committed.
+            // Restore the two migrated fields before rollback so the context
+            // is clean and callers cannot observe a snapshot rolled back on
+            // disk.
+            for snapshot in paragraphSnapshots {
+                snapshot.record.paragraphData = snapshot.data
+                snapshot.record.paragraphizerVersion = snapshot.version
+            }
             context.rollback()
             throw error
         }
@@ -100,10 +111,14 @@ enum TrackedStorePreparation {
 
     /// Rebuild only snapshots produced by an older paragraphizer. The source
     /// text, stable identity, hash, and fetch timestamp stay untouched.
-    private static func migrateStoredActParagraphSnapshots(context: ModelContext) throws {
+    private static func migrateStoredActParagraphSnapshots(
+        context: ModelContext,
+        rollbackSnapshots: inout [(record: CourtActRecord, version: Int, data: Data)]
+    ) throws {
         let currentVersion = ActParagraphizer.currentVersion
         let records = try context.fetch(FetchDescriptor<CourtActRecord>())
         for record in records where record.paragraphizerVersion < currentVersion {
+            rollbackSnapshots.append((record, record.paragraphizerVersion, record.paragraphData))
             record.paragraphData = try JSONEncoder().encode(
                 ActParagraphizer.paragraphs(in: record.sourceText))
             record.paragraphizerVersion = currentVersion

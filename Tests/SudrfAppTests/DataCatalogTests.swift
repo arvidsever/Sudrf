@@ -76,19 +76,28 @@ final class DataCatalogTests: XCTestCase {
             cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-1/2026")
         let act = CaseAct(id: "act-1", title: "Решение", date: "01.07.2026",
                           courtShort: "Тестовый суд", instanceLevel: .first)
+        let secondAct = CaseAct(id: "act-2", title: "Определение", date: "02.07.2026",
+                                courtShort: "Тестовый суд", instanceLevel: .first)
+        let secondSourceText = "Дело № 2-1/2026 ОПРЕДЕЛЕНИЕ Суд определил: заявление вернуть."
         _ = try store.upsert(
             context: context, snapshot: nil,
             movement: CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
-                                   instances: [], complaints: [:], acts: [act],
-                                   actBodies: [act.id: sourceText]),
+                                   instances: [], complaints: [:], acts: [act, secondAct],
+                                   actBodies: [act.id: sourceText, secondAct.id: secondSourceText]),
             collections: [])
-        let record = try XCTUnwrap(try store.container.mainContext.fetch(
-            FetchDescriptor<CourtActRecord>()).first)
+        let records = try store.container.mainContext.fetch(FetchDescriptor<CourtActRecord>())
+        XCTAssertEqual(records.count, 2)
+        let record = try XCTUnwrap(records.first(where: { $0.sourceActID == act.id }))
         let document = try XCTUnwrap(record.document)
+        var legacyDataByID = [String: Data]()
+        for candidate in records {
+            candidate.paragraphizerVersion = 1
+            candidate.paragraphData = try JSONEncoder().encode([
+                ActParagraph(ordinal: 1, text: candidate.sourceText)
+            ])
+            legacyDataByID[candidate.id] = candidate.paragraphData
+        }
         let legacyParagraphs = [ActParagraph(ordinal: 1, text: document.sourceText)]
-        record.paragraphizerVersion = 1
-        record.paragraphData = try JSONEncoder().encode(legacyParagraphs)
-        let legacyParagraphData = record.paragraphData
         try store.container.mainContext.save()
         let expectedID = record.id
         let expectedCaseKey = record.caseKey
@@ -106,8 +115,20 @@ final class DataCatalogTests: XCTestCase {
 
         XCTAssertThrowsError(try TrackedStorePreparation.prepare(
             context: store.container.mainContext, save: { _ in throw ForcedPreparationSaveError.forced }))
-        XCTAssertEqual(record.paragraphizerVersion, 1)
-        XCTAssertEqual(record.paragraphData, legacyParagraphData)
+        for candidate in records {
+            XCTAssertEqual(candidate.paragraphizerVersion, 1)
+            XCTAssertEqual(candidate.paragraphData, legacyDataByID[candidate.id])
+        }
+        XCTAssertFalse(store.container.mainContext.hasChanges)
+
+        let verificationContext = ModelContext(store.container)
+        verificationContext.autosaveEnabled = false
+        let persisted = try verificationContext.fetch(FetchDescriptor<CourtActRecord>())
+        XCTAssertEqual(persisted.count, 2)
+        for candidate in persisted {
+            XCTAssertEqual(candidate.paragraphizerVersion, 1)
+            XCTAssertEqual(candidate.paragraphData, legacyDataByID[candidate.id])
+        }
 
         XCTAssertTrue(try TrackedStorePreparation.prepare(context: store.container.mainContext))
         XCTAssertEqual(record.paragraphizerVersion, ActParagraphizer.currentVersion)

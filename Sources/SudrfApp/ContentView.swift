@@ -94,7 +94,8 @@ private struct FilterPane: View {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 9) {
                 GridRow {
                     FormLabel("Суды")
-                    Picker("", selection: $model.branch) {
+                    Picker("", selection: Binding(get: { model.branch },
+                                                  set: { model.selectFromPicker(.branch($0)) })) {
                         ForEach(CourtBranch.allCases, id: \.self) { b in
                             Text(b.title).tag(b)
                         }
@@ -104,7 +105,8 @@ private struct FilterPane: View {
                 }
                 GridRow {
                     FormLabel("Звено")
-                    Picker("", selection: $model.tier) {
+                    Picker("", selection: Binding(get: { model.tier },
+                                                  set: { model.selectFromPicker(.tier($0)) })) {
                         ForEach(CourtTier.cases(for: model.branch)) { t in
                             Text(t.title(branch: model.branch)).tag(t)
                         }
@@ -114,7 +116,8 @@ private struct FilterPane: View {
                 if model.usesRegion {
                     GridRow {
                         FormLabel("Регион")
-                        Picker("", selection: $model.region) {
+                        Picker("", selection: Binding(get: { model.region },
+                                                  set: { model.selectFromPicker(.region($0)) })) {
                             // Пользователь видит имя, под капотом выбирается код субъекта.
                             ForEach(CourtDirectory.subjectRegions) { r in
                                 Text(r.name).tag(r.code)
@@ -125,7 +128,8 @@ private struct FilterPane: View {
                 }
                 GridRow {
                     FormLabel("Суд")
-                    Picker("", selection: $model.selectedCourtID) {
+                    Picker("", selection: Binding(get: { model.selectedCourtID },
+                                                  set: { model.selectFromPicker(.court($0)) })) {
                         Text("— выберите —").tag("")
                         ForEach(model.courts, id: \.id) { court in
                             Text(court.title).tag(court.id)
@@ -136,7 +140,8 @@ private struct FilterPane: View {
                 }
                 GridRow {
                     FormLabel("Картотека")
-                    Picker("", selection: $model.cartotekaId) {
+                    Picker("", selection: Binding(get: { model.cartotekaId },
+                                                  set: { model.selectFromPicker(.cartoteka($0)) })) {
                         ForEach(model.cartoteki, id: \.id) { c in
                             Text(c.title).tag(c.id)
                         }

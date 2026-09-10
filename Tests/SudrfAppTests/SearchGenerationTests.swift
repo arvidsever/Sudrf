@@ -18,6 +18,12 @@ final class SearchGenerationTests: XCTestCase {
         }
     }
 
+    func testDelayedSearchDoesNotPublishAfterPickerChoice() async throws {
+        try await assertDelayedSearchIsIgnored(deferred: true) { model, _ in
+            model.selectFromPicker(.tier(.supreme))
+        }
+    }
+
     func testCourtScopeChangeClearsSearchCardAndMovementState() async {
         let model = SearchModel()
         let court = SearchModel.CourtOption(
@@ -101,6 +107,7 @@ final class SearchGenerationTests: XCTestCase {
     }
 
     private func assertDelayedSearchIsIgnored(
+        deferred: Bool = false,
         after change: @escaping @MainActor (SearchModel, SearchModel.CourtOption) -> Void
     ) async throws {
         DelayedSearchURLProtocol.reset()
@@ -125,6 +132,11 @@ final class SearchGenerationTests: XCTestCase {
         try await DelayedSearchURLProtocol.waitForRequest()
 
         change(model, otherCourt)
+        if deferred {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
         XCTAssertFalse(model.searching)
         XCTAssertTrue(model.results.isEmpty)
 

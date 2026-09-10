@@ -13,6 +13,61 @@ import CaptchaSolver
 @MainActor
 final class SearchModel: ObservableObject {
 
+    /// Picker callbacks can run inside a SwiftUI view update. Invalidate work
+    /// immediately, but publish the selection and its dependent resets later.
+    enum PickerSelection: Equatable {
+        case branch(CourtBranch)
+        case tier(CourtTier)
+        case region(String)
+        case court(String)
+        case cartoteka(String)
+    }
+
+    func selectFromPicker(_ selection: PickerSelection) {
+        if pendingPickerChanges == 0 {
+            switch selection {
+            case .branch(let value) where value == branch: return
+            case .tier(let value) where value == tier: return
+            case .region(let value) where value == region: return
+            case .court(let value) where value == selectedCourtID: return
+            case .cartoteka(let value) where value == cartotekaId: return
+            default: break
+            }
+        }
+        pendingPickerChanges += 1
+        courtResolutionGeneration &+= 1
+        searchGeneration &+= 1
+        cardLoadGeneration &+= 1
+        movementLoadGeneration &+= 1
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            switch selection {
+            case .branch(let value): self.branch = value
+            case .tier(let value):
+                if CourtTier.cases(for: self.branch).contains(value) { self.tier = value }
+            case .region(let value):
+                if self.usesRegion, CourtDirectory.subjectRegions.contains(where: { $0.code == value }) {
+                    self.region = value
+                }
+            case .court(let value):
+                if value.isEmpty || self.courts.contains(where: { $0.id == value }) {
+                    self.selectedCourtID = value
+                }
+            case .cartoteka(let value):
+                if self.cartoteki.contains(where: { $0.id == value }) { self.cartotekaId = value }
+            }
+            self.pendingPickerChanges -= 1
+            guard self.pendingPickerChanges == 0 else { return }
+            // Also settle invalidated loading flags if the final choice became
+            // unavailable, or a sequence returned to the original selection.
+            self.searchScopeChanged()
+            if self.resolving {
+                let generation = self.courtResolutionGeneration
+                Task { await self.resolveCourts(generation: generation) }
+            }
+        }
+    }
+
     // Ввод
     @Published var branch: CourtBranch = .general {
         didSet {
@@ -228,6 +283,7 @@ final class SearchModel: ObservableObject {
     /// при провале search или при следующем вызове `handleCaptcha`.
     var lastSubmittedCaptcha: (png: Data, token: CaptchaToken)?
     private var magistrateDistrictCourts: [DistrictCourt] = []
+    private var pendingPickerChanges = 0
     private var courtResolutionGeneration = 0
     private var searchGeneration = 0
     private var cardLoadGeneration = 0
@@ -400,7 +456,9 @@ final class SearchModel: ObservableObject {
         magistrateDistrictCourts = []
         resolving = true
         status = "Загружаю суды…"
-        Task { await resolveCourts(generation: generation) }
+        if pendingPickerChanges == 0 {
+            Task { await resolveCourts(generation: generation) }
+        }
     }
     var selectedResult: CaseSearchResult? {
         guard let id = selectedResultID else { return nil }
@@ -412,12 +470,13 @@ final class SearchModel: ObservableObject {
     }
 
     func resolveCourts() async {
+        guard pendingPickerChanges == 0 else { return }
         courtResolutionGeneration &+= 1
         await resolveCourts(generation: courtResolutionGeneration)
     }
 
     private func resolveCourts(generation: Int) async {
-        guard courtResolutionGeneration == generation else { return }
+        guard pendingPickerChanges == 0, courtResolutionGeneration == generation else { return }
         let requestedBranch = branch
         let requestedTier = tier
 
@@ -552,6 +611,7 @@ final class SearchModel: ObservableObject {
     }
 
     func runSearch() async {
+        guard pendingPickerChanges == 0 else { return }
         guard let selected = selectedCourt else {
             status = "Сначала выберите суд."; return
         }
@@ -776,6 +836,7 @@ final class SearchModel: ObservableObject {
     }
 
     func openCard(_ result: CaseSearchResult) async {
+        guard pendingPickerChanges == 0 else { return }
         guard let index = currentIndex(for: result),
               let cart = cartoteka,
               let court = selectedCourt?.searchCourt else { return }
@@ -973,6 +1034,7 @@ final class SearchModel: ObservableObject {
     }
 
     func openMovement(_ result: CaseSearchResult) async {
+        guard pendingPickerChanges == 0 else { return }
         guard let index = currentIndex(for: result),
               let cart = cartoteka, let option = selectedCourt else { return }
         let court = option.searchCourt

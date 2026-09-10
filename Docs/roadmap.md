@@ -122,8 +122,8 @@ registry сроков обжалования подключён; оставши�
   #262 и cutover #179 остаются отдельно.
 - **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
   исправление сохранённых реквизитов выпущено в 0.58.2; документ, текст и связанная сводка сохраняются.
-- **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,
-  сохранив latest-wins; проверить вместе с [#230](https://github.com/arvidsever/Sudrf/issues/230).
+- **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — в `codex/search-picker-updates-233` выбор пяти фильтров отложен до выхода из обработчика SwiftUI; старые запросы инвалидируются сразу.
+  Профильные и полные тесты, сборка Xcode 27 и живая приёмка пяти фильтров пройдены; ожидает merge. [#230](https://github.com/arvidsever/Sudrf/issues/230) остаётся отдельной проверкой.
 - **[#45](https://github.com/arvidsever/Sudrf/issues/45)** — восстановить оформление однострочных актов с сохранением контракта
   paragraphizer version и цитат. Это обычный рендеринг, AI-генерации не требует.
 

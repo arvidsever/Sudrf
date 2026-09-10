@@ -909,11 +909,13 @@ final class TrackedStoreIdentityTests: XCTestCase {
 
     func testAtomicMergeUnionsEventJournalsWithoutCreatingRepairEvent() throws {
         let store = TrackedStore(inMemory: true)
-        let first = context(number: "2-100/2026", cardID: "first-card", judicialUID: oldUID)
-        let appeal = context(number: "33-200/2026", cardID: "appeal-card", judicialUID: oldUID,
+        let first = context(number: "2-100/2026", cardID: "first-card")
+        let appeal = context(number: "33-200/2026", cardID: "appeal-card",
                              domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
         let one = try store.reconcileAndUpsert(context: first, snapshot: nil, collections: [])
         let two = try store.reconcileAndUpsert(context: appeal, snapshot: nil, collections: [])
+        XCTAssertEqual(store.all().count, 2)
+        XCTAssertNotEqual(one.key, two.key)
         let firstEvent = CaseEvent.make(
             kind: .instanceDiscovered, occurrence: ["first"], observedAt: .distantPast,
             evidence: CaseEventEvidence(sourceCardID: "first", occurrenceKey: "first"))
@@ -931,6 +933,46 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(Set(one.eventJournal?.events.map(\.id) ?? []),
                        Set([firstEvent.id, secondEvent.id]))
         XCTAssertEqual(one.eventJournal?.events.count, 2)
+    }
+
+    func testAtomicMergeJournalConflictRollsBackBeforeSaveAndLeavesLaterSaveIndependent() throws {
+        let store = TrackedStore(inMemory: true)
+        let first = context(number: "2-100/2026", cardID: "first-card")
+        let appeal = context(number: "33-200/2026", cardID: "appeal-card",
+                             domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
+        let one = try store.reconcileAndUpsert(context: first, snapshot: nil, collections: ["Первая"])
+        let two = try store.reconcileAndUpsert(context: appeal, snapshot: nil, collections: ["Апелляция"])
+        XCTAssertEqual(store.all().count, 2)
+        XCTAssertNotEqual(one.key, two.key)
+        let event = CaseEvent.make(
+            kind: .instanceDiscovered, occurrence: ["same"], observedAt: .distantPast,
+            evidence: CaseEventEvidence(sourceCardID: "same", occurrenceKey: "same"))
+        let conflicting = CaseEvent(
+            id: event.id, kind: .judgeChanged, observedAtRef: event.observedAtRef,
+            evidence: CaseEventEvidence(sourceCardID: "same", occurrenceKey: "same"))
+        one.eventJournal = CaseEventJournal(events: [event])
+        two.eventJournal = CaseEventJournal(events: [conflicting])
+        try store.save()
+        let savedOneJournal = one.eventJournalData
+        let savedTwoJournal = two.eventJournalData
+
+        XCTAssertThrowsError(try TrackedCaseRepairCoordinator.atomicMerge(
+            store: store, survivor: one, duplicates: [two], canonicalContext: first,
+            canonicalCard: nil, saveChanges: false
+        )) { error in
+            guard case .eventJournalAppend = error as? TrackedStoreCommitError else {
+                return XCTFail("Expected typed journal append failure, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(store.all().map(\.key).sorted(), [first.key, appeal.key].sorted())
+        XCTAssertEqual(store.record(forKey: first.key)?.eventJournalData, savedOneJournal)
+        XCTAssertEqual(store.record(forKey: appeal.key)?.eventJournalData, savedTwoJournal)
+        let unrelated = context(number: "2-101/2026", cardID: "unrelated", judicialUID: newUID)
+        _ = try store.reconcileAndUpsert(context: unrelated, snapshot: nil, collections: ["Отдельно"])
+        XCTAssertEqual(store.all().count, 3)
+        XCTAssertEqual(store.record(forKey: first.key)?.eventJournalData, savedOneJournal)
+        XCTAssertEqual(store.record(forKey: appeal.key)?.eventJournalData, savedTwoJournal)
     }
 
     func testCorruptedJournalFailsClosed() throws {

@@ -5,7 +5,7 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.58.2**, build 172, 1230 XCTest (5 пропущены) и 14 Swift Testing. Полный
+Текущий baseline: **main 0.58.3**, build 173, 1234 XCTest (5 пропущены) и 20 Swift Testing. Полный
 registry сроков обжалования подключён; оставшиеся typed rules относятся к #222.
 
 | Версия | Результат |
@@ -117,7 +117,9 @@ registry сроков обжалования подключён; оставши�
 - **[#260](https://github.com/arvidsever/Sudrf/issues/260) (P1)** — строгая проверка TLS в production, включая CAPTCHA и отсутствие
   скрытого downgrade на HTTP. Bundled roots остаются дополнительными trust anchors.
 - **[#261](https://github.com/arvidsever/Sudrf/issues/261) (P1)** — повторяющиеся occurrences событий и полный rollback при ошибке
-  журнала до commit. Shadow-журнал уже находится на пути обычного refresh.
+  журнала до commit исправлены в 0.58.3: устойчивые повторные события, атомарная граница
+  refresh/сроков/CAPTCHA/слияния и сохранение независимых историй при merge.
+  #262 и cutover #179 остаются отдельно.
 - **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
   исправление сохранённых реквизитов выпущено в 0.58.2; документ, текст и связанная сводка сохраняются.
 - **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,
@@ -171,7 +173,8 @@ registry сроков обжалования подключён; оставши�
 - Завершённые **[#155](https://github.com/arvidsever/Sudrf/issues/155) + [#181](https://github.com/arvidsever/Sudrf/issues/181)** дали shadow-журнал и два уровня fixture contract.
   Непокрытые реальные captures остаются явными пробелами матрицы; синтетические
   примеры их не заменяют. Исчезновение или неоднозначная перезапись строки остаются
-  диагностикой, а не пользовательским событием. Его стабилизация не завершена: **[#261](https://github.com/arvidsever/Sudrf/issues/261) + [#262](https://github.com/arvidsever/Sudrf/issues/262) → [#179](https://github.com/arvidsever/Sudrf/issues/179)**.
+  диагностикой, а не пользовательским событием. Повторные occurrences и rollback #261 исправлены в 0.58.3; до перехода
+  остаётся **[#262](https://github.com/arvidsever/Sudrf/issues/262) → [#179](https://github.com/arvidsever/Sudrf/issues/179)**.
 - **[#262](https://github.com/arvidsever/Sudrf/issues/262)** — полезный partial-кэш не должен продвигать обработанный semantic baseline
   и терять изменения; baseline и журнал должны переживать relaunch согласованно.
 - **[#179](https://github.com/arvidsever/Sudrf/issues/179)** — после исправлений и фактической shadow-сверки перевести ленту,

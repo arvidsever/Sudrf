@@ -32,6 +32,8 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
     case projectionSynchronization(details: String)
     case contextSave(details: String)
     case corruptedEventJournal(key: String)
+    case eventJournalAppend(details: String)
+    case eventJournalEncoding(details: String)
 
     var errorDescription: String? {
         switch self {
@@ -41,6 +43,10 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
             return "Не удалось сохранить изменения в локальной базе: \(details)"
         case .corruptedEventJournal(let key):
             return "Повреждён журнал событий записи \(key); изменения не сохранены."
+        case .eventJournalAppend(let details):
+            return "Не удалось записать событие дела: \(details)"
+        case .eventJournalEncoding(let details):
+            return "Не удалось подготовить журнал событий дела: \(details)"
         }
     }
 }
@@ -715,6 +721,9 @@ final class TrackedStore {
     private let projectionSynchronizer: ProjectionSynchronizer
     /// Test seam for the rollback path used by the atomic identity merge.
     var failNextSaveForTesting = false
+    /// Test seams for journal failures before the SwiftData save.
+    var failNextJournalAppendForTesting = false
+    var failNextJournalEncodingForTesting = false
 
     /// `inMemory: true` — для тестов, чтобы не трогать пользовательское
     /// `~/Library/Application Support` и держать записи изолированно.
@@ -792,14 +801,33 @@ final class TrackedStore {
         return journal
     }
 
-    func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord) throws {
-        guard !events.isEmpty else { return }
+    func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord,
+                          derivationVersion: Int? = nil,
+                          originKey: String? = nil) throws {
+        guard !events.isEmpty || derivationVersion != nil else { return }
         var journal = try requiredEventJournal(for: record)
-        try journal.append(events)
-        guard let data = try? JSONEncoder().encode(journal) else {
-            throw TrackedStoreCommitError.corruptedEventJournal(key: record.key)
+        if let derivationVersion { journal.derivationVersion = derivationVersion }
+        do {
+            if failNextJournalAppendForTesting {
+                failNextJournalAppendForTesting = false
+                throw CaseEventJournalError.conflictingEventID("forced-test-conflict")
+            }
+            try journal.append(journal.identifyingOccurrences(
+                events, originKey: originKey ?? record.key))
+        } catch {
+            storeLog.error("Не удалось дополнить журнал событий: \(error, privacy: .public)")
+            throw TrackedStoreCommitError.eventJournalAppend(details: error.localizedDescription)
         }
-        record.eventJournalData = data
+        do {
+            if failNextJournalEncodingForTesting {
+                failNextJournalEncodingForTesting = false
+                throw TestJournalEncodingFailure.forced
+            }
+            record.eventJournalData = try JSONEncoder().encode(journal)
+        } catch {
+            storeLog.error("Не удалось закодировать журнал событий: \(error, privacy: .public)")
+            throw TrackedStoreCommitError.eventJournalEncoding(details: error.localizedDescription)
+        }
     }
 
     /// Разрешает исходный display-derived locator и его исторические aliases
@@ -1333,6 +1361,33 @@ final class TrackedStore {
         try saveContext()
     }
 
+    /// One synchronous mutation boundary for values, the event journal,
+    /// projections and the SwiftData commit. Network work stays outside it.
+    func commit<T>(projection: (T) -> ProjectionScope = { _ in .none },
+                   _ mutation: () throws -> T) throws -> T {
+        do {
+            let value = try mutation()
+            try save(projection: projection(value))
+            return value
+        } catch {
+            try rollbackAfterFailure(error)
+        }
+    }
+
+    /// Restores a mutation that failed before `save()`, including journal work
+    /// performed by identity repair.
+    func rollbackAfterFailure(_ error: Error) throws -> Never {
+        context.rollback()
+        switch error {
+        case is CaseEventJournalError:
+            throw TrackedStoreCommitError.eventJournalAppend(details: error.localizedDescription)
+        case is EncodingError:
+            throw TrackedStoreCommitError.eventJournalEncoding(details: error.localizedDescription)
+        default:
+            throw error
+        }
+    }
+
     /// Обновляет только денормализованные реквизиты существующих актов. Тексты,
     /// sourceHash, paragraph snapshots и summary при reroute не затрагиваются.
     func synchronizeCourtActMetadata(caseKey: String) throws {
@@ -1400,6 +1455,12 @@ final class TrackedStore {
         case forced
 
         var errorDescription: String? { "forced test save failure" }
+    }
+
+    private enum TestJournalEncodingFailure: LocalizedError {
+        case forced
+
+        var errorDescription: String? { "forced test journal encoding failure" }
     }
 
     // MARK: - Перестраиваемая проекция актов

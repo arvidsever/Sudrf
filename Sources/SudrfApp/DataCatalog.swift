@@ -32,7 +32,9 @@ final class CourtActRecord {
     var sourceText: String
     var sourceHash: String
     var paragraphData: Data
-    var paragraphizerVersion: Int = ActParagraphizer.currentVersion
+    // Keep the persisted default tied to the shipped V7 schema. A runtime
+    // paragraphizer bump must not make SwiftData treat legacy rows as new.
+    var paragraphizerVersion: Int = 1
     var identityVersion: Int = 1
     var semanticKey: String = ""
     var fetchedAt: Date
@@ -112,10 +114,11 @@ final class ActSummaryRecord {
 
     init(documentID: String, summary: ActSummary, provider: String, model: String,
          promptVersion: String, pipelineVersion: String, sourceHash: String,
-         generatedAt: Date = .now) throws {
+         paragraphizerVersion: Int = 1, generatedAt: Date = .now) throws {
         self.id = documentID
         self.documentID = documentID
-        self.summaryData = try JSONEncoder().encode(summary)
+        self.summaryData = try JSONEncoder().encode(SummaryData(
+            summary: summary, paragraphizerVersion: paragraphizerVersion))
         self.provider = provider
         self.model = model
         self.promptVersion = promptVersion
@@ -124,24 +127,48 @@ final class ActSummaryRecord {
         self.generatedAt = generatedAt
     }
 
-    var summary: ActSummary? { try? JSONDecoder().decode(ActSummary.self, from: summaryData) }
+    var summaryPayload: SummaryData? { SummaryData.decode(summaryData) }
+    var summary: ActSummary? { summaryPayload?.summary }
+    var paragraphizerVersion: Int? { summaryPayload?.paragraphizerVersion }
 
     func isStale(for document: ActDocument, identity: SummaryIdentity? = nil) -> Bool {
-        SummaryStaleness.isStale(
+        guard let paragraphizerVersion else { return true }
+        return SummaryStaleness.isStale(
             sourceHash: sourceHash, promptVersion: promptVersion,
-            pipelineVersion: pipelineVersion, document: document, identity: identity)
+            pipelineVersion: pipelineVersion, paragraphizerVersion: paragraphizerVersion,
+            document: document, identity: identity)
+    }
+}
+
+/// Private persistence envelope. `ActSummary` remains the public provider
+/// contract; raw legacy values predate paragraph snapshots and decode as V1.
+struct SummaryData: Codable {
+    let summary: ActSummary
+    let paragraphizerVersion: Int
+
+    static func decode(_ data: Data) -> SummaryData? {
+        let decoder = JSONDecoder()
+        if let envelope = try? decoder.decode(SummaryData.self, from: data) {
+            return envelope
+        }
+        return (try? decoder.decode(ActSummary.self, from: data)).map {
+            SummaryData(summary: $0, paragraphizerVersion: 1)
+        }
     }
 }
 
 /// Сохранённая сводка устаревает не только при изменении текста акта, но и при
 /// смене prompt или pipeline: результат прежнего prompt нельзя показывать как
 /// актуальный. Когда текущая конфигурация недоступна (например, ключ ещё не
-/// введён и сводку всё равно нельзя перегенерировать), сравнивается только hash.
+/// введён и сводку всё равно нельзя перегенерировать), сравниваются hash и
+/// версия paragraphizer.
 enum SummaryStaleness {
     static func isStale(sourceHash: String, promptVersion: String,
-                        pipelineVersion: String, document: ActDocument,
+                        pipelineVersion: String, paragraphizerVersion: Int,
+                        document: ActDocument,
                         identity: SummaryIdentity?) -> Bool {
         if sourceHash != document.sourceHash { return true }
+        if paragraphizerVersion != document.paragraphizerVersion { return true }
         guard let identity else { return false }
         return promptVersion != identity.promptVersion
             || pipelineVersion != identity.pipelineVersion
@@ -995,6 +1022,7 @@ struct CourtActCatalogSnapshot: Sendable, Hashable, Identifiable {
     let fetchedAt: Date
 
     var id: String { document.id }
+    var paragraphizerVersion: Int { document.paragraphizerVersion }
 }
 
 struct ActSummaryCatalogSnapshot: Sendable, Hashable, Identifiable {
@@ -1006,13 +1034,15 @@ struct ActSummaryCatalogSnapshot: Sendable, Hashable, Identifiable {
     let pipelineVersion: String
     let sourceHash: String
     let generatedAt: Date
+    let paragraphizerVersion: Int
 
     var id: String { documentID }
 
     func isStale(for document: ActDocument, identity: SummaryIdentity? = nil) -> Bool {
         SummaryStaleness.isStale(
             sourceHash: sourceHash, promptVersion: promptVersion,
-            pipelineVersion: pipelineVersion, document: document, identity: identity)
+            pipelineVersion: pipelineVersion, paragraphizerVersion: paragraphizerVersion,
+            document: document, identity: identity)
     }
 }
 
@@ -1092,7 +1122,8 @@ actor CaseCatalog {
             documentID: record.documentID, summary: summary,
             provider: record.provider, model: record.model,
             promptVersion: record.promptVersion, pipelineVersion: record.pipelineVersion,
-            sourceHash: record.sourceHash, generatedAt: record.generatedAt)
+            sourceHash: record.sourceHash, generatedAt: record.generatedAt,
+            paragraphizerVersion: record.paragraphizerVersion ?? 1)
     }
 
     func saveSummary(document: ActDocument, summary: ActSummary,
@@ -1103,7 +1134,8 @@ actor CaseCatalog {
             predicate: #Predicate { $0.documentID == id })
         descriptor.fetchLimit = 1
         if let existing = try context.fetch(descriptor).first {
-            existing.summaryData = try JSONEncoder().encode(summary)
+            existing.summaryData = try JSONEncoder().encode(SummaryData(
+                summary: summary, paragraphizerVersion: document.paragraphizerVersion))
             existing.provider = provider
             existing.model = model
             existing.promptVersion = promptVersion
@@ -1114,7 +1146,8 @@ actor CaseCatalog {
             context.insert(try ActSummaryRecord(
                 documentID: id, summary: summary, provider: provider, model: model,
                 promptVersion: promptVersion, pipelineVersion: pipelineVersion,
-                sourceHash: document.sourceHash))
+                sourceHash: document.sourceHash,
+                paragraphizerVersion: document.paragraphizerVersion))
         }
         try context.save()
     }

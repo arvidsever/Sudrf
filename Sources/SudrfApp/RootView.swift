@@ -1007,12 +1007,13 @@ private struct LiveActsPane: View {
                     HStack(spacing: 5) {
                         Button {
                             openWindow(value: ActWindowPayload(
-                                caseNumber: router.liveMovement?.caseNumber ?? "", actText: body0 ?? ""))
+                                caseNumber: router.liveMovement?.caseNumber ?? "", actText: body0 ?? "",
+                                paragraphs: selectedParagraphs))
                         } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Открыть в отдельном окне").disabled(body0 == nil)
                         Button {
                             ActPDFExporter.save(caseNumber: router.liveMovement?.caseNumber ?? "",
-                                                text: body0 ?? "")
+                                                text: body0 ?? "", paragraphs: selectedParagraphs)
                         } label: { Image(systemName: "square.and.arrow.down") }
                         .help("Сохранить в PDF").disabled(body0 == nil)
                         Button {

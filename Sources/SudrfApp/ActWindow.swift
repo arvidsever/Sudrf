@@ -3,6 +3,7 @@
 
 import SwiftUI
 import AppKit
+import SudrfKit
 import UniformTypeIdentifiers
 
 enum SafeFilename {
@@ -31,6 +32,7 @@ enum SafeFilename {
 struct ActWindowPayload: Codable, Hashable {
     var caseNumber: String
     var actText: String
+    var paragraphs: [ActParagraph]? = nil
 }
 
 // MARK: - Содержимое отдельного окна
@@ -40,7 +42,7 @@ struct ActWindowView: View {
 
     var body: some View {
         ScrollView {
-            ActTextView(text: payload.actText)
+            ActTextView(text: payload.actText, paragraphs: payload.paragraphs)
                 .padding(EdgeInsets(top: 22, leading: 26, bottom: 26, trailing: 26))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -50,7 +52,8 @@ struct ActWindowView: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    ActPDFExporter.save(caseNumber: payload.caseNumber, text: payload.actText)
+                    ActPDFExporter.save(caseNumber: payload.caseNumber, text: payload.actText,
+                                        paragraphs: payload.paragraphs)
                 } label: {
                     Label("Сохранить в PDF", systemImage: "square.and.arrow.down")
                 }
@@ -77,12 +80,13 @@ enum ActPDFExporter {
     private static let marginRight: CGFloat = 56
 
     @MainActor
-    static func save(caseNumber: String, text: String) {
+    static func save(caseNumber: String, text: String,
+                     paragraphs: [ActParagraph]? = nil) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = filename(caseNumber: caseNumber)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        write(to: url, text: text)
+        write(to: url, text: text, paragraphs: paragraphs)
     }
 
     static func filename(caseNumber: String) -> String {
@@ -93,16 +97,17 @@ enum ActPDFExporter {
     /// Без UI-панели — для ExportCourtActPDFIntent. Возвращает байты, чтобы
     /// App Intents сам управлял временным файлом и его временем жизни.
     @MainActor
-    static func renderData(text: String) -> Data? {
+    static func renderData(text: String, paragraphs: [ActParagraph]? = nil) -> Data? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Sudrf-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: url) }
-        write(to: url, text: text)
+        write(to: url, text: text, paragraphs: paragraphs)
         return try? Data(contentsOf: url)
     }
 
     @MainActor
-    private static func write(to url: URL, text: String) {
+    private static func write(to url: URL, text: String,
+                              paragraphs: [ActParagraph]? = nil) {
         let printInfo = NSPrintInfo()
         printInfo.paperSize = paper
         printInfo.topMargin = marginTop
@@ -111,6 +116,7 @@ enum ActPDFExporter {
         printInfo.rightMargin = marginRight
         printInfo.horizontalPagination = .fit
         printInfo.verticalPagination = .automatic
+        printInfo.isVerticallyCentered = false
         printInfo.jobDisposition = .save
         printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = url
 
@@ -118,7 +124,8 @@ enum ActPDFExporter {
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 10))
         textView.textContainerInset = .zero
         textView.textContainer?.lineFragmentPadding = 0
-        textView.textStorage?.setAttributedString(attributedAct(text))
+        textView.textStorage?.setAttributedString(
+            attributedAct(text, paragraphs: paragraphs))
         textView.sizeToFit()
 
         let op = NSPrintOperation(view: textView, printInfo: printInfo)
@@ -129,8 +136,9 @@ enum ActPDFExporter {
 
     // MARK: типографика — зеркало ActTextView
 
-    private static func attributedAct(_ text: String) -> NSAttributedString {
-        let blocks = CourtActFormatter.parse(text)
+    static func attributedAct(_ text: String,
+                              paragraphs: [ActParagraph]? = nil) -> NSAttributedString {
+        let blocks = CourtActFormatter.parse(text, paragraphs: paragraphs)
         let out = NSMutableAttributedString()
 
         let bodySize: CGFloat = 13

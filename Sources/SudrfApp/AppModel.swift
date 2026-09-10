@@ -25,6 +25,25 @@ struct MaterialFeedMigrationState: Equatable {
     var pendingUnresolvedCounts = [String: Int]()
 }
 
+enum SummaryCitationNavigationState: Equatable {
+    case available
+    case sourceChanged
+    case paragraphizerChanged(saved: Int, current: Int)
+
+    var warning: String? {
+        switch self {
+        case .available:
+            nil
+        case .sourceChanged:
+            "Текст акта изменился. Прежние выводы и цитаты сохранены, но переход к абзацам отключён."
+        case .paragraphizerChanged:
+            "Разбиение акта на абзацы изменилось. Прежние выводы и цитаты сохранены, но переход к абзацам отключён."
+        }
+    }
+
+    var allowsNavigation: Bool { self == .available }
+}
+
 extension CaseCardRecoveryError {
     func sourceAttempt(host: String) -> SourceAttempt {
         let errorCode: String
@@ -120,10 +139,12 @@ final class AppRouter: ObservableObject {
                 selectedActParagraphs = nil
                 selectedSummary = nil
                 selectedSummaryIsStale = false
+                selectedSummaryCitationState = .available
                 summaryError = nil
                 cancelSummaryOperation()
             }
             updateCurrentEntityActivity()
+            loadSelectedActDocument()
         }
     }
     @Published var focusedMaterialInstanceID: String? = nil
@@ -133,6 +154,7 @@ final class AppRouter: ObservableObject {
     @Published var captcha: SearchModel.CaptchaContext? = nil
     @Published var selectedSummary: ActSummary? = nil
     @Published var selectedSummaryIsStale = false
+    @Published private(set) var selectedSummaryCitationState: SummaryCitationNavigationState = .available
     @Published var summaryGenerating = false
     @Published var summaryError: String? = nil
     /// Когда открытая карточка в последний раз получена с портала.
@@ -586,6 +608,7 @@ final class AppRouter: ObservableObject {
     }
 
     private func open(_ rec: TrackedCaseRecord) {
+        if openedKey != rec.key { selectedActID = nil }
         focusedMaterialInstanceID = nil
         openedCase = rec.caseNumber
         openedKey = rec.key
@@ -642,7 +665,8 @@ final class AppRouter: ObservableObject {
         currentEntityActivity = nil
         cancelSummaryOperation()
         selectedActDocument = nil; selectedActParagraphs = nil
-        selectedSummary = nil; selectedSummaryIsStale = false; summaryError = nil
+        selectedSummary = nil; selectedSummaryIsStale = false
+        selectedSummaryCitationState = .available; summaryError = nil
         // Задачу обновления в полёте не отменяем: её результат всё равно
         // нужен спискам/календарю; к UI он не применится (проверка ключа).
     }
@@ -1347,6 +1371,7 @@ final class AppRouter: ObservableObject {
             ?? mv.acts.first(where: { $0.instanceLevel == .first })?.id
             ?? mv.acts.first?.id
         invalidateCachedActIfNeeded()
+        loadSelectedActDocument()
     }
 
     private func applyRefreshFailed(key: String, error text: String) {
@@ -1365,13 +1390,29 @@ final class AppRouter: ObservableObject {
     }
 
     func selectAct(_ id: String) { selectedActID = id }
-    func highlightSelectedActParagraph(_ id: String) { highlightedParagraphID = id }
+    func highlightSelectedActParagraph(_ id: String) {
+        guard selectedSummaryCitationState.allowsNavigation,
+              selectedActParagraphs?.contains(where: { $0.id == id }) == true else { return }
+        highlightedParagraphID = id
+    }
     var selectedActText: String? { selectedActID.flatMap { liveMovement?.actBodies[$0] } }
+
+    func loadSelectedActDocument() {
+        guard let caseKey = openedKey, let sourceActID = selectedActID,
+              let sourceText = selectedActText else { return }
+        let sourceHash = ActParagraphizer.sourceHash(for: sourceText)
+        guard let document = store.courtActDocument(
+            caseKey: caseKey, sourceActID: sourceActID) else { return }
+        _ = cacheSelectedActDocument(
+            document, caseKey: caseKey, sourceActID: sourceActID,
+            sourceHash: sourceHash)
+    }
 
     func loadSelectedActSummary() {
         guard let sourceActID = selectedActID, let caseKey = openedKey else {
             cancelSummaryOperation()
             selectedSummary = nil; selectedSummaryIsStale = false
+            selectedSummaryCitationState = .available
             return
         }
         if summaryOperationState.preservesCurrentLoad(
@@ -1395,19 +1436,25 @@ final class AppRouter: ObservableObject {
                     self.selectedActDocument = nil
                     self.selectedActParagraphs = nil
                     self.selectedSummary = nil; self.selectedSummaryIsStale = false
+                    self.selectedSummaryCitationState = .available
                     self.finishSummaryOperation(operation)
                     return
                 }
                 let saved = try await self.caseCatalog.summary(documentID: document.id)
                 guard !Task.isCancelled, self.isCurrentSummaryOperation(operation) else { return }
-                self.cacheSelectedActDocument(document)
+                guard self.cacheSelectedActDocument(
+                    document, caseKey: caseKey, sourceActID: sourceActID,
+                    sourceHash: document.sourceHash) else {
+                    self.finishSummaryOperation(operation)
+                    return
+                }
                 self.selectedSummary = saved?.summary
-                // Сводка прежнего prompt/pipeline тоже устарела. Если текущая
-                // конфигурация недоступна (нет ключа или согласия), сводку всё
-                // равно нельзя перегенерировать — тогда сравнивается только hash.
                 let identity = (try? self.summaryConfigurationProvider())?.identity
                 self.selectedSummaryIsStale = saved?.isStale(
                     for: document, identity: identity) ?? false
+                self.selectedSummaryCitationState = saved.map {
+                    Self.summaryCitationNavigationState(saved: $0, document: document)
+                } ?? .available
                 self.finishSummaryOperation(operation)
             } catch {
                 guard self.isCurrentSummaryOperation(operation) else { return }
@@ -1442,7 +1489,12 @@ final class AppRouter: ObservableObject {
                     $0.document.sourceActID == sourceActID
                 })?.document else { throw AISummarizerError.invalidResponse }
                 guard self.isCurrentSummaryOperation(operation) else { return }
-                self.cacheSelectedActDocument(document)
+                guard self.cacheSelectedActDocument(
+                    document, caseKey: caseKey, sourceActID: sourceActID,
+                    sourceHash: document.sourceHash) else {
+                    self.finishSummaryOperation(operation)
+                    return
+                }
                 let summary = try await configured.summarizer.summarize(
                     document: document, options: configured.options)
                 try Task.checkCancellation()
@@ -1454,6 +1506,7 @@ final class AppRouter: ObservableObject {
                 guard !Task.isCancelled, self.isCurrentSummaryOperation(operation) else { return }
                 self.selectedSummary = summary
                 self.selectedSummaryIsStale = false
+                self.selectedSummaryCitationState = .available
                 self.finishSummaryOperation(operation)
             } catch {
                 guard self.isCurrentSummaryOperation(operation) else { return }
@@ -1490,10 +1543,29 @@ final class AppRouter: ObservableObject {
         summaryGenerating = false
     }
 
-    private func cacheSelectedActDocument(_ document: ActDocument) {
+    @discardableResult
+    private func cacheSelectedActDocument(_ document: ActDocument, caseKey: String,
+                                          sourceActID: String,
+                                          sourceHash: String) -> Bool {
+        guard openedKey == caseKey, selectedActID == sourceActID,
+              document.caseKey == caseKey, document.sourceActID == sourceActID,
+              document.sourceHash == sourceHash,
+              selectedActText.map(ActParagraphizer.sourceHash(for:)) == sourceHash else {
+            return false
+        }
         selectedActDocument = document
-        let currentHash = selectedActText.map(ActParagraphizer.sourceHash)
-        selectedActParagraphs = currentHash == document.sourceHash ? document.paragraphs : nil
+        selectedActParagraphs = document.paragraphs
+        return true
+    }
+
+    nonisolated static func summaryCitationNavigationState(
+        saved: ActSummaryCatalogSnapshot, document: ActDocument
+    ) -> SummaryCitationNavigationState {
+        if saved.paragraphizerVersion != document.paragraphizerVersion {
+            return .paragraphizerChanged(
+                saved: saved.paragraphizerVersion, current: document.paragraphizerVersion)
+        }
+        return saved.sourceHash == document.sourceHash ? .available : .sourceChanged
     }
 
     private func invalidateCachedActIfNeeded() {
@@ -1508,6 +1580,7 @@ final class AppRouter: ObservableObject {
         selectedActParagraphs = nil
         selectedSummary = nil
         selectedSummaryIsStale = false
+        selectedSummaryCitationState = .available
     }
 
     /// Явная кнопка «Ввести код» всегда открывает ручной fallback.

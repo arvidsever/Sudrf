@@ -53,14 +53,15 @@ enum CourtActFormatter {
     ]
 
     private static func classify(_ line: String) -> [Block] {
-        let compact = line.replacingOccurrences(of: " ", with: "")
-        if line.hasPrefix("УИД") || line.hasPrefix("Дело №") {
+        let compact = removingWhitespace(line)
+        let lowercase = compact.lowercased()
+        if lowercase.hasPrefix("уид") || lowercase.hasPrefix("дело№") {
             return [.meta(line)]
         }
         if titleWords.contains(compact.uppercased()), compact == compact.uppercased() {
             return [.title(spacedCaps(compact))]
         }
-        if compact.lowercased() == "именемроссийскойфедерации" {
+        if lowercase == "именемроссийскойфедерации" {
             return [.subtitle("Именем Российской Федерации")]
         }
         if let verb = verbMatch(line) {
@@ -70,11 +71,17 @@ enum CourtActFormatter {
     }
 
     private static func verbMatch(_ line: String) -> String? {
-        let pattern = "^(установил|решил|постановил|определил|приговорил)\\s*:?$"
-        let lower = line.lowercased()
-        guard lower.range(of: pattern, options: .regularExpression) != nil else { return nil }
-        return lower.replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: ":", with: "") + ":"
+        let raw = removingWhitespace(line).lowercased()
+        let compact = raw.hasSuffix(":") ? String(raw.dropLast()) : raw
+        guard ["установил", "решил", "постановил", "определил", "приговорил"]
+            .contains(compact) else { return nil }
+        return line
+    }
+
+    private static func removingWhitespace(_ text: String) -> String {
+        String(text.unicodeScalars.filter {
+            !CharacterSet.whitespacesAndNewlines.contains($0)
+        })
     }
 
     /// «ПОСТАНОВЛЕНИЕ» → «П О С Т А Н О В Л Е Н И Е» — традиционная разрядка.

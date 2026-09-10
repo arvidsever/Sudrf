@@ -87,6 +87,22 @@ private actor DelayedSpotlightWriter: SpotlightIndexWriting {
 }
 
 final class SpotlightIntegrationTests: XCTestCase {
+    func testCourtActFingerprintIncludesParagraphizerVersion() {
+        let current = ActDocument(
+            caseKey: "court/2-1/2026", sourceActID: "act-1", caseNumber: "2-1/2026",
+            judicialUID: nil, court: "Тестовый суд", instanceLevel: .first,
+            kind: "Решение", date: "01.07.2026", sourceText: "Текст акта.")
+        let legacy = ActDocument(
+            id: current.id, caseKey: current.caseKey, sourceActID: current.sourceActID,
+            caseNumber: current.caseNumber, judicialUID: current.judicialUID, court: current.court,
+            instanceLevel: current.instanceLevel, kind: current.kind, date: current.date,
+            sourceText: current.sourceText, sourceHash: current.sourceHash,
+            paragraphizerVersion: 1, paragraphs: current.paragraphs)
+
+        XCTAssertNotEqual(CourtActEntity(document: current).fingerprint,
+                          CourtActEntity(document: legacy).fingerprint)
+    }
+
     func testDeepLinksRoundTripReservedCharacters() throws {
         let links: [SudrfDeepLink] = [
             .caseRecord(key: "court.example/2-1/2026 # 7"),

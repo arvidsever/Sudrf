@@ -135,9 +135,19 @@ struct ActSummarySheet: View {
                                            description: Text(error))
                 } else if let summary = router.selectedSummary {
                     ScrollView {
-                        SummarySections(summary: summary) { paragraphID in
-                            router.highlightSelectedActParagraph(paragraphID)
-                            dismiss()
+                        VStack(alignment: .leading, spacing: 14) {
+                            if let warning = router.selectedSummaryCitationState.warning {
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                            }
+                            SummarySections(
+                                summary: summary,
+                                citationNavigationEnabled:
+                                    router.selectedSummaryCitationState.allowsNavigation
+                            ) { paragraphID in
+                                router.highlightSelectedActParagraph(paragraphID)
+                                dismiss()
+                            }
                         }
                         .padding(20)
                     }
@@ -168,6 +178,7 @@ struct ActSummarySheet: View {
 
 private struct SummarySections: View {
     let summary: ActSummary
+    let citationNavigationEnabled: Bool
     let onCitation: (String) -> Void
 
     private let sections: [(String, KeyPath<ActSummary, [SummaryClaim]>)] = [
@@ -191,13 +202,18 @@ private struct SummarySections: View {
                         ForEach(claims) { claim in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(claim.text)
-                                HStack(spacing: 6) {
-                                    ForEach(Array(Set(claim.citations.map(\.paragraphID))).sorted(),
-                                            id: \.self) { paragraphID in
-                                        Button(paragraphID) { onCitation(paragraphID) }
+                                ForEach(Array(claim.citations.enumerated()), id: \.offset) { _, citation in
+                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                        Button(citation.paragraphID) {
+                                            onCitation(citation.paragraphID)
+                                        }
                                             .buttonStyle(.link)
                                             .font(.caption)
-                                            .help("Перейти к \(paragraphID) в русском оригинале")
+                                            .disabled(!citationNavigationEnabled)
+                                            .help("Перейти к \(citation.paragraphID) в русском оригинале")
+                                        Text("«\(citation.evidenceQuote)»")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
                                     }
                                 }
                             }
@@ -209,11 +225,14 @@ private struct SummarySections: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(warning.text, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
-                    HStack(spacing: 6) {
-                        ForEach(Array(Set(warning.citations.map(\.paragraphID))).sorted(),
-                                id: \.self) { paragraphID in
-                            Button(paragraphID) { onCitation(paragraphID) }
+                    ForEach(Array(warning.citations.enumerated()), id: \.offset) { _, citation in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Button(citation.paragraphID) { onCitation(citation.paragraphID) }
                                 .buttonStyle(.link).font(.caption)
+                                .disabled(!citationNavigationEnabled)
+                            Text("«\(citation.evidenceQuote)»")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
                         }
                     }
                 }

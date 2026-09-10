@@ -9,6 +9,49 @@ import CaptchaSolver
 /// разделитель сторон «⚔», сортировка и живой фильтр таблицы «Списком».
 final class MyCasesModelTests: XCTestCase {
 
+    @MainActor
+    func testDeadlineRepeatedConfirmationAndEarlyJournalFailureAreAtomic() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let store = try TrackedStore(container: container, prepared: true)
+        let ctx = projectionContext(number: "2-261/2026", cartotekaID: "g1", suffix: "261")
+        var snapshot = legacySnapshot(steps: ["active"])
+        let date = DateUtil.parse("10.03.2027")!
+        snapshot.deadlines = [StoredDeadline(
+            kind: "appeal", what: "Апелляционная жалоба", basis: "Тест",
+            calLabel: "апелл.", dateRef: date.timeIntervalSinceReferenceDate,
+            statusRaw: DeadlineStatus.proposed.rawValue, occurrenceKey: "rule|round|trigger",
+            provenance: DeadlineProvenance(
+                ruleID: "GPK-APPEAL-GENERAL", registryRevision: 1,
+                trigger: DeadlineTriggerProvenance(
+                    event: "Решение", result: nil, dateRaw: "10.02.2027",
+                    court: "Суд", levelRaw: "first", caseNumber: ctx.caseNumber),
+                policyIDs: [], formula: "one month", source: "ГПК РФ",
+                calculatedDateRef: date.timeIntervalSinceReferenceDate))]
+        let record = try store.upsert(context: ctx, snapshot: snapshot, collections: [])
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let id = "\(record.key)#rule|round|trigger"
+        router.confirm(id)
+        for _ in 0..<2 {
+            router.draftDate = date.addingTimeInterval(86_400)
+            router.save(id)
+            router.confirm(id)
+        }
+        let events = try XCTUnwrap(record.eventJournal?.events)
+        XCTAssertEqual(events.filter { $0.kind == .deadlineConfirmed }.count, 3)
+        XCTAssertEqual(events.filter { $0.kind == .deadlineChanged }.count, 2)
+        XCTAssertEqual(Set(events.map(\.id)).count, 5)
+        record.eventJournalData = Data("broken".utf8)
+        try store.save()
+        let before = record.snapshotData
+        router.draftDate = date.addingTimeInterval(172_800)
+        router.save(id)
+        XCTAssertEqual(record.snapshotData, before)
+        XCTAssertFalse(container.mainContext.hasChanges)
+        try store.save()
+        XCTAssertEqual(record.snapshotData, before)
+        XCTAssertEqual(record.eventJournalData, Data("broken".utf8))
+    }
+
     private func projectionContext(number: String, cartotekaID: String,
                                    suffix: String) -> MovementContext {
         MovementContext(

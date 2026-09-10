@@ -38,11 +38,30 @@ struct CaseEventEvidence: Codable, Equatable, Sendable {
     var relatedOccurrenceKey: String? = nil
 }
 
+/// Stable identity for a repeatable transition inside one persisted event stream.
+/// Optional for backward compatibility with journals written before #261.
+struct CaseEventOccurrence: Codable, Equatable, Sendable {
+    let baseEventID: String
+    let sequenceKey: String
+    let predecessorEventIDs: [String]
+    let originRecordKey: String
+}
+
 struct CaseEvent: Codable, Equatable, Sendable, Identifiable {
     let id: String
     let kind: CaseEventKind
     let observedAtRef: Double
     let evidence: CaseEventEvidence
+    let occurrence: CaseEventOccurrence?
+
+    init(id: String, kind: CaseEventKind, observedAtRef: Double,
+         evidence: CaseEventEvidence, occurrence: CaseEventOccurrence? = nil) {
+        self.id = id
+        self.kind = kind
+        self.observedAtRef = observedAtRef
+        self.evidence = evidence
+        self.occurrence = occurrence
+    }
 
     static func make(kind: CaseEventKind, occurrence: [String], observedAt: Date,
                      evidence: CaseEventEvidence) -> CaseEvent {
@@ -53,6 +72,20 @@ struct CaseEvent: Codable, Equatable, Sendable, Identifiable {
         return CaseEvent(id: id, kind: kind,
                          observedAtRef: observedAt.timeIntervalSinceReferenceDate,
                          evidence: evidence)
+    }
+
+    fileprivate func observed(at value: Double) -> CaseEvent {
+        CaseEvent(id: id, kind: kind, observedAtRef: value,
+                  evidence: evidence, occurrence: occurrence)
+    }
+
+    fileprivate func identified(id: String, occurrence: CaseEventOccurrence) -> CaseEvent {
+        CaseEvent(id: id, kind: kind, observedAtRef: observedAtRef,
+                  evidence: evidence, occurrence: occurrence)
+    }
+
+    fileprivate func hasSamePayload(as other: CaseEvent) -> Bool {
+        kind == other.kind && evidence == other.evidence && occurrence == other.occurrence
     }
 }
 
@@ -77,17 +110,67 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
     }
 
     mutating func append(_ additions: [CaseEvent]) throws {
-        var byID = Dictionary(uniqueKeysWithValues: events.map { ($0.id, $0) })
-        for event in additions {
-            if let prior = byID[event.id] {
-                guard prior == event else {
+        var staged: [CaseEvent] = []
+        var indices: [String: Int] = [:]
+        for event in events + additions {
+            if let index = indices[event.id] {
+                let prior = staged[index]
+                guard prior.hasSamePayload(as: event) else {
                     throw CaseEventJournalError.conflictingEventID(event.id)
+                }
+                if event.observedAtRef < prior.observedAtRef {
+                    staged[index] = prior.observed(at: event.observedAtRef)
                 }
                 continue
             }
-            events.append(event)
-            byID[event.id] = event
+            indices[event.id] = staged.count
+            staged.append(event)
         }
+        events = staged
+    }
+
+    /// Assigns occurrence IDs to raw derived events from this immutable
+    /// pre-append journal. Identified replays remain immutable, and one new
+    /// occurrence consumes every parallel sequence head after a dossier merge.
+    /// Calling it again with the same journal and changes produces the same IDs.
+    func identifyingOccurrences(_ additions: [CaseEvent],
+                                originKey: String) -> [CaseEvent] {
+        var stream = events
+        return additions.map { event in
+            guard event.occurrence == nil else {
+                stream.append(event)
+                return event
+            }
+            guard event.kind.requiresOccurrenceIdentity,
+                  let sequenceKey = event.sequenceKey else {
+                stream.append(event)
+                return event
+            }
+            let heads = Self.sequenceHeads(in: stream, sequenceKey: sequenceKey)
+            let baseID = event.id
+            let predecessorIDs = heads.map(\.id)
+            let occurrence = CaseEventOccurrence(
+                baseEventID: baseID,
+                sequenceKey: sequenceKey,
+                predecessorEventIDs: predecessorIDs,
+                originRecordKey: originKey)
+            let id = CaseEvent.stableID(
+                namespace: "case-event-occurrence-v1",
+                components: [baseID, sequenceKey, originKey] + predecessorIDs)
+            let identified = event.identified(id: id, occurrence: occurrence)
+            stream.append(identified)
+            return identified
+        }
+    }
+
+    private static func sequenceHeads(in events: [CaseEvent],
+                                      sequenceKey: String) -> [CaseEvent] {
+        let candidates = events.filter { $0.sequenceKey == sequenceKey }
+        let predecessors = Set(candidates.flatMap {
+            $0.occurrence?.predecessorEventIDs ?? []
+        })
+        return candidates.filter { !predecessors.contains($0.id) }
+            .sorted { $0.id < $1.id }
     }
 
     static func merged(_ journals: [CaseEventJournal]) throws -> CaseEventJournal {
@@ -96,6 +179,57 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
             try merged.append(journal.events)
         }
         return merged
+    }
+}
+
+private extension CaseEvent {
+    static func stableID(namespace: String, components: [String]) -> String {
+        let canonical = ([namespace] + components)
+            .map { "\($0.utf8.count):\($0)" }.joined()
+        return SHA256.hash(data: Data(canonical.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    var sequenceKey: String? {
+        if let occurrence { return occurrence.sequenceKey }
+        let source = evidence.sourceCardID ?? ""
+        switch kind {
+        case .judgeChanged:
+            return stableSequenceKey(["instance", source, "judge"])
+        case .resultChanged:
+            return stableSequenceKey(["instance", source, "result"])
+        case .entryIntoForceRecorded:
+            return stableSequenceKey(["instance", source, "legal-force"])
+        case .transferRegistered:
+            return stableSequenceKey(["instance", source, "transfer"])
+        case .hearingScheduled, .hearingPostponed, .hearingRescheduled:
+            return stableSequenceKey(["hearing", source,
+                                      evidence.occurrenceKey ?? evidence.event ?? ""])
+        case .deadlineProposed, .deadlineConfirmed, .deadlineChanged,
+             .deadlineExpired, .deadlineSuperseded:
+            return stableSequenceKey(["deadline", evidence.ruleID ?? "",
+                                      evidence.occurrenceKey ?? ""])
+        default:
+            return nil
+        }
+    }
+
+    func stableSequenceKey(_ components: [String]) -> String {
+        Self.stableID(namespace: "case-event-sequence-v1", components: components)
+    }
+}
+
+private extension CaseEventKind {
+    var requiresOccurrenceIdentity: Bool {
+        switch self {
+        case .judgeChanged, .resultChanged, .entryIntoForceRecorded,
+             .transferRegistered, .hearingPostponed, .hearingRescheduled,
+             .deadlineConfirmed, .deadlineChanged, .deadlineExpired,
+             .deadlineSuperseded:
+            return true
+        default:
+            return false
+        }
     }
 }
 

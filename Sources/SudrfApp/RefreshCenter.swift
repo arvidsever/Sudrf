@@ -1075,78 +1075,92 @@ final class RefreshCenter: ObservableObject {
             !MovementDerivation.hasSameRefreshSource($0, persistedMovement)
         } ?? true
         let changed = movementSourceChanged || snapshotSourceChanged
-        let persisted: TrackedCaseRecord
-        var keyRemaps: [String: String] = [:]
-        var publishedMovement = merged
-        var semanticOldSnapshots = oldSnapshot.map { [$0] } ?? []
-        let projectionKeys: Set<String>
         let identityObservation = isComplete
             ? TrackedCaseIdentity.observation(
                 context: ctx, movement: mv, attempt: attempt,
                 outcome: .usableSnapshot)
             : TrackedCaseIdentity.partialRefreshObservation(
                 context: ctx, movement: mv, attempt: attempt)
-        if let identityObservation {
-            // A complete snapshot enters through the normal identity boundary.
-            // A partial chain contributes only exact review-card relations
-            // fetched in this attempt; its number, UID and success TTL do not.
-            let beforeRecords = try store.allForMutation()
-            let before = Set(beforeRecords.map(\.key))
-            let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
-                record in record.snapshot.map { (record.key, $0) }
-            })
-            let reconciled = try store.reconcileAndUpsert(
-                context: ctx, snapshot: newSnap, movement: persistedMovement,
-                collections: rec.collectionNames,
-                identityObservation: identityObservation,
-                movementFetchedAt: isComplete ? attempt.provenance.observedAt
-                                              : rec.movementFetchedAt,
-                updatesMovementFetchedAt: isComplete,
-                saveChanges: false)
-            persisted = reconciled
-            let removed = before.subtracting(Set(store.all().map(\.key)))
-            keyRemaps = Dictionary(uniqueKeysWithValues: removed.map {
-                ($0, persisted.key)
-            })
-            projectionKeys = removed.union([persisted.key])
-            semanticOldSnapshots = projectionKeys.compactMap { beforeSnapshots[$0] }
-            // Reconciliation may have merged this refreshed card into a
-            // dossier whose survivor already contained other instances and
-            // acts. Publish the full persisted projection in that case.
-            publishedMovement = persisted.movement ?? merged
-        } else {
-            rec.snapshot = newSnap
-            rec.movement = persistedMovement
-            // Some legacy/source contexts do not expose a complete
-            // source-native card identity. A successful refresh must still
-            // advance the last-success TTL; only identity reconciliation is
-            // skipped in that case.
-            if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
-            persisted = rec
-            projectionKeys = [persisted.key]
+        let committed = try store.commit(
+            projection: { result in .cases(result.projectionKeys) }
+        ) { () throws -> (persisted: TrackedCaseRecord,
+                           derivation: CaseEventDerivationResult,
+                           projectionKeys: Set<String>,
+                           keyRemaps: [String: String],
+                           publishedMovement: CaseMovement) in
+            var semanticOldSnapshots = oldSnapshot.map { [$0] } ?? []
+            let persisted: TrackedCaseRecord
+            let projectionKeys: Set<String>
+            let keyRemaps: [String: String]
+            let publishedMovement: CaseMovement
+            if let identityObservation {
+                // A complete snapshot enters through the normal identity boundary.
+                // A partial chain contributes only exact review-card relations
+                // fetched in this attempt; its number, UID and success TTL do not.
+                let beforeRecords = try store.allForMutation()
+                let before = Set(beforeRecords.map(\.key))
+                let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
+                    record in record.snapshot.map { (record.key, $0) }
+                })
+                let reconciled = try store.reconcileAndUpsert(
+                    context: ctx, snapshot: newSnap, movement: persistedMovement,
+                    collections: rec.collectionNames,
+                    identityObservation: identityObservation,
+                    movementFetchedAt: isComplete ? attempt.provenance.observedAt
+                                                  : rec.movementFetchedAt,
+                    updatesMovementFetchedAt: isComplete,
+                    saveChanges: false)
+                let removed = before.subtracting(Set(try store.allForMutation().map(\.key)))
+                let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, reconciled.key) })
+                let scope = removed.union([reconciled.key])
+                semanticOldSnapshots = scope.compactMap { beforeSnapshots[$0] }
+                // Reconciliation may have merged this refreshed card into a
+                // dossier whose survivor already contained other instances and
+                // acts. Publish the full persisted projection in that case.
+                persisted = reconciled
+                projectionKeys = scope
+                keyRemaps = remaps
+                publishedMovement = reconciled.movement ?? merged
+            } else {
+                rec.snapshot = newSnap
+                rec.movement = persistedMovement
+                // Some legacy/source contexts do not expose a complete
+                // source-native card identity. A successful refresh must still
+                // advance the last-success TTL; only identity reconciliation is
+                // skipped in that case.
+                if isComplete { rec.movementFetchedAt = attempt.provenance.observedAt }
+                projectionKeys = [rec.key]
+                keyRemaps = [:]
+                persisted = rec
+                publishedMovement = merged
+            }
+            persisted.sourceRefreshAttempt = attempt
+            let journal = try store.requiredEventJournal(for: persisted)
+            let finalSnapshot = persisted.snapshot ?? newSnap
+            let derivation: CaseEventDerivationResult
+            if journal.derivationVersion != CaseEventJournal.currentDerivationVersion {
+                derivation = .init(events: [], diagnostics: [.derivationVersionChanged])
+            } else {
+                let baseline = CaseEventDeriver.conservativeBaseline(
+                    semanticOldSnapshots, comparedTo: finalSnapshot)
+                derivation = CaseEventDeriver.derive(
+                    old: baseline, new: finalSnapshot,
+                    attempt: isComplete ? attempt : SourceAttempt(
+                        kind: .partial, provenance: attempt.provenance),
+                    observedAt: attempt.provenance.observedAt)
+            }
+            try store.appendCaseEvents(derivation.events, to: persisted,
+                                       derivationVersion: CaseEventJournal.currentDerivationVersion,
+                                       originKey: persisted.key)
+            // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
+            // кроме дела, открытого прямо сейчас (пользователь его и так видит).
+            if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
+            return (persisted, derivation, projectionKeys, keyRemaps, publishedMovement)
         }
-        persisted.sourceRefreshAttempt = attempt
-        var journal = try store.requiredEventJournal(for: persisted)
-        let finalSnapshot = persisted.snapshot ?? newSnap
-        let derivation: CaseEventDerivationResult
-        if journal.derivationVersion != CaseEventJournal.currentDerivationVersion {
-            derivation = .init(events: [], diagnostics: [.derivationVersionChanged])
-        } else {
-            let baseline = CaseEventDeriver.conservativeBaseline(
-                semanticOldSnapshots, comparedTo: finalSnapshot)
-            derivation = CaseEventDeriver.derive(
-                old: baseline, new: finalSnapshot,
-                attempt: isComplete ? attempt : SourceAttempt(
-                    kind: .partial, provenance: attempt.provenance),
-                observedAt: attempt.provenance.observedAt)
-        }
-        journal.derivationVersion = CaseEventJournal.currentDerivationVersion
-        try journal.append(derivation.events)
-        persisted.eventJournalData = try JSONEncoder().encode(journal)
-        // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
-        // кроме дела, открытого прямо сейчас (пользователь его и так видит).
-        if changed && openedKey?() != persisted.key { persisted.seenAt = nil }
-        try store.save(projection: .cases(projectionKeys))
+        let persisted = committed.persisted
+        let derivation = committed.derivation
+        let keyRemaps = committed.keyRemaps
+        let publishedMovement = committed.publishedMovement
         let kinds = Dictionary(grouping: derivation.events, by: \.kind)
             .map { "\($0.key.rawValue):\($0.value.count)" }.sorted()
             .joined(separator: ",")

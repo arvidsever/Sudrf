@@ -563,6 +563,103 @@ final class RefreshCenterTests: XCTestCase {
                        saved.eventJournal)
     }
 
+    func testRepeatedJudgeAndResultTransitionsPersistDistinctOccurrences() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("event-261-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("test.store")
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let localStore = try TrackedStore(container: container, prepared: true)
+        var context = makeContext()
+        context.caseID = "source-card-261"
+        var movement = makeSuccessMovement(court: context.searchCourt)
+        movement.instances[0].judge = "Иванов"
+        movement.instances[0].result = "Оставлено без изменения"
+        let record = try localStore.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: movement, context: context),
+            movement: movement, collections: ["Регрессия"])
+        let key = record.key
+        for (judge, result) in [("Петров", "Решение изменено"),
+                                ("Иванов", "Оставлено без изменения"),
+                                ("Петров", "Решение изменено")] {
+            movement.instances[0].judge = judge
+            movement.instances[0].result = result
+            // A fresh container reads the persisted journal between each transition.
+            let nextContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+            let reopened = try TrackedStore(container: nextContainer, prepared: true)
+            let center = RefreshCenter(store: reopened, client: SudrfClient(),
+                                       serviceBuilder: { _ in FixedMovement(movement) })
+            let execution = await center.refresh(key: key)?.value
+            XCTAssertEqual(execution?.outcome, .refreshed)
+            let journal = try XCTUnwrap(reopened.record(forKey: key)?.eventJournal)
+            let repeated = await center.refresh(key: key)?.value
+            XCTAssertEqual(repeated?.outcome, .refreshed)
+            XCTAssertEqual(reopened.record(forKey: key)?.eventJournal, journal)
+        }
+        let finalContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let finalStore = try TrackedStore(container: finalContainer, prepared: true)
+        let events = try XCTUnwrap(finalStore.record(forKey: key)?.eventJournal?.events)
+        XCTAssertEqual(events.filter { $0.kind == .judgeChanged }.count, 3)
+        XCTAssertEqual(events.filter { $0.kind == .resultChanged }.count, 3)
+        XCTAssertEqual(Set(events.map(\.id)).count, events.count)
+    }
+
+    func testEarlyJournalFailuresRollBackRefreshBeforeIndependentSave() async throws {
+        for failure in ["corrupt", "append", "encoding"] {
+            let localStore = TrackedStore(inMemory: true)
+            var context = makeContext()
+            context.caseID = "source-card-261"
+            var movement = makeSuccessMovement(court: context.searchCourt)
+            movement.instances[0].judge = "Иванов"
+            let record = try localStore.upsert(
+                context: context,
+                snapshot: MovementDerivation.snapshot(from: movement, context: context),
+                movement: movement, collections: ["Сохранить"])
+            record.seenAt = Date(timeIntervalSince1970: 1_700_000_000)
+            if failure == "corrupt" { record.eventJournalData = Data("broken".utf8) }
+            try localStore.save()
+            let key = record.key
+            let before = [record.contextData, record.snapshotData, record.movementData,
+                          record.identityStateData, record.sourceRefreshAttemptData,
+                          record.eventJournalData]
+            let ttl = record.movementFetchedAt
+            let seen = record.seenAt
+            let aliases = record.legacyKeyAliases
+            movement.instances[0].judge = "Петров"
+            var successes = 0
+            let center = RefreshCenter(store: localStore, client: SudrfClient(),
+                                       serviceBuilder: { _ in FixedMovement(movement) })
+            center.onRefreshed = { _, _, _ in successes += 1 }
+            localStore.failNextJournalAppendForTesting = failure == "append"
+            localStore.failNextJournalEncodingForTesting = failure == "encoding"
+
+            let execution = await center.refresh(key: key)?.value
+
+            guard case .failed(let message) = execution?.outcome else {
+                return XCTFail("Expected persistence failure: \(failure)")
+            }
+            XCTAssertTrue(message.contains("сохранить"))
+            XCTAssertEqual(successes, 0)
+            XCTAssertFalse(localStore.container.mainContext.hasChanges)
+            // A later, unrelated successful commit must not resurrect rejected data.
+            var unrelated = context
+            unrelated.caseNumber = "2-999/2026"
+            unrelated.caseID = "unrelated-card"
+            _ = try localStore.upsert(context: unrelated, snapshot: nil, collections: ["Другое"])
+            let reopened = try TrackedStore(container: localStore.container, prepared: true)
+            let saved = try XCTUnwrap(reopened.record(forKey: key))
+            XCTAssertEqual([saved.contextData, saved.snapshotData, saved.movementData,
+                            saved.identityStateData, saved.sourceRefreshAttemptData,
+                            saved.eventJournalData], before, failure)
+            XCTAssertEqual(saved.movementFetchedAt, ttl)
+            XCTAssertEqual(saved.seenAt, seen)
+            XCTAssertEqual(saved.legacyKeyAliases, aliases)
+            XCTAssertEqual(saved.collectionNames, ["Сохранить"])
+        }
+    }
+
     func testPartialRefreshDoesNotAppendSemanticEvents() async throws {
         let localStore = TrackedStore(inMemory: true)
         var context = makeContext()
@@ -650,6 +747,18 @@ final class RefreshCenterTests: XCTestCase {
         }
         XCTAssertEqual(localStore.all().count, 2)
         XCTAssertEqual(localStore.record(forKey: base.key)?.movementFetchedAt, successfulTTL)
+
+        localStore.failNextJournalEncodingForTesting = true
+        let earlyFailure = await center.refresh(key: base.key)?.value
+        guard case .failed = earlyFailure?.outcome else {
+            return XCTFail("journal encoding must roll back pending duplicate deletion")
+        }
+        XCTAssertEqual(localStore.all().count, 2)
+        XCTAssertFalse(localStore.container.mainContext.hasChanges)
+        try localStore.save()
+        XCTAssertEqual(localStore.record(forKey: base.key)?.movementFetchedAt, successfulTTL)
+        XCTAssertEqual(localStore.record(forKey: base.key)?.collectionNames, ["Основные"])
+        XCTAssertEqual(localStore.record(forKey: review.key)?.collectionNames, ["Надзор"])
 
         let succeeded = await center.refresh(key: base.key)?.value
 

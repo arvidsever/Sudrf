@@ -933,6 +933,7 @@ final class TrackedCaseRepairCoordinator {
                             canonicalCard: CaseCard?,
                             identityState: LogicalCaseState? = nil,
                             saveChanges: Bool = true) throws -> [String: String] {
+        do {
         let all = [survivor] + duplicates
         let oldKeys = all.map(\.key)
         let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
@@ -1022,6 +1023,9 @@ final class TrackedCaseRepairCoordinator {
         }
         return Dictionary(uniqueKeysWithValues: oldKeys.filter { $0 != survivor.key }
             .map { ($0, survivor.key) })
+        } catch {
+            try store.rollbackAfterFailure(error)
+        }
     }
 
     // MARK: Persistent retry policy

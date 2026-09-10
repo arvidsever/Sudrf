@@ -164,18 +164,164 @@ struct CaseEventDeriverTests {
         #expect(result.diagnostics == [.derivationVersionChanged])
     }
 
-    @Test func journalDeduplicatesAndRejectsConflictingPayload() throws {
+    @Test func journalDeduplicatesByPayloadKeepsEarliestObservationAndRejectsConflicts() throws {
         let event = derive(snapshot(), snapshot(sessions: [session("10.03.2027")]))
             .events.first!
         var journal = CaseEventJournal()
-        try journal.append([event, event])
+        let later = CaseEvent(id: event.id, kind: event.kind,
+                              observedAtRef: event.observedAtRef + 1,
+                              evidence: event.evidence)
+        try journal.append([later, event])
         #expect(journal.events.count == 1)
+        #expect(journal.events[0].observedAtRef == event.observedAtRef)
+        var conflictingEvidence = event.evidence
+        conflictingEvidence.value = "другие данные"
         let conflict = CaseEvent(id: event.id, kind: event.kind,
-                                 observedAtRef: event.observedAtRef + 1,
-                                 evidence: event.evidence)
+                                 observedAtRef: event.observedAtRef,
+                                 evidence: conflictingEvidence)
+        let before = journal
         #expect(throws: CaseEventJournalError.conflictingEventID(event.id)) {
-            try journal.append([conflict])
+            try journal.append([CaseEvent.make(
+                kind: .complaintRegistered, occurrence: ["new"],
+                observedAt: observedAt, evidence: .init()), conflict])
         }
+        #expect(journal == before)
+    }
+
+    @Test func journalSafelyNormalizesDuplicateExistingIDs() throws {
+        let event = derive(snapshot(), snapshot(sessions: [session("10.03.2027")]))
+            .events.first!
+        let earlier = CaseEvent(id: event.id, kind: event.kind,
+                                observedAtRef: event.observedAtRef - 1,
+                                evidence: event.evidence)
+        var journal = CaseEventJournal(events: [event, earlier])
+
+        try journal.append([])
+
+        #expect(journal.events == [earlier])
+    }
+
+    @Test func repeatedTransitionsReceiveDistinctDeterministicOccurrenceIDs() throws {
+        var journal = CaseEventJournal()
+        let firstRaw = judgeChange(from: "Иванов", to: "Петров", day: 0)
+        let first = journal.identifyingOccurrences([firstRaw], originKey: "record-a")[0]
+        try journal.append([first])
+        let secondRaw = judgeChange(from: "Петров", to: "Иванов", day: 1)
+        let second = journal.identifyingOccurrences([secondRaw], originKey: "record-a")[0]
+        try journal.append([second])
+
+        let immutableContext = journal
+        let thirdRaw = judgeChange(from: "Иванов", to: "Петров", day: 2)
+        let third = immutableContext.identifyingOccurrences(
+            [thirdRaw], originKey: "record-a")[0]
+        let retried = immutableContext.identifyingOccurrences(
+            [judgeChange(from: "Иванов", to: "Петров", day: 3)],
+            originKey: "record-a")[0]
+        try journal.append([third])
+
+        #expect(Set(journal.events.map(\.id)).count == 3)
+        #expect(first.id != third.id)
+        #expect(third.id == retried.id)
+        #expect(first.occurrence?.predecessorEventIDs == [])
+        #expect(second.occurrence?.predecessorEventIDs == [first.id])
+        #expect(third.occurrence?.predecessorEventIDs == [second.id])
+
+        let olderReplay = journal.identifyingOccurrences([first], originKey: "record-a")[0]
+        #expect(olderReplay == first)
+
+        let redelivered = CaseEvent(
+            id: third.id, kind: third.kind, observedAtRef: third.observedAtRef + 1,
+            evidence: third.evidence, occurrence: third.occurrence)
+        try journal.append([redelivered])
+        #expect(journal.events.count == 3)
+        #expect(journal.events.last?.observedAtRef == third.observedAtRef)
+    }
+
+    @Test func independentOriginsAndSharedDeadlineSequenceStayDistinct() throws {
+        let raw = judgeChange(from: "Иванов", to: "Петров", day: 0)
+        let empty = CaseEventJournal()
+        #expect(empty.identifyingOccurrences([raw], originKey: "record-a")[0].id
+                != empty.identifyingOccurrences([raw], originKey: "record-b")[0].id)
+
+        let proposed = deadline(status: .proposed, date: "10.03.2027")
+        var confirmed = proposed
+        confirmed.statusRaw = DeadlineStatus.confirmed.rawValue
+        let proposedEvent = derive(snapshot(), snapshot(deadlines: [proposed])).events[0]
+        var journal = CaseEventJournal(events: [proposedEvent])
+        let confirmationRaw = derive(snapshot(deadlines: [proposed]),
+                                     snapshot(deadlines: [confirmed])).events[0]
+        let confirmation = journal.identifyingOccurrences(
+            [confirmationRaw], originKey: "record-a")[0]
+        #expect(confirmation.occurrence?.predecessorEventIDs == [proposedEvent.id])
+        try journal.append([confirmation])
+
+        var changed = confirmed
+        changed.dateRef = DateUtil.parse("12.03.2027")!.timeIntervalSinceReferenceDate
+        let changeRaw = derive(snapshot(deadlines: [confirmed]),
+                               snapshot(deadlines: [changed])).events[0]
+        let change = journal.identifyingOccurrences([changeRaw], originKey: "record-a")[0]
+        #expect(change.occurrence?.predecessorEventIDs == [confirmation.id])
+    }
+
+    @Test func resultLegalForceAndTransferUseDistinctPropertyStreams() {
+        let evidence = CaseEventEvidence(sourceCardID: card)
+        let raw = [CaseEventKind.resultChanged, .entryIntoForceRecorded, .transferRegistered]
+            .map {
+                CaseEvent.make(kind: $0, occurrence: [card, $0.rawValue],
+                               observedAt: observedAt, evidence: evidence)
+            }
+        let identified = CaseEventJournal().identifyingOccurrences(
+            raw, originKey: "record-a")
+
+        #expect(identified.allSatisfy { $0.occurrence?.predecessorEventIDs == [] })
+        #expect(Set(identified.compactMap { $0.occurrence?.sequenceKey }).count == 3)
+    }
+
+    @Test func mergedIndependentStreamsChooseTheSameNextPredecessorInEitherOrder() throws {
+        let raw = judgeChange(from: "Иванов", to: "Петров", day: 0)
+        let first = CaseEventJournal().identifyingOccurrences(
+            [raw], originKey: "record-a")[0]
+        let second = CaseEventJournal().identifyingOccurrences(
+            [raw], originKey: "record-b")[0]
+        let left = try CaseEventJournal.merged([
+            CaseEventJournal(events: [first]), CaseEventJournal(events: [second])
+        ])
+        let right = try CaseEventJournal.merged([
+            CaseEventJournal(events: [second]), CaseEventJournal(events: [first])
+        ])
+        let next = judgeChange(from: "Петров", to: "Иванов", day: 1)
+
+        #expect(left.events.count == 2)
+        #expect(right.events.count == 2)
+        let leftNext = left.identifyingOccurrences([next], originKey: "survivor")[0]
+        let rightNext = right.identifyingOccurrences([next], originKey: "survivor")[0]
+        #expect(leftNext.id == rightNext.id)
+        #expect(leftNext.occurrence?.predecessorEventIDs.sorted()
+                == [first.id, second.id].sorted())
+
+        var joined = left
+        try joined.append([leftNext])
+        let repeatedRaw = judgeChange(from: "Иванов", to: "Петров", day: 2)
+        let repeated = joined.identifyingOccurrences(
+            [repeatedRaw], originKey: "survivor")[0]
+        #expect(repeated.occurrence?.predecessorEventIDs == [leftNext.id])
+        #expect(repeated.id != first.id)
+        #expect(repeated.id != second.id)
+    }
+
+    @Test func legacyJournalWithoutOccurrenceMetadataDecodesAndContinuesSequence() throws {
+        let raw = judgeChange(from: "Иванов", to: "Петров", day: 0)
+        let encoded = try JSONEncoder().encode(CaseEventJournal(events: [raw]))
+        let decoded = try JSONDecoder().decode(CaseEventJournal.self, from: encoded)
+        #expect(decoded.events[0].occurrence == nil)
+
+        let nextRaw = judgeChange(from: "Петров", to: "Иванов", day: 1)
+        let next = decoded.identifyingOccurrences([nextRaw], originKey: "record-a")[0]
+        #expect(next.occurrence?.predecessorEventIDs == [raw.id])
+        let roundTrip = try JSONDecoder().decode(
+            CaseEventJournal.self,
+            from: JSONEncoder().encode(CaseEventJournal(events: [next])))
+        #expect(roundTrip.events[0].occurrence == next.occurrence)
     }
 
     private func derive(_ old: CaseSnapshot, _ new: CaseSnapshot) -> CaseEventDerivationResult {
@@ -187,6 +333,16 @@ struct CaseEventDeriverTests {
         SourceAttempt(kind: .usableSnapshot,
                       provenance: .init(operation: .movement, sourceFamily: "sudrf",
                                         host: "example.sudrf.ru", observedAt: observedAt))
+    }
+
+    private func judgeChange(from: String, to: String, day: Int) -> CaseEvent {
+        var old = snapshot()
+        var new = snapshot()
+        old.instanceObservations?[0].judge = from
+        new.instanceObservations?[0].judge = to
+        let date = Calendar.current.date(byAdding: .day, value: day, to: observedAt)!
+        return CaseEventDeriver.derive(old: old, new: new, attempt: usableAttempt(),
+                                       observedAt: date).events[0]
     }
 
     private func session(_ date: String, source: String? = nil,

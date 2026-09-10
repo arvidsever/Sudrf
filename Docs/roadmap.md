@@ -117,7 +117,9 @@ registry сроков обжалования подключён; оставши�
 - **[#260](https://github.com/arvidsever/Sudrf/issues/260) (P1)** — строгая проверка TLS в production, включая CAPTCHA и отсутствие
   скрытого downgrade на HTTP. Bundled roots остаются дополнительными trust anchors.
 - **[#261](https://github.com/arvidsever/Sudrf/issues/261) (P1)** — повторяющиеся occurrences событий и полный rollback при ошибке
-  журнала до commit. Shadow-журнал уже находится на пути обычного refresh.
+  журнала до commit. В работе в `codex/event-occurrence-rollback-261`: устойчивые повторные события,
+  атомарная граница refresh/сроков/CAPTCHA и сохранение независимых историй при merge.
+  Shadow-журнал уже находится на пути обычного refresh; #262 и cutover #179 остаются отдельно.
 - **[#263](https://github.com/arvidsever/Sudrf/issues/263)** — точная связь акта с инстанцией имеет приоритет над совпадением уровня;
   исправление сохранённых реквизитов выпущено в 0.58.2; документ, текст и связанная сводка сохраняются.
 - **[#233](https://github.com/arvidsever/Sudrf/issues/233)** — устранить публикации во время SwiftUI view update при смене судов,

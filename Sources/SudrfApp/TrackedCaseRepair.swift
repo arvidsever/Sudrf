@@ -281,6 +281,11 @@ final class TrackedCaseRepairCoordinator {
     // v6 повторно прогоняет v5 и дополнительно пересаживает предварительные
     // `М-/9-` карточки на подтверждённое основное дело по точному УИД.
     private static let migrationID = "importChainRepair.v6"
+    /// Subject-court KAS preliminary registrations were not classified by V6,
+    /// so they could legitimately have been marked terminal before this path
+    /// existed. Clear each affected record's stale exclusions once; new
+    /// failures keep the ordinary V6 retry policy.
+    private static let subjectKASRetryResetKey = "importChainRepair.v6.subjectKASRetryReset"
     private var attemptsKey: String { "\(Self.migrationID).attempts" }
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
@@ -409,6 +414,7 @@ final class TrackedCaseRepairCoordinator {
     private func runAllPass() async throws -> CaseRepairSummary {
         var summary = CaseRepairSummary()
         do {
+            try resetPreexistingSubjectKASExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes()
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -438,6 +444,7 @@ final class TrackedCaseRepairCoordinator {
     private func runScopedPass(keys: Set<String>) async throws -> CaseRepairSummary {
         var summary = CaseRepairSummary()
         do {
+            try resetPreexistingSubjectKASExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes(keys: keys)
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -643,6 +650,13 @@ final class TrackedCaseRepairCoordinator {
                 recordTransient(key: key)
                 appendEvent(.firstInstanceNotFound, caseKey: eventKey, oldKey: anchorKey,
                             old: anchorContext, summary: &summary)
+            case .incompleteCandidates:
+                // An unreadable eligible UID row is neither an exhaustive
+                // negative result nor a reason to mark the repair complete.
+                summary.transient += 1
+                recordTransient(key: key)
+                appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
             case .unsupportedCourt:
                 summary.notFound.append(anchorContext.caseNumber)
                 appendEvent(.unsupportedCourt, caseKey: eventKey, oldKey: anchorKey,
@@ -704,6 +718,10 @@ final class TrackedCaseRepairCoordinator {
                 appendEvent(kind, caseKey: eventKey, oldKey: anchorKey,
                             old: anchorContext, summary: &summary)
             }
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
         } catch {
             summary.transient += 1
             recordTransient(key: key)
@@ -728,6 +746,36 @@ final class TrackedCaseRepairCoordinator {
         CaseIndexClassifier.classify(caseNumber: context.caseNumber,
                                     courtLevel: context.courtLevel,
                                     branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
+    }
+
+    /// This is deliberately narrower than `mayBecomeMainCase`: only the
+    /// subject-court KAS intake registers newly recognized by #284 may have
+    /// stale V6 terminal markers cleared. `g1` is included for old source
+    /// links that predate the KAS cartoteka correction; other kinds retain the
+    /// existing retry policy.
+    private static func isNewlySupportedSubjectKAS(_ context: MovementContext) -> Bool {
+        context.branch == .general
+            && context.courtLevel == .subject
+            && ["g1", "p1"].contains(context.cartotekaId)
+            && mayBecomeMainCase(context)
+    }
+
+    private func resetPreexistingSubjectKASExclusionsIfNeeded() throws {
+        let records = try store.allForMutation()
+        let resetRecords = Set(defaults.stringArray(forKey: Self.subjectKASRetryResetKey) ?? [])
+        let targets = records.filter { record in
+            guard let context = record.context else { return false }
+            return Self.isNewlySupportedSubjectKAS(context) && !resetRecords.contains(record.key)
+        }
+        guard !targets.isEmpty else { return }
+        let keys = Set(targets.flatMap { [$0.key] + $0.legacyKeyAliases })
+        for defaultsKey in [unsupportedKey, completedKey] {
+            let retained = (defaults.stringArray(forKey: defaultsKey) ?? [])
+                .filter { !keys.contains($0) }
+            defaults.set(retained, forKey: defaultsKey)
+        }
+        defaults.set(Array(resetRecords.union(targets.map(\.key))).sorted(),
+                     forKey: Self.subjectKASRetryResetKey)
     }
 
     private func appendEvent(_ kind: CaseRepairEvent.Kind, caseKey: String,
@@ -824,6 +872,10 @@ final class TrackedCaseRepairCoordinator {
     private func makeContext(origin: ResolvedCaseOrigin, anchor: MovementContext,
                              anchorCard: CaseCard) -> MovementContext {
         let row = origin.result
+        // On a same-card renumber, the listing row may be the old cached
+        // registration. Its terminal result and dates must not overwrite the
+        // card just fetched from the canonical source.
+        let isAnchorSource = row.caseID != nil && row.caseID == anchor.caseID
         let display = SudrfHost.alternate(origin.court.domain) ?? origin.court.domain
         let cardURL: URL? = row.cardURL ?? {
             guard let id = row.caseID, let guid = row.caseUID else { return nil }
@@ -840,11 +892,12 @@ final class TrackedCaseRepairCoordinator {
             caseNumber: origin.card.caseNumber ?? row.caseNumber,
             caseID: row.caseID, caseUID: row.caseUID,
             essence: row.essence ?? anchor.essence,
-            judge: row.judge ?? origin.card.judge,
-            receiptDate: row.receiptDate ?? origin.card.receiptDate,
-            decisionDate: row.decisionDate ?? origin.card.decisionDate,
-            resultText: row.result ?? origin.card.result,
-            legalForceDate: row.legalForceDate ?? origin.card.legalForceDate,
+            judge: origin.card.judge ?? (isAnchorSource ? nil : row.judge),
+            receiptDate: origin.card.receiptDate ?? (isAnchorSource ? nil : row.receiptDate),
+            decisionDate: origin.card.decisionDate ?? (isAnchorSource ? nil : row.decisionDate),
+            resultText: origin.card.result ?? (isAnchorSource ? nil : row.result),
+            legalForceDate: origin.card.legalForceDate
+                ?? (isAnchorSource ? nil : row.legalForceDate),
             cardURLString: cardURL?.absoluteString)
         ctx.judicialUID = Self.firstNonEmpty(origin.card.uid, anchorCard.uid, anchor.judicialUID)
         // `m` — самостоятельная карточка материала, а нижестоящий номер
@@ -958,8 +1011,11 @@ final class TrackedCaseRepairCoordinator {
             Self.normalizedMovement($0.movement, context: $0.context)
         })
         var movement = Self.mergeMovements(movements)
-        if !Self.mayBecomeMainCase(context) {
-            movement = Self.pruningPreliminaryAliases(movement, from: all)
+        if var mergedMovement = movement {
+            Self.reuseSameSourceActIdentifiers(
+                in: &mergedMovement, canonicalContext: context, records: all)
+            movement = Self.pruningPreliminaryAliases(
+                mergedMovement, canonicalContext: context, from: all)
         }
 
         let collections = all.flatMap(\.collectionNames).reduce(into: [String]()) {
@@ -1009,8 +1065,9 @@ final class TrackedCaseRepairCoordinator {
         survivor.movementFetchedAt = nil
         if let movement {
             var snapshot = MovementDerivation.snapshot(from: movement, context: context)
-            // Канонический survivor идёт первым в `all`, поэтому применяем
-            // его подтверждённые сроки после дублей: они имеют приоритет.
+            // Confirmed and manual deadlines remain user state across a
+            // registration change. Fresh automatic calculations are derived
+            // above from the accepted current card.
             for old in all.compactMap(\.snapshot).reversed() {
                 snapshot = MovementDerivation.preservingConfirmedDeadlines(snapshot, old: old)
             }
@@ -1120,6 +1177,7 @@ final class TrackedCaseRepairCoordinator {
                 if let index = out.instances.firstIndex(where: {
                     SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(inst.domain)
                         && CaseOriginResolver.sameCaseNumber($0.caseNumber, inst.caseNumber)
+                        && samePublishedSource($0, inst)
                 }) {
                     // Свежая canonicalCard может быть частичной. Обогащаем её
                     // последним успешным кэшем, не теряя заседания и акт.
@@ -1181,31 +1239,61 @@ final class TrackedCaseRepairCoordinator {
         return out
     }
 
-    /// После подтверждённого перехода `М-/9- → основное дело` предварительная
-    /// карточка не является самостоятельным кругом движения и не должна
-    /// оставлять свой акт в проекции.
-    private static func pruningPreliminaryAliases(_ movement: CaseMovement?,
-                                                   from records: [TrackedCaseRecord]) -> CaseMovement? {
-        guard var movement else { return nil }
-        let aliases = records.compactMap { record -> (String, String)? in
+    /// A changed display number on one published source card is a duplicate
+    /// projection. A distinct preliminary card, even with the same judicial
+    /// UID, is a previous registration and keeps its movement, acts and appeal
+    /// history. The source-native identity is the only pruning evidence.
+    private static func pruningPreliminaryAliases(_ movement: CaseMovement,
+                                                   canonicalContext: MovementContext,
+                                                   from records: [TrackedCaseRecord]) -> CaseMovement {
+        var movement = movement
+        // A still-preliminary canonical record may have duplicate imports, but
+        // it has not been promoted to a new registration and must retain its base.
+        guard !isPreliminaryContext(canonicalContext) else { return movement }
+        let aliases = records.compactMap { record -> MovementContext? in
             guard let context = record.context,
-                  CaseIndexClassifier.classify(caseNumber: context.caseNumber,
-                                               courtLevel: context.courtLevel,
-                                               branch: context.branch)?.materialLinkPolicy == .mayBecomeMainCase
+                  isPreliminaryContext(context),
+                  isSameSourceCard(context, canonicalContext)
             else { return nil }
-            return (SudrfHost.moduleHost(context.searchDomain), context.caseNumber)
+            return context
         }
-        guard !aliases.isEmpty else { return movement }
-        let removedActIDs = Set(movement.instances.flatMap { instance -> [String] in
-            aliases.contains { host, number in
-                SudrfHost.moduleHost(instance.domain) == host
-                    && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
+        guard !aliases.isEmpty else {
+            markPreviousRegistrations(in: &movement, canonicalContext: canonicalContext, records: records)
+            return movement
+        }
+        for alias in aliases {
+            guard let currentIndex = movement.instances.firstIndex(where: {
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(canonicalContext.searchDomain)
+                    && CaseOriginResolver.sameCaseNumber($0.caseNumber, canonicalContext.caseNumber)
+                    && matchesSourceInstance($0, context: canonicalContext,
+                                             among: movement.instances)
+            }) else { continue }
+            let sourceIndices = movement.instances.indices.filter {
+                matchesSourceInstance(movement.instances[$0], context: alias,
+                                      among: movement.instances)
+            }
+            for sourceIndex in sourceIndices where sourceIndex != currentIndex {
+                let source = movement.instances[sourceIndex]
+                for session in source.sessions
+                    where !movement.instances[currentIndex].sessions.contains(session) {
+                    movement.instances[currentIndex].sessions.append(session)
+                }
+                let ids = unique(movement.instances[currentIndex].linkedActIDs + source.linkedActIDs)
+                movement.instances[currentIndex].actIDs = ids.isEmpty ? nil : ids
+                var urls = movement.instances[currentIndex].linkedActURLs
+                for url in source.linkedActURLs where !urls.contains(url) { urls.append(url) }
+                movement.instances[currentIndex].actURLs = urls.isEmpty ? nil : urls
+            }
+        }
+        let originalInstances = movement.instances
+        let removedActIDs = Set(originalInstances.flatMap { instance -> [String] in
+            aliases.contains {
+                matchesSourceInstance(instance, context: $0, among: originalInstances)
             } ? instance.linkedActIDs : []
         })
         movement.instances.removeAll { instance in
-            aliases.contains { host, number in
-                SudrfHost.moduleHost(instance.domain) == host
-                    && CaseOriginResolver.sameCaseNumber(instance.caseNumber, number)
+            aliases.contains {
+                matchesSourceInstance(instance, context: $0, among: originalInstances)
             }
         }
         // Базовые карточки одного суда исторически используют общий
@@ -1224,7 +1312,175 @@ final class TrackedCaseRepairCoordinator {
         }) {
             movement.actBodies[id] = nil
         }
+        markPreviousRegistrations(in: &movement, canonicalContext: canonicalContext, records: records)
         return movement
+    }
+
+    private static func isPreliminaryContext(_ context: MovementContext?) -> Bool {
+        guard let context else { return false }
+        return CaseIndexClassifier.classify(
+            caseNumber: context.caseNumber,
+            courtLevel: context.courtLevel,
+            branch: context.branch
+        )?.materialLinkPolicy == .mayBecomeMainCase
+    }
+
+    private static func isSameSourceCard(_ lhs: MovementContext,
+                                         _ rhs: MovementContext) -> Bool {
+        guard let left = TrackedCaseIdentity.observation(context: lhs)?.cardIdentity,
+              let right = TrackedCaseIdentity.observation(context: rhs)?.cardIdentity else {
+            return false
+        }
+        return left == right && sourceServerNumber(lhs) == sourceServerNumber(rhs)
+    }
+
+    private static func sourceServerNumber(_ context: MovementContext) -> String {
+        guard let url = context.cardURLString.flatMap(URL.init(string:)) else { return "1" }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name.lowercased() == "srv_num" })?.value ?? "1"
+    }
+
+    private static func sourceEvidence(_ url: URL) -> String? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ names: Set<String>) -> String? {
+            items.first { names.contains($0.name.lowercased()) }?.value
+        }
+        guard let caseID = value(["case_id", "caseid"])
+                ?? value(["case_uid", "caseuid"])
+        else { return nil }
+        let uid = value(["case_uid", "caseuid"]) ?? ""
+        let server = value(["srv_num"]) ?? "1"
+        let deloID = value(["delo_id", "_deloid"]) ?? ""
+        let new = value(["new", "_new"]) ?? ""
+        return "\(SudrfHost.moduleHost(url.host ?? ""))|\(caseID)|\(uid)|\(server)|\(deloID)|\(new)"
+    }
+
+    private static func samePublishedSource(_ lhs: CaseInstance, _ rhs: CaseInstance) -> Bool {
+        guard let lhsURL = lhs.sourceURL, let rhsURL = rhs.sourceURL else { return true }
+        guard let lhsEvidence = sourceEvidence(lhsURL), let rhsEvidence = sourceEvidence(rhsURL)
+        else { return lhsURL == rhsURL }
+        return lhsEvidence == rhsEvidence
+    }
+
+    private static func matchesSourceInstance(_ instance: CaseInstance, context: MovementContext,
+                                              among instances: [CaseInstance]) -> Bool {
+        guard SudrfHost.moduleHost(instance.domain) == SudrfHost.moduleHost(context.searchDomain),
+              CaseOriginResolver.sameCaseNumber(instance.caseNumber, context.caseNumber)
+        else { return false }
+        if let expected = context.cardURLString.flatMap(URL.init(string:)).flatMap(sourceEvidence),
+           let actual = instance.sourceURL.flatMap(sourceEvidence) {
+            return expected == actual
+        }
+        // Old snapshots did not always retain a source URL. Only their unique,
+        // normalized base instance is safe to treat as the source card.
+        return instance.sourceURL == nil
+            && instance.level == context.baseInstanceLevel
+            && instances.filter {
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(context.searchDomain)
+                    && CaseOriginResolver.sameCaseNumber($0.caseNumber, context.caseNumber)
+                    && $0.level == context.baseInstanceLevel
+                    && $0.sourceURL == nil
+            }.count == 1
+    }
+
+    private static func markPreviousRegistrations(in movement: inout CaseMovement,
+                                                  canonicalContext: MovementContext,
+                                                  records: [TrackedCaseRecord]) {
+        let previous = records.compactMap(\.context).filter {
+            isPreliminaryContext($0) && !isSameSourceCard($0, canonicalContext)
+        }
+        for index in movement.instances.indices {
+            if CaseOriginResolver.sameCaseNumber(movement.instances[index].caseNumber,
+                                                 canonicalContext.caseNumber) {
+                movement.instances[index].note = nil
+            } else if previous.contains(where: {
+                matchesSourceInstance(movement.instances[index], context: $0,
+                                      among: movement.instances)
+            }) {
+                movement.instances[index].note = "Предыдущая регистрация"
+            }
+        }
+    }
+
+    /// Legacy base cards used `act_<host>` while the reconstructed canonical
+    /// movement names its act `act_<host>#<number>`. For a number change on the
+    /// exact same published card, keep the old source ID so the court-act
+    /// projection recognizes the existing document and does not emit it anew.
+    private static func reuseSameSourceActIdentifiers(
+        in movement: inout CaseMovement,
+        canonicalContext: MovementContext,
+        records: [TrackedCaseRecord]
+    ) {
+        let duplicatedContexts = records.compactMap { record -> MovementContext? in
+            guard let context = record.context,
+                  isPreliminaryContext(context),
+                  isSameSourceCard(context, canonicalContext) else { return nil }
+            return context
+        }
+        for oldContext in duplicatedContexts {
+            let oldActIDs = Set(movement.instances.flatMap { instance -> [String] in
+                guard SudrfHost.moduleHost(instance.domain)
+                        == SudrfHost.moduleHost(oldContext.searchDomain),
+                      CaseOriginResolver.sameCaseNumber(instance.caseNumber, oldContext.caseNumber)
+                else { return [] }
+                return instance.linkedActIDs
+            })
+            let canonicalIndices = movement.instances.indices.filter { index in
+                let instance = movement.instances[index]
+                return SudrfHost.moduleHost(instance.domain)
+                    == SudrfHost.moduleHost(canonicalContext.searchDomain)
+                    && CaseOriginResolver.sameCaseNumber(
+                        instance.caseNumber, canonicalContext.caseNumber)
+                    && !instance.linkedActIDs.isEmpty
+            }
+            let canonicalActIDs = Set(canonicalIndices.flatMap { movement.instances[$0].linkedActIDs })
+            let matches = oldActIDs.flatMap { oldID in canonicalActIDs.compactMap { newID -> (String, String)? in
+                guard oldID != newID,
+                      let oldAct = movement.acts.first(where: { $0.id == oldID }),
+                      let newAct = movement.acts.first(where: { $0.id == newID }),
+                      isSamePublishedAct(oldAct, newAct) else { return nil }
+                return (oldID, newID)
+            }}
+            guard matches.count == 1 else { continue }
+            replaceActIdentifier(in: &movement, from: matches[0].1, to: matches[0].0)
+        }
+    }
+
+    private static func isSamePublishedAct(_ lhs: CaseAct, _ rhs: CaseAct) -> Bool {
+        lhs.title == rhs.title
+            && lhs.date == rhs.date
+            && lhs.courtShort == rhs.courtShort
+            && lhs.instanceLevel == rhs.instanceLevel
+            && lhs.fileProvenance == rhs.fileProvenance
+    }
+
+    private static func replaceActIdentifier(in movement: inout CaseMovement,
+                                             from oldID: String, to newID: String) {
+        guard let sourceIndex = movement.acts.firstIndex(where: { $0.id == oldID }) else { return }
+        if let destinationIndex = movement.acts.firstIndex(where: { $0.id == newID }) {
+            if let body = movement.actBodies[oldID] { movement.actBodies[newID] = body }
+            if movement.acts[destinationIndex].fileProvenance == nil {
+                movement.acts[destinationIndex].fileProvenance = movement.acts[sourceIndex].fileProvenance
+            }
+            movement.acts.remove(at: sourceIndex)
+        } else {
+            let act = movement.acts[sourceIndex]
+            movement.acts[sourceIndex] = CaseAct(
+                id: newID,
+                title: act.title,
+                date: act.date,
+                courtShort: act.courtShort,
+                instanceLevel: act.instanceLevel,
+                fileProvenance: act.fileProvenance)
+            if let body = movement.actBodies[oldID] { movement.actBodies[newID] = body }
+        }
+        movement.actBodies[oldID] = nil
+        for index in movement.instances.indices {
+            if movement.instances[index].actID == oldID { movement.instances[index].actID = newID }
+            if let ids = movement.instances[index].actIDs {
+                movement.instances[index].actIDs = ids.map { $0 == oldID ? newID : $0 }
+            }
+        }
     }
 
     static func movement(from card: CaseCard, context: MovementContext) -> CaseMovement {

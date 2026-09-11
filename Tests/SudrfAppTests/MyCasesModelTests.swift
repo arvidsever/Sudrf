@@ -559,6 +559,246 @@ final class MyCasesModelTests: XCTestCase {
 
     // MARK: Живой фильтр
 
+    func testCaseNumberAliasesSeparateCurrentCardHistoryFromKnownCards() {
+        let currentCard = SourceNativeCardIdentity(
+            sourceFamily: "sudrf", courtKey: "11RS0001",
+            cartotekaKey: "p1", sourceNativeID: "card-current")
+        let previousCard = SourceNativeCardIdentity(
+            sourceFamily: "sudrf", courtKey: "11RS0001",
+            cartotekaKey: "p1", sourceNativeID: "card-previous")
+        let provenance = SourceProvenance(
+            operation: .movement, sourceFamily: "sudrf", host: "court--komi.sudrf.ru",
+            observedAt: Date(timeIntervalSince1970: 1_725_000_000))
+        let projection = AppRouter.caseNumberAliases(
+            currentNumber: "3а-100/2026", currentCard: currentCard,
+            history: [
+                CaseNumberBinding(rawValue: "3а-100/2026 ~ М-100/2026",
+                                  cardIdentity: currentCard,
+                                  provenance: provenance),
+                CaseNumberBinding(rawValue: "9а-10/2026", cardIdentity: previousCard,
+                                  provenance: provenance),
+            ],
+            knownCards: [KnownCard(
+                domain: "court--komi.sudrf.ru", courtTitle: "Суд",
+                caseID: "card-known", caseUID: "known", deloID: "1540005", new: "5",
+                caseNumber: "9а-20/2026", levelRaw: CaseInstance.Level.first.rawValue,
+                cartotekaID: "p1")])
+
+        XCTAssertEqual(projection.previous, ["М-100/2026"])
+        XCTAssertEqual(projection.searchable,
+                       ["3а-100/2026 ~ М-100/2026", "9а-10/2026", "9а-20/2026"])
+        var row = tracked("3а-100/2026")
+        row.searchCaseNumbers = projection.searchable
+        XCTAssertTrue(AppRouter.matches(row, query: "м-100"))
+        XCTAssertTrue(AppRouter.matches(row, query: "9а-20"))
+    }
+
+    @MainActor
+    func testMalformedIdentityFallsBackToKnownCardNumberWithoutMutation() throws {
+        var context = projectionContext(
+            number: "3а-101/2026", cartotekaID: "p1", suffix: "aliases")
+        context.knownCards = [KnownCard(
+            domain: context.searchDomain, courtTitle: context.courtTitle,
+            caseID: "old-card", caseUID: "old-uid", deloID: "1540005", new: "5",
+            caseNumber: "М-101/2026", levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: "p1")]
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(legacySnapshot(steps: ["active"])))
+        let malformed = Data("not identity json".utf8)
+        record.identityStateData = malformed
+        let logicalCaseID = record.logicalCaseID
+
+        let aliases = AppRouter.caseNumberAliases(for: record)
+
+        XCTAssertEqual(aliases.previous, [])
+        XCTAssertEqual(aliases.searchable, ["М-101/2026"])
+        var projected = tracked(context.caseNumber)
+        projected.searchCaseNumbers = aliases.searchable
+        XCTAssertTrue(AppRouter.matches(projected, query: "м-101"))
+        XCTAssertEqual(record.logicalCaseID, logicalCaseID)
+        XCTAssertEqual(record.identityStateData, malformed)
+    }
+
+    @MainActor
+    func testCurrentNumberFeedsMonitoringWhileSourceNumberAndFeedIDsStayStable() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        var context = projectionContext(
+            number: "М-102/2026", cartotekaID: "p1", suffix: "current-number")
+        var snapshot = legacySnapshot(steps: ["active"])
+        snapshot.sessions = [
+            StoredSession(
+                dateRaw: "10.09.2026", time: "10:00", room: "1",
+                event: "Регистрация административного искового заявления", result: nil,
+                court: context.courtTitle, levelRaw: CaseInstance.Level.first.rawValue,
+                caseNumber: "М-102/2026"),
+            StoredSession(
+                dateRaw: "12.09.2026", time: "11:00", room: "2",
+                event: "Судебное заседание", result: nil,
+                court: context.courtTitle, levelRaw: CaseInstance.Level.first.rawValue,
+                caseNumber: "М-102/2026"),
+        ]
+        snapshot.deadlines = [StoredDeadline(
+            kind: "test", what: "Проверочный срок", basis: "Тест",
+            calLabel: "тест", dateRef: try XCTUnwrap(DateUtil.parse("13.09.2026"))
+                .timeIntervalSinceReferenceDate,
+            statusRaw: DeadlineStatus.proposed.rawValue)]
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+        let router = try AppRouter(
+            modelContainer: container, modelContainerIsPrepared: true)
+        let day = try XCTUnwrap(DateUtil.parse("11.09.2026"))
+        router.reload(today: day)
+        let originalFeedIDs = router.feed.map(\.id)
+
+        context.caseNumber = "3а-102/2026"
+        record.caseNumber = context.caseNumber
+        record.context = context
+        try container.mainContext.save()
+        router.reload(today: day)
+
+        XCTAssertEqual(router.cases.map(\.caseNumber), ["3а-102/2026"])
+        XCTAssertTrue(router.hearings.allSatisfy { $0.caseNumber == "3а-102/2026" })
+        XCTAssertTrue(router.calendarHearings.allSatisfy { $0.caseNumber == "3а-102/2026" })
+        XCTAssertTrue(router.deadlines.allSatisfy { $0.caseNumber == "3а-102/2026" })
+        XCTAssertTrue(router.feed.allSatisfy {
+            $0.caseNumber == "3а-102/2026" && $0.notificationSubtitle == "3а-102/2026"
+        })
+        XCTAssertEqual(router.feed.map(\.id), originalFeedIDs)
+        XCTAssertEqual(router.hearings.first?.instanceCaseNumber, "М-102/2026")
+        XCTAssertEqual(router.feed.first?.instanceCaseNumber, "М-102/2026")
+    }
+
+    @MainActor
+    func testHistoricalFirstInstanceNumberIsResolvedFromExactSourceCard() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        var context = projectionContext(
+            number: "3а-103/2026", cartotekaID: "p1", suffix: "source-number")
+        context.caseID = "current-card"
+        context.caseUID = "current-link"
+        context.knownCards = [KnownCard(
+            domain: context.searchDomain, courtTitle: context.courtTitle,
+            caseID: "previous-card", caseUID: "previous-link",
+            deloID: "1540005", new: "5", caseNumber: "9а-103/2026",
+            levelRaw: CaseInstance.Level.first.rawValue, cartotekaID: "p1")]
+        let historical = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: "9а-103/2026",
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: nil, sessions: [CaseSession(
+                date: "10.09.2026", time: "10:00", room: nil,
+                event: "Судебное заседание", result: "Отложено")],
+            note: "Предыдущая регистрация")
+        let current = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: nil, sessions: [])
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [historical, current], complaints: [:], acts: [])
+        let snapshot = MovementDerivation.snapshot(
+            from: movement, context: context,
+            today: try XCTUnwrap(DateUtil.parse("11.09.2026")))
+        XCTAssertNil(snapshot.sessions.first?.caseNumber)
+        XCTAssertNotNil(snapshot.sessions.first?.sourceCardID)
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        record.movement = movement
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+        let router = try AppRouter(
+            modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: try XCTUnwrap(DateUtil.parse("11.09.2026")))
+
+        let feed = try XCTUnwrap(router.feed.first { $0.text == "Отложено" })
+        XCTAssertEqual(feed.caseNumber, "3а-103/2026")
+        XCTAssertEqual(feed.instanceCaseNumber, "9а-103/2026")
+        XCTAssertEqual(feed.previousRegistrationNumber, "9а-103/2026")
+        XCTAssertEqual(feed.secondaryLabel, "Предыдущая регистрация № 9а-103/2026")
+        XCTAssertEqual(feed.notificationSubtitle,
+                       "3а-103/2026 · Предыдущая регистрация № 9а-103/2026")
+        let calendar = try XCTUnwrap(router.calendarHearings.first)
+        XCTAssertEqual(calendar.caseNumber, "3а-103/2026")
+        XCTAssertEqual(calendar.instanceCaseNumber, "9а-103/2026")
+        XCTAssertEqual(calendar.secondaryLabel,
+                       "Предыдущая регистрация № 9а-103/2026")
+    }
+
+    @MainActor
+    func testAmbiguousPreviousRegistrationSourceDoesNotLabelCurrentEvents() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        var context = projectionContext(
+            number: "3а-104/2026", cartotekaID: "p1", suffix: "ambiguous-source")
+        context.caseID = "current-card"
+        context.caseUID = "current-link"
+        let historical = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: "9а-104/2026",
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: nil, sessions: [CaseSession(
+                date: "10.09.2026", time: "09:00", room: nil,
+                event: "Регистрация заявления", result: nil)],
+            note: "Предыдущая регистрация")
+        XCTAssertNil(AppRouter.previousRegistrationSourceCardID(
+            for: historical, context: context))
+        context.knownCards = [KnownCard(
+            domain: context.searchDomain, courtTitle: context.courtTitle,
+            caseID: "wrong-card", caseUID: "wrong-link",
+            deloID: "1540005", new: "5", caseNumber: "9а-999/2026",
+            levelRaw: CaseInstance.Level.first.rawValue, cartotekaID: "p1")]
+        XCTAssertNil(AppRouter.previousRegistrationSourceCardID(
+            for: historical, context: context))
+        context.knownCards = [KnownCard(
+            domain: context.searchDomain, courtTitle: context.courtTitle,
+            caseID: "previous-card", caseUID: "previous-link",
+            deloID: "1540005", new: "5", caseNumber: historical.caseNumber,
+            levelRaw: CaseInstance.Level.first.rawValue, cartotekaID: "p1")]
+        var conflictingURL = historical
+        conflictingURL.sourceURL = URL(string:
+            "https://\(context.searchDomain)/modules.php?name=sud_delo&name_op=case&case_id=different-card&case_uid=different-link&delo_id=1540005&new=5")
+        XCTAssertNil(AppRouter.previousRegistrationSourceCardID(
+            for: conflictingURL, context: context))
+        context.knownCards = nil
+        let current = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: nil, sessions: [CaseSession(
+                date: "10.09.2026", time: "10:00", room: nil,
+                event: "Принято к производству", result: nil)])
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [historical, current], complaints: [:], acts: [])
+        let day = try XCTUnwrap(DateUtil.parse("11.09.2026"))
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: day)
+        XCTAssertEqual(Set(snapshot.sessions.compactMap(\.sourceCardID)).count, 1)
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        record.movement = movement
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+        let router = try AppRouter(
+            modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: day)
+
+        XCTAssertTrue(router.feed.allSatisfy { $0.previousRegistrationNumber == nil })
+        let currentEvent = try XCTUnwrap(router.feed.first {
+            $0.text == "Принято к производству"
+        })
+        XCTAssertNil(currentEvent.secondaryLabel)
+        XCTAssertEqual(currentEvent.notificationSubtitle, context.caseNumber)
+    }
+
     func testQueryMatchesNumberPartiesCollectionsCourt() {
         var c = tracked("2-115/2026")
         c.collections = ["Новожилова"]

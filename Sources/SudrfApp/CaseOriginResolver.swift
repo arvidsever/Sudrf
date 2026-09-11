@@ -36,6 +36,9 @@ enum CaseOriginResolutionError: Error, Equatable {
     case unsupportedCourt
     case notFound
     case ambiguous
+    /// A matching search row existed, but its source/card could not be fully
+    /// verified, so the result set is not exhaustive enough for uniqueness.
+    case incompleteCandidates
 }
 
 protocol CaseOriginResolving: Sendable {
@@ -180,14 +183,14 @@ actor CaseOriginResolver {
     }
 
     /// Ищет принятое к производству основное дело в том же суде и по тому же
-    /// УИД. Номер `М-/9-` не участвует в выборе: он лишь повод выполнить
+    /// УИД. Предварительный номер не участвует в выборе: он лишь повод выполнить
     /// проверку, а совпадение допускается ровно одно.
     func resolveMainCase(anchorContext: MovementContext,
                          anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
-        guard CaseIndexClassifier.classify(caseNumber: anchorContext.caseNumber,
-                                           courtLevel: anchorContext.courtLevel,
-                                           branch: anchorContext.branch)?.materialLinkPolicy == .mayBecomeMainCase,
-              let uid = Self.nonEmpty(anchorCard.uid) ?? Self.nonEmpty(anchorContext.judicialUID)
+        guard let preliminary = CaseIndexClassifier.classify(
+            caseNumber: anchorContext.caseNumber, courtLevel: anchorContext.courtLevel,
+            branch: anchorContext.branch),
+              preliminary.materialLinkPolicy == .mayBecomeMainCase
         else { throw CaseOriginResolutionError.noReference }
 
         let court = anchorContext.searchCourt
@@ -201,20 +204,264 @@ actor CaseOriginResolver {
         guard court.level != .magistrate else {
             throw CaseOriginResolutionError.noReference
         }
-        let rows = try await regularProvider.search(court: court, cartoteka: cart,
-                                                    field: .uid, value: uid)
-        let mainRows = rows.filter {
-            CaseIndexClassifier.classify(caseNumber: $0.caseNumber,
-                                         courtLevel: court.level,
-                                         branch: anchorContext.branch)?.cardRole == .firstInstanceCase
+
+        let cartotekas = Self.firstInstanceCartotekas(
+            court: court, anchor: cart, branch: anchorContext.branch)
+        guard !cartotekas.isEmpty else { throw CaseOriginResolutionError.noReference }
+        let anchorSRV = Self.sourceSRV(anchorContext.baseResult.cardURL) ?? "1"
+
+        // Ряд судов меняет номер прямо на той же карточке: например,
+        // `3а-685/2026 ~ М-662/2026`. Это сильнее поисковой эвристики:
+        // карточка уже загружена по точному исходному адресу.
+        if Self.validatedSourceKey(row: anchorContext.baseResult, court: court,
+                                   cartoteka: cart, expectedSRV: anchorSRV) != nil,
+           Self.judicialUIDsDoNotContradict(card: anchorCard, context: anchorContext),
+           let current = Self.mainRegistration(
+            in: anchorCard.caseNumber, preliminaryNumber: anchorContext.caseNumber,
+            preliminary: preliminary, courtLevel: court.level,
+            branch: anchorContext.branch, allowedCartotekas: cartotekas),
+           current.cartoteka.id == cart.id {
+            var result = anchorContext.baseResult
+            result.caseNumber = anchorCard.caseNumber ?? current.number
+            return ResolvedCaseOrigin(
+                court: court, branch: anchorContext.branch, region: anchorContext.region,
+                courtCode: anchorContext.courtCode, cartoteka: current.cartoteka,
+                result: result, card: anchorCard)
         }
-        guard let match = try await uniqueUIDMatch(
-            rows: mainRows, uid: uid, court: court, cartoteka: cart,
-            provider: regularProvider)
-        else { throw CaseOriginResolutionError.notFound }
+
+        guard let uid = Self.verifiedJudicialUID(card: anchorCard, context: anchorContext)
+        else { throw CaseOriginResolutionError.noReference }
+
+        var matches: [String: ResolvedOriginCard] = [:]
+        var incomplete = false
+        for candidateCart in cartotekas {
+            try Task.checkCancellation()
+            let rows = try await regularProvider.search(
+                court: court, cartoteka: candidateCart, field: .uid, value: uid)
+            for row in rows {
+                try Task.checkCancellation()
+                guard let rowRegistration = Self.mainRegistration(
+                    in: row.caseNumber, preliminaryNumber: anchorContext.caseNumber,
+                    preliminary: preliminary, courtLevel: court.level,
+                    branch: anchorContext.branch, allowedCartotekas: cartotekas),
+                      rowRegistration.cartoteka.id == candidateCart.id else { continue }
+                guard let sourceKey = Self.validatedSourceKey(
+                    row: row, court: court, cartoteka: candidateCart,
+                    expectedSRV: anchorSRV) else {
+                    incomplete = true
+                    continue
+                }
+
+                let foundCard: CaseCard
+                do {
+                    foundCard = try await fetchCard(
+                        row: row, court: court, cartoteka: candidateCart,
+                        provider: regularProvider)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled {
+                    throw error
+                } catch let error as SudrfError {
+                    switch error {
+                    case .captchaRequired, .transientNetworkError,
+                         .caseCardTemporarilyUnavailable, .sourceMaintenance:
+                        throw error
+                    default:
+                        incomplete = true
+                        continue
+                    }
+                } catch {
+                    // Пока хотя бы одну подходящую строку нельзя прочитать,
+                    // единственность другой карточки не доказана.
+                    incomplete = true
+                    continue
+                }
+                guard Self.matchesVerifiedJudicialUID(foundCard.uid, expected: uid),
+                      let cardRegistration = Self.mainRegistration(
+                        in: foundCard.caseNumber, preliminaryNumber: anchorContext.caseNumber,
+                        preliminary: preliminary, courtLevel: court.level,
+                        branch: anchorContext.branch, allowedCartotekas: cartotekas),
+                      cardRegistration.cartoteka.id == candidateCart.id,
+                      Self.samePublishedCaseNumber(
+                        rowRegistration.number, cardRegistration.number),
+                      Self.previousRegistrationDoesNotContradict(
+                        foundCard.previousRegistration, anchor: anchorContext,
+                        court: court, anchorCartoteka: cart,
+                        expectedSRV: anchorSRV)
+                else { continue }
+                let match = ResolvedOriginCard(
+                    court: court, cartoteka: candidateCart,
+                    result: row, card: foundCard)
+                if let existing = matches[sourceKey],
+                   !Self.samePublishedCaseNumber(
+                    existing.card.caseNumber, match.card.caseNumber) {
+                    throw CaseOriginResolutionError.ambiguous
+                }
+                matches[sourceKey] = match
+            }
+        }
+        if incomplete { throw CaseOriginResolutionError.incompleteCandidates }
+        guard matches.count == 1, let match = matches.values.first else {
+            throw matches.isEmpty ? CaseOriginResolutionError.notFound
+                                  : CaseOriginResolutionError.ambiguous
+        }
         return ResolvedCaseOrigin(court: court, branch: anchorContext.branch,
                                   region: anchorContext.region, courtCode: anchorContext.courtCode,
-                                  cartoteka: cart, result: match.0, card: match.1)
+                                  cartoteka: match.cartoteka, result: match.result,
+                                  card: match.card)
+    }
+
+    private struct MainRegistration {
+        var number: String
+        var cartoteka: Cartoteka
+    }
+
+    private static func mainRegistration(
+        in publishedNumber: String?, preliminaryNumber: String,
+        preliminary: CaseIndexInfo, courtLevel: CourtLevel, branch: CourtBranch,
+        allowedCartotekas: [Cartoteka]
+    ) -> MainRegistration? {
+        guard let publishedNumber = nonEmpty(publishedNumber) else { return nil }
+        let parts = publishedNumber
+            .split(omittingEmptySubsequences: false) { $0 == "~" || $0 == "∼" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard parts.count == 1 || parts.count == 2,
+              parts.allSatisfy({ !$0.isEmpty }) else { return nil }
+        if parts.count == 2,
+           !samePublishedCaseNumber(parts[1], preliminaryNumber) { return nil }
+
+        let currentNumber = parts[0]
+        guard isCompletePublishedNumber(currentNumber),
+              parts.count == 1 || isCompletePublishedNumber(parts[1]) else { return nil }
+        guard let current = CaseIndexClassifier.classify(
+            caseNumber: currentNumber, courtLevel: courtLevel, branch: branch),
+              current.cardRole == .firstInstanceCase,
+              courtLevel != .subject || current.processKind == .administrative,
+              preliminary.processKind == nil || current.processKind == preliminary.processKind
+        else { return nil }
+        let carts = CartotekaRegistry.matches(caseNumber: currentNumber, level: courtLevel)
+            .filter { cart in allowedCartotekas.contains { $0.id == cart.id } }
+        guard carts.count == 1, let cart = carts.first else { return nil }
+        return MainRegistration(number: currentNumber, cartoteka: cart)
+    }
+
+    private static func firstInstanceCartotekas(
+        court: Court, anchor: Cartoteka, branch: CourtBranch
+    ) -> [Cartoteka] {
+        guard branch == .general else { return [anchor] }
+        let ids: [String]
+        switch anchor.id.lowercased() {
+        case "g1": ids = ["g1", "p1"]
+        case "p1": ids = ["p1", "g1"]
+        default: ids = [anchor.id]
+        }
+        return ids.compactMap { CartotekaRegistry.find(level: court.level, id: $0) }
+    }
+
+    private static func verifiedJudicialUID(
+        card: CaseCard, context: MovementContext
+    ) -> String? {
+        let rawValues = [card.uid, context.judicialUID].compactMap(nonEmpty)
+        guard !rawValues.isEmpty,
+              rawValues.allSatisfy({ JudicialUIDObservation.validity(of: $0) == .valid })
+        else { return nil }
+        let normalized = Set(rawValues.map(JudicialUIDObservation.normalize))
+        guard normalized.count == 1 else { return nil }
+        return rawValues[0]
+    }
+
+    private static func judicialUIDsDoNotContradict(
+        card: CaseCard, context: MovementContext
+    ) -> Bool {
+        let rawValues = [card.uid, context.judicialUID].compactMap(nonEmpty)
+        guard rawValues.allSatisfy({ JudicialUIDObservation.validity(of: $0) == .valid })
+        else { return false }
+        return Set(rawValues.map(JudicialUIDObservation.normalize)).count <= 1
+    }
+
+    private static func matchesVerifiedJudicialUID(
+        _ candidate: String?, expected: String
+    ) -> Bool {
+        guard JudicialUIDObservation.validity(of: candidate) == .valid,
+              let candidate else { return false }
+        return JudicialUIDObservation.normalize(candidate)
+            == JudicialUIDObservation.normalize(expected)
+    }
+
+    private static func validatedSourceKey(
+        row: CaseSearchResult, court: Court, cartoteka: Cartoteka,
+        expectedSRV: String?
+    ) -> String? {
+        if let url = row.cardURL {
+            guard let link = try? SudrfCaseCardLink(url: url),
+                  link.moduleHost == SudrfHost.moduleHost(court.domain),
+                  let linkedCart = CartotekaRegistry.resolve(
+                    level: court.level, deloID: link.deloID, new: link.new,
+                    caseNumber: row.caseNumber),
+                  linkedCart.id == cartoteka.id,
+                  expectedSRV == nil || (link.srvNum ?? "1") == expectedSRV,
+                  row.caseID == nil || row.caseID == link.caseID,
+                  row.caseUID == nil || row.caseUID == link.caseUID
+            else { return nil }
+            let sourceID = link.caseID.map { "id:\($0)" }
+                ?? link.caseUID.map { "uid:\($0)" }
+            guard let sourceID else { return nil }
+            return "\(cartoteka.id)|srv:\(link.srvNum ?? "1")|\(sourceID)"
+        }
+        guard let caseID = nonEmpty(row.caseID), nonEmpty(row.caseUID) != nil else { return nil }
+        guard expectedSRV == nil || expectedSRV == "1" else { return nil }
+        return "\(cartoteka.id)|srv:1|id:\(caseID)"
+    }
+
+    private static func previousRegistrationDoesNotContradict(
+        _ reference: PreviousRegistrationReference?, anchor: MovementContext,
+        court: Court, anchorCartoteka: Cartoteka, expectedSRV: String
+    ) -> Bool {
+        guard let reference else { return true }
+        guard samePublishedCaseNumber(reference.caseNumber, anchor.caseNumber),
+              let link = try? SudrfCaseCardLink(url: reference.url),
+              link.moduleHost == SudrfHost.moduleHost(court.domain),
+              let linkedCart = CartotekaRegistry.resolve(
+                level: court.level, deloID: link.deloID, new: link.new,
+                caseNumber: reference.caseNumber),
+              linkedCart.id == anchorCartoteka.id,
+              (link.srvNum ?? "1") == expectedSRV,
+              (anchor.caseID != nil && anchor.caseID == link.caseID)
+                || (anchor.caseID == nil && anchor.caseUID != nil
+                    && anchor.caseUID == link.caseUID),
+              anchor.caseUID == nil || link.caseUID == nil || anchor.caseUID == link.caseUID
+        else { return false }
+        return true
+    }
+
+    private static func samePublishedCaseNumber(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = normalizedPublishedCaseNumber(lhs),
+              let rhs = normalizedPublishedCaseNumber(rhs) else { return false }
+        return lhs == rhs
+    }
+
+    private static func normalizedPublishedCaseNumber(_ value: String?) -> String? {
+        guard let value = nonEmpty(value) else { return nil }
+        let latin: [Character: Character] = ["a": "а", "g": "г", "k": "к",
+                                             "m": "м", "y": "у", "u": "у"]
+        var compact = String(value.lowercased().replacingOccurrences(of: "ё", with: "е")
+            .filter { !$0.isWhitespace }.map { latin[$0] ?? $0 })
+        if compact.hasPrefix("№") { compact.removeFirst() }
+        return compact.isEmpty ? nil : compact
+    }
+
+    private static func isCompletePublishedNumber(_ value: String) -> Bool {
+        guard let normalized = normalizedPublishedCaseNumber(value),
+              let regex = try? NSRegularExpression(
+                pattern: #"^[0-9а-яё/]+-[0-9]+/[0-9]{4}(?:\([0-9]+\))?$"#)
+        else { return false }
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        return regex.firstMatch(in: normalized, range: range)?.range == range
+    }
+
+    private static func sourceSRV(_ url: URL?) -> String? {
+        guard let url, let link = try? SudrfCaseCardLink(url: url) else { return nil }
+        return link.srvNum ?? "1"
     }
 
     private func resolveVerifiedMaterialParent(context: MovementContext, card: CaseCard) async throws

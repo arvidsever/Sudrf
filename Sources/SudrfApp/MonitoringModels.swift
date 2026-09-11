@@ -311,6 +311,9 @@ struct TrackedHearing: Identifiable {
     var instanceCaseNumber: String? = nil
     /// Уровень карточки-источника нужен только проекциям интерфейса.
     var instanceLevel: CaseInstance.Level = .first
+    /// Номер сохранённой отдельной предыдущей регистрации. Это transient
+    /// проекция по sourceCardID; исходный level карточки не меняется.
+    var previousRegistrationNumber: String? = nil
     var reviewNumber: String? {
         guard instanceLevel != .material else { return nil }
         return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)
@@ -320,6 +323,9 @@ struct TrackedHearing: Identifiable {
         return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: "")
     }
     var secondaryLabel: String? {
+        if let previousRegistrationNumber {
+            return "Предыдущая регистрация № \(previousRegistrationNumber)"
+        }
         guard instanceLevel == .material else { return reviewNumber }
         return materialNumber.map { "Материал № \($0)" }
             ?? "Материал · номер не опубликован"
@@ -346,6 +352,9 @@ struct FeedEntry: Identifiable {
     var instanceLevel: CaseInstance.Level = .first
     var sourceCardID: String? = nil
     var sourceInstanceID: String? = nil
+    /// Номер сохранённой отдельной предыдущей регистрации. Источник остаётся
+    /// доступен в ленте без переклассификации карточки в обычный материал.
+    var previousRegistrationNumber: String? = nil
 
     var hasAct: Bool { actID != nil }
     var reviewNumber: String? {
@@ -357,12 +366,18 @@ struct FeedEntry: Identifiable {
         return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: "")
     }
     var secondaryLabel: String? {
+        if let previousRegistrationNumber {
+            return "Предыдущая регистрация № \(previousRegistrationNumber)"
+        }
         guard instanceLevel == .material else { return reviewNumber }
         return materialNumber.map { "Материал № \($0)" }
             ?? "Материал · номер не опубликован"
     }
     var notificationSubtitle: String {
-        guard instanceLevel == .material, let secondaryLabel else { return caseNumber }
+        guard let secondaryLabel,
+              instanceLevel == .material || previousRegistrationNumber != nil else {
+            return caseNumber
+        }
         return "\(caseNumber) · \(secondaryLabel)"
     }
 }
@@ -379,6 +394,12 @@ struct TrackedCase: Identifiable {
     var id: String { recordKey }
     var recordKey: String
     var caseNumber: String
+    /// Прежние номера этой же карточки источника — для подписи рядом с
+    /// текущим опубликованным номером.
+    var previousCaseNumbers: [String] = []
+    /// Все известные номера логического дела, включая отдельные карточки.
+    /// Используются только локальным фильтром; текущий номер остаётся главным.
+    var searchCaseNumbers: [String] = []
     /// Очищенный номер текущей апелляции/кассации/надзора для UI. Сырой
     /// `caseNumber` остаётся источником навигации и поиска.
     var currentReviewNumber: String? = nil

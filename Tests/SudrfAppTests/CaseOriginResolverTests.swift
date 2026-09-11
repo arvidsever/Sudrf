@@ -8,6 +8,9 @@ private actor OriginProviderStub: CaseProviding {
     var cards: [String: CaseCard]
     var rowsByCartAndValue: [String: [CaseSearchResult]]
     var throwTransientOnUID: Bool
+    var transientUIDCartID: String?
+    var cancelUIDCartID: String?
+    var unreadableCardIDs: Set<String>
     var captchaOnUIDURL: URL?
     var captchaOnCardURL: URL?
     private(set) var fields: [SearchField] = []
@@ -15,11 +18,15 @@ private actor OriginProviderStub: CaseProviding {
     init(uidRows: [CaseSearchResult] = [], numberRows: [CaseSearchResult],
          cards: [String: CaseCard], rowsByCartAndValue: [String: [CaseSearchResult]] = [:],
          throwTransientOnUID: Bool = false, captchaOnUIDURL: URL? = nil,
-         captchaOnCardURL: URL? = nil) {
+         captchaOnCardURL: URL? = nil, transientUIDCartID: String? = nil,
+         cancelUIDCartID: String? = nil, unreadableCardIDs: Set<String> = []) {
         self.uidRows = uidRows; self.numberRows = numberRows
         self.cards = cards; self.rowsByCartAndValue = rowsByCartAndValue
         self.throwTransientOnUID = throwTransientOnUID; self.captchaOnUIDURL = captchaOnUIDURL
         self.captchaOnCardURL = captchaOnCardURL
+        self.transientUIDCartID = transientUIDCartID
+        self.cancelUIDCartID = cancelUIDCartID
+        self.unreadableCardIDs = unreadableCardIDs
     }
 
     func search(court: Court, cartoteka: Cartoteka,
@@ -29,6 +36,11 @@ private actor OriginProviderStub: CaseProviding {
             throw SudrfError.transientNetworkError(domain: court.domain,
                                                     code: .timedOut, attempt: 3)
         }
+        if field == .uid, cartoteka.id == transientUIDCartID {
+            throw SudrfError.transientNetworkError(domain: court.domain,
+                                                    code: .timedOut, attempt: 3)
+        }
+        if field == .uid, cartoteka.id == cancelUIDCartID { throw CancellationError() }
         if field == .uid, let captchaOnUIDURL {
             throw SudrfError.captchaRequired(formURL: captchaOnUIDURL)
         }
@@ -38,6 +50,7 @@ private actor OriginProviderStub: CaseProviding {
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard {
         if let captchaOnCardURL { throw SudrfError.captchaRequired(formURL: captchaOnCardURL) }
+        if unreadableCardIDs.contains(caseID) { throw SudrfError.http(status: 503) }
         guard let card = cards[caseID] else { throw SudrfError.http(status: 404) }
         return card
     }
@@ -73,6 +86,35 @@ final class CaseOriginResolverTests: XCTestCase {
             court: Court(domain: "syktsud--komi.sudrf.ru",
                          title: "Сыктывкарский городской суд", level: .district),
             branch: .general, code: "11RS0001")
+    }
+
+    private func subjectPreliminary(
+        number: String, cartotekaID: String = "p1", uid: String? = nil
+    ) throws -> (MovementContext, CaseCard) {
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: cartotekaID))
+        let url = try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=anchor&case_uid=anchor-guid"
+                + "&delo_id=\(cart.deloID)&new=\(cart.new)"))
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "vs--komi.sudrf.ru", displayDomain: "vs.komi.sudrf.ru",
+            courtTitle: "Верховный Суд Республики Коми", courtLevelRaw: "subject",
+            courtCode: "11", cartotekaId: cartotekaID,
+            cartotekaLevelRaw: "subject", caseNumber: number,
+            caseID: "anchor", caseUID: "anchor-guid", cardURLString: url.absoluteString)
+        context.judicialUID = uid
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        return (context, CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: number))
+    }
+
+    private func subjectURL(cartotekaID: String, caseID: String,
+                            srvNum: String = "1") throws -> URL {
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: cartotekaID))
+        return try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=\(srvNum)"
+                + "&name_op=case&case_id=\(caseID)&case_uid=\(caseID)-guid"
+                + "&delo_id=\(cart.deloID)&new=\(cart.new)"))
     }
 
     func testMissingUIDResolvesBySingleExactLowerNumber() async throws {
@@ -123,6 +165,348 @@ final class CaseOriginResolverTests: XCTestCase {
         XCTAssertEqual(result.result.caseNumber, main.caseNumber)
         XCTAssertEqual(result.cartoteka.id, "p1")
         XCTAssertEqual(result.court.title, context.courtTitle)
+    }
+
+    func testSubjectPreliminaryUsesCurrentCompositeNumberFromSameExactCardWithoutUID() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        let (context, original) = try subjectPreliminary(number: "М-662/2026")
+        let current = CaseCard(rawText: "", actText: nil,
+                               caseNumber: "3а-685/2026 ~ М-662/2026")
+
+        let result = try await resolver.resolveMainCase(
+            anchorContext: context, anchorCard: current)
+
+        XCTAssertEqual(original.caseNumber, "М-662/2026")
+        XCTAssertEqual(result.result.caseNumber, "3а-685/2026 ~ М-662/2026")
+        XCTAssertEqual(result.card.caseNumber, "3а-685/2026 ~ М-662/2026")
+        XCTAssertEqual(result.cartoteka.id, "p1")
+        let fields = await provider.fields
+        XCTAssertTrue(fields.isEmpty)
+    }
+
+    func testSubject9AUsesStandaloneCurrentNumberFromSameExactCard() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        let (context, _) = try subjectPreliminary(number: "9а-118/2026")
+        let current = CaseCard(rawText: "", actText: nil, caseNumber: "3а-151/2026")
+
+        let result = try await resolver.resolveMainCase(
+            anchorContext: context, anchorCard: current)
+
+        XCTAssertEqual(result.cartoteka.id, "p1")
+        XCTAssertEqual(result.result.caseNumber, "3а-151/2026")
+        let fields = await provider.fields
+        XCTAssertTrue(fields.isEmpty)
+    }
+
+    func testSameCardCurrentNumberRequiresCompletePublishedHeading() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        let (context, _) = try subjectPreliminary(number: "М-662/2026")
+        let malformed = CaseCard(rawText: "", actText: nil,
+                                 caseNumber: "3а-685/2026 решение ~ М-662/2026")
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: malformed)
+            XCTFail("Посторонний текст не является опубликованным номером")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+    }
+
+    func testSameCardCurrentNumberRequiresExactAnchorSource() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        var (context, _) = try subjectPreliminary(number: "М-662/2026")
+        context.caseID = nil
+        context.caseUID = nil
+        context.cardURLString = nil
+        let current = CaseCard(rawText: "", actText: nil,
+                               caseNumber: "3а-685/2026 ~ М-662/2026")
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: current)
+            XCTFail("Новый заголовок без идентичности карточки не доказывает связь")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+    }
+
+    func testSameCardDoesNotSwitchCartotekaInferredOnlyFromNewHeading() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        let (context, _) = try subjectPreliminary(
+            number: "М-662/2026", cartotekaID: "g1")
+        let current = CaseCard(rawText: "", actText: nil,
+                               caseNumber: "3а-685/2026 ~ М-662/2026")
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: current)
+            XCTFail("Адрес g1 не доказывает, что карточка принадлежит p1")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+    }
+
+    func testSameCardRejectsMalformedKnownJudicialUID() async throws {
+        let provider = OriginProviderStub(numberRows: [], cards: [:])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        let (context, _) = try subjectPreliminary(number: "М-662/2026", uid: "not-a-uid")
+        let current = CaseCard(rawText: "", actText: nil, uid: "not-a-uid",
+                               caseNumber: "3а-685/2026 ~ М-662/2026")
+
+        do {
+            _ = try await resolver.resolveMainCase(anchorContext: context, anchorCard: current)
+            XCTFail("Невалидное значение УИД нельзя игнорировать")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .noReference)
+        }
+    }
+
+    func testSubjectMFindsUniqueKASRegistrationAcrossPairedCartotekas() async throws {
+        let currentURL = try subjectURL(cartotekaID: "p1", caseID: "current")
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3а-685/2026", caseID: "current",
+                                   caseUID: "current-guid", cardURL: currentURL)
+        let previous = PreviousRegistrationReference(
+            caseNumber: context.caseNumber, url: try XCTUnwrap(context.baseResult.cardURL))
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["current": CaseCard(rawText: "", actText: nil, uid: uid,
+                                        caseNumber: "3а-685/2026",
+                                        previousRegistration: previous)],
+            rowsByCartAndValue: ["p1|\(uid)": [row], "g1|\(uid)": []])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        let result = try await resolver.resolveMainCase(
+            anchorContext: context, anchorCard: anchorCard)
+
+        XCTAssertEqual(result.cartoteka.id, "p1")
+        XCTAssertEqual(result.result.caseID, "current")
+        let fields = await provider.fields
+        XCTAssertEqual(fields, [.uid, .uid])
+    }
+
+    func testFallbackRejectsContradictoryPreviousRegistrationSource() async throws {
+        let currentURL = try subjectURL(cartotekaID: "p1", caseID: "current")
+        let wrongPreviousURL = try subjectURL(cartotekaID: "p1", caseID: "other")
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3а-685/2026", caseID: "current",
+                                   caseUID: "current-guid", cardURL: currentURL)
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["current": CaseCard(
+                rawText: "", actText: nil, uid: uid, caseNumber: row.caseNumber,
+                previousRegistration: PreviousRegistrationReference(
+                    caseNumber: context.caseNumber, url: wrongPreviousURL))],
+            rowsByCartAndValue: ["p1|\(uid)": [row], "g1|\(uid)": []])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Ссылка на другую предыдущую карточку противоречит якорю")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testSubjectMDoesNotPromoteCivilCurrentRegistration() async throws {
+        let currentURL = try subjectURL(cartotekaID: "g1", caseID: "civil")
+        let (context, anchorCard) = try subjectPreliminary(
+            number: "М-662/2026", cartotekaID: "g1", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3-91/2026", caseID: "civil",
+                                   caseUID: "civil-guid", cardURL: currentURL)
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["civil": CaseCard(rawText: "", actText: nil, uid: uid,
+                                      caseNumber: row.caseNumber)],
+            rowsByCartAndValue: ["g1|\(uid)": [row], "p1|\(uid)": []])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Гражданское дело суда субъекта относится к отдельному объёму #246")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testDistrict9ToCivil2PromotionRemainsSupported() async throws {
+        let current = CaseSearchResult(caseNumber: "2-7212/2025",
+                                       caseID: "current", caseUID: "current-guid")
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["current": CaseCard(rawText: "", actText: nil, uid: uid,
+                                        caseNumber: current.caseNumber)],
+            rowsByCartAndValue: ["g1|\(uid)": [current], "p1|\(uid)": []])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+        var (context, card) = anchor(uid: uid)
+        context.searchDomain = "syktsud--komi.sudrf.ru"
+        context.displayDomain = "syktsud.komi.sudrf.ru"
+        context.courtTitle = "Сыктывкарский городской суд"
+        context.courtLevelRaw = CourtLevel.district.rawValue
+        context.cartotekaId = "g1"
+        context.cartotekaLevelRaw = CourtLevel.district.rawValue
+        context.caseNumber = "9-1693/2025"
+        context.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        card.caseNumber = context.caseNumber
+
+        let result = try await resolver.resolveMainCase(
+            anchorContext: context, anchorCard: card)
+
+        XCTAssertEqual(result.cartoteka.id, "g1")
+        XCTAssertEqual(result.result.caseNumber, "2-7212/2025")
+    }
+
+    func testSubject9ADoesNotPromoteCivilRegistration() async throws {
+        let civilURL = try subjectURL(cartotekaID: "g1", caseID: "civil")
+        let (context, anchorCard) = try subjectPreliminary(number: "9а-118/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3-91/2026", caseID: "civil",
+                                   caseUID: "civil-guid", cardURL: civilURL)
+        let provider = OriginProviderStub(
+            numberRows: [], cards: [:],
+            rowsByCartAndValue: ["p1|\(uid)": [], "g1|\(uid)": [row]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("9а не доказывает связь с гражданским делом")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testPairedUIDSearchRejectsActualCartotekaMismatch() async throws {
+        let kasURL = try subjectURL(cartotekaID: "p1", caseID: "current")
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3а-685/2026", caseID: "current",
+                                   caseUID: "current-guid", cardURL: kasURL)
+        let provider = OriginProviderStub(
+            numberRows: [], cards: [:],
+            rowsByCartAndValue: ["p1|\(uid)": [], "g1|\(uid)": [row]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Строка p1, возвращённая поиском g1, не точна")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testPairedUIDSearchRejectsDifferentDatabaseInstance() async throws {
+        let wrongSRVURL = try subjectURL(
+            cartotekaID: "p1", caseID: "current", srvNum: "2")
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3а-685/2026", caseID: "current",
+                                   caseUID: "current-guid", cardURL: wrongSRVURL)
+        let provider = OriginProviderStub(
+            numberRows: [], cards: [:],
+            rowsByCartAndValue: ["p1|\(uid)": [row], "g1|\(uid)": []])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Другой srv_num не является той же базой суда")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .incompleteCandidates)
+        }
+    }
+
+    func testPairedUIDSearchDoesNotAcceptPartialResult() async throws {
+        let kasURL = try subjectURL(cartotekaID: "p1", caseID: "current")
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let row = CaseSearchResult(caseNumber: "3а-685/2026", caseID: "current",
+                                   caseUID: "current-guid", cardURL: kasURL)
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["current": CaseCard(rawText: "", actText: nil, uid: uid,
+                                        caseNumber: row.caseNumber)],
+            rowsByCartAndValue: ["p1|\(uid)": [row]], transientUIDCartID: "g1")
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Неполный парный поиск не доказывает единственность")
+        } catch let error as SudrfError {
+            guard case .transientNetworkError = error else {
+                return XCTFail("Неожиданная ошибка: \(error)")
+            }
+        }
+    }
+
+    func testUnreadableEligibleCardDoesNotMakeAnotherCandidateUnique() async throws {
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let readable = CaseSearchResult(
+            caseNumber: "3а-685/2026", caseID: "readable", caseUID: "readable-guid",
+            cardURL: try subjectURL(cartotekaID: "p1", caseID: "readable"))
+        let unreadable = CaseSearchResult(
+            caseNumber: "3а-686/2026", caseID: "unreadable", caseUID: "unreadable-guid",
+            cardURL: try subjectURL(cartotekaID: "p1", caseID: "unreadable"))
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: ["readable": CaseCard(rawText: "", actText: nil, uid: uid,
+                                         caseNumber: readable.caseNumber)],
+            rowsByCartAndValue: ["p1|\(uid)": [readable, unreadable], "g1|\(uid)": []],
+            unreadableCardIDs: ["unreadable"])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Непрочитанный кандидат не даёт доказать единственность")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .incompleteCandidates)
+        }
+    }
+
+    func testPairedUIDSearchPropagatesCancellation() async throws {
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let provider = OriginProviderStub(
+            numberRows: [], cards: [:],
+            rowsByCartAndValue: ["p1|\(uid)": []], cancelUIDCartID: "g1")
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        do {
+            _ = try await resolver.resolveMainCase(
+                anchorContext: context, anchorCard: anchorCard)
+            XCTFail("Отмена не должна превращаться в пустой результат")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testSubjectMIgnoresCivilCandidateWhenKASRegistrationIsUnique() async throws {
+        let (context, anchorCard) = try subjectPreliminary(number: "М-662/2026", uid: uid)
+        let kas = CaseSearchResult(
+            caseNumber: "3а-685/2026", caseID: "kas", caseUID: "kas-guid",
+            cardURL: try subjectURL(cartotekaID: "p1", caseID: "kas"))
+        let civil = CaseSearchResult(
+            caseNumber: "3-91/2026", caseID: "civil", caseUID: "civil-guid",
+            cardURL: try subjectURL(cartotekaID: "g1", caseID: "civil"))
+        let provider = OriginProviderStub(
+            numberRows: [],
+            cards: [
+                "kas": CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: kas.caseNumber),
+                "civil": CaseCard(rawText: "", actText: nil, uid: uid,
+                                  caseNumber: civil.caseNumber),
+            ],
+            rowsByCartAndValue: ["p1|\(uid)": [kas], "g1|\(uid)": [civil]])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider)
+
+        let result = try await resolver.resolveMainCase(
+            anchorContext: context, anchorCard: anchorCard)
+
+        XCTAssertEqual(result.cartoteka.id, "p1")
+        XCTAssertEqual(result.result.caseID, "kas")
     }
 
     func testPreliminaryNumberRejectsMainCardWithDifferentUID() async throws {

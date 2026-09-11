@@ -34,6 +34,7 @@ extension CaseInstance.Level {
 struct CaseMovementView: View {
     let movement: CaseMovement
     @Binding var expanded: Set<String>
+    var previousCaseNumbers: [String] = []
     var backTitle: String = "Выдача"
     var onBack: () -> Void
     /// Ссылка базовой карточки из сохранённого контекста. Нужна как fallback
@@ -75,10 +76,24 @@ struct CaseMovementView: View {
                     // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
                     // отдельной секцией в конце: они идут в рамках дела, но инстанциями
                     // не являются.
-                    ForEach(movement.instances.filter { $0.level != .material }) { inst in
+                    ForEach(Self.activeInstances(in: movement)) { inst in
                         InstanceBlock(instance: inst, complaints: movement.complaints,
                                       expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
                                       onRefresh: onRefresh)
+                    }
+                    let previousRegistrations = Self.previousRegistrationInstances(in: movement)
+                    if !previousRegistrations.isEmpty {
+                        Text("Предыдущая регистрация")
+                            .font(.system(size: 12.5, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
+                            .padding(.top, 6)
+                        ForEach(previousRegistrations) { inst in
+                            InstanceBlock(instance: inst, complaints: movement.complaints,
+                                          expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                                          onRefresh: onRefresh)
+                        }
                     }
                     let materials = Self.materialInstances(in: movement)
                     if !materials.isEmpty {
@@ -142,7 +157,19 @@ struct CaseMovementView: View {
     /// рисует их шапку, состояние источника и опубликованные события без
     /// отдельной UI-модели или механики раскрытия.
     static func materialInstances(in movement: CaseMovement) -> [CaseInstance] {
-        movement.instances.filter { $0.level == .material }
+        movement.instances.filter {
+            $0.level == .material && $0.note != "Предыдущая регистрация"
+        }
+    }
+
+    static func previousRegistrationInstances(in movement: CaseMovement) -> [CaseInstance] {
+        movement.instances.filter { $0.note == "Предыдущая регистрация" }
+    }
+
+    static func activeInstances(in movement: CaseMovement) -> [CaseInstance] {
+        movement.instances.filter {
+            $0.level != .material && $0.note != "Предыдущая регистрация"
+        }
     }
 
     private var header: some View {
@@ -218,6 +245,12 @@ struct CaseMovementView: View {
                 Text("Дело № \(movement.caseNumber) · движение")
                     .font(.system(size: 14.5, weight: .bold))
                 ForceBadge(inForce: movement.inForce)
+            }
+            if !previousCaseNumbers.isEmpty {
+                Text("Предыдущие номера: \(previousCaseNumbers.joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             Text(movement.uid.isEmpty
                  ? "УИД в карточке не указан — вышестоящие инстанции не подтянуты"

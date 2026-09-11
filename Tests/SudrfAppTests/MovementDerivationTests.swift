@@ -298,6 +298,7 @@ final class MovementDerivationTests: XCTestCase {
             ("Регистрация входящей корреспонденции", nil),
             ("Изготовлено мотивированное решение в окончательной форме", nil),
             ("Направление копии постановления (определения) в соответствующие органы", nil),
+            ("Результат рассмотрения жалобы", "Оставлено без изменения"),
         ]
 
         for row in cases {
@@ -1183,6 +1184,64 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(snapshot.steps, ["done", "done", "done"])
         XCTAssertEqual(snapshot.statusText, "Жалоба оставлена без удовлетворения")
         XCTAssertNil(presentation.currentTier)
+    }
+
+    func testConflictingKoAPKSOYUResultsStayVisibleWithoutChoosingLifecycleWinner() {
+        let sourceURL = URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&delo_id=2550001&case_id=44")!
+        let ksoyu = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "16-2038/2023", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [
+                CaseSession(date: "18.05.2026", event: "Результат рассмотрения жалобы",
+                            result: "Оставлено без изменения"),
+                CaseSession(date: "18.05.2026", event: "Результат рассмотрения жалобы",
+                            result: "Отменено с направлением на новое рассмотрение"),
+            ], sourceURL: sourceURL)
+        let movement = koapMovement(
+            caseNumber: "5-3337/2022", appealNumber: "12-36/2023", reviews: [ksoyu])
+        let context = context(cartoteka: "adm")
+
+        let snapshot = MovementDerivation.snapshot(
+            from: movement, context: context,
+            today: DateUtil.parse("19.05.2026")!)
+
+        XCTAssertTrue(CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(ksoyu))
+        XCTAssertEqual(snapshot.sessions.filter {
+            $0.event == "Результат рассмотрения жалобы"
+        }.compactMap(\.result), [
+            "Оставлено без изменения",
+            "Отменено с направлением на новое рассмотрение",
+        ])
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.supervisory.rawValue)
+        XCTAssertEqual(snapshot.statusText, "Итог требует проверки")
+    }
+
+    func testKoAPKSOYUConflictGroupingUsesCalendarDayAndStrictSource() {
+        func instance(dates: [String], sourceURL: String) -> CaseInstance {
+            CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "16-2038/2023", judge: nil, domain: "3kas.sudrf.ru",
+                foundByUID: true, result: nil,
+                sessions: zip(dates, ["Оставлено без изменения", "Отменено"]).map {
+                    CaseSession(date: $0.0, event: "Результат рассмотрения жалобы",
+                                result: $0.1)
+                }, sourceURL: URL(string: sourceURL))
+        }
+        let exact =
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&delo_id=2550001&case_id=44"
+
+        XCTAssertTrue(CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(
+            instance(dates: ["1.2.2023", "01.02.2023"], sourceURL: exact)))
+        XCTAssertTrue(CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(
+            instance(dates: ["", "  "], sourceURL: exact)))
+        XCTAssertFalse(CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(
+            instance(dates: ["18.05.2023", "18.05.2023"], sourceURL:
+                "https://2kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&delo_id=2550001&case_id=44")))
+        XCTAssertFalse(CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(
+            instance(dates: ["18.05.2023", "18.05.2023"], sourceURL:
+                exact + "&delo_id=2550002")))
     }
 
     func testKoAPVSRFPathUsesSupervisoryStageAndSupremeTier() {

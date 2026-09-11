@@ -172,6 +172,11 @@ struct CaseMovementView: View {
         }
     }
 
+    static func sessionDateLabel(_ date: String) -> String {
+        date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Дата не опубликована" : date
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -722,6 +727,9 @@ private struct InstanceBlock: View {
                 // pure-transient сценарий: кэша нет, инстанция не загружена.
                 transientPrompt
             }
+            if CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult(instance) {
+                complaintResultAmbiguity
+            }
             if let error = instance.actFileError {
                 actFilePrompt(error)
             }
@@ -738,6 +746,15 @@ private struct InstanceBlock: View {
         )
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.06)))
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var complaintResultAmbiguity: some View {
+        Text("Суд опубликовал разные результаты на одну дату. Итог требует проверки в карточке суда.")
+            .font(.system(size: 11))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // Заглушка: форма суда под капчей — автопоиск невозможен, нужен ручной ввод кода.
@@ -857,8 +874,11 @@ private struct SessionRow: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(session.date).font(.system(size: 11.5, weight: .semibold))
-                    .frame(width: 70, alignment: .leading)
+                Text(CaseMovementView.sessionDateLabel(session.date))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(width: session.date.trimmingCharacters(
+                        in: .whitespacesAndNewlines).isEmpty ? 118 : 70,
+                        alignment: .leading)
                 Text([session.time, session.room].compactMap { $0 }.joined(separator: " · "))
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
                     .frame(width: 62, alignment: .leading)

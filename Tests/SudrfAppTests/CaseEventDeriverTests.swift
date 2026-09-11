@@ -5,6 +5,7 @@ import SudrfKit
 
 struct CaseEventDeriverTests {
     private let card = "sudrf|11rs0001|g1|12345"
+    private let koapKSOYUCard = "sudrf|3kas.sudrf.ru|adm3|25004446"
     private let observedAt = DateUtil.parse("01.03.2027")!
 
     @Test func identicalReorderWhitespaceAndRenumberingAreSilent() {
@@ -122,6 +123,144 @@ struct CaseEventDeriverTests {
         let baseline = derive(legacy, snapshot(sessions: [session("10.03.2027")]))
         #expect(baseline.events.isEmpty)
         #expect(baseline.diagnostics == [.derivationVersionChanged])
+    }
+
+    @Test func koapKSOYUComplaintTimelineUsesExactSourceDatesAndDeduplicates() {
+        let request = koapSession("18.05.2023", event: "Истребование дела (материала)")
+        let receipt = koapSession("12.06.2023",
+                                  event: "Поступление истребованного дела (материала)")
+        let consideration = koapSession("04.07.2023",
+                                        event: "Результат рассмотрения жалобы",
+                                        result: "Жалоба оставлена без удовлетворения")
+        let before = koapSnapshot()
+        let after = koapSnapshot(sessions: [request, receipt, consideration])
+
+        let result = derive(before, after)
+
+        #expect(result.events.map(\.kind) == [
+            .caseFileRequested, .complaintReviewResult, .requestedCaseReceived
+        ])
+        #expect(result.events.map(\.evidence.dateRaw) == [
+            "18.05.2023", "04.07.2023", "12.06.2023"
+        ])
+        #expect(result.events.first(where: { $0.kind == .complaintReviewResult })?
+            .evidence.value == "Жалоба оставлена без удовлетворения")
+        #expect(derive(after, koapSnapshot(sessions: [request, receipt, consideration,
+                                                        consideration])).events.isEmpty)
+    }
+
+    @Test func koapKSOYUComplaintTimelineRequiresExactCardAndSourceDate() {
+        let labels = [
+            koapSession("18.05.2023", source: nil,
+                        event: "Истребование дела (материала)"),
+            koapSession("18.05.2023", source: "sudrf|3kas.sudrf.ru|adm1|25004446",
+                        event: "Истребование дела (материала)"),
+            koapSession("18.05.2023", source: "sudrf|not-ksoyu.sudrf.ru|adm3|25004446",
+                        event: "Истребование дела (материала)"),
+            koapSession("18.05.2023", source: "sudrf|3kas.sudrf.ru|g3|25004446",
+                        event: "Истребование дела (материала)"),
+            koapSession("18.05.2023", source: "sudrf|3kas.sudrf.ru|adm3|   ",
+                        event: "Истребование дела (материала)"),
+            koapSession("", event: "Поступление истребованного дела (материала)"),
+            koapSession("", event: "Результат рассмотрения жалобы",
+                        result: "Жалоба оставлена без удовлетворения")
+        ]
+
+        for value in labels {
+            #expect(derive(koapSnapshot(), koapSnapshot(sessions: [value])).events.isEmpty)
+        }
+    }
+
+    @Test func contradictoryKoAPKSOYUComplaintResultsOnOneSourceDateAreSilent() {
+        let first = koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                result: "Жалоба оставлена без удовлетворения")
+        let second = koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                 result: "Жалоба возвращена")
+
+        let result = derive(koapSnapshot(), koapSnapshot(sessions: [first, second]))
+
+        #expect(result.events.isEmpty)
+        #expect(result.diagnostics == [.ambiguousComplaintResult])
+    }
+
+    @Test func resolvedKoAPKSOYUComplaintResultAfterAmbiguousOldRowsIsNewEvent() {
+        let first = koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                result: "Жалоба оставлена без удовлетворения")
+        let second = koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                 result: "Жалоба возвращена")
+        let old = koapSnapshot(sessions: [first, second])
+        let result = derive(old, koapSnapshot(sessions: [second]))
+
+        #expect(result.events.map(\.kind) == [.complaintReviewResult])
+        #expect(result.events.first?.evidence.value == "Жалоба возвращена")
+        #expect(result.diagnostics.isEmpty)
+    }
+
+    @Test func koapKSOYUComplaintResultSuppressesOnlyProvenDuplicateTransitions() {
+        let prior = koapSnapshot(result: "Жалоба оставлена без удовлетворения")
+        let remand = "Постановление отменено с направлением дела на новое рассмотрение"
+        let matching = koapSnapshot(
+            sessions: [koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                   result: remand)], result: remand)
+
+        #expect(derive(prior, matching).events.map(\.kind) == [.complaintReviewResult])
+
+        let unmatched = koapSnapshot(
+            sessions: [koapSession("04.07.2023", event: "Результат рассмотрения жалобы",
+                                   result: "Жалоба возвращена")], result: remand)
+        let result = derive(prior, unmatched)
+        #expect(result.events.contains(where: { $0.kind == .complaintReviewResult }))
+        #expect(result.events.contains(where: { $0.kind == .resultChanged }))
+        #expect(result.events.contains(where: { $0.kind == .transferRegistered }))
+    }
+
+    @Test func koapKSOYUComplaintResultUsesOccurrenceForReturnToEarlierResult() throws {
+        let first = koapSession("01.06.2023", event: "Результат рассмотрения жалобы",
+                                result: "Жалоба возвращена")
+        let second = koapSession("02.06.2023", event: "Результат рассмотрения жалобы",
+                                 result: "Жалоба оставлена без удовлетворения")
+        let third = koapSession("03.06.2023", event: "Результат рассмотрения жалобы",
+                                result: "Жалоба возвращена")
+        var journal = CaseEventJournal()
+
+        let firstEvent = journal.identifyingOccurrences(
+            derive(koapSnapshot(), koapSnapshot(sessions: [first])).events,
+            originKey: "record-a")[0]
+        try journal.append([firstEvent])
+        let secondEvent = journal.identifyingOccurrences(
+            derive(koapSnapshot(sessions: [first]), koapSnapshot(sessions: [first, second])).events,
+            originKey: "record-a")[0]
+        try journal.append([secondEvent])
+        let thirdEvent = journal.identifyingOccurrences(
+            derive(koapSnapshot(sessions: [first, second]),
+                   koapSnapshot(sessions: [first, second, third])).events,
+            originKey: "record-a")[0]
+
+        #expect(firstEvent.kind == .complaintReviewResult)
+        #expect(secondEvent.kind == .complaintReviewResult)
+        #expect(thirdEvent.kind == .complaintReviewResult)
+        #expect(thirdEvent.occurrence?.predecessorEventIDs == [secondEvent.id])
+        #expect(thirdEvent.id != firstEvent.id)
+    }
+
+    @Test func derivationVersionTwoBaselinesLegacyComplaintTimelineAndPreservesJournal() throws {
+        let event = CaseEvent.make(kind: .complaintRegistered, occurrence: ["legacy"],
+                                   observedAt: observedAt, evidence: .init())
+        let legacy = CaseEventJournal(derivationVersion: 1, events: [event])
+        let decoded = try JSONDecoder().decode(CaseEventJournal.self,
+                                               from: JSONEncoder().encode(legacy))
+        #expect(decoded == legacy)
+
+        var old = koapSnapshot()
+        old.semanticProjectionVersion = 1
+        let new = koapSnapshot(sessions: [koapSession(
+            "18.05.2023", event: "Истребование дела (материала)")])
+        let result = derive(old, new)
+        #expect(result.events.isEmpty)
+        #expect(result.diagnostics == [.derivationVersionChanged])
+        #expect(CaseEventDeriver.derive(old: nil, new: new,
+                                        attempt: usableAttempt(), observedAt: observedAt)
+            .diagnostics == [.baseline])
     }
 
     @Test func recognizedDispositionOnlyProducesResultChange() {
@@ -363,6 +502,25 @@ struct CaseEventDeriverTests {
                       result: result, court: "Суд", judge: "Иванов И. И.",
                       levelRaw: "first", caseNumber: "2-1/2027",
                       sourceCardID: source ?? card)
+    }
+
+    private func koapSession(_ date: String,
+                             source: String? = "sudrf|3kas.sudrf.ru|adm3|25004446",
+                             event: String, result: String? = nil) -> StoredSession {
+        StoredSession(dateRaw: date, time: nil, room: nil, event: event, result: result,
+                      court: "Третий кассационный суд общей юрисдикции", judge: nil,
+                      levelRaw: CaseInstance.Level.cassation.rawValue,
+                      caseNumber: "16-5132/2023", sourceCardID: source)
+    }
+
+    private func koapSnapshot(sessions: [StoredSession] = [], result: String? = nil)
+        -> CaseSnapshot {
+        var value = snapshot(sessions: sessions)
+        value.instanceObservations = [.init(
+            sourceCardID: koapKSOYUCard, levelRaw: CaseInstance.Level.cassation.rawValue,
+            court: "Третий кассационный суд общей юрисдикции", caseNumber: "16-5132/2023",
+            judge: nil, result: result)]
+        return value
     }
 
     private func deadline(status: DeadlineStatus, date: String) -> StoredDeadline {

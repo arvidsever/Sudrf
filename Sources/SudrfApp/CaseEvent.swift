@@ -15,6 +15,9 @@ enum CaseEventKind: String, Codable, CaseIterable, Sendable {
     case entryIntoForceRecorded
     case complaintRegistered
     case transferRegistered
+    case caseFileRequested
+    case requestedCaseReceived
+    case complaintReviewResult
     case deadlineProposed
     case deadlineConfirmed
     case deadlineChanged
@@ -95,7 +98,7 @@ enum CaseEventJournalError: Error, Equatable {
 
 struct CaseEventJournal: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
-    static let currentDerivationVersion = 1
+    static let currentDerivationVersion = 2
 
     var schemaVersion: Int
     var derivationVersion: Int
@@ -202,6 +205,8 @@ private extension CaseEvent {
             return stableSequenceKey(["instance", source, "legal-force"])
         case .transferRegistered:
             return stableSequenceKey(["instance", source, "transfer"])
+        case .complaintReviewResult:
+            return stableSequenceKey(["koap-ksoyu", source, "complaint-result"])
         case .hearingScheduled, .hearingPostponed, .hearingRescheduled:
             return stableSequenceKey(["hearing", source,
                                       evidence.occurrenceKey ?? evidence.event ?? ""])
@@ -224,6 +229,7 @@ private extension CaseEventKind {
         switch self {
         case .judgeChanged, .resultChanged, .entryIntoForceRecorded,
              .transferRegistered, .hearingPostponed, .hearingRescheduled,
+             .complaintReviewResult,
              .deadlineConfirmed, .deadlineChanged, .deadlineExpired,
              .deadlineSuperseded:
             return true
@@ -239,6 +245,7 @@ enum CaseEventDiagnosticReason: String, Codable, Equatable, Sendable {
     case unusableSnapshot
     case missingSourceIdentity
     case ambiguousHearingRewrite
+    case ambiguousComplaintResult
 }
 
 struct CaseEventDerivationResult: Equatable, Sendable {
@@ -381,6 +388,12 @@ enum CaseEventDeriver {
             }
         }
 
+        deriveKoAPKSOYUComplaintTimeline(old: old.sessions, new: new.sessions,
+                                         observedAt: observedAt, events: &events,
+                                         diagnostics: &diagnostics)
+
+        suppressDuplicateComplaintResults(events: &events)
+
         if !old.inForce, new.inForce,
            !events.contains(where: { $0.kind == .entryIntoForceRecorded }),
            let observation = (new.instanceObservations ?? []).first(where: {
@@ -406,6 +419,108 @@ enum CaseEventDeriver {
         let uniqueDiagnostics = Array(Set(diagnostics)).sorted { $0.rawValue < $1.rawValue }
         return .init(events: unique(events.sorted(by: eventOrder)),
                      diagnostics: uniqueDiagnostics)
+    }
+
+    /// These rows are published administrative milestones, not hearing rows.
+    /// They require the exact KSOYU КоАП card identity and its source date;
+    /// an undated card result remains a fact of the movement only.
+    private static func deriveKoAPKSOYUComplaintTimeline(
+        old: [StoredSession], new: [StoredSession], observedAt: Date,
+        events: inout [CaseEvent], diagnostics: inout [CaseEventDiagnosticReason]
+    ) {
+        let oldCandidates = old.compactMap(complaintTimelineCandidate)
+        let oldGroups = Dictionary(grouping: oldCandidates) { value in
+            [value.source, value.kind.rawValue, value.dateKey].joined(separator: "|")
+        }
+        let oldKeys: Set<String> = Set(oldGroups.values.compactMap { values -> String? in
+            guard let candidate = values.first else { return nil }
+            if candidate.kind == .complaintReviewResult,
+               Set(values.map(\.resultKey)).count != 1 {
+                return nil
+            }
+            return candidate.key
+        })
+        let candidates = new.compactMap { value in
+            complaintTimelineCandidate(value).map { (value, $0) }
+        }
+        let grouped = Dictionary(grouping: candidates) { value in
+            [value.1.source, value.1.kind.rawValue, value.1.dateKey].joined(separator: "|")
+        }
+        for key in grouped.keys.sorted() {
+            guard let values = grouped[key] else { continue }
+            let candidate = values[0].1
+            if candidate.kind == .complaintReviewResult,
+               Set(values.map { $0.1.resultKey }).count != 1 {
+                diagnostics.append(.ambiguousComplaintResult)
+                continue
+            }
+            guard !oldKeys.contains(candidate.key) else { continue }
+            let value = values[0].0
+            events.append(make(candidate.kind, source: candidate.source,
+                               occurrence: [candidate.dateKey, candidate.resultKey],
+                               observedAt: observedAt, evidence: sessionEvidence(value,
+                                                                                   occurrenceKey: candidate.key)))
+        }
+    }
+
+    private static func suppressDuplicateComplaintResults(events: inout [CaseEvent]) {
+        let published = events.filter { $0.kind == .complaintReviewResult }
+        guard !published.isEmpty else { return }
+        events.removeAll { event in
+            guard event.kind == .resultChanged || event.kind == .transferRegistered,
+                  let source = event.evidence.sourceCardID else {
+                return false
+            }
+            let result = normalized(event.evidence.value)
+            guard !result.isEmpty else { return false }
+            return published.contains {
+                $0.evidence.sourceCardID == source && normalized($0.evidence.value) == result
+            }
+        }
+    }
+
+    private static func complaintTimelineCandidate(_ value: StoredSession)
+        -> (kind: CaseEventKind, source: String, dateKey: String, resultKey: String, key: String)? {
+        guard let source = koapKSOYUCardSource(for: value),
+              let date = DateUtil.parse(value.dateRaw) else { return nil }
+        let kind: CaseEventKind
+        let resultKey: String
+        switch normalized(value.event) {
+        case "истребование дела (материала)":
+            kind = .caseFileRequested
+            resultKey = "request"
+        case "поступление истребованного дела (материала)":
+            kind = .requestedCaseReceived
+            resultKey = "receipt"
+        case "результат рассмотрения жалобы":
+            let result = normalized(value.result)
+            guard !result.isEmpty else { return nil }
+            kind = .complaintReviewResult
+            resultKey = result
+        default:
+            return nil
+        }
+        let dateKey = isoDate(date)
+        let key = [source, kind.rawValue, dateKey, resultKey].joined(separator: "|")
+        return (kind, source, dateKey, resultKey, key)
+    }
+
+    private static func koapKSOYUCardSource(for value: StoredSession) -> String? {
+        guard value.level == .cassation,
+              let source = value.sourceCardID else { return nil }
+        let parts = source.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        let identity = SourceNativeCardIdentity(
+            sourceFamily: String(parts[0]), courtKey: String(parts[1]),
+            cartotekaKey: String(parts[2]), sourceNativeID: String(parts[3]))
+        guard identity.isComplete, identity.sourceFamily == "sudrf" else { return nil }
+        let host = SudrfHost.moduleHost(identity.courtKey.lowercased())
+        guard CourtDirectory.cassationCourts.contains(where: {
+            SudrfHost.moduleHost($0.domain.lowercased()) == host
+        }),
+        let cartoteka = CartotekaRegistry.find(level: .cassation, id: identity.cartotekaKey),
+        cartoteka.id == "adm3", cartoteka.deloID == "2550001" else { return nil }
+        return source
     }
 
     private static func deriveHearings(old: [StoredSession], new: [StoredSession],
@@ -651,13 +766,14 @@ enum CaseEventDeriver {
                           occurrenceKey: value.sourceCardID, relatedOccurrenceKey: nil)
     }
 
-    private static func sessionEvidence(_ value: StoredSession) -> CaseEventEvidence {
+    private static func sessionEvidence(_ value: StoredSession,
+                                        occurrenceKey: String? = nil) -> CaseEventEvidence {
         CaseEventEvidence(sourceCardID: value.sourceCardID,
                           instanceLevelRaw: value.levelRaw,
                           caseNumber: value.caseNumber, dateRaw: value.dateRaw,
                           time: value.time, previousDateRaw: nil, previousTime: nil,
                           event: value.event, previousValue: nil, value: value.result,
-                          ruleID: nil, occurrenceKey: hearingKey(value),
+                          ruleID: nil, occurrenceKey: occurrenceKey ?? hearingKey(value),
                           relatedOccurrenceKey: nil)
     }
 

@@ -4,6 +4,13 @@ import SudrfKit
 
 final class CaseMovementViewTests: XCTestCase {
     @MainActor
+    func testUndatedPublishedFactHasExplicitDateLabel() {
+        XCTAssertEqual(CaseMovementView.sessionDateLabel(""), "Дата не опубликована")
+        XCTAssertEqual(CaseMovementView.sessionDateLabel("  \n"), "Дата не опубликована")
+        XCTAssertEqual(CaseMovementView.sessionDateLabel("18.05.2023"), "18.05.2023")
+    }
+
+    @MainActor
     func testMaterialProjectionKeepsPublishedMovementAndSourceState() {
         let session = CaseSession(
             date: "02.09.2026", time: "10:30", room: "Зал № 1",

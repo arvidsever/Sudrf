@@ -523,6 +523,7 @@ enum CaseLifecycleResolver {
     /// хронологии, чтобы старое вступление в силу/возврат не побеждало более
     /// позднее возобновление или новый конечный результат.
     private static func latestSignal(for instance: CaseInstance) -> InstanceSignal? {
+        let ambiguousComplaintResultDates = ambiguousKoAPKSOYUComplaintResultDates(instance)
         let ordered = instance.sessions.enumerated().sorted { left, right in
             let leftDate = DateUtil.parse(left.element.date) ?? .distantPast
             let rightDate = DateUtil.parse(right.element.date) ?? .distantPast
@@ -535,7 +536,11 @@ enum CaseLifecycleResolver {
         var reactivationStillDominant = false
         for (_, session) in ordered {
             let event = nonempty(session.event)
-            let result = nonempty(session.result)
+            let isAmbiguousComplaintResult = normalized(session.event)
+                == "результат рассмотрения жалобы"
+                && ambiguousComplaintResultDates.contains(
+                    complaintResultDateKey(session.date))
+            let result = isAmbiguousComplaintResult ? nil : nonempty(session.result)
             let combined = [event, result].compactMap { $0 }.joined(separator: " ")
             if let current = result.flatMap(signal)
                 ?? event.flatMap(signal)
@@ -584,6 +589,52 @@ enum CaseLifecycleResolver {
             return .terminal(result)
         }
         return latest
+    }
+
+    static func hasAmbiguousKoAPKSOYUComplaintResult(_ instance: CaseInstance) -> Bool {
+        !ambiguousKoAPKSOYUComplaintResultDates(instance).isEmpty
+    }
+
+    private static func ambiguousKoAPKSOYUComplaintResultDates(
+        _ instance: CaseInstance
+    ) -> Set<String> {
+        guard instance.level == .cassation,
+              CourtDirectory.cassationCourts.contains(where: {
+                  SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(instance.domain)
+              }),
+              let sourceURL = instance.sourceURL,
+              let components = URLComponents(
+                url: sourceURL, resolvingAgainstBaseURL: false),
+              components.path == "/modules.php",
+              SudrfHost.moduleHost(components.host ?? "")
+                == SudrfHost.moduleHost(instance.domain),
+              let queryItems = components.queryItems
+        else { return [] }
+        func exactValue(_ name: String) -> String? {
+            let values = queryItems.filter { $0.name == name }.compactMap(\.value)
+            return values.count == 1 ? values[0] : nil
+        }
+        guard exactValue("name") == "sud_delo",
+              exactValue("name_op") == "case",
+              exactValue("delo_id") == "2550001" else { return [] }
+
+        let rows = instance.sessions.filter {
+            normalized($0.event) == "результат рассмотрения жалобы"
+        }
+        let grouped = Dictionary(grouping: rows) {
+            complaintResultDateKey($0.date)
+        }
+        return Set(grouped.compactMap { date, sessions in
+            let results = Set(sessions.compactMap { nonempty($0.result).map(normalized) })
+            return results.count > 1 ? date : nil
+        })
+    }
+
+    private static func complaintResultDateKey(_ raw: String) -> String {
+        if let date = DateUtil.parse(raw) {
+            return "day:\(DateUtil.startOfDay(date).timeIntervalSinceReferenceDate)"
+        }
+        return "raw:\(raw.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
 
     private static func remandTarget(from signal: InstanceSignal?) -> CaseStageKind? {

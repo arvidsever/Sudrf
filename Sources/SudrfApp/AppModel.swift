@@ -164,6 +164,10 @@ final class AppRouter: ObservableObject {
     /// Ключ записи открытой карточки — фоновые результаты применяются к UI
     /// только при совпадении ключа (карточку могли закрыть/сменить).
     private var openedKey: String? = nil
+    var openedPreviousCaseNumbers: [String] {
+        guard let openedKey, let record = store.record(forKey: openedKey) else { return [] }
+        return Self.caseNumberAliases(for: record).previous
+    }
 
     private let store: TrackedStore
     let modelContainer: ModelContainer
@@ -1956,6 +1960,17 @@ final class AppRouter: ObservableObject {
                 guard let movement = rec.movement, let context = rec.context else { return [:] }
                 return Self.materialInstancesBySourceID(movement: movement, context: context)
             }()
+            let previousRegistrationsBySourceID: [String: CaseInstance] = {
+                guard let movement = rec.movement, let context = rec.context else { return [:] }
+                var grouped = [String: [CaseInstance]]()
+                for instance in movement.instances
+                    where instance.note == "Предыдущая регистрация" {
+                    guard let sourceID = Self.previousRegistrationSourceCardID(
+                        for: instance, context: context) else { continue }
+                    grouped[sourceID, default: []].append(instance)
+                }
+                return grouped.compactMapValues { $0.count == 1 ? $0[0] : nil }
+            }()
 
             func materialSource(_ session: StoredSession) -> (instance: CaseInstance?, number: String?) {
                 guard session.level == .material else { return (nil, nil) }
@@ -1970,11 +1985,24 @@ final class AppRouter: ObservableObject {
                 return (candidate, stored ?? current)
             }
 
+            func previousRegistrationSource(_ session: StoredSession)
+                -> (instance: CaseInstance, number: String, sourceID: String)? {
+                guard let sourceID = session.sourceCardID,
+                      let instance = previousRegistrationsBySourceID[sourceID] else { return nil }
+                let number = CaseNumberPresentation.secondary(
+                    session.caseNumber, distinctFrom: rec.caseNumber)
+                    ?? CaseNumberPresentation.secondary(
+                        instance.caseNumber, distinctFrom: rec.caseNumber)
+                guard let number else { return nil }
+                return (instance, number, sourceID)
+            }
+
             func trackedHearing(_ session: StoredSession) -> TrackedHearing? {
                 guard let date = session.date else { return nil }
                 let material = materialSource(session)
-                let instanceNumber = session.level == .material
-                    ? material.number : session.caseNumber
+                let previousRegistration = previousRegistrationSource(session)
+                let instanceNumber = previousRegistration?.number
+                    ?? (session.level == .material ? material.number : session.caseNumber)
                 let sourceIdentity = session.level == .material
                     ? (session.sourceCardID ?? instanceNumber ?? "") : ""
                 return TrackedHearing(recordKey: rec.key, date: date,
@@ -1985,7 +2013,8 @@ final class AppRouter: ObservableObject {
                     identitySuffix: "\(session.event)#\(session.result ?? "")"
                         + (sourceIdentity.isEmpty ? "" : "#\(sourceIdentity)"),
                     instanceCaseNumber: instanceNumber,
-                    instanceLevel: session.level)
+                    instanceLevel: session.level,
+                    previousRegistrationNumber: previousRegistration?.number)
             }
 
             // Календарь сохраняет всю историю, включая завершённые дела.
@@ -2035,6 +2064,7 @@ final class AppRouter: ObservableObject {
                     let legacyID = Self.feedID(recordKey: rec.key, date: d,
                                                time: s.time ?? "—", text: text)
                     let material = materialSource(s)
+                    let previousRegistration = previousRegistrationSource(s)
                     let id: String
                     if s.level == .material, let sourceCardID = s.sourceCardID {
                         id = Self.materialFeedID(legacyID: legacyID,
@@ -2053,9 +2083,12 @@ final class AppRouter: ObservableObject {
                         time: s.time ?? "—", recordKey: rec.key, caseNumber: rec.caseNumber,
                         client: client, kind: kind, text: text, actID: nil,
                         isUnread: unreadByCase && !readIDs.contains(id),
-                        instanceCaseNumber: s.level == .material ? material.number : s.caseNumber,
+                        instanceCaseNumber: previousRegistration?.number
+                            ?? (s.level == .material ? material.number : s.caseNumber),
                         instanceLevel: s.level, sourceCardID: s.sourceCardID,
-                        sourceInstanceID: material.instance?.id))
+                        sourceInstanceID: previousRegistration?.instance.id
+                            ?? material.instance?.id,
+                        previousRegistrationNumber: previousRegistration?.number))
                 }
             }
             // Опубликованные акты берём из полного кэша движения, когда он есть.
@@ -2070,6 +2103,11 @@ final class AppRouter: ObservableObject {
                     let linked = mv.instances.filter { $0.linkedActIDs.contains(act.id) }
                     let exactOwner = linked.count == 1 ? linked[0] : nil
                     let sourceLevel = exactOwner?.level ?? act.instanceLevel
+                    let previousRegistrationNumber = exactOwner.flatMap { instance -> String? in
+                        guard instance.note == "Предыдущая регистрация" else { return nil }
+                        return CaseNumberPresentation.secondary(
+                            instance.caseNumber, distinctFrom: rec.caseNumber)
+                    }
                     let linkedMaterial = exactOwner?.level == .material ? exactOwner : nil
                     let sourceCardID = linkedMaterial.flatMap { instance in
                         guard let context = rec.context else { return nil }
@@ -2098,12 +2136,15 @@ final class AppRouter: ObservableObject {
                         time: "—", recordKey: rec.key, caseNumber: rec.caseNumber,
                         client: client, kind: .act, text: text, actID: act.id,
                         isUnread: unreadByCase && !readIDs.contains(id),
-                        instanceCaseNumber: sourceLevel == .material
-                            ? material.flatMap(MovementDerivation.materialNumber)
-                            : Self.actReviewNumber(for: act, instances: mv.instances,
-                                                   baseCaseNumber: rec.caseNumber),
+                        instanceCaseNumber: previousRegistrationNumber
+                            ?? (sourceLevel == .material
+                                ? material.flatMap(MovementDerivation.materialNumber)
+                                : Self.actReviewNumber(
+                                    for: act, instances: mv.instances,
+                                    baseCaseNumber: rec.caseNumber)),
                         instanceLevel: sourceLevel, sourceCardID: sourceCardID,
-                        sourceInstanceID: material?.id))
+                        sourceInstanceID: exactOwner?.id ?? material?.id,
+                        previousRegistrationNumber: previousRegistrationNumber))
                 }
             }
         }
@@ -2201,6 +2242,138 @@ final class AppRouter: ObservableObject {
             branch: context.branch, cartotekaID: context.cartotekaId)
     }
 
+    static func caseNumberAliases(for rec: TrackedCaseRecord)
+        -> (previous: [String], searchable: [String]) {
+        let state = TrackedCaseIdentity.persistedState(for: rec)
+        let observedCard = rec.context.flatMap {
+            TrackedCaseIdentity.observation(context: $0, movement: rec.movement)?.cardIdentity
+        }
+        let currentKey = Self.normalizedCaseNumber(rec.caseNumber)
+        let matchingCards = state?.cards.filter {
+            $0.currentCaseNumber.map(Self.normalizedCaseNumber) == currentKey
+        } ?? []
+        let currentCard = observedCard.flatMap { observed in
+            state?.cards.contains(where: { $0.identity == observed }) == true ? observed : nil
+        } ?? (matchingCards.count == 1 ? matchingCards[0].identity : nil)
+        return Self.caseNumberAliases(
+            currentNumber: rec.caseNumber, currentCard: currentCard,
+            history: state?.numberHistory ?? [], knownCards: rec.context?.knownCards ?? [])
+    }
+
+    nonisolated static func caseNumberAliases(
+        currentNumber: String,
+        currentCard: SourceNativeCardIdentity?,
+        history: [CaseNumberBinding],
+        knownCards: [KnownCard]
+    ) -> (previous: [String], searchable: [String]) {
+        let orderedHistory = history.sorted { lhs, rhs in
+            if lhs.lastObservedAt != rhs.lastObservedAt {
+                return lhs.lastObservedAt > rhs.lastObservedAt
+            }
+            return lhs.id < rhs.id
+        }
+        let previous = uniqueCaseNumbers(orderedHistory.flatMap { binding -> [String] in
+            guard binding.cardIdentity == currentCard else { return [] }
+            return displayCaseNumberTokens(in: binding.rawValue)
+        }, excluding: currentNumber)
+        let searchable = uniqueCaseNumbers(
+            orderedHistory.map(\.rawValue) + knownCards.compactMap(\.caseNumber),
+            excluding: currentNumber)
+        return (previous, searchable)
+    }
+
+    private nonisolated static func uniqueCaseNumbers(
+        _ values: [String], excluding currentNumber: String
+    ) -> [String] {
+        let current = normalizedCaseNumber(currentNumber)
+        var seen = Set<String>()
+        return values.compactMap { raw in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = normalizedCaseNumber(value)
+            guard !value.isEmpty, normalized != current,
+                  seen.insert(normalized).inserted else { return nil }
+            return value
+        }
+    }
+
+    private nonisolated static func displayCaseNumberTokens(in value: String) -> [String] {
+        value.split(whereSeparator: { $0 == "~" || $0 == "∼" }).compactMap { part in
+            let number = CaseNumberPresentation.primary(String(part))
+            return number.isEmpty ? nil : number
+        }
+    }
+
+    private nonisolated static func normalizedCaseNumber(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "Ё", with: "Е")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    nonisolated static func previousRegistrationSourceCardID(
+        for instance: CaseInstance, context: MovementContext
+    ) -> String? {
+        let host = SudrfHost.moduleHost(instance.domain)
+        let number = normalizedCaseNumber(instance.caseNumber)
+        let exactKnownCards = ([context.sourceKnownCard].compactMap { $0 }
+            + (context.knownCards ?? [])).filter {
+                SudrfHost.moduleHost($0.domain) == host
+                    && $0.level == instance.level
+                    && $0.caseNumber.map(normalizedCaseNumber) == number
+                    && !$0.caseID.isEmpty
+            }
+        let knownIdentities = Set(exactKnownCards.map { card in
+            SourceNativeCardIdentity(
+                sourceFamily: sourceFamily(for: card.domain),
+                courtKey: host == SudrfHost.moduleHost(context.searchDomain)
+                    ? (context.courtCode ?? host) : host,
+                cartotekaKey: card.cartotekaID ?? card.deloID,
+                sourceNativeID: card.caseID).id
+        })
+        guard knownIdentities.count <= 1 else { return nil }
+        let sourceLink = instance.sourceURL.flatMap { try? SudrfCaseCardLink(url: $0) }
+        let linkIdentity: String? = sourceLink.flatMap { link in
+            guard link.moduleHost == host,
+                  let caseID = link.caseID, !caseID.isEmpty else { return nil }
+            let level = host == SudrfHost.moduleHost(context.searchDomain)
+                ? context.courtLevel : courtLevel(for: instance.level)
+            let cartoteka = CartotekaRegistry.resolve(
+                level: level, deloID: link.deloID,
+                new: link.new, caseNumber: instance.caseNumber)?.id ?? link.deloID
+            return SourceNativeCardIdentity(
+                sourceFamily: sourceFamily(for: link.host),
+                courtKey: host == SudrfHost.moduleHost(context.searchDomain)
+                    ? (context.courtCode ?? host) : host,
+                cartotekaKey: cartoteka, sourceNativeID: caseID).id
+        }
+        if let knownIdentity = knownIdentities.first {
+            guard linkIdentity == nil || linkIdentity == knownIdentity else { return nil }
+            return knownIdentity
+        }
+        guard let linkIdentity else { return nil }
+        return linkIdentity
+    }
+
+    private nonisolated static func sourceFamily(for host: String) -> String {
+        let value = host.lowercased()
+        if value.contains("msudrf") { return "msudrf" }
+        if value.contains("mos-gorsud") { return "mosgorsud" }
+        if value.contains("vsrf") { return "vsrf" }
+        return "sudrf"
+    }
+
+    private nonisolated static func courtLevel(
+        for level: CaseInstance.Level
+    ) -> CourtLevel {
+        switch level {
+        case .first, .material: return .district
+        case .appeal: return .subject
+        case .cassation, .vsCassation, .supervisory: return .cassation
+        }
+    }
+
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
                                  stage: CaseStageKind,
                                  presentation: CaseLifecyclePresentation? = nil) -> TrackedCase {
@@ -2208,6 +2381,7 @@ final class AppRouter: ObservableObject {
         let today = DateUtil.today
         let production = productionType(for: rec)
         let ctx = rec.context
+        let aliases = Self.caseNumberAliases(for: rec)
         if let snap {
             // Даты для сортировок: последнее состоявшееся событие и ближайшее
             // будущее (заседание или срок).
@@ -2226,6 +2400,8 @@ final class AppRouter: ObservableObject {
             }
             return TrackedCase(
                 recordKey: rec.key, caseNumber: rec.caseNumber,
+                previousCaseNumbers: aliases.previous,
+                searchCaseNumbers: aliases.searchable,
                 currentReviewNumber: presentation?.currentReviewNumber,
                 collections: rec.collectionNames,
                 stage: stage, stageTag: presentation?.stageTag ?? snap.stageTag,
@@ -2259,7 +2435,10 @@ final class AppRouter: ObservableObject {
         // маскировать временную ошибку приглашением «Откройте».
         let sourceStatus = Self.coldSourceStatus(rec.sourceRefreshAttempt)
         return TrackedCase(
-            recordKey: rec.key, caseNumber: rec.caseNumber, collections: rec.collectionNames,
+            recordKey: rec.key, caseNumber: rec.caseNumber,
+            previousCaseNumbers: aliases.previous,
+            searchCaseNumbers: aliases.searchable,
+            collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
             court: rec.courtTitle,
             recordCourt: rec.courtTitle,
@@ -2695,12 +2874,14 @@ final class AppRouter: ObservableObject {
         return Self.sorted(rows, by: sortBy)
     }
 
-    /// Вхождение запроса в номер + стороны + подборки + суд (case-insensitive).
+    /// Вхождение запроса в текущий/прежний номер + стороны + подборки + суд
+    /// (case-insensitive).
     /// Судов два: показываемый (инстанция ближайшего события, #100) и суд
     /// записи. Дело, ушедшее в апелляцию, обязано находиться и по названию
     /// своего суда первой инстанции — номер дела у него по-прежнему её.
     nonisolated static func matches(_ c: TrackedCase, query q: String) -> Bool {
-        (c.caseNumber + " " + c.partiesShort + " "
+        (c.caseNumber + " " + c.searchCaseNumbers.joined(separator: " ")
+         + " " + c.partiesShort + " "
          + c.collections.joined(separator: " ") + " " + c.court
          + " " + c.recordCourt)
             .lowercased().contains(q)

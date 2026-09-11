@@ -941,6 +941,7 @@ private struct CaseCardHost: View {
                     movement: mv,
                     expanded: Binding(get: { router.expandedComplaints },
                                       set: { router.expandedComplaints = $0 }),
+                    previousCaseNumbers: router.openedPreviousCaseNumbers,
                     backTitle: "Назад",
                     onBack: { router.closeCase() },
                     sourceURL: router.openCaseSourceURL,

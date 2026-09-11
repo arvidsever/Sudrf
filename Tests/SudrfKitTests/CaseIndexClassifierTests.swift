@@ -42,6 +42,8 @@ final class CaseIndexClassifierTests: XCTestCase {
             ("10-1/2026", .district, .upk, .appellateCase, .requiresVerifiedParent),
             ("11а-1/2026", .district, .administrative, .appellateCase, .requiresVerifiedParent),
             ("13-1/2026", .district, .civil, .decisionExecutionMaterial, .requiresVerifiedParent),
+            ("М-662/2026", .subject, nil, .preliminaryIntakeMaterial, .mayBecomeMainCase),
+            ("9а-118/2026", .subject, .administrative, .preliminaryIntakeMaterial, .mayBecomeMainCase),
             ("22К-1/2026", .subject, .upk, .appellateComplaint, .requiresVerifiedParent),
             ("33а-1/2026", .subject, .administrative, .appellateCase, .requiresVerifiedParent),
             ("7-1/2026", .subject, .koap, .appellateComplaint, .requiresVerifiedParent),

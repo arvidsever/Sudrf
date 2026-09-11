@@ -111,6 +111,8 @@ public enum CaseIndexClassifier {
         add("15", nil, .otherMaterial, .standalone, g, .general)
 
         // Обычные суды субъекта.
+        add("м", nil, .preliminaryIntakeMaterial, .mayBecomeMainCase, s, .general)
+        add("9а", .administrative, .preliminaryIntakeMaterial, .mayBecomeMainCase, s, .general)
         add("2", .upk, .firstInstanceCase, .standalone, s, .general)
         add("3", .civil, .firstInstanceCase, .standalone, s, .general)
         add("3а", .administrative, .firstInstanceCase, .standalone, s, .general)

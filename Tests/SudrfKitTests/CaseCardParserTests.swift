@@ -7,6 +7,18 @@ import XCTest
 /// трём инстанциям. Фикстуры лежат в Tests/SudrfKitTests/Fixtures.
 final class CaseCardParserTests: XCTestCase {
 
+    func testSubjectKASCurrentAndPreliminaryNumbersRemainInCardHeading() throws {
+        let cases = [
+            ("vsrk_subject_kas_m662", "3а-685/2026 ~ М-662/2026"),
+            ("vsrk_subject_kas_m663", "3а-683/2026 ~ М-663/2026"),
+            ("vsrk_subject_kas_m664", "3а-684/2026 ~ М-664/2026"),
+        ]
+        for (fixture, expected) in cases {
+            let card = try CaseCardParser.parse(html: try loadFixture(fixture))
+            XCTAssertEqual(card.caseNumber, expected, fixture)
+        }
+    }
+
     func testTemporaryUnavailablePageIsNotParsedAsEmptyCard() throws {
         let html = """
         <html><body>

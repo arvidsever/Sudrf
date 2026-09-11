@@ -136,15 +136,18 @@ final class RefreshCenterTests: XCTestCase {
     private actor FixtureCardClient: CaseProviding {
         let html: String
         let responseURL: URL
+        let searchRows: [CaseSearchResult]
 
-        init(html: String, responseURL: URL) {
+        init(html: String, responseURL: URL,
+             searchRows: [CaseSearchResult] = []) {
             self.html = html
             self.responseURL = responseURL
+            self.searchRows = searchRows
         }
 
         func search(court: Court, cartoteka: Cartoteka,
                     field: SearchField, value: String) async throws -> [CaseSearchResult] {
-            []
+            searchRows
         }
 
         func fetchCard(court: Court, caseID: String, caseUID: String,
@@ -395,11 +398,36 @@ final class RefreshCenterTests: XCTestCase {
     }
 
     private func fixtureService(_ fixture: String,
-                                context: MovementContext) throws -> MovementService {
+                                context: MovementContext,
+                                searchRows: [CaseSearchResult] = []) throws -> MovementService {
+        let deloID = try XCTUnwrap(context.cartoteka?.deloID)
         let responseURL = try XCTUnwrap(URL(string:
-            "https://\(context.searchDomain)/modules.php?name=sud_delo&name_op=case"))
-        let client = FixtureCardClient(html: try sourceFixture(fixture), responseURL: responseURL)
+            "https://\(context.searchDomain)/modules.php?name=sud_delo&name_op=case&delo_id=\(deloID)&case_id=fixture-card"))
+        let client = FixtureCardClient(
+            html: try sourceFixture(fixture), responseURL: responseURL,
+            searchRows: searchRows)
         return context.makeService(client: client)
+    }
+
+    private func koapComplaintTimelineMovement(
+        context: MovementContext
+    ) async throws -> CaseMovement {
+        let service = try fixtureService("ksoyu_koap_complaint_timeline_3kas", context: context)
+        return try await service.movement(
+            for: context.baseResult, court: context.searchCourt,
+            cartoteka: try XCTUnwrap(context.cartoteka))
+    }
+
+    private func koapComplaintReceiptBaseline(
+        _ movement: CaseMovement
+    ) throws -> CaseMovement {
+        var baseline = movement
+        let receipt = try XCTUnwrap(baseline.instances.first?.sessions.first {
+            $0.event == "Поступление жалобы в суд"
+        })
+        baseline.instances[0].sessions = [receipt]
+        baseline.instances[0].result = nil
+        return baseline
     }
 
     private func paperWrit(_ id: String = "court-writ-1",
@@ -1801,9 +1829,9 @@ final class RefreshCenterTests: XCTestCase {
     func testKoAPReturnedComplaintFixturesCompleteThroughRefresh() async throws {
         let scenarios = [
             (fixture: "ksoyu_koap_returned_2kas", number: "16-5035/2023",
-             domain: "2kas.sudrf.ru", receipt: "13.07.2023"),
+             domain: "2kas.sudrf.ru", receipt: "13.07.2023", resultDate: "25.07.2023"),
             (fixture: "ksoyu_koap_returned_3kas", number: "16-3568/2021",
-             domain: "3kas.sudrf.ru", receipt: "21.05.2021"),
+             domain: "3kas.sudrf.ru", receipt: "21.05.2021", resultDate: "01.06.2021"),
         ]
 
         for scenario in scenarios {
@@ -1825,7 +1853,12 @@ final class RefreshCenterTests: XCTestCase {
             XCTAssertEqual(instance.level, .cassation, scenario.fixture)
             XCTAssertEqual(instance.caseNumber, scenario.number, scenario.fixture)
             XCTAssertEqual(instance.result, "Возвращено без рассмотрения", scenario.fixture)
-            XCTAssertEqual(instance.sessions.map(\.date), [scenario.receipt], scenario.fixture)
+            XCTAssertEqual(instance.sessions.map(\.date),
+                           [scenario.receipt, scenario.resultDate], scenario.fixture)
+            XCTAssertEqual(instance.sessions.last?.event,
+                           "Результат рассмотрения жалобы", scenario.fixture)
+            XCTAssertEqual(instance.sessions.last?.result,
+                           "Возвращено без рассмотрения", scenario.fixture)
             XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.done.rawValue, scenario.fixture)
             XCTAssertEqual(record.snapshot?.statusText,
                            "Возвращено без рассмотрения", scenario.fixture)
@@ -1906,6 +1939,177 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(failedRecord.snapshot?.statusText, "Возвращено без рассмотрения")
         XCTAssertEqual(failedRecord.sourceRefreshAttempt?.kind, .maintenance)
         XCTAssertNotNil(center.lastErrors[context.key])
+    }
+
+    func testKoAPComplaintTimelineFixtureFlowsThroughRefreshSnapshotFeedAndLifecycle() async throws {
+        var context = koapCassationContext(
+            caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
+        context.resultText = "Посторонний итог нижестоящего суда"
+        context.higherCourtTargets = []
+        let full = try await koapComplaintTimelineMovement(context: context)
+        let baseline = try koapComplaintReceiptBaseline(full)
+        let record = try store.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: baseline, context: context),
+            movement: baseline, collections: [])
+        try store.save()
+        let service = try fixtureService(
+            "ksoyu_koap_complaint_timeline_3kas", context: context,
+            searchRows: [context.baseResult])
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(), serviceBuilder: { _ in service })
+
+        let execution = await center.refresh(key: record.key)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+        let refreshed = try XCTUnwrap(store.record(forKey: record.key))
+        let instance = try XCTUnwrap(refreshed.movement?.instances.first)
+        let normalizedResult =
+            "оставлены без изменения постановление и/или все решения по делу"
+        XCTAssertEqual(instance.result, normalizedResult,
+                       "нормализованная карточка сильнее stale строки выдачи")
+        XCTAssertEqual(instance.sessions, [
+            CaseSession(date: "10.02.2023", event: "Поступление жалобы в суд"),
+            CaseSession(date: "27.03.2023", event: "Истребование дела (материала)"),
+            CaseSession(date: "19.04.2023",
+                        event: "Поступление истребованного дела (материала)"),
+            CaseSession(date: "18.05.2023", event: "Результат рассмотрения жалобы",
+                        result: normalizedResult),
+        ])
+        let snapshot = try XCTUnwrap(refreshed.snapshot)
+        XCTAssertEqual(snapshot.sessions.map(\.event), instance.sessions.map(\.event))
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot.statusText, normalizedResult)
+        XCTAssertEqual(Set(refreshed.eventJournal?.events.map(\.kind) ?? []), [
+            .caseFileRequested, .requestedCaseReceived, .complaintReviewResult,
+        ])
+
+        let router = try AppRouter(
+            modelContainer: store.container, modelContainerIsPrepared: true)
+        router.reload(today: try XCTUnwrap(DateUtil.parse("18.05.2023")))
+        let entries = router.feed.filter { $0.recordKey == refreshed.key }
+        XCTAssertEqual(Set(entries.map(\.text)), [
+            "Поступление истребованного дела (материала)", normalizedResult,
+        ])
+        XCTAssertTrue(entries.allSatisfy {
+            $0.kind == .movement && $0.notificationSubtitle == context.caseNumber
+        })
+        XCTAssertFalse(router.hearings.contains { $0.recordKey == refreshed.key })
+        XCTAssertFalse(router.calendarHearings.contains { $0.recordKey == refreshed.key })
+
+        router.reload(today: try XCTUnwrap(DateUtil.parse("03.07.2023")))
+        XCTAssertFalse(router.feed.contains { $0.recordKey == refreshed.key },
+                       "обычное 45-дневное окно ленты не расширяется")
+    }
+
+    func testKoAPComplaintTimelineRefreshRollsBackAtomically() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
+        let full = try await koapComplaintTimelineMovement(context: context)
+        let baseline = try koapComplaintReceiptBaseline(full)
+        let localStore = TrackedStore(inMemory: true)
+        let record = try localStore.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: baseline, context: context),
+            movement: baseline, collections: [])
+        try localStore.save()
+        let before = [record.snapshotData, record.movementData, record.eventJournalData]
+        localStore.failNextSaveForTesting = true
+        let center = RefreshCenter(
+            store: localStore, client: SudrfClient(),
+            serviceBuilder: { _ in FixedMovement(full) })
+
+        let execution = await center.refresh(key: record.key)?.value
+
+        guard case .failed = execution?.outcome else {
+            return XCTFail("ошибка сохранения должна откатить новый timeline")
+        }
+        let restored = try XCTUnwrap(localStore.record(forKey: record.key))
+        XCTAssertEqual([restored.snapshotData, restored.movementData,
+                        restored.eventJournalData], before)
+        XCTAssertFalse(localStore.container.mainContext.hasChanges)
+    }
+
+    func testUndatedKoAPComplaintResultStaysInMovementWithoutDatedAppProjection() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
+        var movement = try await koapComplaintTimelineMovement(context: context)
+        let result = try XCTUnwrap(movement.instances[0].sessions.last?.result)
+        movement.instances[0].sessions[3].date = ""
+        let record = try store.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: movement, context: context),
+            movement: movement, collections: [])
+        try store.save()
+
+        let saved = try XCTUnwrap(store.record(forKey: record.key))
+        XCTAssertEqual(saved.movement?.instances.first?.sessions.last?.date, "")
+        XCTAssertEqual(saved.snapshot?.sessions.first(where: {
+            $0.event == "Результат рассмотрения жалобы"
+        })?.dateRaw, "")
+        let router = try AppRouter(
+            modelContainer: store.container, modelContainerIsPrepared: true)
+        router.reload(today: try XCTUnwrap(DateUtil.parse("18.05.2023")))
+        XCTAssertFalse(router.feed.contains {
+            $0.recordKey == record.key && $0.text == result
+        })
+        XCTAssertFalse(router.hearings.contains { $0.recordKey == record.key })
+        XCTAssertFalse(router.calendarHearings.contains { $0.recordKey == record.key })
+    }
+
+    func testKoAPComplaintTimelinePartialRefreshPreservesFactsWithoutJournalPublication() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
+        var full = try await koapComplaintTimelineMovement(context: context)
+        let baseline = try koapComplaintReceiptBaseline(full)
+        let localStore = TrackedStore(inMemory: true)
+        let record = try localStore.upsert(
+            context: context,
+            snapshot: MovementDerivation.snapshot(from: baseline, context: context),
+            movement: baseline, collections: [])
+        try localStore.save()
+        let journalBefore = record.eventJournal
+        full.incompleteHigherCourtDomains = ["unrelated.sudrf.ru"]
+        let center = RefreshCenter(
+            store: localStore, client: SudrfClient(),
+            serviceBuilder: { _ in FixedMovement(full) })
+
+        let execution = await center.refresh(key: record.key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("неполный источник должен сохранить partial outcome")
+        }
+        let refreshed = try XCTUnwrap(localStore.record(forKey: record.key))
+        XCTAssertEqual(refreshed.movement?.instances.first?.sessions.count, 4)
+        XCTAssertEqual(refreshed.snapshot?.sessions.count, 4)
+        XCTAssertEqual(refreshed.eventJournal, journalBefore,
+                       "partial refresh не публикует семантические события")
+        XCTAssertEqual(refreshed.sourceRefreshAttempt?.kind, .partial)
+    }
+
+    func testDeletingTrackedCaseCancelsLateKoAPComplaintTimelineRefresh() async throws {
+        let context = koapCassationContext(
+            caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
+        let full = try await koapComplaintTimelineMovement(context: context)
+        let localStore = TrackedStore(inMemory: true)
+        let record = try localStore.upsert(
+            context: context, snapshot: nil, movement: nil, collections: [])
+        let service = SuspendedMovement(full)
+        let center = RefreshCenter(
+            store: localStore, client: SudrfClient(), serviceBuilder: { _ in service })
+        var published = false
+        center.onRefreshed = { _, _, _ in published = true }
+
+        let task = try XCTUnwrap(center.refresh(key: record.key))
+        await service.waitUntilStarted()
+        try localStore.remove(key: record.key)
+        center.cancelTracking(for: record.key)
+        await service.resume()
+        _ = await task.value
+
+        XCTAssertNil(localStore.record(forKey: record.key))
+        XCTAssertFalse(center.isRefreshing(record.key))
+        XCTAssertFalse(published)
     }
 
     func testUnavailableCourtDoesNotOverwriteSavedCard() async throws {

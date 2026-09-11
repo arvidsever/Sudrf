@@ -512,7 +512,8 @@ public actor MovementService: MovementProviding {
             judge: base.judge ?? baseCard.judge,
             domain: court.domain,
             foundByUID: false,
-            result: base.result ?? baseCard.result,
+            result: Self.isKoAPKSOYU(court: court, cartoteka: cartoteka)
+                ? baseCard.result : (base.result ?? baseCard.result),
             sessions: baseCard.sessions,
             actID: baseActID,
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
@@ -884,7 +885,9 @@ public actor MovementService: MovementProviding {
                             judge: r.judge ?? higherCard.judge,
                             domain: domain,
                             foundByUID: true,
-                            result: r.result ?? higherCard.result,
+                            result: Self.isKoAPKSOYU(court: higherCourt,
+                                                    cartoteka: higherCart)
+                                ? higherCard.result : (r.result ?? higherCard.result),
                             sessions: higherCard.sessions,
                             actID: higherCard.actText != nil ? actID : nil,
                             sourceURL: Self.sourceURL(for: r, court: higherCourt,
@@ -1475,6 +1478,18 @@ extension MovementService {
         if domain.range(of: #"\dap\.sudrf\.ru"#, options: .regularExpression) != nil { return .appeal }
         if domain.contains("asoy") { return .appeal }
         return .subject
+    }
+
+    /// For the KSOYU KoAP complaint card the normalized card tab is the only
+    /// authoritative result. A listing row may retain a stale lower-court
+    /// disposition, and must not restore it when the card is ambiguous.
+    private static func isKoAPKSOYU(court: Court, cartoteka: Cartoteka) -> Bool {
+        court.level == .cassation
+            && cartoteka.id == "adm3"
+            && cartoteka.deloID == "2550001"
+            && CourtDirectory.cassationCourts.contains {
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
+            }
     }
 
     /// Уровень инстанции относительно базового дела (районный суд).

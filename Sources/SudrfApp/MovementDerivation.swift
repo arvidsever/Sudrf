@@ -359,6 +359,10 @@ enum MovementDerivation {
         case nil where nextHearing != nil:
             statusText = "Назначено заседание"
             statusChip = .blue
+        case nil where resolution.currentInstance.map(
+            CaseLifecycleResolver.hasAmbiguousKoAPKSOYUComplaintResult) == true:
+            statusText = "Итог требует проверки"
+            statusChip = .gray
         case nil:
             if let result = resolution.currentInstance?.result, !result.isEmpty {
                 statusText = result

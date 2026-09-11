@@ -63,20 +63,54 @@ public enum CaseCardParser {
                                     previousRegistration: previousRegistration)
         }
 
-        let meta = parseMeta(doc)
-        let sessions = sortSessions(parseMovement(doc)
-                                  + parseComplaintMovement(doc)
-                                  + parseEarlyComplaintMovement(doc))
+        let complaintMetadata = complaintMetadata(in: doc)
+        let enrichComplaintTimeline = isKSOYuKoAPComplaint(cardURL)
+        let meta = parseMeta(doc, complaintMetadata: complaintMetadata)
+        let explicitSessions = parseMovement(doc) + parseComplaintMovement(doc)
+        let sessions: [CaseSession]
+        let result: String?
+        let complaintDecisionDate: String?
+        switch complaintMetadata {
+        case .values(let values) where enrichComplaintTimeline:
+            var timelineValues = values
+            let explicitConsidered = explicitSessions.filter(isPublishedComplaintResultSession)
+            let explicitDates = Dictionary(grouping: explicitConsidered, by: complaintDateKey)
+            if timelineValues["дата рассмотрения"] == nil,
+               (timelineValues["результат рассмотрения"] != nil
+                    || timelineValues["результат кассационного рассмотрения"] != nil) {
+                if explicitDates.count == 1, let date = explicitConsidered.first?.date {
+                    timelineValues["дата рассмотрения"] = date
+                } else if !explicitConsidered.isEmpty {
+                    timelineValues.removeValue(forKey: "результат рассмотрения")
+                    timelineValues.removeValue(forKey: "результат кассационного рассмотрения")
+                }
+            }
+            let metadataSessions = complaintTimelineSessions(metadata: timelineValues)
+            let merged = mergeComplaintTimeline(
+                explicit: explicitSessions, metadata: metadataSessions)
+            sessions = sortSessions(merged)
+            result = complaintResult(metadata: values, sessions: merged)
+            complaintDecisionDate = values["дата рассмотрения"]
+                ?? (explicitDates.count == 1 ? explicitConsidered.first?.date : nil)
+        case .values:
+            sessions = sortSessions(explicitSessions + complaintReceiptSession(metadata: meta))
+            result = meta["результат рассмотрения"]
+                ?? meta["результат кассационного рассмотрения"]
+            complaintDecisionDate = meta["дата рассмотрения"]
+        case .absent, .invalid:
+            sessions = sortSessions(explicitSessions)
+            result = meta["результат рассмотрения"]
+                ?? meta["результат кассационного рассмотрения"]
+            complaintDecisionDate = meta["дата рассмотрения"]
+        }
         let acts = parseActs(doc)
 
         let uid = meta["уникальный идентификатор дела"]
         let judge = meta["судья"]
             ?? meta["председательствующий судья"]
             ?? meta["судья-докладчик"]
-        let result = meta["результат рассмотрения"]
-            ?? meta["результат кассационного рассмотрения"]
         let receipt = meta["дата поступления"]
-        let decision = meta["дата рассмотрения"]
+        let decision = complaintDecisionDate
         let legalForce = meta["дата вступления в законную силу"]
         let category = meta["категория дела"]
         let caseNumber = parseCaseNumber(doc: doc)
@@ -462,32 +496,74 @@ public enum CaseCardParser {
     /// Карта «метка (нижний регистр) → значение» из контейнера, где встречается
     /// «Уникальный идентификатор дела». В карточках КоАП без УИД берётся только
     /// таблица «ДЕЛО» однозначной вкладки «ЖАЛОБА».
-    private static func parseMeta(_ doc: Document) -> [String: String] {
+    private enum ComplaintMetadata {
+        case absent
+        case invalid
+        case values([String: String])
+    }
+
+    /// The expanded complaint timeline is specific to the KoAP cassation
+    /// registry. Other SUDRF cards can also have a tab named `ЖАЛОБА`, so the
+    /// effective response URL is part of the source contract.
+    private static func isKSOYuKoAPComplaint(_ cardURL: URL?) -> Bool {
+        guard let cardURL,
+              let components = URLComponents(url: cardURL, resolvingAgainstBaseURL: false),
+              components.path == "/modules.php",
+              let host = components.host?.lowercased(),
+              CourtDirectory.cassationCourts.contains(where: { $0.domain == host })
+        else { return false }
+
+        let items = components.queryItems ?? []
+        func exactValue(_ name: String) -> String? {
+            let values = items.filter { $0.name == name }.compactMap(\.value)
+            return values.count == 1 ? values[0] : nil
+        }
+        return exactValue("name") == "sud_delo"
+            && exactValue("name_op") == "case"
+            && exactValue("delo_id") == "2550001"
+    }
+
+    private static func parseMeta(
+        _ doc: Document, complaintMetadata: ComplaintMetadata
+    ) -> [String: String] {
+        switch complaintMetadata {
+        case .values(let values): return values
+        case .invalid: return [:]
+        case .absent: break
+        }
+
         let marker = "уникальный идентификатор дела"
         let cont = tabContainers(doc).first { container in
             ((try? container.text()) ?? "").lowercased().contains(marker)
                 && !isLowerCourtTabContainer(container, in: doc)
         }
-        if let cont { return legacyMetadataMap(from: cont) }
+        return cont.map(legacyMetadataMap) ?? [:]
+    }
 
+    /// КСОЮ КоАП: реквизиты принадлежат только единственной точной вкладке
+    /// `ЖАЛОБА` и её парному контейнеру `tabN → contN`. Неоднозначная структура
+    /// не разрешает откатываться к поиску по всему документу: там может быть
+    /// результат нижестоящего суда.
+    private static func complaintMetadata(in doc: Document) -> ComplaintMetadata {
         let complaintTabs = ((try? doc.select("ul.tabs li").array()) ?? []).filter {
             normalizeHeader((try? $0.text()) ?? "") == "жалоба"
         }
-        guard complaintTabs.count == 1 else { return [:] }
+        guard !complaintTabs.isEmpty else { return .absent }
+        guard complaintTabs.count == 1 else { return .invalid }
         let tabID = (try? complaintTabs[0].attr("id")) ?? ""
         guard tabID.range(of: #"^tab\d+$"#, options: .regularExpression) != nil,
-              let tabNumber = number(in: tabID) else { return [:] }
+              let tabNumber = number(in: tabID) else { return .invalid }
 
         let containerID = "cont\(tabNumber)"
         let containers = tabContainers(doc).filter {
             ((try? $0.attr("id")) ?? "") == containerID
         }
-        guard containers.count == 1 else { return [:] }
+        guard containers.count == 1 else { return .invalid }
 
         let tables = metadataTables(in: containers[0], headers: ["дело"])
-        guard tables.count == 1 else { return [:] }
+        guard tables.count == 1 else { return .invalid }
 
-        return metadataMap(from: directRows(tables[0]))
+        return .values(metadataMap(from: directRows(tables[0])))
     }
 
     private static func isLowerCourtTabContainer(_ container: Element, in doc: Document) -> Bool {
@@ -542,10 +618,18 @@ public enum CaseCardParser {
 
     private static func metadataMap(from rows: [Element]) -> [String: String] {
         let allowedKeys = Set([
+            "уникальный идентификатор дела",
+            "судья",
+            "председательствующий судья",
+            "судья-докладчик",
             "дата поступления",
+            "дата истребования дела (материала)",
+            "дата поступления истребованного дела (материала)",
             "дата рассмотрения",
             "результат рассмотрения",
-            "результат кассационного рассмотрения"
+            "результат кассационного рассмотрения",
+            "дата вступления в законную силу",
+            "категория дела"
         ])
         var map: [String: String] = [:]
         var conflicts: Set<String> = []
@@ -557,16 +641,19 @@ public enum CaseCardParser {
             guard !key.isEmpty, !val.isEmpty, key.count <= 60 else { continue }
             let rawKey = normalizeHeader(key)
             guard allowedKeys.contains(rawKey) else { continue }
-            let k = rawKey == "результат кассационного рассмотрения"
-                ? "результат рассмотрения"
-                : rawKey
-            guard !conflicts.contains(k) else { continue }
-            if let existing = map[k], existing != val {
-                map.removeValue(forKey: k)
-                conflicts.insert(k)
+            guard !conflicts.contains(rawKey) else { continue }
+            if let existing = map[rawKey], existing != val {
+                map.removeValue(forKey: rawKey)
+                conflicts.insert(rawKey)
             } else {
-                map[k] = val
+                map[rawKey] = val
             }
+        }
+
+        let resultKeys = ["результат рассмотрения", "результат кассационного рассмотрения"]
+        let resultValues = Set(resultKeys.compactMap { map[$0] }.map(normalizeHeader))
+        if resultValues.count > 1 {
+            resultKeys.forEach { map.removeValue(forKey: $0) }
         }
         return map
     }
@@ -737,32 +824,187 @@ public enum CaseCardParser {
 
     // MARK: - Движение дела
 
-    /// Раннее производство по жалобе на КСОЮ имеет отдельную вкладку
-    /// «ЖАЛОБА», где пока опубликована только дата поступления. Это не та же
-    /// таблица, что зрелая вкладка «ЖАЛОБЫ»: сохраняем единственный факт без
-    /// догадки о стадии или результате.
-    private static func parseEarlyComplaintMovement(_ doc: Document) -> [CaseSession] {
-        guard let tab = ((try? doc.select("ul.tabs li").array()) ?? []).first(where: {
-            normalizeHeader((try? $0.text()) ?? "") == "жалоба"
-        }),
-        let tabNumber = number(in: (try? tab.attr("id")) ?? ""),
-        let container = (try? doc.select("#cont\(tabNumber)").first()) ?? nil else {
-            return []
+    private enum ComplaintTimelineKind: Hashable {
+        case received
+        case requested
+        case requestedCaseReceived
+        case considered
+    }
+
+    /// Before the expanded KoAP timeline, the exact complaint tab contributed
+    /// only its published receipt date. Keep that behavior for other sources.
+    private static func complaintReceiptSession(
+        metadata: [String: String]
+    ) -> [CaseSession] {
+        guard let date = metadata["дата поступления"] else { return [] }
+        return [CaseSession(date: date, event: "Поступление жалобы в суд")]
+    }
+
+    /// Реквизиты точной вкладки «ЖАЛОБА» становятся отдельными фактами
+    /// движения. Результат без опубликованной даты сохраняется как недатированный
+    /// факт; дата поступления или текущая дата вместо неё не подставляются.
+    private static func complaintTimelineSessions(
+        metadata: [String: String]
+    ) -> [CaseSession] {
+        var sessions: [CaseSession] = []
+        func append(dateKey: String, event: String) {
+            guard let date = metadata[dateKey] else { return }
+            sessions.append(CaseSession(date: date, event: event))
+        }
+        append(dateKey: "дата поступления", event: "Поступление жалобы в суд")
+        append(dateKey: "дата истребования дела (материала)",
+               event: "Истребование дела (материала)")
+        append(dateKey: "дата поступления истребованного дела (материала)",
+               event: "Поступление истребованного дела (материала)")
+        let result = metadata["результат рассмотрения"]
+            ?? metadata["результат кассационного рассмотрения"]
+        if let date = metadata["дата рассмотрения"] {
+            sessions.append(CaseSession(
+                date: date, event: "Результат рассмотрения жалобы", result: result))
+        } else if let result {
+            sessions.append(CaseSession(
+                date: "", event: "Результат рассмотрения жалобы", result: result))
+        }
+        return sessions
+    }
+
+    /// Явная строка таблицы движения сильнее синтезированной из реквизитов.
+    /// Источник здесь один — текущая карточка; поэтому точная дедупликация
+    /// выполняется по виду факта и опубликованной дате.
+    private static func mergeComplaintTimeline(
+        explicit: [CaseSession], metadata: [CaseSession]
+    ) -> [CaseSession] {
+        var sessions: [CaseSession] = []
+        var indexesByKey: [String: [Int]] = [:]
+        let metadataConsideredKeys = Set(metadata.compactMap { session -> String? in
+            complaintTimelineKind(for: session.event) == .considered
+                ? complaintDateKey(session) : nil
+        })
+
+        func key(for session: CaseSession) -> String? {
+            guard let kind = complaintTimelineKind(for: session.event) else { return nil }
+            return "\(kind)#\(complaintDateKey(session))"
         }
 
-        for table in (try? container.select("table").array()) ?? [] {
-            for row in directRows(table) {
-                let cells = directCells(row, tags: ["td", "th"])
-                guard cells.count >= 2 else { continue }
-                let key = normalizeHeader((try? cells[0].text()) ?? "")
-                guard key == "дата поступления" else { continue }
-                let date = ((try? cells[1].text()) ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !date.isEmpty else { continue }
-                return [CaseSession(date: date, event: "Поступление жалобы в суд")]
+        for original in explicit {
+            var session = original
+            if let kind = complaintTimelineKind(for: session.event) {
+                let isUnresolvedHearing = kind == .considered
+                    && normalizeHeader(session.event) == "рассмотрение жалобы"
+                    && trimmed(session.result) == nil
+                    && !metadataConsideredKeys.contains(complaintDateKey(session))
+                if !isUnresolvedHearing {
+                    session.event = complaintTimelineEvent(for: kind)
+                }
+            }
+            guard let key = key(for: session) else {
+                sessions.append(session)
+                continue
+            }
+            let indexes = indexesByKey[key] ?? []
+            let newResult = trimmed(session.result)
+            if indexes.isEmpty {
+                indexesByKey[key] = [sessions.count]
+                sessions.append(session)
+                continue
+            }
+            let existingResults = Set(indexes.compactMap {
+                complaintResultKey(sessions[$0].result)
+            })
+            let newResultKey = complaintResultKey(newResult)
+            if let newResultKey, !existingResults.isEmpty,
+               !existingResults.contains(newResultKey) {
+                indexesByKey[key, default: []].append(sessions.count)
+                sessions.append(session)
+            } else if let newResult, existingResults.isEmpty {
+                sessions[indexes[0]].result = newResult
             }
         }
-        return []
+
+        for session in metadata {
+            guard let key = key(for: session) else {
+                sessions.append(session)
+                continue
+            }
+            guard let indexes = indexesByKey[key], !indexes.isEmpty else {
+                indexesByKey[key] = [sessions.count]
+                sessions.append(session)
+                continue
+            }
+            // The explicit row owns the event. Metadata may only fill a result
+            // that the explicit row did not publish; it never overwrites one.
+            if indexes.allSatisfy({ trimmed(sessions[$0].result) == nil }),
+               let result = trimmed(session.result) {
+                sessions[indexes[0]].result = result
+            }
+        }
+        return sessions
+    }
+
+    private static func complaintResult(
+        metadata: [String: String], sessions: [CaseSession]
+    ) -> String? {
+        let metadataResult = metadata["результат рассмотрения"]
+            ?? metadata["результат кассационного рассмотрения"]
+        let considered = sessions.filter {
+            complaintTimelineKind(for: $0.event) == .considered
+        }
+        let matching: [CaseSession]
+        if let date = metadata["дата рассмотрения"] {
+            let dateKey = complaintDateKey(CaseSession(date: date, event: ""))
+            matching = considered.filter { complaintDateKey($0) == dateKey }
+        } else {
+            matching = considered
+        }
+        let results = Dictionary(grouping: matching.compactMap { trimmed($0.result) },
+                                 by: { complaintResultKey($0) ?? "" })
+        if results.count > 1 { return nil }
+        if let result = results.values.first?.first { return result }
+        return metadataResult
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
+    private static func complaintResultKey(_ value: String?) -> String? {
+        trimmed(value).map(normalizeHeader)
+    }
+
+    private static func isPublishedComplaintResultSession(_ session: CaseSession) -> Bool {
+        guard complaintTimelineKind(for: session.event) == .considered else { return false }
+        return trimmed(session.result) != nil
+            || normalizeHeader(session.event) == "результат рассмотрения жалобы"
+    }
+
+    private static func complaintTimelineKind(for event: String) -> ComplaintTimelineKind? {
+        switch normalizeHeader(event) {
+        case "поступление жалобы в суд", "поступление жалобы (представления) в суд":
+            return .received
+        case "истребование дела (материала)", "истребование дела", "истребовано дело":
+            return .requested
+        case "поступление истребованного дела (материала)",
+             "поступление истребованного дела":
+            return .requestedCaseReceived
+        case "результат рассмотрения жалобы", "рассмотрение жалобы":
+            return .considered
+        default: return nil
+        }
+    }
+
+    private static func complaintTimelineEvent(for kind: ComplaintTimelineKind) -> String {
+        switch kind {
+        case .received: return "Поступление жалобы в суд"
+        case .requested: return "Истребование дела (материала)"
+        case .requestedCaseReceived: return "Поступление истребованного дела (материала)"
+        case .considered: return "Результат рассмотрения жалобы"
+        }
+    }
+
+    private static func complaintDateKey(_ session: CaseSession) -> String {
+        let parsed = MovementService.dateSortKey(session.date)
+        return parsed == Int.max ? "raw:\(normalizeHeader(session.date))" : "date:\(parsed)"
     }
 
     /// КСОЮ публикуют ранние этапы кассационного производства отдельной

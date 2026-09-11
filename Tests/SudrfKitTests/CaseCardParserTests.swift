@@ -7,6 +7,13 @@ import XCTest
 /// трём инстанциям. Фикстуры лежат в Tests/SudrfKitTests/Fixtures.
 final class CaseCardParserTests: XCTestCase {
 
+    private func ksoyuKoAPURL(
+        host: String = "3kas.sudrf.ru", caseID: String = "1"
+    ) -> URL {
+        URL(string: "https://\(host)/modules.php?name=sud_delo&srv_num=1"
+            + "&name_op=case&case_id=\(caseID)&delo_id=2550001")!
+    }
+
     func testSubjectKASCurrentAndPreliminaryNumbersRemainInCardHeading() throws {
         let cases = [
             ("vsrk_subject_kas_m662", "3а-685/2026 ~ М-662/2026"),
@@ -143,18 +150,49 @@ final class CaseCardParserTests: XCTestCase {
         ])
     }
 
+    func testKSOYuKoAPComplaintMetadataBuildsCompleteTimeline() throws {
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("ksoyu_koap_complaint_timeline_3kas"),
+            cardURL: ksoyuKoAPURL(caseID: "12744364"))
+
+        XCTAssertEqual(card.caseNumber, "16-2038/2023")
+        XCTAssertEqual(card.uid, "11RS0001-01-2022-013113-07")
+        XCTAssertEqual(card.receiptDate, "10.02.2023")
+        XCTAssertEqual(card.decisionDate, "18.05.2023")
+        XCTAssertEqual(card.result,
+                       "оставлены без изменения постановление и/или все решения по делу")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "10.02.2023", event: "Поступление жалобы в суд"),
+            CaseSession(date: "27.03.2023", event: "Истребование дела (материала)"),
+            CaseSession(date: "19.04.2023",
+                        event: "Поступление истребованного дела (материала)"),
+            CaseSession(
+                date: "18.05.2023", event: "Результат рассмотрения жалобы",
+                result: "оставлены без изменения постановление и/или все решения по делу"),
+        ])
+    }
+
     func testCompletedKSOYuKoAPComplaintWithoutUIDParsesMetadata() throws {
-        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_koap_returned_2kas"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("ksoyu_koap_returned_2kas"),
+            cardURL: ksoyuKoAPURL(host: "2kas.sudrf.ru", caseID: "9132414"))
 
         XCTAssertEqual(card.caseNumber, "16-5035/2023")
         XCTAssertNil(card.uid)
         XCTAssertEqual(card.receiptDate, "13.07.2023")
         XCTAssertEqual(card.decisionDate, "25.07.2023")
         XCTAssertEqual(card.result, "Возвращено без рассмотрения")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "13.07.2023", event: "Поступление жалобы в суд"),
+            CaseSession(date: "25.07.2023", event: "Результат рассмотрения жалобы",
+                        result: "Возвращено без рассмотрения"),
+        ])
     }
 
     func testSecondCompletedKSOYuKoAPComplaintWithoutUIDParsesMetadata() throws {
-        let card = try CaseCardParser.parse(html: try loadFixture("ksoyu_koap_returned_3kas"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("ksoyu_koap_returned_3kas"),
+            cardURL: ksoyuKoAPURL(caseID: "4848606"))
 
         XCTAssertEqual(card.caseNumber, "16-3568/2021")
         XCTAssertNil(card.uid)
@@ -171,14 +209,17 @@ final class CaseCardParserTests: XCTestCase {
         </ul>
         <div id="cont1"><table>
           <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Уникальный идентификатор дела</td><td>11RS0001-01-2026-000001-01</td></tr>
           <tr><td>Результат рассмотрения</td><td>Первый</td></tr>
         </table></div>
         <div id="cont2"><table>
           <tr><th colspan="2">ДЕЛО</th></tr>
           <tr><td>Результат рассмотрения</td><td>Второй</td></tr>
         </table></div>
-        """)
+        """, cardURL: ksoyuKoAPURL())
         XCTAssertNil(duplicatedTabs.result)
+        XCTAssertNil(duplicatedTabs.uid)
+        XCTAssertTrue(duplicatedTabs.sessions.isEmpty)
 
         let conflictingValues = try CaseCardParser.parse(html: """
         <div class="casenumber">ДЕЛО № 16-2/2026</div>
@@ -191,7 +232,7 @@ final class CaseCardParserTests: XCTestCase {
           <tr><td>Результат рассмотрения</td><td>Первый</td></tr>
           <tr><td>Результат кассационного рассмотрения</td><td>Второй</td></tr>
         </table></div>
-        """)
+        """, cardURL: ksoyuKoAPURL())
         XCTAssertNil(conflictingValues.receiptDate)
         XCTAssertEqual(conflictingValues.decisionDate, "03.09.2026")
         XCTAssertNil(conflictingValues.result)
@@ -239,6 +280,219 @@ final class CaseCardParserTests: XCTestCase {
         """)
 
         XCTAssertTrue(card.sessions.isEmpty)
+    }
+
+    func testOrdinaryCardResultDoesNotBecomeComplaintTimeline() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 2-2/2026</div>
+        <ul class="tabs"><li id="tab1">ДЕЛО</li></ul>
+        <div id="cont1"><table>
+          <tr><td>Уникальный идентификатор дела</td><td>11RS0001-01-2026-000002-01</td></tr>
+          <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+          <tr><td>Результат рассмотрения</td><td>Иск удовлетворён</td></tr>
+        </table></div>
+        """)
+
+        XCTAssertEqual(card.result, "Иск удовлетворён")
+        XCTAssertTrue(card.sessions.isEmpty)
+    }
+
+    func testComplaintTabOutsideKSOYuKoAPKeepsMetadataWithoutSyntheticTimeline() throws {
+        let html = """
+        <div class="casenumber">ДЕЛО № 2-3/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1"><table>
+          <tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Дата поступления</td><td>01.09.2026</td></tr>
+          <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+          <tr><td>Результат рассмотрения</td><td>Жалоба отклонена</td></tr>
+        </table></div>
+        """
+        let URLs = [
+            URL(string: "https://syktsud--komi.sudrf.ru/modules.php"
+                + "?name=sud_delo&name_op=case&case_id=3&delo_id=2550001")!,
+            URL(string: "https://3kas.sudrf.ru/modules.php"
+                + "?name=sud_delo&name_op=case&case_id=3&delo_id=5")!,
+        ]
+
+        for url in URLs {
+            let card = try CaseCardParser.parse(html: html, cardURL: url)
+            XCTAssertEqual(card.receiptDate, "01.09.2026")
+            XCTAssertEqual(card.decisionDate, "03.09.2026")
+            XCTAssertEqual(card.result, "Жалоба отклонена")
+            XCTAssertEqual(card.sessions, [
+                CaseSession(date: "01.09.2026", event: "Поступление жалобы в суд")
+            ])
+        }
+    }
+
+    func testExplicitComplaintMovementWinsAndMetadataOnlyFillsMissingResult() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-4/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Дата поступления</td><td>03.09.2026</td></tr>
+            <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+            <tr><td>Результат рассмотрения</td><td>Оставлено без изменения</td></tr>
+          </table>
+          <table><tr><th colspan="5">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Время</td>
+                <td>Место проведения</td><td>Результат события</td></tr>
+            <tr><td>Поступление жалобы (представления) в суд</td><td>3.09.2026</td>
+                <td></td><td></td><td></td></tr>
+            <tr><td>Рассмотрение жалобы</td><td>3.09.2026</td>
+                <td>10:00</td><td>Зал 1</td><td></td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertEqual(card.result, "Оставлено без изменения")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "3.09.2026", event: "Поступление жалобы в суд"),
+            CaseSession(
+                date: "3.09.2026", time: "10:00", room: "Зал 1",
+                event: "Результат рассмотрения жалобы",
+                result: "Оставлено без изменения"),
+        ])
+    }
+
+    func testConflictingExplicitComplaintResultsRemainVisibleAndDoNotChooseWinner() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-5/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+            <tr><td>Результат рассмотрения</td><td>Результат из реквизитов</td></tr>
+          </table>
+          <table><tr><th colspan="5">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Время</td>
+                <td>Место проведения</td><td>Результат события</td></tr>
+            <tr><td>Результат рассмотрения жалобы</td><td>03.09.2026</td>
+                <td></td><td></td><td>Первый явный результат</td></tr>
+            <tr><td>Результат рассмотрения жалобы</td><td>03.09.2026</td>
+                <td></td><td></td><td>Второй явный результат</td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertNil(card.result)
+        XCTAssertEqual(card.sessions.map(\.result), [
+            "Первый явный результат", "Второй явный результат",
+        ])
+    }
+
+    func testExplicitComplaintResultWinsAndExactDuplicateIsRemoved() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-8/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+            <tr><td>Результат рассмотрения</td><td>Итог из реквизитов</td></tr>
+          </table>
+          <table><tr><th colspan="3">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Результат события</td></tr>
+            <tr><td>Рассмотрение жалобы</td><td>03.09.2026</td>
+                <td>Явный итог</td></tr>
+            <tr><td>Результат рассмотрения жалобы</td><td>3.09.2026</td>
+                <td>явный итог</td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertEqual(card.result, "Явный итог")
+        XCTAssertEqual(card.sessions, [CaseSession(
+            date: "03.09.2026", event: "Результат рассмотрения жалобы",
+            result: "Явный итог")])
+    }
+
+    func testComplaintResultWithoutDateIsPreservedWithoutInventedDate() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-6/2026</div>
+        <ul class="tabs"><li id="tab3">ЖАЛОБА</li></ul>
+        <div id="cont3"><table><tr><th colspan="2">ДЕЛО</th></tr>
+          <tr><td>Результат рассмотрения</td><td>Производство прекращено</td></tr>
+        </table></div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertEqual(card.result, "Производство прекращено")
+        XCTAssertEqual(card.sessions, [CaseSession(
+            date: "", event: "Результат рассмотрения жалобы",
+            result: "Производство прекращено")])
+    }
+
+    func testSingleExplicitConsiderationSuppliesPublishedDateForUndatedMetadataResult() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-9/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Результат рассмотрения</td><td>Итог из реквизитов</td></tr>
+          </table>
+          <table><tr><th colspan="3">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Результат события</td></tr>
+            <tr><td>Рассмотрение жалобы</td><td>04.09.2026</td>
+                <td>Явный итог</td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertEqual(card.decisionDate, "04.09.2026")
+        XCTAssertEqual(card.result, "Явный итог")
+        XCTAssertEqual(card.sessions, [CaseSession(
+            date: "04.09.2026", event: "Результат рассмотрения жалобы",
+            result: "Явный итог")])
+    }
+
+    func testComplaintResultAtDifferentExplicitDateIsNotMovedToMetadataDate() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-7/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Дата рассмотрения</td><td>03.09.2026</td></tr>
+            <tr><td>Результат рассмотрения</td><td>Итог из реквизитов</td></tr>
+          </table>
+          <table><tr><th colspan="3">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Результат события</td></tr>
+            <tr><td>Результат рассмотрения жалобы</td><td>02.09.2026</td>
+                <td>Итог из движения</td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertEqual(card.result, "Итог из реквизитов")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "02.09.2026", event: "Результат рассмотрения жалобы",
+                        result: "Итог из движения"),
+            CaseSession(date: "03.09.2026", event: "Результат рассмотрения жалобы",
+                        result: "Итог из реквизитов"),
+        ])
+    }
+
+    func testFutureComplaintHearingWithoutResultRemainsAHearing() throws {
+        let card = try CaseCardParser.parse(html: """
+        <div class="casenumber">ДЕЛО № 16-10/2026</div>
+        <ul class="tabs"><li id="tab1">ЖАЛОБА</li></ul>
+        <div id="cont1">
+          <table><tr><th colspan="2">ДЕЛО</th></tr>
+            <tr><td>Дата поступления</td><td>01.09.2026</td></tr>
+          </table>
+          <table><tr><th colspan="3">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Результат события</td></tr>
+            <tr><td>Рассмотрение жалобы</td><td>20.09.2026</td><td></td></tr>
+          </table>
+        </div>
+        """, cardURL: ksoyuKoAPURL())
+
+        XCTAssertNil(card.decisionDate)
+        XCTAssertNil(card.result)
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "01.09.2026", event: "Поступление жалобы в суд"),
+            CaseSession(date: "20.09.2026", event: "Рассмотрение жалобы"),
+        ])
     }
 
     func testKSOYuComplaintTableAddsMilestonesWithoutHearing() throws {

@@ -159,6 +159,37 @@ final class MovementServiceTests: XCTestCase {
             cartoteka: kasAppeal))
     }
 
+    func testSamaraAppealKeepsBothVerifiedMaterialsWithoutReplacingMainAppeal() async throws {
+        let court = Court(domain: "oblsud.sam.sudrf.ru", title: "Самарский областной суд", level: .subject)
+        let number = "2-12/2025 (2-45/2024;)"
+        let uid = "63OS0000-01-2024-002224-56"
+        let definitions = [("8477511", "55К-702/2024"), ("8480089", "55К-241/2025"),
+                           ("8481895", "55-584/2025"), ("foreign", "55К-999/2025")]
+        let rows = definitions.map { CaseSearchResult(caseNumber: $0.1, caseID: $0.0, caseUID: "guid-\($0.0)") }
+        let cards = Dictionary(uniqueKeysWithValues: definitions.map { id, number in
+            (id, CaseCard(rawText: "Карточка", actText: "Текст акта \(number)",
+                          result: "ВЫНЕСЕНО РЕШЕНИЕ (ОПРЕДЕЛЕНИЕ)",
+                          uid: id == "foreign" ? Self.uid : uid, caseNumber: number))
+        })
+        let mock = MockClient(firstCardID: "base",
+            firstCard: CaseCard(rawText: "Карточка", actText: nil, uid: uid, caseNumber: number),
+            higherResults: [], higherCards: cards,
+            higherResultsByLocator: ["4ap.sudrf.ru/u2": rows + [rows[0]]],
+            homeDomain: court.domain, expectedUID: uid)
+        let service = MovementService(client: mock, higherCourtDomains: ["4ap.sudrf.ru"],
+                                      baseInstanceLevel: .first)
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: number, caseID: "base", caseUID: Self.linkGUID),
+            court: court, cartoteka: XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "u1")))
+        XCTAssertEqual(movement.instances.filter { $0.level == .appeal }.map(\.caseNumber), ["55-584/2025"])
+        let materials = movement.instances.filter { $0.level == .material }
+        XCTAssertEqual(Set(materials.map(\.caseNumber)), ["55К-702/2024", "55К-241/2025"])
+        XCTAssertEqual(materials.count, 2)
+        XCTAssertTrue(materials.allSatisfy { $0.foundByUID && $0.sourceURL?.host == "4ap.sudrf.ru" })
+        XCTAssertEqual(movement.acts.filter { $0.instanceLevel == .material }.count, 2)
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "55К-999/2025" })
+    }
+
     func testSubjectFirstAnchorRequiresPublishedBaseRegistrationEvidence() async throws {
         let subjectCourt = Court(domain: "vs--komi.sudrf.ru",
                                  title: "Верховный Суд Республики Коми", level: .subject)

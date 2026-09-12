@@ -245,7 +245,10 @@ public extension CourtDirectory {
         var host = domain.lowercased()
         for pre in ["https://", "http://"] where host.hasPrefix(pre) { host.removeFirst(pre.count) }
         host = host.split(separator: "/").first.map(String.init) ?? host
-        return subjectCourtDomainByCode.first { $0.value == host }?.key
+        let canonicalHost = SudrfHost.moduleHost(host)
+        return subjectCourtDomainByCode.first {
+            SudrfHost.moduleHost($0.value) == canonicalHost
+        }?.key
     }
 
     /// Региональный код по «региональному суффиксу» домена платформы sudrf —

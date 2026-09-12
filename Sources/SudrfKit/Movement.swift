@@ -878,6 +878,7 @@ public actor MovementService: MovementProviding {
                     // инстанцией (а не только первый, как было раньше).
                     var rounds: [(inst: CaseInstance, act: CaseAct?, body: String?, sortKey: Int)] = []
                     for r in usable {
+                        var resolvedLevel = instLevel
                         if isSubjectFirstAppealRoute,
                            !Self.isCompatibleAppealSourceURL(
                                r, court: higherCourt, cartoteka: higherCart) {
@@ -902,11 +903,11 @@ public actor MovementService: MovementProviding {
                                 markHigherCourtIncomplete(domain)
                                 continue
                             }
-                            // Подтверждённый 55к — самостоятельный материал,
-                            // не пропавший апелляционный круг. Остальные роли
-                            // не дают основания считать выдачу исчерпывающей.
-                            if role == .judicialControlMaterial { continue }
-                            guard role == .appellateCase else {
+                            // Подтверждённый по УИД 55к сохраняется в досье как
+                            // материал, не подменяя апелляцию по основному делу.
+                            if role == .judicialControlMaterial {
+                                resolvedLevel = .material
+                            } else if role != .appellateCase {
                                 targetIncomplete = true
                                 markHigherCourtIncomplete(domain)
                                 continue
@@ -915,7 +916,8 @@ public actor MovementService: MovementProviding {
                         // Круг или нет — решает вкладка «Обжалование» (вид жалобы),
                         // с откатом к различителю по результату. Частные жалобы и
                         // прочее (замечания на протокол) кругом не считаем.
-                        if !Self.isRoundOfAppeal(row: r, card: higherCard, appeals: appeals) { continue }
+                        if resolvedLevel != .material,
+                           !Self.isRoundOfAppeal(row: r, card: higherCard, appeals: appeals) { continue }
 
                         // actID уникален по № дела: при двух кругах из одного суда
                         // прежний "act_<домен>" схлопывал оба акта в один.
@@ -926,14 +928,16 @@ public actor MovementService: MovementProviding {
                             let date = r.decisionDate ?? r.receiptDate ?? "—"
                             act = CaseAct(
                                 id: actID,
-                                title: Self.actTitle(cartotekaID: higherCart.id, level: instLevel),
+                                title: resolvedLevel == .material
+                                    ? Self.materialActTitle(caseNumber: r.caseNumber)
+                                    : Self.actTitle(cartotekaID: higherCart.id, level: resolvedLevel),
                                 date: date,
                                 courtShort: Self.shortCourtName(forDomain: domain),
-                                instanceLevel: instLevel)
+                                instanceLevel: resolvedLevel)
                             body = actText
                         }
                         let inst = CaseInstance(
-                            level: instLevel,
+                            level: resolvedLevel,
                             court: higherCourt.title,
                             caseNumber: r.caseNumber,
                             judge: r.judge ?? higherCard.judge,

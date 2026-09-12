@@ -37,10 +37,13 @@ enum CaseLifecycleResolver {
     /// доказательства, что после её пересмотра начался новый круг.
     struct Timeline {
         var sourceOrdered: [IndexedInstance]
+        var lifecycleOrdered: [IndexedInstance]
+        var hasAmbiguousAppealEffect: Bool
         var chronological: [IndexedInstance]
         var dated: [IndexedInstance]
         /// Первая датированная инстанция нового круга, созданного возвратом.
         var currentRoundStart: IndexedInstance?
+        var currentRoundDate: Date?
         var currentDated: IndexedInstance?
         var currentDatedStartsNewRound: Bool { currentRoundStart != nil }
 
@@ -51,16 +54,30 @@ enum CaseLifecycleResolver {
                 ?? chronological.last(where: { $0.instance.level == .first })
         }
 
+        /// Trigger extraction must not reuse a refusal from before a later
+        /// acceptance recorded in the same source card.
+        var deadlineFirst: CaseInstance? {
+            guard var first = latestFirst?.instance else { return nil }
+            guard first.id == currentRoundStart?.instance.id,
+                  let start = currentRoundDate,
+                  let earliest = CaseLifecycleResolver.earliestDatedSessionDate(in: first), earliest < start else { return first }
+            first.sessions = first.sessions.filter { DateUtil.parse($0.date).map { $0 >= start } == true }
+            if (first.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) ?? .distantPast) < start {
+                first.result = nil
+            }
+            return first
+        }
+
         /// Карточка апелляции без дат не доказывает стадию, но достаточно
         /// надёжна, чтобы не предлагать пользователю уже поданную жалобу.
         /// Датированная апелляция относится к текущему кругу только после
         /// последней первой инстанции этого круга.
         var hasAppealInCurrentRound: Bool {
             guard let latestFirst else {
-                return sourceOrdered.contains { $0.instance.level == .appeal }
+                return lifecycleOrdered.contains { $0.instance.level == .appeal }
             }
-            let firstDate = CaseLifecycleResolver.earliestDatedSessionDate(in: latestFirst.instance)
-            for candidate in sourceOrdered where candidate.instance.level == .appeal {
+            let firstDate = currentRoundDate ?? CaseLifecycleResolver.earliestDatedSessionDate(in: latestFirst.instance)
+            for candidate in lifecycleOrdered where candidate.instance.level == .appeal {
                 guard let appealDate = CaseLifecycleResolver.earliestDatedSessionDate(in: candidate.instance) else {
                     // Дата отсутствует, поэтому не повышаем стадию. Но реальная
                     // карточка всё равно консервативно подавляет предлагаемый
@@ -76,8 +93,21 @@ enum CaseLifecycleResolver {
             return false
         }
 
+        var currentAppeal: CaseInstance? {
+            let firstDate = currentRoundDate ?? latestFirst.flatMap {
+                CaseLifecycleResolver.earliestDatedSessionDate(in: $0.instance)
+            }
+            return lifecycleOrdered.filter {
+                guard $0.instance.level == .appeal else { return false }
+                guard let firstDate else { return true }
+                return (CaseLifecycleResolver.earliestDatedSessionDate(in: $0.instance) ?? .distantPast) >= firstDate
+            }.max {
+                MovementService.precedesInChronology($0.instance, $1.instance)
+            }?.instance
+        }
+
         var hasUnresolvedUndatedAppeal: Bool {
-            return sourceOrdered.contains {
+            return lifecycleOrdered.contains {
                 $0.instance.level == .appeal
                     && CaseLifecycleResolver.earliestDatedSessionDate(in: $0.instance) == nil
                     && !CaseLifecycleResolver.isConcludedReview($0.instance)
@@ -86,10 +116,7 @@ enum CaseLifecycleResolver {
 
         var hasCassationInCurrentRound: Bool {
             let cassationLevels: Set<CaseInstance.Level> = [.cassation, .vsCassation, .supervisory]
-            guard let currentRoundStart,
-                  let roundDate = CaseLifecycleResolver.earliestDatedSessionDate(
-                    in: currentRoundStart.instance
-                  ) else {
+            guard let roundDate = currentRoundDate else {
                 return sourceOrdered.contains { cassationLevels.contains($0.instance.level) }
             }
             return sourceOrdered.contains { candidate in
@@ -125,10 +152,8 @@ enum CaseLifecycleResolver {
             }
             .map { IndexedInstance(index: $0.offset, instance: $0.element) }
         let chronological = sourceOrdered.sorted {
-                let left = MovementService.instanceOrderKey($0.instance)
-                let right = MovementService.instanceOrderKey($1.instance)
-                return left == right ? $0.index < $1.index : left < right
-            }
+            MovementService.precedesInChronology($0.instance, $1.instance)
+        }
         let dated = chronological.filter { hasDatedSession($0.instance) }
         // Возврат создаёт новый процессуальный круг только когда есть отдельная
         // датированная карточка целевой инстанции. У недатированного возврата
@@ -157,22 +182,92 @@ enum CaseLifecycleResolver {
                 if followsRemand { roundStarts.append(targetInstance) }
             }
         }
+        // A published acceptance after a concluded review starts a new round
+        // even when the review resolved the issue itself rather than remanding.
+        for first in dated where first.instance.level == .first {
+            guard let acceptance = continuationDate(in: first.instance, acceptanceOnly: true) else { continue }
+            if sourceOrdered.contains(where: { review in
+                isReview(review.instance.level)
+                    && (isConcludedReview(review.instance)
+                        || (nonempty(review.instance.result) != nil
+                            && review.instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) != nil))
+                    && reviewEventDate(in: review.instance).map { $0 < acceptance } == true
+            }) { roundStarts.append(first) }
+        }
+        let latestFirst = dated.last(where: { $0.instance.level == .first })
+        var excludedAppeals = Set<Int>()
+        var ambiguousAppeal = false
+        // A verified UPK 22К complaint is not an appeal of the main verdict.
+        // Keep it in the displayed chronology; with a main first instance it
+        // must not cancel that instance's hearings or drive its deadlines.
+        if production == .crim, latestFirst != nil {
+            for review in sourceOrdered where review.instance.level == .appeal {
+                if let index = CaseIndexClassifier.classify(
+                    caseNumber: review.instance.caseNumber, courtLevel: .subject),
+                   index.processKind == .upk, index.cardRole == .appellateComplaint {
+                    excludedAppeals.insert(review.index)
+                }
+            }
+        }
+        if production == .civil || production == .kas, let first = latestFirst {
+            let kinds = first.instance.sourceEvidence?.appealKinds?.map(normalized)
+            let privateOnly = kinds?.contains(where: { $0.contains("частн") }) == true
+                && kinds?.contains(where: { $0.contains("апелляцион") }) != true
+            let hasMainAppeal = kinds?.contains(where: { $0.contains("апелляцион") }) == true
+            for review in sourceOrdered where review.instance.level == .appeal {
+                guard let start = earliestDatedSessionDate(in: first.instance),
+                      let reviewDate = reviewEventDate(in: review.instance), reviewDate >= start else { continue }
+                let lower = review.instance.sourceEvidence?.lowerCourt
+                let differentNumber = lower?.caseNumber.map {
+                    normalized($0).trimmingCharacters(in: .whitespacesAndNewlines)
+                        != normalized(first.instance.caseNumber).trimmingCharacters(in: .whitespacesAndNewlines)
+                } ?? false
+                let differentCourt = lower?.courtTitle.map {
+                    normalized($0).trimmingCharacters(in: .whitespacesAndNewlines)
+                        != normalized(first.instance.court).trimmingCharacters(in: .whitespacesAndNewlines)
+                } ?? false
+                if differentNumber || differentCourt {
+                    // A published reference to another registration cannot
+                    // conclude the current first instance just because dates overlap.
+                    ambiguousAppeal = true
+                    continue
+                }
+                let continued = continuationDate(in: first.instance).map { $0 > reviewDate } == true
+                let soleJudge = review.instance.sourceEvidence?.reviewProcedure.map {
+                    normalized($0).contains("единолич")
+                } == true
+                if continued && !hasMainAppeal && (privateOnly || soleJudge) {
+                    excludedAppeals.insert(review.index)
+                } else if privateOnly || continued {
+                    // Neither a missing AJ nor sole-judge proceedings alone
+                    // prove the role of a particular appellate card.
+                    ambiguousAppeal = true
+                }
+            }
+        }
+        let lifecycleOrdered = sourceOrdered.filter { !excludedAppeals.contains($0.index) }
+        let lifecycleDated = dated.filter { !excludedAppeals.contains($0.index) }
         let currentRoundStart = roundStarts.max { left, right in
             let leftKey = MovementService.instanceOrderKey(left.instance)
             let rightKey = MovementService.instanceOrderKey(right.instance)
             return leftKey == rightKey ? left.index < right.index : leftKey < rightKey
         }
+        let currentRoundDate = currentRoundStart.flatMap { first in
+            continuationDate(in: first.instance, acceptanceOnly: true)
+                ?? earliestDatedSessionDate(in: first.instance)
+        }
         let currentDated: IndexedInstance?
-        if let currentRoundStart, let startDate = earliestDatedSessionDate(in: currentRoundStart.instance) {
-            currentDated = dated.last(where: {
+        if let currentRoundStart, let startDate = currentRoundDate {
+            currentDated = lifecycleDated.last(where: {
                 guard let date = earliestDatedSessionDate(in: $0.instance) else { return false }
                 return date >= startDate
-            })
+            }) ?? currentRoundStart
         } else {
-            currentDated = dated.last
+            currentDated = lifecycleDated.last
         }
-        return Timeline(sourceOrdered: sourceOrdered, chronological: chronological, dated: dated,
-                        currentRoundStart: currentRoundStart, currentDated: currentDated)
+        return Timeline(sourceOrdered: sourceOrdered, lifecycleOrdered: lifecycleOrdered,
+                        hasAmbiguousAppealEffect: ambiguousAppeal, chronological: chronological, dated: dated,
+                        currentRoundStart: currentRoundStart, currentRoundDate: currentRoundDate, currentDated: currentDated)
     }
 
     static func resolve(movement: CaseMovement, production: ProductionType? = nil,
@@ -180,7 +275,8 @@ enum CaseLifecycleResolver {
                         deadlineAssessments: [DeadlineRuleAssessment] = [],
                         today: Date = DateUtil.today) -> Resolution {
         let timeline = timeline(in: movement, production: production)
-        let instances = timeline.instances
+        let eligible = Set(timeline.lifecycleOrdered.map(\.index))
+        let instances = timeline.chronological.filter { eligible.contains($0.index) }.map(\.instance)
         // Пустая карточка вышестоящего суда, найденная по УИД, полезна как
         // доказательство подачи жалобы (в частности, подавляет расчётный срок),
         // но не должна перекрывать последний датированный круг производства.
@@ -220,16 +316,48 @@ enum CaseLifecycleResolver {
         }
         let visited = Set(instances.compactMap { stage(for: $0, production: production) })
 
+        if timeline.hasAmbiguousAppealEffect, let first = timeline.latestFirst?.instance {
+            return Resolution(stage: .first, currentInstance: first,
+                              steps: steps(visited: visited, active: .first, production: production),
+                              completionReason: nil, graceDeadline: nil)
+        }
+
         // Будущее заседание — наиболее сильный сигнал активного производства.
         // Берём ближайшее; при одинаковой дате более поздний круг выигрывает.
-        if let hearingInstance = instanceWithNearestFutureHearing(instances, today: today) {
+        let hearingInstances = instances.filter { instance in
+            if let round = timeline.currentRoundDate,
+               instance.id != timeline.currentRoundStart?.instance.id,
+               (earliestDatedSessionDate(in: instance) ?? .distantPast) < round { return false }
+            if instance.level == .first,
+               let reviewDate = instances.filter({ isReview($0.level) }).compactMap({ reviewEventDate(in: $0) }).max(),
+               (continuationDate(in: instance) ?? .distantPast) <= reviewDate { return false }
+            return true
+        }
+        if let hearingInstance = instanceWithNearestFutureHearing(hearingInstances, today: today) {
             let active = stage(for: hearingInstance, production: production) ?? .first
             return Resolution(stage: active, currentInstance: hearingInstance,
                               steps: steps(visited: visited, active: active, production: production),
                               completionReason: nil, graceDeadline: nil)
         }
 
-        let currentSignal = latest.flatMap(latestSignal)
+        let currentSignal: InstanceSignal?
+        if let latest, latest.level == .first,
+           latest.id == timeline.currentRoundStart?.instance.id,
+           let start = timeline.currentRoundDate,
+           continuationDate(in: latest, acceptanceOnly: true) == start,
+           !(nonempty(latest.result) != nil
+             && latest.sourceEvidence?.decisionDate.flatMap(DateUtil.parse).map { $0 >= start } == true),
+           !latest.sessions.contains(where: { session in
+               guard let date = DateUtil.parse(session.date), date >= start else { return false }
+               switch signal(in: session.event + " " + (session.result ?? "")) {
+               case .terminal?, .legalForce?, .remand?: return true
+               default: return false
+               }
+           }) {
+            currentSignal = .active
+        } else {
+            currentSignal = latest.flatMap(latestSignal)
+        }
         if let latest {
             switch currentSignal {
             case .remand(let target):
@@ -508,7 +636,39 @@ enum CaseLifecycleResolver {
     }
 
     static func earliestDatedSessionDate(in instance: CaseInstance) -> Date? {
-        instance.sessions.compactMap { DateUtil.parse($0.date) }.min()
+        (instance.sessions.compactMap { DateUtil.parse($0.date) }
+            + [instance.sourceEvidence?.receiptDate.flatMap(DateUtil.parse)].compactMap { $0 }).min()
+    }
+
+    /// Date of an actual published review event, never its future scheduled hearing.
+    private static func reviewEventDate(in instance: CaseInstance) -> Date? {
+        if let decision = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) { return decision }
+        return instance.sessions.compactMap { session -> Date? in
+            guard !isClericalEvent(session.event),
+                  !isHearingEvent(event: session.event) || session.result?.isEmpty == false,
+                  signal(in: session.event + " " + (session.result ?? "")) != nil else { return nil }
+            return DateUtil.parse(session.date)
+        }.max() ?? instance.sourceEvidence?.receiptDate.flatMap(DateUtil.parse)
+    }
+
+    private static func continuationDate(in instance: CaseInstance, acceptanceOnly: Bool = false) -> Date? {
+        instance.sessions.compactMap { session -> Date? in
+            let text = normalized(session.event + " " + (session.result ?? ""))
+            guard !isDenied(text) else { return nil }
+            let words = text.split(whereSeparator: { !$0.isLetter })
+            let namesFirstProceeding = words.contains {
+                $0.hasPrefix("иск") || $0.hasPrefix("заявлен") || $0 == "дело" || $0 == "дела"
+            }
+            let accepted = text.contains("принят") && text.contains("производств")
+                && (!text.contains("жалоб") || namesFirstProceeding)
+            let resumed = text.contains("возобнов") && !text.contains("срок")
+            let event = normalized(session.event)
+            let explicitAssignment = event.contains("назнач") && event.contains("заседан")
+            let assigned = !acceptanceOnly && text.contains("назнач") && text.contains("заседан")
+                && (explicitAssignment || !isHearingEvent(event: session.event))
+            guard accepted || resumed || assigned else { return nil }
+            return DateUtil.parse(session.date)
+        }.max()
     }
 
     private static func hasAuthoritativeResult(_ instance: CaseInstance) -> Bool {

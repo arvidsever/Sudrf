@@ -195,6 +195,10 @@ enum DeadlineRuleEngine {
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
                                  today: Date, calendar: LegalCalendar?)
         -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
+        if timeline.hasAmbiguousAppealEffect {
+            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                    status: .needsLegalReview))
+        }
         switch binding.kind {
         case "appeal":
             // A real higher-court card in the current round proves that this
@@ -232,7 +236,7 @@ enum DeadlineRuleEngine {
         let triggerResult: TriggerExtraction
         switch binding.trigger {
         case .finalForm:
-            guard let first = timeline.latestFirst?.instance else {
+            guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .finalForm])
             }
             let act = finalAct(in: first)
@@ -247,7 +251,7 @@ enum DeadlineRuleEngine {
                 triggerResult = .missing([.finalForm])
             }
         case .finalAct:
-            guard let first = timeline.latestFirst?.instance else {
+            guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType])
             }
             guard let act = finalAct(in: first) else {
@@ -259,7 +263,7 @@ enum DeadlineRuleEngine {
             }
             triggerResult = .found(act)
         case .deliveryOrReceipt:
-            guard let first = timeline.latestFirst?.instance,
+            guard let first = timeline.deadlineFirst,
                   finalAct(in: first) != nil else {
                 return insufficient(rule, binding: binding, [.finalAct])
             }
@@ -278,7 +282,7 @@ enum DeadlineRuleEngine {
                 }
                 triggerResult = .found(motivated)
             } else {
-                guard let first = timeline.latestFirst?.instance,
+                guard let first = timeline.deadlineFirst,
                       let legalForce = legalForce(in: first) else {
                     return insufficient(rule, binding: binding, [.legalForce])
                 }
@@ -288,7 +292,7 @@ enum DeadlineRuleEngine {
             guard routeSupportsCSOY(context.movementContext) else {
                 return insufficient(rule, binding: binding, [.production])
             }
-            guard let first = timeline.latestFirst?.instance,
+            guard let first = timeline.deadlineFirst,
                   let legalForce = legalForce(in: first) else {
                 return insufficient(rule, binding: binding, [.legalForce])
             }
@@ -535,19 +539,7 @@ enum DeadlineRuleEngine {
     }
 
     private static func currentAppeal(in timeline: CaseLifecycleResolver.Timeline) -> CaseInstance? {
-        guard let first = timeline.latestFirst,
-              let firstDate = CaseLifecycleResolver.earliestDatedSessionDate(in: first.instance) else {
-            return timeline.sourceOrdered.last(where: { $0.instance.level == .appeal })?.instance
-        }
-        return timeline.sourceOrdered.filter { candidate in
-            candidate.instance.level == .appeal
-                && (CaseLifecycleResolver.earliestDatedSessionDate(in: candidate.instance) ?? .distantPast)
-                    >= firstDate
-        }
-        .max { left, right in
-            (CaseLifecycleResolver.earliestDatedSessionDate(in: left.instance) ?? .distantPast)
-                < (CaseLifecycleResolver.earliestDatedSessionDate(in: right.instance) ?? .distantPast)
-        }?.instance
+        timeline.currentAppeal
     }
 
     private static func latestSession(in instance: CaseInstance,
@@ -597,7 +589,7 @@ enum DeadlineRuleEngine {
                                       movement: CaseMovement,
                                       trigger: DeadlineTriggerProvenance) -> String {
         let round = timeline.currentRoundStart?.instance.id
-            ?? timeline.latestFirst?.instance.id ?? movement.uid
+            ?? timeline.deadlineFirst?.id ?? movement.uid
         let identity = [round, trigger.levelRaw, trigger.caseNumber, trigger.dateRaw,
                         trigger.event, trigger.result ?? ""].joined(separator: "\u{1F}")
         return ruleID + "|" + Data(identity.utf8).base64EncodedString()

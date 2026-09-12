@@ -258,8 +258,8 @@ struct CaseMovementView: View {
                     .lineLimit(2)
             }
             Text(movement.uid.isEmpty
-                 ? "УИД в карточке не указан — вышестоящие инстанции не подтянуты"
-                 : "УИД \(movement.uid) · вышестоящие инстанции подтянуты по УИД")
+                 ? "УИД в карточке не указан — поиск по УИД недоступен"
+                 : "УИД \(movement.uid) · поиск вышестоящих инстанций по УИД")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             if movement.category != nil || !movement.parties.isEmpty {
                 PartiesCard(category: movement.category, parties: movement.parties)

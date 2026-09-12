@@ -936,18 +936,7 @@ final class SearchModel: ObservableObject {
         let generation = beginCardLoad()
         defer { finishCardLoad(generation, resultID: r.stableID) }
         do {
-            let card: CaseCard
-            if let caseID = r.caseID, let caseUID = r.caseUID {
-                card = try await client.fetchCard(court: court, caseID: caseID,
-                                                  caseUID: caseUID, deloID: cart.deloID,
-                                                  new: cart.new)
-            } else if let url = r.cardURL {
-                // Винтажные суды (напр., Благовещенский) дают в выдаче только
-                // `_uid` — карточка открывается по готовой ссылке выдачи.
-                card = try await client.fetchCard(url: url)
-            } else {
-                return
-            }
+            let card = try await fetchOrdinaryCard(r, court: court, cartoteka: cart)
             guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
             let text = Self.publishedActText(from: card)
             actMissing = text == nil
@@ -958,6 +947,63 @@ final class SearchModel: ObservableObject {
         } catch {
             guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
             status = "Ошибка карточки: \(error)"
+        }
+    }
+
+    /// Совпадает с выбором базовой карточки в `MovementService`: точная ссылка
+    /// выдачи сохраняет фактические параметры источника, но принимается только
+    /// для того же суда. Идентификаторы остаются безопасным запасным путём.
+    private func fetchOrdinaryCard(_ row: CaseSearchResult,
+                                   court: Court,
+                                   cartoteka: Cartoteka) async throws -> CaseCard {
+        if let url = verifiedExactCardURL(for: row, court: court) {
+            return try await client.fetchCard(url: url)
+        }
+        if let caseID = row.caseID, let caseUID = row.caseUID {
+            return try await client.fetchCard(court: court, caseID: caseID,
+                                              caseUID: caseUID, deloID: cartoteka.deloID,
+                                              new: cartoteka.new)
+        }
+        guard let url = row.cardURL else {
+            throw SudrfError.parsing("у записи нет ни идентификаторов, ни ссылки на карточку")
+        }
+        // Винтажные суды (напр., Благовещенский) дают в выдаче только `_uid`.
+        return try await client.fetchCard(url: url)
+    }
+
+    private func verifiedExactCardURL(for row: CaseSearchResult, court: Court) -> URL? {
+        guard let url = row.cardURL,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil,
+              SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(court.domain)
+        else { return nil }
+        return url
+    }
+
+    private func verifiedDirectCardURLForCache(for row: CaseSearchResult,
+                                                court: Court) -> URL? {
+        guard let url = verifiedExactCardURL(for: row, court: court),
+              (try? SudrfCaseCardLink(url: url)) != nil else { return nil }
+        return url
+    }
+
+    private func cachedMovement(_ movement: CaseMovement,
+                                matches row: CaseSearchResult,
+                                court: Court,
+                                cartoteka: Cartoteka) -> Bool {
+        guard let exactURL = verifiedDirectCardURLForCache(for: row, court: court) else {
+            // При наличии пары идентификаторов непроверенная ссылка не участвует
+            // в загрузке: карточка строится для выбранного суда и картотеки.
+            // Такой URL также не может подтвердить источник старого кэша.
+            return row.cardURL == nil || row.caseID == nil || row.caseUID == nil
+        }
+        let baseLevel = MovementContext.instanceLevel(
+            cartotekaID: cartoteka.id, courtLevel: court.level, judicialUID: movement.uid)
+        return movement.instances.contains {
+            $0.level == baseLevel
+                && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
+                && CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber)
+                && $0.sourceURL == exactURL
         }
     }
 
@@ -1050,7 +1096,8 @@ final class SearchModel: ObservableObject {
         let cacheKey = MovementContext.identityKey(displayDomain: option.domain,
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
-        if let hit = MovementMemoryCache.shared.get(cacheKey) {
+        if let hit = MovementMemoryCache.shared.get(cacheKey),
+           cachedMovement(hit.movement, matches: base, court: court, cartoteka: cart) {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             movement = hit.movement
             expandedComplaints = []

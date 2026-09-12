@@ -103,6 +103,30 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertTrue(r.cardURL?.absoluteString.contains("_new=5") == true)
     }
 
+    func testParsesAppealSOYuUPKUIDSearchWithoutMergingRelatedMaterials() throws {
+        let court = Court(domain: "4ap.sudrf.ru",
+                          title: "Четвертый апелляционный суд", level: .appeal)
+        let results = try ResultsParser.parseComplete(
+            html: try loadFixture("asoy_upk_search_55_584_2025"), court: court)
+
+        XCTAssertEqual(results.map(\.caseNumber), [
+            "55-584/2025", "55К-241/2025", "55К-702/2024",
+        ])
+        XCTAssertEqual(results.map(\.caseID), ["8481895", "8480089", "8477511"])
+
+        let main = try XCTUnwrap(results.first)
+        XCTAssertEqual(main.caseUID, "c253619c-4094-4c15-ba1b-7bdc02640ede")
+        XCTAssertEqual(main.receiptDate, "17.11.2025")
+        XCTAssertEqual(main.decisionDate, "18.12.2025")
+        XCTAssertEqual(main.result, "ВЫНЕСЕНО РЕШЕНИЕ (ОПРЕДЕЛЕНИЕ)")
+        XCTAssertEqual(
+            main.cardURL?.absoluteString,
+            "https://4ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=8481895"
+                + "&case_uid=c253619c-4094-4c15-ba1b-7bdc02640ede"
+                + "&delo_id=4&new=4")
+    }
+
     func testCompleteParserAcceptsPublishedCountAndRichestResponsiveDuplicate() throws {
         let html = try loadFixture("samara_kas_appeal_uid_results")
         let court = Court(domain: "oblsud--sam.sudrf.ru",

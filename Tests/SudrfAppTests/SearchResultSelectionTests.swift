@@ -77,6 +77,144 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 
     @MainActor
+    func testOrdinaryCardAndMovementUseVerifiedExactURLWithoutPublishedAct() async throws {
+        OrdinaryCardSelectionStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OrdinaryCardSelectionStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let model = SearchModel(client: client)
+        let court = SearchModel.CourtOption(
+            domain: "leninsky.orb.sudrf.ru", title: "Ленинский районный суд", level: .district
+        )
+        let exactURL = try XCTUnwrap(URL(string:
+            "https://leninsky--orb.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=exact&case_uid=exact-uid&delo_id=1540005&srv_num=9"))
+        let row = CaseSearchResult(caseNumber: "2-42/2026", caseID: "rebuilt",
+                                   caseUID: "rebuilt-uid", cardURL: exactURL)
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [row]
+        let cacheKey = MovementContext.identityKey(displayDomain: court.domain,
+                                                   courtCode: court.code,
+                                                   caseNumber: row.caseNumber)
+        let staleURL = try XCTUnwrap(URL(string:
+            "https://leninsky--orb.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=stale&case_uid=stale-uid&delo_id=1540005&srv_num=1"))
+        MovementMemoryCache.shared.put(cacheKey, CaseMovement(
+            uid: "", caseNumber: row.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: court.title, caseNumber: row.caseNumber,
+                judge: nil, domain: court.domain, foundByUID: false, result: nil,
+                sessions: [], sourceURL: staleURL)],
+            complaints: [:], acts: []))
+        defer { MovementMemoryCache.shared.remove(cacheKey) }
+
+        await model.openCard(row)
+
+        XCTAssertEqual(OrdinaryCardSelectionStub.requests, [exactURL])
+        XCTAssertEqual(model.selectedResultID, row.stableID)
+        XCTAssertTrue(model.actMissing)
+        XCTAssertTrue(model.actText.isEmpty)
+
+        await model.openMovement(row)
+
+        XCTAssertEqual(OrdinaryCardSelectionStub.requests, [exactURL, exactURL])
+        XCTAssertEqual(model.movement?.caseNumber, row.caseNumber)
+        XCTAssertEqual(model.movement?.instances.first?.caseNumber, row.caseNumber)
+        XCTAssertEqual(model.movement?.instances.first?.sourceURL, exactURL)
+        XCTAssertTrue(model.actText.isEmpty)
+    }
+
+    @MainActor
+    func testOrdinaryMovementReusesCacheForSameExactURL() async throws {
+        OrdinaryCardSelectionStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OrdinaryCardSelectionStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let model = SearchModel(client: client)
+        let court = SearchModel.CourtOption(
+            domain: "leninsky.orb.sudrf.ru", title: "Ленинский районный суд", level: .district
+        )
+        let exactURL = try XCTUnwrap(URL(string:
+            "https://leninsky--orb.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=exact&case_uid=exact-uid&delo_id=1540005&srv_num=9"))
+        let row = CaseSearchResult(caseNumber: "2-42/2026", caseID: "exact",
+                                   caseUID: "exact-uid", cardURL: exactURL)
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [row]
+        let cacheKey = MovementContext.identityKey(displayDomain: court.domain,
+                                                   courtCode: court.code,
+                                                   caseNumber: row.caseNumber)
+        let cached = CaseMovement(
+            uid: "cached-uid", caseNumber: row.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: court.title, caseNumber: row.caseNumber,
+                judge: nil, domain: court.domain, foundByUID: false, result: nil,
+                sessions: [], sourceURL: exactURL)],
+            complaints: [:], acts: [])
+        MovementMemoryCache.shared.put(cacheKey, cached)
+        defer { MovementMemoryCache.shared.remove(cacheKey) }
+
+        await model.openMovement(row)
+
+        XCTAssertTrue(OrdinaryCardSelectionStub.requests.isEmpty)
+        XCTAssertEqual(model.movement, cached)
+    }
+
+    @MainActor
+    func testOrdinaryCardRejectsForeignExactURLAndUsesIdentifiers() async throws {
+        OrdinaryCardSelectionStub.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OrdinaryCardSelectionStub.self]
+        let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let model = SearchModel(client: client)
+        let court = SearchModel.CourtOption(
+            domain: "leninsky.orb.sudrf.ru", title: "Ленинский районный суд", level: .district
+        )
+        let foreignURL = try XCTUnwrap(URL(string:
+            "https://other--orb.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=foreign&case_uid=foreign-uid"))
+        let row = CaseSearchResult(caseNumber: "2-42/2026", caseID: "expected-id",
+                                   caseUID: "expected-uid", cardURL: foreignURL)
+        model.tier = .district
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [row]
+        let cacheKey = MovementContext.identityKey(displayDomain: court.domain,
+                                                   courtCode: court.code,
+                                                   caseNumber: row.caseNumber)
+        MovementMemoryCache.shared.put(cacheKey, CaseMovement(
+            uid: "", caseNumber: row.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: court.title, caseNumber: row.caseNumber,
+                judge: nil, domain: court.domain, foundByUID: false, result: nil,
+                sessions: [], sourceURL: foreignURL)],
+            complaints: [:], acts: []))
+        defer { MovementMemoryCache.shared.remove(cacheKey) }
+
+        await model.openCard(row)
+
+        let requested = try XCTUnwrap(OrdinaryCardSelectionStub.requests.first)
+        let query = URLComponents(url: requested, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(SudrfHost.moduleHost(requested.host ?? ""),
+                       SudrfHost.moduleHost(court.domain))
+        XCTAssertEqual(query.first { $0.name == "case_id" }?.value, "expected-id")
+        XCTAssertEqual(query.first { $0.name == "case_uid" }?.value, "expected-uid")
+        XCTAssertNotEqual(requested, foreignURL)
+
+        await model.openMovement(row)
+
+        XCTAssertEqual(OrdinaryCardSelectionStub.requests.count, 2)
+        XCTAssertTrue(OrdinaryCardSelectionStub.requests.allSatisfy { $0 != foreignURL })
+    }
+
+    @MainActor
     func testMosGorSudPreviewUsesOnlyPublishedActLinks() async throws {
         let cardURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/1"))
         let actURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/cases/docs/content/1"))
@@ -751,6 +889,33 @@ private final class MagistrateListingAndCardStub: URLProtocol {
             </div>
             """
         }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class OrdinaryCardSelectionStub: URLProtocol {
+    nonisolated(unsafe) static var requests: [URL] = []
+
+    static func reset() {
+        requests = []
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.requests.append(url)
+        let body = "<div class=\"casenumber\">ДЕЛО № 2-42/2026</div>"
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                        headerFields: ["Content-Type": "text/html; charset=utf-8"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

@@ -477,6 +477,21 @@ public actor MovementService: MovementProviding {
         ).instanceLevel ?? baseInstanceLevel
         let baseIsMainCase = CaseIndexClassifier.classify(
             caseNumber: base.caseNumber, courtLevel: court.level)?.cardRole == .firstInstanceCase
+        let publishedBaseNumber = baseCard.caseNumber?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUIDMatchesSaved = judicialUID == nil
+            || Self.normalizedJudicialUID(baseCard.uid) == Self.normalizedJudicialUID(judicialUID)
+        let isSubjectFirstAnchor = court.level == .subject
+            && effectiveBaseLevel == .first
+            && baseUIDMatchesSaved
+            && publishedBaseNumber.map { CartotekaRegistry.prefixMatches(cartoteka, caseNumber: $0) } == true
+            && publishedBaseNumber.map {
+                CartotekaRegistry.normalizedNumber($0)
+                    == CartotekaRegistry.normalizedNumber(base.caseNumber)
+            } == true
+            && CaseIndexClassifier.classify(
+                caseNumber: publishedBaseNumber ?? "",
+                courtLevel: court.level)?.cardRole == .firstInstanceCase
         func isPreliminaryAlias(_ knownCard: KnownCard) -> Bool {
             guard baseIsMainCase,
                   SudrfHost.moduleHost(knownCard.domain) == SudrfHost.moduleHost(court.domain),
@@ -833,9 +848,16 @@ public actor MovementService: MovementProviding {
                                     title: target.courtTitle ?? Self.shortCourtName(forDomain: domain),
                                     level: level)
             let cartotekaIDs = target.cartotekaIDs ?? Self.higherCartotekaIDs(
-                baseID: cartoteka.id, level: level, judicialUID: uid)
+                baseID: cartoteka.id, level: level, judicialUID: uid,
+                isFirstInstanceAnchor: isSubjectFirstAnchor)
             let toTry = CartotekaRegistry.sets(for: level).filter { cartotekaIDs.contains($0.id) }
             guard !toTry.isEmpty else { continue }
+            // АСОЮ и военный апелляционный суд ищутся только от фактически первой инстанции суда
+            // субъекта. Выдача УИД — лишь кандидат: карточка должна подтвердить
+            // и УИД, и процессуальный номер именно запрошенной картотеки.
+            let isSubjectFirstAppealRoute = level == .appeal
+                && isSubjectFirstAnchor
+                && ["u1", "g1", "p1"].contains(cartoteka.id.lowercased())
 
             let instanceCountBeforeTarget = instances.count
             var targetIncomplete = false
@@ -856,8 +878,40 @@ public actor MovementService: MovementProviding {
                     // инстанцией (а не только первый, как было раньше).
                     var rounds: [(inst: CaseInstance, act: CaseAct?, body: String?, sortKey: Int)] = []
                     for r in usable {
+                        if isSubjectFirstAppealRoute,
+                           !Self.isCompatibleAppealSourceURL(
+                               r, court: higherCourt, cartoteka: higherCart) {
+                            targetIncomplete = true
+                            markHigherCourtIncomplete(domain)
+                            continue
+                        }
                         let higherCard = try await fetchCard(row: r, court: higherCourt,
                                                              cartoteka: higherCart)
+                        if isSubjectFirstAppealRoute {
+                            guard let publishedNumber = higherCard.caseNumber,
+                                  Self.normalizedJudicialUID(higherCard.uid)
+                                      == Self.normalizedJudicialUID(uid),
+                                  Self.samePublishedCaseNumber(r.caseNumber, publishedNumber),
+                                  CartotekaRegistry.prefixMatches(
+                                      higherCart, caseNumber: publishedNumber),
+                                  let role = CaseIndexClassifier.classify(
+                                      caseNumber: publishedNumber,
+                                      courtLevel: .appeal)?.cardRole
+                            else {
+                                targetIncomplete = true
+                                markHigherCourtIncomplete(domain)
+                                continue
+                            }
+                            // Подтверждённый 55к — самостоятельный материал,
+                            // не пропавший апелляционный круг. Остальные роли
+                            // не дают основания считать выдачу исчерпывающей.
+                            if role == .judicialControlMaterial { continue }
+                            guard role == .appellateCase else {
+                                targetIncomplete = true
+                                markHigherCourtIncomplete(domain)
+                                continue
+                            }
+                        }
                         // Круг или нет — решает вкладка «Обжалование» (вид жалобы),
                         // с откатом к различителю по результату. Частные жалобы и
                         // прочее (замечания на протокол) кругом не считаем.
@@ -1449,6 +1503,17 @@ extension MovementService {
             deloID: knownCard.deloID, new: knownCard.new)
     }
 
+    /// Для нового УИД-маршрута в АСОЮ и военный апелляционный суд ссылка выдачи является доказательством
+    /// той же процессуальной картотеки. При её отсутствии безопасный URL будет
+    /// построен из идентификаторов в `fetchCard(row:...)`.
+    static func isCompatibleAppealSourceURL(_ row: CaseSearchResult, court: Court,
+                                            cartoteka: Cartoteka) -> Bool {
+        guard let url = row.cardURL else { return true }
+        guard let link = try? SudrfCaseCardLink(url: url),
+              link.moduleHost == SudrfHost.moduleHost(court.domain) else { return false }
+        return link.deloID == cartoteka.deloID && link.resolvedNew == cartoteka.new
+    }
+
     /// Точная ссылка строки сохраняет фактические `delo_id` / `new` / `srv_num`.
     /// Принимаем её с приоритетом только с того же суда; иначе безопасно
     /// откатываемся к каноническому URL по идентификаторам.
@@ -1615,7 +1680,8 @@ extension MovementService {
     ///         → субъект (adm2) → КСОЮ (adm3). admj + MS уже является
     ///         районной апелляцией и в adm2 не направляется. АСОЮ не участвует.
     static func higherCartotekaIDs(baseID: String, level: CourtLevel,
-                                   judicialUID: String? = nil) -> [String] {
+                                   judicialUID: String? = nil,
+                                   isFirstInstanceAnchor: Bool = false) -> [String] {
         let prefix = String(baseID.prefix(while: { $0.isLetter })).lowercased()
         // База u2/g2/p2 районного звена — апелляция на мировых судей: её акты
         // минуют суд субъекта и АСОЮ, кассация — сразу в КСОЮ.
@@ -1644,11 +1710,16 @@ extension MovementService {
             default:    return []
             }
         case .appeal:
-            // АСОЮ — апелляция только на акты судов субъектов, принятые ими по
-            // 1-й инстанции. Для дел районного звена (а это сегодня единственная
-            // стартовая точка поиска) АСОЮ инстанцией не является. Ветка
-            // заработает, когда появится поиск от суда субъекта как 1-й инстанции.
-            return []
+            // АСОЮ и военный апелляционный суд — апелляция только на акты судов субъектов, принятые ими
+            // по первой инстанции. Неявный уровень сохраняет прежнее пустое
+            // соответствие для специализированных вызывающих путей.
+            guard isFirstInstanceAnchor else { return [] }
+            switch baseID.lowercased() {
+            case "u1": return ["u2"]
+            case "g1": return ["g2"]
+            case "p1": return ["p2"]
+            default: return []
+            }
         case .cassation:
             switch prefix {
             case "g":   return ["g3"]

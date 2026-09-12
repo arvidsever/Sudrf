@@ -77,23 +77,8 @@ struct CaseMovementView: View {
                     // отдельной секцией в конце: они идут в рамках дела, но инстанциями
                     // не являются.
                     ForEach(Self.activeInstances(in: movement)) { inst in
-                        InstanceBlock(instance: inst, complaints: movement.complaints,
-                                      expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                        InstanceBlock(instance: inst, onSolveCaptcha: onSolveCaptcha,
                                       onRefresh: onRefresh)
-                    }
-                    let previousRegistrations = Self.previousRegistrationInstances(in: movement)
-                    if !previousRegistrations.isEmpty {
-                        Text("Предыдущая регистрация")
-                            .font(.system(size: 12.5, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 4)
-                            .padding(.top, 6)
-                        ForEach(previousRegistrations) { inst in
-                            InstanceBlock(instance: inst, complaints: movement.complaints,
-                                          expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
-                                          onRefresh: onRefresh)
-                        }
                     }
                     let materials = Self.materialInstances(in: movement)
                     if !materials.isEmpty {
@@ -104,18 +89,11 @@ struct CaseMovementView: View {
                             .padding(.horizontal, 4)
                             .padding(.top, 6)
                         ForEach(materials) { inst in
-                            InstanceBlock(instance: inst, complaints: movement.complaints,
-                                          expanded: $expanded, onSolveCaptcha: onSolveCaptcha,
+                            InstanceBlock(instance: inst, onSolveCaptcha: onSolveCaptcha,
                                           onRefresh: onRefresh)
                                 .id(inst.id)
                         }
                     }
-                    Text("Чип «обжаловано · ЧЖ» — частная жалоба на определение; "
-                       + "клик раскрывает её движение на месте.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 4)
                     if let documents = movement.executionDocuments, !documents.isEmpty {
                         EnforcementBlock(documents: documents, records: enforcementRecords,
                                          isRefreshing: isRefreshingEnforcement,
@@ -168,8 +146,8 @@ struct CaseMovementView: View {
 
     static func activeInstances(in movement: CaseMovement) -> [CaseInstance] {
         movement.instances.filter {
-            $0.level != .material && $0.note != "Предыдущая регистрация"
-        }
+            $0.level != .material || $0.note == "Предыдущая регистрация"
+        }.sorted(by: MovementService.precedesInChronology)
     }
 
     static func sessionDateLabel(_ date: String) -> String {
@@ -707,8 +685,6 @@ private struct PartiesCard: View {
 
 private struct InstanceBlock: View {
     let instance: CaseInstance
-    let complaints: [String: PrivateComplaint]
-    @Binding var expanded: Set<String>
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Опциональный callback «повторить» для transient-stub (A16). В поиске
     /// не передаётся → кнопка скрыта. В мониторинге прокидывается из
@@ -734,9 +710,7 @@ private struct InstanceBlock: View {
                 actFilePrompt(error)
             }
             ForEach(instance.sessions) { s in
-                SessionRow(session: s, color: instance.level.tint,
-                           complaint: s.complaintID.flatMap { complaints[$0] },
-                           expanded: $expanded)
+                SessionRow(session: s)
             }
         }
         .background(
@@ -861,82 +835,29 @@ private struct InstanceBlock: View {
     }
 }
 
-// MARK: - Строка заседания + частная жалоба
+// MARK: - Строка движения
 
 private struct SessionRow: View {
     let session: CaseSession
-    let color: Color
-    let complaint: PrivateComplaint?
-    @Binding var expanded: Set<String>
-
-    private var isOpen: Bool { complaint.map { expanded.contains($0.id) } ?? false }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(CaseMovementView.sessionDateLabel(session.date))
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .frame(width: session.date.trimmingCharacters(
-                        in: .whitespacesAndNewlines).isEmpty ? 118 : 70,
-                        alignment: .leading)
-                Text([session.time, session.room].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
-                    .frame(width: 62, alignment: .leading)
-                Text(session.event).font(.system(size: 12)).lineLimit(1)
-                if let c = complaint {
-                    Button {
-                        if isOpen { expanded.remove(c.id) } else { expanded.insert(c.id) }
-                    } label: {
-                        TinyChip(text: "обжаловано · ЧЖ \(isOpen ? "▾" : "▸")", color: color)
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer(minLength: 8)
-                if let r = session.result {
-                    Text(r).font(.system(size: 11)).foregroundStyle(.secondary)
-                        .lineLimit(1).frame(maxWidth: 200, alignment: .trailing)
-                }
-            }
-            .padding(.horizontal, 13).padding(.vertical, 5)
-            .background(isOpen ? Color.primary.opacity(0.02) : Color.clear)
-            .overlay(Divider().opacity(0.6), alignment: .top)
-
-            if let c = complaint, isOpen {
-                ComplaintRows(complaint: c, color: color)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(CaseMovementView.sessionDateLabel(session.date))
+                .font(.system(size: 11.5, weight: .semibold))
+                .frame(width: session.date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 118 : 70,
+                       alignment: .leading)
+            Text([session.time, session.room].compactMap { $0 }.joined(separator: " · "))
+                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                .frame(width: 62, alignment: .leading)
+            Text(session.event).font(.system(size: 12)).lineLimit(1)
+            Spacer(minLength: 8)
+            if let result = session.result {
+                Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).frame(maxWidth: 200, alignment: .trailing)
             }
         }
-    }
-}
-
-private struct ComplaintRows: View {
-    let complaint: PrivateComplaint
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(complaint.label).font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary).lineLimit(1)
-                TinyChip(text: "№ \(complaint.caseNumber)\(complaint.foundByUID ? " · по УИД" : "")",
-                         color: color)
-            }
-            .padding(.leading, 93).padding(.trailing, 13).padding(.top, 3)
-            ForEach(complaint.rows) { r in
-                HStack(spacing: 8) {
-                    Text(r.date).font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
-                    Text(r.event).font(.system(size: 11)).foregroundStyle(.secondary)
-                    if let res = r.result {
-                        Text("— \(res)").font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 93).padding(.trailing, 13)
-            }
-        }
-        .padding(.bottom, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.02))
+        .padding(.horizontal, 13).padding(.vertical, 5)
+        .overlay(Divider().opacity(0.6), alignment: .top)
     }
 }
 

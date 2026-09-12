@@ -665,11 +665,17 @@ enum MovementDerivation {
     /// доступность портала, не новое событие дела. Публичные метаданные актов и
     /// остальные поля снимка отдельно проверяет `CaseSnapshot`.
     static func hasSameRefreshSource(_ lhs: CaseMovement, _ rhs: CaseMovement) -> Bool {
-        lhs.uid == rhs.uid
+        func comparableInstances(_ movement: CaseMovement) -> [CaseInstance] {
+            CaseLifecycleResolver.realInstances(in: movement).map {
+                var instance = $0
+                instance.sourceEvidence = nil
+                return instance
+            }.sorted(by: MovementService.precedesInChronology)
+        }
+        return lhs.uid == rhs.uid
             && lhs.caseNumber == rhs.caseNumber
             && lhs.inForce == rhs.inForce
-            && CaseLifecycleResolver.realInstances(in: lhs)
-                == CaseLifecycleResolver.realInstances(in: rhs)
+            && comparableInstances(lhs) == comparableInstances(rhs)
             && lhs.complaints == rhs.complaints
             && lhs.executionDocuments == rhs.executionDocuments
     }

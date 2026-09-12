@@ -190,6 +190,51 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertFalse(movement.instances.contains { $0.caseNumber == "55К-999/2025" })
     }
 
+    func testPrivateComplaintOfPreviousKASRegistrationRemainsInDossier() async throws {
+        let uid = "11OS0000-01-2026-000704-31"
+        let court = Court(domain: "vs--komi.sudrf.ru", title: "Верховный Суд Республики Коми", level: .subject)
+        let oldNumber = "9а-77/2026 ~ М-642/2026"
+        let oldRow = CaseSearchResult(caseNumber: oldNumber, caseID: "previous", caseUID: "old-guid")
+        let row = CaseSearchResult(caseNumber: "66а-726/2026", receiptDate: "07.09.2026", decisionDate: "08.09.2026",
+                                   caseID: "6247282", caseUID: "appeal-guid")
+        let previous = CaseCard(rawText: "Карточка", actText: nil,
+            sessions: [CaseSession(date: "05.09.2026", event: "Отказано в принятии административного искового заявления")],
+            result: "ОТКАЗАНО в принятии заявления", uid: uid, caseNumber: oldNumber,
+            appeals: [AppealRecord(kind: .privateComplaint, rawKind: "Частная жалоба",
+                                  higherCourt: "Второй апелляционный суд общей юрисдикции", sentUpDate: "07.09.2026")])
+        var appeal = try CaseCardParser.parse(html: try fixture("issue300_appeal"))
+        // Artificial act body exercises preservation independently of source publication.
+        appeal.actText = "Текст определения"
+        XCTAssertEqual(appeal.sessions.count, 4)
+        XCTAssertEqual(appeal.reviewProcedure,
+                       "Единоличное рассмотрение (без вызова лиц, участвующих в деле)")
+        let mock = MockClient(firstCardID: "base",
+            firstCard: CaseCard(rawText: "Карточка", actText: nil,
+                sessions: [CaseSession(date: "09.09.2026", event: "Регистрация административного искового заявления и принятие его к производству"),
+                           CaseSession(date: "14.09.2026", time: "14:15", event: "Судебное заседание")],
+                uid: uid, caseNumber: "3а-681/2026"), higherResults: [],
+            higherCards: ["previous": previous, "6247282": appeal],
+            higherResultsByLocator: ["2ap.sudrf.ru/p2": [row]], sameCourtResults: [oldRow],
+            homeDomain: court.domain, expectedUID: uid)
+        let service = MovementService(client: mock, higherCourtDomains: ["2ap.sudrf.ru"], baseInstanceLevel: .first)
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "3а-681/2026", caseID: "base", caseUID: Self.linkGUID),
+            court: court, cartoteka: XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "p1")))
+        let complaint = try XCTUnwrap(movement.instances.first { $0.caseNumber == "66а-726/2026" })
+        XCTAssertEqual(complaint.level, .appeal)
+        XCTAssertNil(complaint.note)
+        XCTAssertEqual(complaint.sessions, appeal.sessions)
+        XCTAssertEqual(complaint.sourceURL?.host, "2ap.sudrf.ru")
+        XCTAssertTrue(complaint.foundByUID)
+        XCTAssertEqual(movement.acts.first { $0.id == complaint.actID }?.instanceLevel, .appeal)
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == oldNumber })
+        XCTAssertEqual(movement.instances.first { $0.caseNumber == oldNumber }?.sourceEvidence?.appealKinds,
+                       ["Частная жалоба"])
+        XCTAssertNil(movement.instances.first { $0.caseNumber == "3а-681/2026" }?.sourceEvidence?.appealKinds)
+        XCTAssertEqual(movement.instances.sorted(by: MovementService.precedesInChronology).map(\.caseNumber),
+                       [oldNumber, "66а-726/2026", "3а-681/2026"])
+    }
+
     func testSubjectFirstAnchorRequiresPublishedBaseRegistrationEvidence() async throws {
         let subjectCourt = Court(domain: "vs--komi.sudrf.ru",
                                  title: "Верховный Суд Республики Коми", level: .subject)
@@ -388,7 +433,7 @@ final class MovementServiceTests: XCTestCase {
 
     /// Частная жалоба под тем же УИД кругом апелляции не считается — в инстанциях
     /// остаётся только полноценный круг.
-    func testPrivateComplaintNotShownAsRound() async throws {
+    func testAllAppealCardsRemainVisibleRegardlessOfResult() async throws {
         let firstCard = try CaseCardParser.parse(html: try fixture("sgs_1inst"))
 
         let appealRow = CaseSearchResult(
@@ -399,9 +444,8 @@ final class MovementServiceTests: XCTestCase {
             rawText: "", actText: "АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ\nрешение оставлено без изменения.",
             result: "РЕШЕНИЕ оставлено без изменения", caseNumber: "33-4818/2025")
 
-        // Частная жалоба на определение — тот же УИД, но не круг апелляции.
-        // Важно: «Категория дела» у неё — обычное существо спора (не «частная
-        // жалоба»), различитель — «ОПРЕДЕЛЕНИЕ …» в результате рассмотрения.
+        // Другая апелляционная карточка с тем же УИД тоже сохраняется.
+        // Формулировка результата не разрешает скрывать производство.
         let chzhRow = CaseSearchResult(
             caseNumber: "33-1102/2025", decisionDate: "02.04.2025",
             result: "ОПРЕДЕЛЕНИЕ оставлено без изменения",
@@ -421,31 +465,29 @@ final class MovementServiceTests: XCTestCase {
         let mv = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
 
         let appeals = mv.instances.filter { $0.level == .appeal }
-        XCTAssertEqual(appeals.map(\.caseNumber), ["33-4818/2025"],
-                       "частная жалоба не должна показываться как круг апелляции")
+        XCTAssertEqual(Set(appeals.map(\.caseNumber)), ["33-4818/2025", "33-1102/2025"])
+        XCTAssertEqual(mv.acts.filter { $0.instanceLevel == .appeal }.count, 2)
     }
 
     /// Реальная карточка частной жалобы из ВС РК (33-4820/2025): «Категория дела» —
     /// трудовой спор, слова «частная жалоба» в карточке нет, но «Результат
     /// рассмотрения» = «ОПРЕДЕЛЕНИЕ оставлено без изменения» → распознаётся как ЧЖ.
-    func testRealPrivateComplaintCardClassified() throws {
+    func testRealRulingReviewMetadataPreserved() throws {
         let card = try CaseCardParser.parse(html: try fixture("vsrk_chzh"))
         XCTAssertEqual(card.uid, "11RS0001-01-2025-002795-66")
         XCTAssertEqual(card.decisionDate, "02.10.2025")
         XCTAssertEqual(card.receiptDate, "17.09.2025")
-        // Фолбэк по результату: «ОПРЕДЕЛЕНИЕ …» → частная жалоба.
-        XCTAssertTrue(MovementService.isPrivateComplaintByResult(
-            row: CaseSearchResult(caseNumber: "33-4820/2025"), card: card))
+        XCTAssertEqual(card.caseNumber, "33-4820/2025")
+        XCTAssertNotNil(card.result)
     }
 
     /// Реальная карточка полного круга апелляции (33-4818/2025): «Результат
     /// рассмотрения» = «РЕШЕНИЕ оставлено без изменения» → кругом и остаётся,
     /// несмотря на то что сам акт называется «Апелляционным определением».
-    func testRealAppealRoundNotClassifiedAsComplaint() throws {
+    func testRealJudgmentReviewMetadataPreserved() throws {
         let card = try CaseCardParser.parse(html: try fixture("vsrk_appeal"))
         XCTAssertTrue((card.result ?? "").lowercased().contains("решени"))
-        XCTAssertFalse(MovementService.isPrivateComplaintByResult(
-            row: CaseSearchResult(caseNumber: "33-4818/2025"), card: card))
+        XCTAssertNotNil(card.result)
     }
 
     /// Реальная вкладка «Обжалование» (карточка горсуда, дело 2-3671/2025):
@@ -461,26 +503,6 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(chzh.returnedDate, "08.10.2025")
     }
 
-    /// Классификация по вкладке «Обжалование» (а не по результату): запись ВС
-    /// сшивается с жалобой по дате и берёт её «Вид».
-    func testClassificationViaObzhalovanie() throws {
-        let appeals = try CaseCardParser.parse(html: try fixture("sgs_card")).appeals
-
-        // Карточка ВС 33-4820/2025 — частная жалоба (дата рассмотрения 02.10.2025).
-        let chzhCard = try CaseCardParser.parse(html: try fixture("vsrk_chzh"))
-        XCTAssertFalse(MovementService.isRoundOfAppeal(
-            row: CaseSearchResult(caseNumber: "33-4820/2025"), card: chzhCard, appeals: appeals),
-            "частная жалоба сшивается по дате 02.10.2025 и кругом не считается")
-
-        // Гипотетическая запись с датой апелляционного круга из той же вкладки →
-        // классифицируется как круг даже при «определенческом» результате.
-        let appealLike = CaseCard(rawText: "", actText: nil,
-                                  result: "ОПРЕДЕЛЕНИЕ … (нерелевантно)", decisionDate: "31.10.2025")
-        XCTAssertTrue(MovementService.isRoundOfAppeal(
-            row: CaseSearchResult(caseNumber: "33-X/2025", receiptDate: "31.10.2025"),
-            card: appealLike, appeals: appeals),
-            "апелляционная жалоба из вкладки → круг, вид важнее результата")
-    }
 
     func testMinimalMovementDoesNotShowLinkGUIDAsUID() {
         let mv = MovementService.minimalMovement(
@@ -517,6 +539,30 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertNil(decoded.sourceURL)
     }
 
+    func testSourceEvidenceRoundTripsAndLegacyRemainsUnknown() throws {
+        var instance = CaseInstance(level: .appeal, court: "Суд", caseNumber: "33-1/2026",
+            judge: nil, domain: "court.sudrf.ru", foundByUID: true, result: nil, sessions: [])
+        let oldData = try JSONEncoder().encode(instance)
+        XCTAssertNil(try JSONDecoder().decode(CaseInstance.self, from: oldData).sourceEvidence)
+        instance.sourceEvidence = .init(appealKinds: ["Частная жалоба"],
+            reviewProcedure: "Рассмотрено единолично судьей", lowerCourt: .init(caseNumber: "2-1/2026"),
+            receiptDate: "01.09.2026", decisionDate: "02.09.2026")
+        XCTAssertEqual(try JSONDecoder().decode(CaseInstance.self,
+                       from: JSONEncoder().encode(instance)), instance)
+    }
+
+    func testReviewProcedureComesFromOwnMetadata() throws {
+        let card = try CaseCardParser.parse(html: try fixture("sgs_1inst"))
+        XCTAssertEqual(card.reviewProcedure, "Рассмотрено единолично судьей")
+        let absent = try CaseCardParser.parse(html: """
+            <html><h2>ДЕЛО № 33-1/2026</h2><div id="cont1"><table>
+            <tr><td>Уникальный идентификатор дела</td><td>uid</td></tr></table></div>
+            <div id="cont2"><table><tr><td>Признак рассмотрения дела</td>
+            <td>Рассмотрено единолично судьей</td></tr></table></div></html>
+            """)
+        XCTAssertNil(absent.reviewProcedure)
+    }
+
     func testVSRFProductionCarriesItsExactCardURL() throws {
         let production = VSRFProduction(cardID: "12-34154493", cardSection: .cases,
                                         kind: .caseFile, number: "3-КГ23-1-К3")
@@ -525,26 +571,6 @@ final class MovementServiceTests: XCTestCase {
                        VSRFEndpoint.cardURL(productionID: "12-34154493", section: .cases))
     }
 
-    // Юнит-проверки фолбэка по «Результату рассмотрения» (когда вкладка
-    // «Обжалование» не сшилась): определение → ЧЖ, решение/приговор → круг.
-    func testResultFallbackHeuristic() {
-        let row = CaseSearchResult(caseNumber: "33-1/2025")
-        func card(result: String?, category: String? = nil) -> CaseCard {
-            CaseCard(rawText: "", actText: nil, result: result, category: category)
-        }
-        XCTAssertTrue(MovementService.isPrivateComplaintByResult(
-            row: row, card: card(result: "ОПРЕДЕЛЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ")))
-        XCTAssertTrue(MovementService.isPrivateComplaintByResult(
-            row: row, card: card(result: "определение отменено, вопрос направлен на новое рассмотрение")))
-        XCTAssertFalse(MovementService.isPrivateComplaintByResult(
-            row: row, card: card(result: "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ")))
-        XCTAssertFalse(MovementService.isPrivateComplaintByResult(
-            row: row, card: card(result: "приговор изменён")))
-        XCTAssertFalse(MovementService.isPrivateComplaintByResult(row: row, card: card(result: nil)))
-        XCTAssertTrue(MovementService.isPrivateComplaintByResult(
-            row: CaseSearchResult(caseNumber: "33-9/2025", result: "ОПРЕДЕЛЕНИЕ оставлено без изменения"),
-            card: card(result: nil)))
-    }
 
     // «Вид жалобы (представления)» → тип.
     func testAppealKindMapping() {

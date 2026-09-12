@@ -4,7 +4,7 @@
 //  Алгоритм сборки:
 //    1. fetchCard(1-я инстанция) → сессии из таблицы карточки + текст акта.
 //    2. Для каждого higherCourtDomain: поиск по УИД → fetchCard → инстанция.
-//    3. Частные жалобы на определения не разбираются автоматически (complaints = [:]).
+//    3. Все проверенные апелляционные карточки сохраняются в общей хронологии.
 
 import Foundation
 
@@ -53,6 +53,31 @@ public struct PrivateComplaint: Sendable, Equatable, Identifiable, Codable {
 }
 
 public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
+    /// Опубликованные реквизиты именно этой карточки, не классификация жалобы.
+    /// nil (включая старый кэш) означает отсутствие сведений, а не отсутствие АЖ.
+    public struct SourceEvidence: Sendable, Equatable, Codable {
+        public var appealKinds: [String]?
+        public var reviewProcedure: String?
+        public var lowerCourt: LowerCourtReference?
+        public var receiptDate: String?
+        public var decisionDate: String?
+
+        public init(appealKinds: [String]? = nil, reviewProcedure: String? = nil,
+                    lowerCourt: LowerCourtReference? = nil,
+                    receiptDate: String? = nil, decisionDate: String? = nil) {
+            self.appealKinds = appealKinds; self.reviewProcedure = reviewProcedure
+            self.lowerCourt = lowerCourt; self.receiptDate = receiptDate
+            self.decisionDate = decisionDate
+        }
+
+        init(card: CaseCard) {
+            self.init(appealKinds: card.appeals.isEmpty ? nil : card.appeals.map(\.rawKind),
+                      reviewProcedure: card.reviewProcedure, lowerCourt: card.lowerCourt,
+                      receiptDate: card.receiptDate, decisionDate: card.decisionDate)
+        }
+    }
+    public var sourceEvidence: SourceEvidence?
+
     public enum Level: String, Sendable, Codable {
         case first, appeal, cassation, vsCassation, supervisory
         /// Производство по материалу (13-…, 3/12-…, 15-…) в рамках дела —
@@ -116,6 +141,7 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
                 captchaFormURL: URL? = nil, note: String? = nil, actURL: URL? = nil,
                 actURLs: [URL]? = nil, actFileError: String? = nil, sourceURL: URL? = nil,
                 previousRegistration: PreviousRegistrationReference? = nil,
+                sourceEvidence: SourceEvidence? = nil,
                 transientError: Bool? = nil) {
         self.level = level; self.court = court; self.caseNumber = caseNumber
         self.judge = judge; self.domain = domain; self.foundByUID = foundByUID
@@ -127,6 +153,7 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
         self.sourceURL = sourceURL
         self.previousRegistration = previousRegistration
         self.transientError = transientError
+        self.sourceEvidence = sourceEvidence
     }
 
     public var linkedActIDs: [String] {
@@ -502,7 +529,6 @@ public actor MovementService: MovementProviding {
         }
         // Вкладка «Обжалование» 1-й инстанции — авторитетный классификатор жалоб
         // (вид + даты). Парсится из уже загруженной карточки, без доп. запросов.
-        var appeals = baseCard.appeals
         var acts: [CaseAct] = []
         var actBodies: [String: String] = [:]
         var baseActID: String? = nil
@@ -532,7 +558,8 @@ public actor MovementService: MovementProviding {
             sessions: baseCard.sessions,
             actID: baseActID,
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
-            previousRegistration: baseCard.previousRegistration)]
+            previousRegistration: baseCard.previousRegistration,
+            sourceEvidence: .init(card: baseCard))]
         var unavailableMaterialFallbacks: [CaseInstance] = []
         var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
             ? [court.domain] : []
@@ -618,9 +645,8 @@ public actor MovementService: MovementProviding {
                     actIDs: linkedActIDs.isEmpty ? nil : linkedActIDs,
                     note: "Предыдущая регистрация",
                     sourceURL: loaded.sourceURL,
-                    previousRegistration: loaded.card.previousRegistration))
-                let newAppeals = loaded.card.appeals.filter { !appeals.contains($0) }
-                appeals.append(contentsOf: newAppeals)
+                    previousRegistration: loaded.card.previousRegistration,
+                    sourceEvidence: .init(card: loaded.card)))
                 registrations.append(loaded)
                 return true
             }
@@ -903,8 +929,7 @@ public actor MovementService: MovementProviding {
                                 markHigherCourtIncomplete(domain)
                                 continue
                             }
-                            // Подтверждённый по УИД 55к сохраняется в досье как
-                            // материал, не подменяя апелляцию по основному делу.
+                            // Уголовный судебный контроль сохраняет собственную роль.
                             if role == .judicialControlMaterial {
                                 resolvedLevel = .material
                             } else if role != .appellateCase {
@@ -913,12 +938,6 @@ public actor MovementService: MovementProviding {
                                 continue
                             }
                         }
-                        // Круг или нет — решает вкладка «Обжалование» (вид жалобы),
-                        // с откатом к различителю по результату. Частные жалобы и
-                        // прочее (замечания на протокол) кругом не считаем.
-                        if resolvedLevel != .material,
-                           !Self.isRoundOfAppeal(row: r, card: higherCard, appeals: appeals) { continue }
-
                         // actID уникален по № дела: при двух кругах из одного суда
                         // прежний "act_<домен>" схлопывал оба акта в один.
                         let actID = "act_\(domain)#\(r.caseNumber)"
@@ -950,7 +969,8 @@ public actor MovementService: MovementProviding {
                             actID: higherCard.actText != nil ? actID : nil,
                             sourceURL: Self.sourceURL(for: r, court: higherCourt,
                                                       cartoteka: higherCart),
-                            previousRegistration: higherCard.previousRegistration)
+                            previousRegistration: higherCard.previousRegistration,
+                            sourceEvidence: .init(card: higherCard))
                         rounds.append((inst, act, body,
                                        Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
                     }
@@ -1200,7 +1220,8 @@ public actor MovementService: MovementProviding {
                                 result: card.result, sessions: card.sessions,
                                 actID: act?.id,
                                 sourceURL: Self.sourceURL(for: kc),
-                                previousRegistration: card.previousRegistration)
+                                previousRegistration: card.previousRegistration,
+                                sourceEvidence: .init(card: card))
         return (inst, act, body)
     }
 
@@ -1572,56 +1593,12 @@ extension MovementService {
         }
     }
 
-    /// Главный классификатор: показывать ли запись вышестоящего суда как круг
-    /// (полноценную апелляцию/кассацию). Авторитетный источник — вкладка
-    /// «Обжалование» карточки 1-й инстанции: запись наверху сшивается с жалобой по
-    /// датам (дата рассмотрения наверху = «Дата рассмотрения жалобы»; дата
-    /// поступления наверх = «Направлено в вышестоящую инстанцию») и решает её «Вид»:
-    ///   • апелляционная / кассационная → круг (показываем);
-    ///   • частная жалоба / прочее (замечания на протокол и т. п.) → не круг.
-    /// Если по датам жалоба не нашлась (нет вкладки/расхождение дат) — откат к
-    /// различителю по «Результату рассмотрения» самой карточки.
-    static func isRoundOfAppeal(row: CaseSearchResult, card: CaseCard,
-                                appeals: [AppealRecord]) -> Bool {
-        if let match = matchAppeal(receipt: card.receiptDate ?? row.receiptDate,
-                                   decision: card.decisionDate ?? row.decisionDate,
-                                   in: appeals) {
-            switch match.kind {
-            case .appeal, .cassation:        return true
-            case .privateComplaint, .other:  return false
-            }
-        }
-        return !isPrivateComplaintByResult(row: row, card: card)
-    }
 
-    /// Сшивка записи вышестоящего суда с жалобой из вкладки «Обжалование» по датам.
-    /// Приоритет — дата рассмотрения (точная), затем дата направления/поступления.
-    static func matchAppeal(receipt: String?, decision: String?,
-                            in appeals: [AppealRecord]) -> AppealRecord? {
-        func norm(_ s: String?) -> String? {
-            guard let s else { return nil }
-            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? nil : t
-        }
-        if let d = norm(decision),
-           let m = appeals.first(where: { norm($0.hearingDate) == d }) { return m }
-        if let r = norm(receipt),
-           let m = appeals.first(where: { norm($0.sentUpDate) == r }) { return m }
-        return nil
-    }
-
-    /// Фолбэк-различитель по полю «Результат рассмотрения» апелляционной карточки:
-    /// круг пересматривает РЕШЕНИЕ/ПРИГОВОР, частная жалоба — ОПРЕДЕЛЕНИЕ. Категория
-    /// и ярлык акта не годятся (категория — существо спора; акт и там, и там —
-    /// «Апелляционное определение»). Консервативно: при пустом результате не
-    /// считаем частной жалобой.
-    static func isPrivateComplaintByResult(row: CaseSearchResult, card: CaseCard) -> Bool {
-        let result = (card.result ?? row.result ?? "").lowercased()
-        guard !result.isEmpty else { return false }
-        let reviewsRuling   = result.contains("определени")             // ОПРЕДЕЛЕНИЕ
-        let reviewsJudgment = result.contains("решени")                 // РЕШЕНИЕ
-                           || result.contains("приговор")               // ПРИГОВОР
-        return reviewsRuling && !reviewsJudgment
+    /// Устойчивый порядок карточек для хронологии, независимо от порядка ответа/кэша.
+    public static func precedesInChronology(_ lhs: CaseInstance, _ rhs: CaseInstance) -> Bool {
+        let left = instanceOrderKey(lhs), right = instanceOrderKey(rhs)
+        if left != right { return left < right }
+        return (lhs.sourceURL?.absoluteString ?? lhs.id) < (rhs.sourceURL?.absoluteString ?? rhs.id)
     }
 
     /// Хронологический ключ инстанции для сортировки движения: строго по дате

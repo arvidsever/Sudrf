@@ -121,6 +121,19 @@ public enum MovementCachePolicy {
                         instances[freshIndex].sourceURL = sourceURL
                         changed = true
                     }
+                    if overlaysPartialFields, let cachedEvidence = r.sourceEvidence {
+                        let freshEvidence = instances[freshIndex].sourceEvidence
+                        let evidence = CaseInstance.SourceEvidence(
+                            appealKinds: freshEvidence?.appealKinds ?? cachedEvidence.appealKinds,
+                            reviewProcedure: freshEvidence?.reviewProcedure ?? cachedEvidence.reviewProcedure,
+                            lowerCourt: freshEvidence?.lowerCourt ?? cachedEvidence.lowerCourt,
+                            receiptDate: freshEvidence?.receiptDate ?? cachedEvidence.receiptDate,
+                            decisionDate: freshEvidence?.decisionDate ?? cachedEvidence.decisionDate)
+                        if freshEvidence != evidence {
+                            instances[freshIndex].sourceEvidence = evidence
+                            changed = true
+                        }
+                    }
                     if overlaysPartialFields,
                        instances[freshIndex].previousRegistration == nil,
                        let previousRegistration = r.previousRegistration {

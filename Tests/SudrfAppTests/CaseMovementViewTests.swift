@@ -59,12 +59,36 @@ final class CaseMovementViewTests: XCTestCase {
             inForce: false, instances: [historical, current, material],
             complaints: [:], acts: [])
 
-        XCTAssertEqual(CaseMovementView.activeInstances(in: movement), [current])
+        XCTAssertEqual(CaseMovementView.activeInstances(in: movement), [historical, current, material])
         XCTAssertEqual(CaseMovementView.previousRegistrationInstances(in: movement),
                        [historical, material])
         XCTAssertEqual(CaseMovementView.previousRegistrationInstances(in: movement)
             .first?.sessions, [historicalSession])
         XCTAssertTrue(CaseMovementView.materialInstances(in: movement).isEmpty)
+    }
+
+    @MainActor
+    func testChronologyIsStableAndMetadataDoesNotCreateRefreshEvent() {
+        let previous = CaseInstance(level: .first, court: "Суд", caseNumber: "9а-77/2026",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "04.09.2026", event: "Регистрация")], note: "Предыдущая регистрация")
+        let appeal = CaseInstance(level: .appeal, court: "АСОЮ", caseNumber: "66а-726/2026",
+            judge: nil, domain: "2ap.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "07.09.2026", event: "Регистрация")])
+        let current = CaseInstance(level: .first, court: "Суд", caseNumber: "3а-681/2026",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "09.09.2026", event: "Принято к производству")])
+        let old = CaseMovement(uid: "uid", caseNumber: current.caseNumber, inForce: false,
+                               instances: [current, appeal, previous], complaints: [:], acts: [])
+        var enriched = old
+        enriched.instances.reverse()
+        enriched.instances[0].sourceEvidence = .init(appealKinds: ["Частная жалоба"])
+        XCTAssertEqual(CaseMovementView.activeInstances(in: old), [previous, appeal, current])
+        XCTAssertEqual(CaseMovementView.activeInstances(in: enriched).map(\.id), [previous.id, appeal.id, current.id])
+        XCTAssertTrue(MovementDerivation.hasSameRefreshSource(old, enriched))
+        var changed = enriched
+        changed.instances[0].sessions.append(CaseSession(date: "06.09.2026", event: "Новое событие"))
+        XCTAssertFalse(MovementDerivation.hasSameRefreshSource(old, changed))
     }
 
     func testHistoricalMaterialSourceUsesRegistrationLabel() {

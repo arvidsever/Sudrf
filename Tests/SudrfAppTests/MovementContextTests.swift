@@ -54,6 +54,13 @@ final class MovementContextTests: XCTestCase {
         militaryAppeal.searchDomain = "vap.sudrf.ru"
         militaryAppeal.displayDomain = "vap.sudrf.ru"
         XCTAssertEqual(militaryAppeal.expandedHigherDomains(), ["vkas.sudrf.ru"])
+
+        var militarySubjectFirst = context(level: .subject, cartoteka: "g1", base: .first)
+        militarySubjectFirst.branchRaw = CourtBranch.military.rawValue
+        militarySubjectFirst.searchDomain = "oskovsk.sudrf.ru"
+        militarySubjectFirst.displayDomain = "oskovsk.sudrf.ru"
+        XCTAssertTrue(militarySubjectFirst.expandedHigherDomains().contains("vap.sudrf.ru"))
+        XCTAssertTrue(militarySubjectFirst.expandedHigherDomains().contains("vkas.sudrf.ru"))
     }
 
     func testKoAPLevelsUseCartotekaAndUIDOrigin() {

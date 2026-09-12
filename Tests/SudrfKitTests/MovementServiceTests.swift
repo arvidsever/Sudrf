@@ -69,6 +69,179 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(movement.instances.first { $0.level == .appeal }?.sourceURL, appealURL)
     }
 
+    func testSubjectFirstAnchorDiscoversASOYuAndKSOYuButRejectsUnverifiedCandidates() async throws {
+        let subjectCourt = Court(domain: "vs--komi.sudrf.ru",
+                                 title: "Верховный Суд Республики Коми", level: .subject)
+        let base = CaseSearchResult(caseNumber: "3-1/2026", caseID: "base",
+                                    caseUID: Self.linkGUID)
+        let baseCard = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                                caseNumber: "3-1/2026")
+        let asoyURL = try XCTUnwrap(URL(string:
+            "https://2ap.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=asoy&case_uid=asoy-guid&delo_id=5&new=5"))
+        let asoyRow = CaseSearchResult(caseNumber: "66-1/2026", caseID: "asoy",
+                                       caseUID: "asoy-guid", cardURL: asoyURL)
+        let materialRow = CaseSearchResult(caseNumber: "55к-2/2026", caseID: "55k",
+                                           caseUID: "material-guid")
+        let mismatchedUIDRow = CaseSearchResult(caseNumber: "66-3/2026", caseID: "other-uid",
+                                                caseUID: "other-uid-guid")
+        let mismatchedProcessRow = CaseSearchResult(caseNumber: "66-4/2026", caseID: "wrong-process",
+                                                    caseUID: "wrong-process-guid")
+        let incompatibleURL = try SudrfURLBuilder(court: Court(
+            domain: "2ap.sudrf.ru", title: "Апелляционный суд", level: .appeal)
+        ).cardURL(caseID: "wrong-url", caseUID: "wrong-url-guid", deloID: "4", new: "4")
+        let wrongURLRow = CaseSearchResult(caseNumber: "66-5/2026", caseID: "wrong-url",
+                                           caseUID: "wrong-url-guid", cardURL: incompatibleURL)
+        let ksoyuRow = CaseSearchResult(caseNumber: "8Г-6/2026", caseID: "ksoyu",
+                                        caseUID: "ksoyu-guid")
+        let mock = MockClient(
+            firstCardID: "base", firstCard: baseCard, higherResults: [],
+            higherCards: [
+                "asoy": CaseCard(rawText: "", actText: nil, result: "РЕШЕНИЕ",
+                                  uid: Self.uid, caseNumber: "66-1/2026"),
+                "55k": CaseCard(rawText: "", actText: nil, result: "РЕШЕНИЕ",
+                                 uid: Self.uid, caseNumber: "55к-2/2026"),
+                "other-uid": CaseCard(rawText: "", actText: nil, result: "РЕШЕНИЕ",
+                                        uid: "11RS0001-01-2025-999999-03", caseNumber: "66-3/2026"),
+                "wrong-process": CaseCard(rawText: "", actText: nil, result: "РЕШЕНИЕ",
+                                            uid: Self.uid, caseNumber: "33-4/2026"),
+                "ksoyu": CaseCard(rawText: "", actText: nil, result: "РЕШЕНИЕ",
+                                   uid: Self.uid, caseNumber: "8Г-6/2026")
+            ],
+            higherResultsByLocator: [
+                "2ap.sudrf.ru/g2": [asoyRow, materialRow, mismatchedUIDRow,
+                                      mismatchedProcessRow, wrongURLRow],
+                "3kas.sudrf.ru/g3": [ksoyuRow]
+            ],
+            homeDomain: subjectCourt.domain)
+        let service = MovementService(client: mock,
+                                      higherCourtDomains: ["2ap.sudrf.ru", "3kas.sudrf.ru"],
+                                      baseInstanceLevel: .first)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "g1"))
+
+        let movement = try await service.movement(for: base, court: subjectCourt, cartoteka: cart)
+
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == "66-1/2026" && $0.level == .appeal })
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == "8Г-6/2026" && $0.level == .cassation })
+        XCTAssertFalse(movement.instances.contains {
+            ["55к-2/2026", "66-3/2026", "33-4/2026", "66-5/2026"].contains($0.caseNumber)
+        })
+        let locators = await mock.searchLocators
+        XCTAssertTrue(locators.contains("2ap.sudrf.ru/g2"))
+        XCTAssertTrue(locators.contains("3kas.sudrf.ru/g3"))
+        let values = await mock.searchedValues
+        XCTAssertTrue(values.allSatisfy { $0 == Self.uid })
+        XCTAssertFalse(values.contains(Self.linkGUID))
+        XCTAssertEqual(movement.instances.first { $0.caseNumber == "66-1/2026" }?.sourceURL,
+                       asoyURL)
+    }
+
+    func testSubjectFirstAppealCartotekaMappingRequiresExplicitFirstLevel() throws {
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "u1", level: .appeal, isFirstInstanceAnchor: true), ["u2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "g1", level: .appeal, isFirstInstanceAnchor: true), ["g2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "p1", level: .appeal, isFirstInstanceAnchor: true), ["p2"])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "g1", level: .appeal), [])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(
+            baseID: "g1", level: .appeal, isFirstInstanceAnchor: false), [])
+        XCTAssertEqual(MovementService.higherCartotekaIDs(baseID: "g1", level: .cassation), ["g3"])
+
+        let kasAppeal = try XCTUnwrap(CartotekaRegistry.find(level: .appeal, id: "p2"))
+        let omittedNewURL = try XCTUnwrap(URL(string:
+            "https://vap.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=kas&case_uid=kas-guid&delo_id=42"))
+        XCTAssertTrue(MovementService.isCompatibleAppealSourceURL(
+            CaseSearchResult(caseNumber: "66а-1/2026", cardURL: omittedNewURL),
+            court: Court(domain: "vap.sudrf.ru", title: "Военный апелляционный суд", level: .appeal),
+            cartoteka: kasAppeal))
+    }
+
+    func testSubjectFirstAnchorRequiresPublishedBaseRegistrationEvidence() async throws {
+        let subjectCourt = Court(domain: "vs--komi.sudrf.ru",
+                                 title: "Верховный Суд Республики Коми", level: .subject)
+        func searchedLocators(baseNumber: String, publishedNumber: String,
+                              cartotekaID: String, baseUID: String? = nil,
+                              savedUID: String? = nil) async throws -> [String] {
+            let base = CaseSearchResult(caseNumber: baseNumber, caseID: "base",
+                                        caseUID: Self.linkGUID)
+            let mock = MockClient(
+                firstCardID: "base",
+                firstCard: CaseCard(rawText: "", actText: nil, uid: baseUID ?? Self.uid,
+                                    caseNumber: publishedNumber),
+                higherResults: [], higherCards: [:], homeDomain: subjectCourt.domain)
+            let service = MovementService(client: mock, higherCourtDomains: ["2ap.sudrf.ru"],
+                                          baseInstanceLevel: .first, judicialUID: savedUID)
+            let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: cartotekaID))
+            _ = try await service.movement(for: base, court: subjectCourt, cartoteka: cart)
+            return await mock.searchLocators
+        }
+
+        let upk = try await searchedLocators(
+            baseNumber: "2-12/2025", publishedNumber: "2-12/2025 (2-45/2024;)",
+            cartotekaID: "u1")
+        XCTAssertTrue(upk.contains("2ap.sudrf.ru/u2"))
+        let kas = try await searchedLocators(
+            baseNumber: "3а-1/2026", publishedNumber: "3а-1/2026 ~ М-1/2026",
+            cartotekaID: "p1")
+        XCTAssertTrue(kas.contains("2ap.sudrf.ru/p2"))
+        let wrongProcess = try await searchedLocators(
+            baseNumber: "3-1/2026", publishedNumber: "3а-1/2026",
+            cartotekaID: "g1")
+        XCTAssertFalse(wrongProcess.contains("2ap.sudrf.ru/g2"))
+        let wrongNumber = try await searchedLocators(
+            baseNumber: "3-1/2026", publishedNumber: "3-2/2026",
+            cartotekaID: "g1")
+        XCTAssertFalse(wrongNumber.contains("2ap.sudrf.ru/g2"))
+        let wrongUID = try await searchedLocators(
+            baseNumber: "3-1/2026", publishedNumber: "3-1/2026",
+            cartotekaID: "g1", baseUID: "11RS0001-01-2025-999999-03",
+            savedUID: Self.uid)
+        XCTAssertFalse(wrongUID.contains("2ap.sudrf.ru/g2"))
+    }
+
+    func testUnverifiedASOYuCandidatePreservesCachedRound() async throws {
+        let subjectCourt = Court(domain: "vs--komi.sudrf.ru",
+                                 title: "Верховный Суд Республики Коми", level: .subject)
+        let base = CaseSearchResult(caseNumber: "3-1/2026", caseID: "base",
+                                    caseUID: Self.linkGUID)
+        let mock = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                                caseNumber: "3-1/2026"),
+            higherResults: [],
+            higherCards: ["unverified": CaseCard(rawText: "", actText: nil,
+                                                   result: "РЕШЕНИЕ", caseNumber: "66-1/2026")],
+            higherResultsByLocator: [
+                "2ap.sudrf.ru/g2": [CaseSearchResult(
+                    caseNumber: "66-1/2026", caseID: "unverified", caseUID: "candidate-guid")]
+            ],
+            homeDomain: subjectCourt.domain)
+        let service = MovementService(client: mock, higherCourtDomains: ["2ap.sudrf.ru"],
+                                      baseInstanceLevel: .first)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "g1"))
+
+        let fresh = try await service.movement(for: base, court: subjectCourt, cartoteka: cart)
+        XCTAssertEqual(fresh.incompleteHigherCourtDomains, ["2ap.sudrf.ru"])
+        let cached = CaseMovement(
+            uid: Self.uid, caseNumber: base.caseNumber, inForce: true,
+            instances: [
+                CaseInstance(level: .first, court: subjectCourt.title,
+                             caseNumber: base.caseNumber, judge: nil, domain: subjectCourt.domain,
+                             foundByUID: false, result: nil, sessions: []),
+                CaseInstance(level: .appeal, court: "Апелляционный суд",
+                             caseNumber: "66-1/2026", judge: nil, domain: "2ap.sudrf.ru",
+                             foundByUID: true, result: "РЕШЕНИЕ", sessions: [])
+            ],
+            complaints: [:], acts: [], actBodies: [:])
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        XCTAssertTrue(merged.instances.contains {
+            $0.domain == "2ap.sudrf.ru" && $0.caseNumber == "66-1/2026"
+        })
+    }
+
     func testUIDLookupFetchesKSOYuCardAndCarriesComplaintSessions() async throws {
         let firstCard = CaseCard(rawText: "", actText: nil,
                                  uid: Self.uid, caseNumber: "2-7212/2025")
@@ -614,6 +787,7 @@ private actor MockClient: CaseProviding {
     private let firstCardID: String
     private let firstCard: CaseCard
     private let higherResults: [CaseSearchResult]
+    private let higherResultsByLocator: [String: [CaseSearchResult]]
     private let higherCards: [String: CaseCard]
     private let sameCourtResults: [CaseSearchResult]
     private let homeDomain: String
@@ -625,12 +799,14 @@ private actor MockClient: CaseProviding {
 
     init(firstCardID: String, firstCard: CaseCard,
          higherResults: [CaseSearchResult], higherCards: [String: CaseCard],
+         higherResultsByLocator: [String: [CaseSearchResult]] = [:],
          sameCourtResults: [CaseSearchResult] = [],
          homeDomain: String = "syktsud--komi.sudrf.ru",
          expectedUID: String = "11RS0001-01-2025-011255-03") {
         self.firstCardID = firstCardID
         self.firstCard = firstCard
         self.higherResults = higherResults
+        self.higherResultsByLocator = higherResultsByLocator
         self.higherCards = higherCards
         self.sameCourtResults = sameCourtResults
         self.homeDomain = homeDomain
@@ -640,14 +816,18 @@ private actor MockClient: CaseProviding {
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult] {
         searchedValues.append(value)
-        searchLocators.append(court.domain + "/" + cartoteka.id)
+        let locator = court.domain + "/" + cartoteka.id
+        searchLocators.append(locator)
         guard field == .uid, value == expectedUID else { return [] }
-        return court.domain == homeDomain ? sameCourtResults : higherResults
+        if court.domain == homeDomain { return sameCourtResults }
+        return higherResultsByLocator[locator] ?? higherResults
     }
 
     func fetchCard(url: URL) async throws -> CaseCard {
         fetchedURLs.append(url)
-        guard let row = (higherResults + sameCourtResults).first(where: { $0.cardURL == url }),
+        let rows = higherResults + sameCourtResults
+            + higherResultsByLocator.values.flatMap { $0 }
+        guard let row = rows.first(where: { $0.cardURL == url }),
               let caseID = row.caseID,
               let card = higherCards[caseID] else {
             throw SudrfError.http(status: 404)

@@ -14,6 +14,57 @@ final class CaseCardParserTests: XCTestCase {
             + "&name_op=case&case_id=\(caseID)&delo_id=2550001")!
     }
 
+    func testAppealSOYuKASCardKeepsUIDLowerCourtAndFutureHearing() throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://2ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+            + "&name_op=case&case_id=6248620"
+            + "&case_uid=36d1a623-32e2-4484-8900-bda1bf8e7eee&delo_id=42"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("asoy_kas_appeal_66a_731_2026"), cardURL: url)
+
+        XCTAssertEqual(card.caseNumber, "66а-731/2026")
+        XCTAssertEqual(card.uid, "11OS0000-01-2026-000702-37")
+        XCTAssertEqual(card.receiptDate, "10.09.2026")
+        XCTAssertNil(card.decisionDate)
+        XCTAssertNil(card.result)
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "10.09.2026", time: "10:29",
+                        event: "Передача дела судье"),
+            CaseSession(date: "14.09.2026", time: "12:00", room: "№ 6",
+                        event: "Судебное заседание"),
+        ])
+        XCTAssertEqual(card.lowerCourt, LowerCourtReference(
+            region: "11 - Республика Коми",
+            courtTitle: "Верховный Суд Республики Коми",
+            caseNumber: "3а-673/2026 ~ М-640/2026"))
+    }
+
+    func testAppealSOYuUPKCardKeepsUIDLowerCourtAndDecision() throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://4ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+            + "&name_op=case&case_id=8481895"
+            + "&case_uid=c253619c-4094-4c15-ba1b-7bdc02640ede&delo_id=4&new=4"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("asoy_upk_appeal_55_584_2025"), cardURL: url)
+
+        XCTAssertEqual(card.caseNumber, "55-584/2025")
+        XCTAssertEqual(card.uid, "63OS0000-01-2024-002224-56")
+        XCTAssertEqual(card.receiptDate, "17.11.2025")
+        XCTAssertEqual(card.decisionDate, "18.12.2025")
+        XCTAssertEqual(card.result, "ВЫНЕСЕНО РЕШЕНИЕ (ОПРЕДЕЛЕНИЕ)")
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "17.11.2025", time: "14:48",
+                        event: "Передача дела судье"),
+            CaseSession(date: "18.12.2025", time: "10:00", room: "Зал 204",
+                        event: "Судебное заседание",
+                        result: "ВЫНЕСЕНО РЕШЕНИЕ (ОПРЕДЕЛЕНИЕ)"),
+        ])
+        XCTAssertEqual(card.lowerCourt, LowerCourtReference(
+            region: "63 - Самарская область",
+            courtTitle: "Самарский областной суд",
+            caseNumber: "2-12/2025 (2-45/2024;)"))
+    }
+
     func testSubjectKASCurrentAndPreliminaryNumbersRemainInCardHeading() throws {
         let cases = [
             ("vsrk_subject_kas_m662", "3а-685/2026 ~ М-662/2026"),

@@ -143,7 +143,16 @@ public enum CaseCardParser {
                         parties: parties,
                         lowerCourt: lowerCourt,
                         previousRegistration: previousRegistration,
-                        executionDocuments: executionDocuments)
+                        executionDocuments: executionDocuments,
+                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions))
+    }
+
+    private static func reviewProcedure(meta: [String: String], sessions: [CaseSession]) -> String? {
+        if let published = meta["признак рассмотрения дела"] { return published }
+        let published = Set(sessions.map(\.event).filter {
+            $0.lowercased().contains("единоличное рассмотрение")
+        })
+        return published.count == 1 ? published.first : nil
     }
 
     // MARK: - Винтажная карточка (VNKOD-суды)
@@ -212,7 +221,8 @@ public enum CaseCardParser {
                         parties: parties,
                         lowerCourt: lowerCourt,
                         previousRegistration: previousRegistration,
-                        executionDocuments: executionDocuments)
+                        executionDocuments: executionDocuments,
+                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions))
     }
 
     /// Вкладка по имени: #tab_content_<name>.

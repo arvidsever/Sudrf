@@ -297,6 +297,37 @@ final class MovementCachePolicyTests: XCTestCase {
         XCTAssertEqual(Set(merged.acts.map(\.id)), [firstID, secondID])
     }
 
+    func testPartialSourceEvidenceFillsMissingFieldsWithoutReplacingPublishedValues() {
+        var cachedBase = instance(domain: "home--komi.sudrf.ru", level: .first)
+        cachedBase.caseNumber = "2-1/2026"
+        cachedBase.sourceEvidence = .init(
+            appealKinds: ["Частная жалоба"], reviewProcedure: "Единоличное рассмотрение дела",
+            lowerCourt: .init(caseNumber: "9-1/2026"), receiptDate: "01.06.2026", decisionDate: "02.06.2026")
+        let cached = movement([cachedBase])
+        var freshBase = cachedBase
+        freshBase.sessions = []
+        freshBase.sourceEvidence = .init()
+        var fresh = movement([freshBase])
+        fresh.incompleteHigherCourtDomains = [freshBase.domain]
+        let restored = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        XCTAssertEqual(restored.instances[0].sourceEvidence, cachedBase.sourceEvidence)
+        XCTAssertEqual(restored.instances[0].sessions, cachedBase.sessions)
+
+        fresh.instances[0].sourceEvidence = .init(appealKinds: [], reviewProcedure: "Коллегиальное рассмотрение",
+                                                 decisionDate: "03.06.2026")
+        let updated = MovementCachePolicy.merge(fresh: fresh, cached: cached).instances[0].sourceEvidence
+        XCTAssertEqual(updated?.appealKinds, [])
+        XCTAssertEqual(updated?.reviewProcedure, "Коллегиальное рассмотрение")
+        XCTAssertEqual(updated?.decisionDate, "03.06.2026")
+        XCTAssertEqual(updated?.receiptDate, "01.06.2026")
+        XCTAssertEqual(updated?.lowerCourt, cachedBase.sourceEvidence?.lowerCourt)
+
+        // A complete response is authoritative, including unavailable evidence.
+        fresh.incompleteHigherCourtDomains = nil
+        fresh.instances[0].sourceEvidence = .init()
+        XCTAssertEqual(MovementCachePolicy.merge(fresh: fresh, cached: cached).instances[0].sourceEvidence, .init())
+    }
+
     func testSparseBaseFallbackPreservesCachedBaseDataAndFreshHigherRounds() {
         let baseActID = "act_home#2-1/2026"
         let cachedBase = CaseInstance(

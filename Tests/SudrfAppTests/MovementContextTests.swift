@@ -78,6 +78,23 @@ final class MovementContextTests: XCTestCase {
         XCTAssertEqual(context(level: .cassation, cartoteka: "adm3").baseInstanceLevel, .cassation)
     }
 
+    func testSavedSamaraFirstInstanceWithoutCourtCodeFindsAppeal() throws {
+        // Контекст сохранённого 2-12, проверенный в работающем приложении 12 сентября 2026 года.
+        var ctx = MovementContext(
+            branchRaw: "general", region: "Самарская область",
+            searchDomain: "oblsud--sam.sudrf.ru", displayDomain: "oblsud.sam.sudrf.ru",
+            courtTitle: "Самарский областной суд", courtLevelRaw: "subject", courtCode: nil,
+            cartotekaId: "u1", cartotekaLevelRaw: "subject",
+            caseNumber: "2-12/2025 (2-45/2024;)")
+        ctx.baseInstanceLevelRaw = "first"
+        ctx.judicialUID = "63OS0000-01-2024-002224-56"
+        let restored = try JSONDecoder().decode(MovementContext.self, from: JSONEncoder().encode(ctx))
+        XCTAssertNil(restored.courtCode)
+        XCTAssertTrue(restored.expandedHigherDomains().contains("4ap.sudrf.ru"))
+        ctx.displayDomain = ctx.searchDomain
+        XCTAssertEqual(ctx.expandedHigherDomains(), restored.expandedHigherDomains())
+    }
+
     @MainActor
     func testSwiftDataRecordAllowsMissingDenormalizedUID() throws {
         let store = TrackedStore(inMemory: true)

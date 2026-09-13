@@ -127,6 +127,17 @@ extension CourtDirectoryTests {
         XCTAssertEqual(CourtDirectory.normalizedSubjectCode("78"), "78")
     }
 
+    func testSubjectDomainAliasesResolveToSameRegion() {
+        for (code, domain) in CourtDirectory.subjectCourtDomainByCode {
+            for host in [domain, SudrfHost.moduleHost(domain), SudrfHost.alternate(domain)].compactMap({ $0 }) {
+                XCTAssertEqual(CourtDirectory.subjectCode(forDomain: host), code, host)
+                XCTAssertEqual(CourtDirectory.subjectCode(forDomain: "https://\(host.uppercased())/modules.php"), code, host)
+            }
+        }
+        XCTAssertNil(CourtDirectory.subjectCode(forDomain: "oblsud.sam.sudrf.ru.example.org"))
+        XCTAssertNil(CourtDirectory.subjectCode(forDomain: "unknown--sam.sudrf.ru"))
+    }
+
     func testMilitaryUpperTiersHardcoded() {
         // Ст. 1 466-ФЗ: 9 окружных (флотских) военных судов — 1-й/2-й Западные,
         // 1-й/2-й Восточные, Центральный, Южный + Балтийский, Северный,

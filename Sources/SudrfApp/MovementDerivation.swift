@@ -324,7 +324,9 @@ enum MovementDerivation {
             nextChip = .blue
             nextEventDate = date
         } else if let deadline = nextDeadline {
-            nextEvent = "срок \(deadline.kind == "cassation" ? "кассации" : "апелляции"): "
+            let deadlineLabel = deadline.kind == "cassation" ? "кассации"
+                : deadline.what.lowercased().contains("частн") ? "частной жалобы" : "апелляции"
+            nextEvent = "срок \(deadlineLabel): "
                 + DateUtil.shortDM(deadline.date)
             nextChip = deadline.isUserControlled
                 ? .confirmed : .proposed

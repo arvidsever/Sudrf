@@ -67,9 +67,11 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
             })
 
         var refreshed = movement(number: current.caseNumber, sourceActID: "act-current",
-                                 result: "Принято к производству")
+                                 result: "Производство по делу ПРЕКРАЩЕНО")
+        refreshed.category = "Об оспаривании решений иных органов, наделённых публичными полномочиями"
         refreshed.instances[0].sessions = [CaseSession(
-            date: "01.09.2026", event: "Принято к производству")]
+            date: "11.09.2026", event: "Судебное заседание",
+            result: "Производство по делу ПРЕКРАЩЕНО")]
         var previousInstance = cached.instances[0]
         previousInstance.note = "Предыдущая регистрация"
         refreshed.instances.append(previousInstance)
@@ -91,6 +93,9 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
         let promoted = try XCTUnwrap(store.record(forKey: record.key))
         let journalIDs = Set(try XCTUnwrap(promoted.eventJournal).events.map(\.id))
         let firstMovement = try XCTUnwrap(promoted.movement)
+        let firstDeadline = try XCTUnwrap(promoted.snapshot?.deadlines.first {
+            $0.provenance?.ruleID == "KAS-PRIVATE-GENERAL"
+        })
         let firstPrevious = try XCTUnwrap(firstMovement.instances.first {
             $0.caseNumber == old.caseNumber && $0.note == "Предыдущая регистрация"
         })
@@ -100,6 +105,7 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(first.outcome, .refreshed)
         XCTAssertEqual(promoted.context?.caseNumber, current.caseNumber)
         XCTAssertEqual(firstMovement.caseNumber, current.caseNumber)
+        XCTAssertEqual(firstDeadline.date, DateUtil.parse("02.10.2026"))
         XCTAssertEqual(firstRequestedNumbers, [current.caseNumber])
         XCTAssertEqual(firstPrevious.sourceURL,
                        try XCTUnwrap(old.cardURLString.flatMap(URL.init(string:))))
@@ -113,6 +119,9 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
         let afterPartial = try XCTUnwrap(store.record(forKey: record.key))
         let afterIDs = Set(try XCTUnwrap(afterPartial.eventJournal).events.map(\.id))
         let partialMovement = try XCTUnwrap(afterPartial.movement)
+        let partialDeadline = try XCTUnwrap(afterPartial.snapshot?.deadlines.first {
+            $0.provenance?.ruleID == "KAS-PRIVATE-GENERAL"
+        })
         let partialPrevious = try XCTUnwrap(partialMovement.instances.first {
             $0.caseNumber == old.caseNumber && $0.note == "Предыдущая регистрация"
         })
@@ -123,6 +132,7 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
             "Не обновился источник 3kas.sudrf.ru; сохранены последние успешные данные."))
         XCTAssertEqual(afterPartial.context?.caseNumber, current.caseNumber)
         XCTAssertEqual(partialMovement.caseNumber, current.caseNumber)
+        XCTAssertEqual(partialDeadline.date, firstDeadline.date)
         XCTAssertEqual(secondRequestedNumbers, [current.caseNumber, current.caseNumber])
         XCTAssertEqual(afterIDs, journalIDs)
         XCTAssertEqual(afterPartial.movementFetchedAt, firstFetchedAt)

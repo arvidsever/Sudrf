@@ -17,13 +17,18 @@ final class DeadlineRuleEngineTests: XCTestCase {
     }
 
     private func movement(cartoteka: String = "g", category: String? = "Споры из договоров",
-                          inForce: Bool = false, sessions: [CaseSession],
-                          extra: [CaseInstance] = []) -> CaseMovement {
+                          caseNumber: String? = nil, inForce: Bool = false,
+                          sessions: [CaseSession], extra: [CaseInstance] = [],
+                          parties: CaseParties = CaseParties()) -> CaseMovement {
         let number: String
-        switch cartoteka {
-        case "u": number = "1-100/2026"
-        case "adm": number = "5-100/2026"
-        default: number = "2-100/2026"
+        if let caseNumber {
+            number = caseNumber
+        } else {
+            switch cartoteka {
+            case "u": number = "1-100/2026"
+            case "adm": number = "5-100/2026"
+            default: number = "2-100/2026"
+            }
         }
         let first = CaseInstance(level: .first, court: "Сыктывкарский городской суд",
                                  caseNumber: number, judge: nil,
@@ -31,7 +36,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
                                  result: sessions.last?.result, sessions: sessions)
         return CaseMovement(uid: "11RS0001-01-2026-000100-11", caseNumber: number,
                             inForce: inForce, instances: [first] + extra,
-                            complaints: [:], acts: [], category: category)
+                            complaints: [:], acts: [], category: category, parties: parties)
     }
 
     private func snapshot(_ movement: CaseMovement, cartoteka: String = "g",
@@ -165,6 +170,131 @@ final class DeadlineRuleEngineTests: XCTestCase {
                        DateUtil.parse("03.08.2026"))
         XCTAssertEqual(cassation.deadlines.single(where: { $0.kind == "cassation" })?.provenance?.ruleID,
                        "KAS-CASSATION-KSOYU")
+    }
+
+    func testKASIssue294SelectsElectionAndGeneralPrivateRules() throws {
+        let electionCategory = "О защите избирательных прав и права на участие в референдуме (гл. 24 КАС РФ)"
+        let decision = movement(
+            cartoteka: "p", category: electionCategory, caseNumber: "3а-682/2026",
+            sessions: [
+                CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                            result: "Вынесено решение по делу; в удовлетворении отказано"),
+                CaseSession(date: "11.09.2026",
+                            event: "Изготовлено мотивированное решение в окончательной форме"),
+            ])
+        let electionAppeal = try evaluation(decision, cartoteka: "p")
+        let appeal = try XCTUnwrap(electionAppeal.deadlines.single(where: { $0.kind == "appeal" }))
+
+        XCTAssertEqual(electionAppeal.deadlines.count, 1)
+        XCTAssertEqual(appeal.date, DateUtil.parse("16.09.2026"))
+        XCTAssertEqual(appeal.provenance?.ruleID, "KAS-APPEAL-ELECTION")
+        XCTAssertEqual(appeal.provenance?.trigger.dateRaw, "11.09.2026")
+        XCTAssertTrue(appeal.provenance?.policyIDs.contains(
+            "KAS-COUNTING-DAY-CALENDAR-EXCEPTIONS") ?? false)
+        XCTAssertTrue(appeal.provenance?.policyIDs.contains(
+            "KAS-END-POST-NO-SAFE-HARBOR-ELECTION") ?? false)
+        XCTAssertFalse(appeal.provenance?.policyIDs.contains(
+            "KAS-END-NONWORKING-NEXT-WORKING") ?? true)
+
+        for number in ["3а-683/2026", "3а-684/2026"] {
+            let terminated = movement(
+                cartoteka: "p", category: electionCategory, caseNumber: number,
+                sessions: [CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                                       result: "Производство по делу ПРЕКРАЩЕНО")])
+            let evaluated = try evaluation(terminated, cartoteka: "p")
+            let deadline = try XCTUnwrap(evaluated.deadlines.single(where: {
+                $0.what == "Частная жалоба"
+            }))
+
+            XCTAssertEqual(evaluated.deadlines.count, 1, number)
+            XCTAssertEqual(deadline.date, DateUtil.parse("16.09.2026"), number)
+            XCTAssertEqual(deadline.provenance?.ruleID, "KAS-PRIVATE-ELECTION", number)
+        }
+
+        let generic = movement(
+            cartoteka: "p",
+            category: "Об оспаривании решений, действий (бездействия) иных органов, организаций, наделенных публичными полномочиями",
+            caseNumber: "3а-685/2026",
+            sessions: [CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                                   result: "Производство по делу ПРЕКРАЩЕНО")],
+            parties: CaseParties(thirdParties: ["Избирательная комиссия Республики Коми"]))
+        let generalPrivate = try evaluation(generic, cartoteka: "p")
+        let privateDeadline = try XCTUnwrap(generalPrivate.deadlines.single(where: {
+            $0.what == "Частная жалоба"
+        }))
+
+        XCTAssertEqual(generalPrivate.deadlines.count, 1)
+        XCTAssertEqual(privateDeadline.date, DateUtil.parse("02.10.2026"))
+        XCTAssertEqual(privateDeadline.provenance?.ruleID, "KAS-PRIVATE-GENERAL")
+        XCTAssertTrue(privateDeadline.provenance?.policyIDs.contains(
+            "KAS-COUNTING-DAY-WORKING-GENERAL") ?? false)
+        XCTAssertEqual(generalPrivate.assessments.single(where: {
+            $0.ruleID == "KAS-PRIVATE-ELECTION"
+        })?.status, .notApplicable)
+
+        let referendum = movement(
+            cartoteka: "p", category: "О защите права на участие в референдуме",
+            sessions: [CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                                   result: "Производство по делу ПРЕКРАЩЕНО")])
+        let referendumEvaluation = try evaluation(referendum, cartoteka: "p")
+        XCTAssertEqual(referendumEvaluation.deadlines.count, 1)
+        XCTAssertEqual(referendumEvaluation.deadlines.first?.provenance?.ruleID,
+                       "KAS-PRIVATE-ELECTION")
+    }
+
+    func testKASIssue294PrivateRulesIgnoreIntermediateActsAndRequireCategory() throws {
+        let intermediate = movement(
+            cartoteka: "p", category: "Об оспаривании решения органа",
+            sessions: [CaseSession(date: "11.09.2026",
+                                   event: "Определение о подготовке дела к судебному разбирательству",
+                                   result: "Назначено судебное заседание")])
+        let evaluatedIntermediate = try evaluation(intermediate, cartoteka: "p")
+        XCTAssertFalse(evaluatedIntermediate.deadlines.contains { $0.what == "Частная жалоба" })
+
+        let missingCategory = movement(
+            cartoteka: "p", category: nil,
+            sessions: [CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                                   result: "Производство по делу ПРЕКРАЩЕНО")])
+        let evaluatedMissing = try evaluation(missingCategory, cartoteka: "p")
+        XCTAssertTrue(evaluatedMissing.deadlines.isEmpty)
+        XCTAssertEqual(evaluatedMissing.assessments.single(where: {
+            $0.ruleID == "KAS-PRIVATE-GENERAL"
+        })?.status, .insufficientEvidence)
+    }
+
+    func testKASElectionDeadlineEndingOnWeekendIsNotMoved() throws {
+        let mv = movement(
+            cartoteka: "p", category: "Защита избирательных прав (гл. 24 КАС РФ)",
+            sessions: [CaseSession(date: "15.09.2026", event: "Судебное заседание",
+                                   result: "Вынесено решение по делу")])
+        let evaluated = try evaluation(mv, cartoteka: "p")
+        let deadline = try XCTUnwrap(evaluated.deadlines.single(where: {
+            $0.provenance?.ruleID == "KAS-APPEAL-ELECTION"
+        }))
+
+        XCTAssertEqual(deadline.date, DateUtil.parse("20.09.2026"))
+        XCTAssertNil(deadline.provenance?.calendarTrace)
+    }
+
+    func testKASPrivateDeadlinePresentationAndOverrideSurviveRefresh() {
+        let mv = movement(
+            cartoteka: "p", category: "Об оспаривании решения органа",
+            caseNumber: "3а-685/2026",
+            sessions: [CaseSession(date: "11.09.2026", event: "Судебное заседание",
+                                   result: "Производство по делу ПРЕКРАЩЕНО")])
+        let currentDay = DateUtil.parse("12.09.2026")!
+        let original = snapshot(mv, cartoteka: "p", today: currentDay)
+        XCTAssertTrue(original.nextEvent.hasPrefix("срок частной жалобы:"))
+
+        var edited = original
+        edited.deadlines[0].statusRaw = DeadlineStatus.overridden.rawValue
+        edited.deadlines[0].dateRef = DateUtil.parse("05.10.2026")!.timeIntervalSinceReferenceDate
+        let refreshed = MovementDerivation.preservingConfirmedDeadlines(
+            snapshot(mv, cartoteka: "p", today: currentDay), old: edited, today: currentDay)
+
+        XCTAssertEqual(refreshed.deadlines.single(where: { $0.isActive })?.status, .overridden)
+        XCTAssertEqual(refreshed.deadlines.single(where: { $0.isActive })?.date,
+                       DateUtil.parse("05.10.2026"))
     }
 
     func testKoAPRequiresProvedReceiptAndDoesNotSubstituteDecisionDate() throws {

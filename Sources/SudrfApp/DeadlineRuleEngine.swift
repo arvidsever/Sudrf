@@ -107,10 +107,18 @@ enum DeadlineRuleEngine {
 
     private enum TriggerMode {
         case finalForm
+        case decisionFinalForm
+        case decision
+        case termination
         case finalAct
         case deliveryOrReceipt
         case gpkCassation
         case legalForce
+    }
+
+    private enum CategoryScope {
+        case general
+        case election
     }
 
     private struct Binding {
@@ -118,11 +126,13 @@ enum DeadlineRuleEngine {
         var kind: String
         var production: ProductionType
         var trigger: TriggerMode
+        var categoryScope: CategoryScope = .general
     }
 
     private enum TriggerExtraction {
         case found(DeadlineTriggerProvenance)
         case missing([DeadlineEvidenceRequirement])
+        case notApplicable
     }
 
     private enum DateCalculation {
@@ -130,14 +140,19 @@ enum DeadlineRuleEngine {
         case unsupported([String])
     }
 
-    /// The first production layer intentionally activates only the six Docs
-    /// rules approved for #70. The full catalog remains available in the
-    /// registry for #222 without a second hand-maintained list.
+    /// Only explicitly approved Docs rules are activated here. The full catalog
+    /// remains available in the registry for #222 without a second maintained list.
     private static let bindings = [
         Binding(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", production: .civil,
                 trigger: .finalForm),
         Binding(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", production: .kas,
-                trigger: .finalForm),
+                trigger: .decisionFinalForm),
+        Binding(ruleID: "KAS-APPEAL-ELECTION", kind: "appeal", production: .kas,
+                trigger: .decision, categoryScope: .election),
+        Binding(ruleID: "KAS-PRIVATE-GENERAL", kind: "appeal", production: .kas,
+                trigger: .termination),
+        Binding(ruleID: "KAS-PRIVATE-ELECTION", kind: "appeal", production: .kas,
+                trigger: .termination, categoryScope: .election),
         Binding(ruleID: "UPK-APPEAL-GENERAL", kind: "appeal", production: .crim,
                 trigger: .finalAct),
         Binding(ruleID: "KOAP-APPEAL-INITIAL-GENERAL", kind: "appeal", production: .koap,
@@ -226,11 +241,18 @@ enum DeadlineRuleEngine {
            normalized(movement.category).isEmpty {
             return insufficient(rule, binding: binding, [.caseCategory])
         }
-        if binding.kind == "appeal", categorySelectsSpecialRule(movement.category, code: rule.code) {
-            // A known special category displaces the general rule. Its typed
-            // activation belongs to #222; do not calculate the general one.
-            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
-                                    status: .notApplicable))
+        if binding.kind == "appeal" {
+            switch binding.categoryScope {
+            case .general where categorySelectsSpecialRule(movement.category, code: rule.code):
+                // A known special category displaces the general rule.
+                return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                        status: .notApplicable))
+            case .election where !isElectionCategory(movement.category):
+                return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                        status: .notApplicable))
+            case .general, .election:
+                break
+            }
         }
 
         let triggerResult: TriggerExtraction
@@ -249,6 +271,37 @@ enum DeadlineRuleEngine {
                 triggerResult = .missing([.finalAct])
             } else {
                 triggerResult = .missing([.finalForm])
+            }
+        case .decisionFinalForm:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct, .actType, .finalForm])
+            }
+            guard decision(in: first) != nil else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+                break
+            }
+            triggerResult = finalForm(in: first).map(TriggerExtraction.found)
+                ?? .missing([.finalForm])
+        case .decision:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct, .actType])
+            }
+            if let act = decision(in: first) {
+                triggerResult = .found(act)
+            } else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+            }
+        case .termination:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct, .actType])
+            }
+            if let act = termination(in: first) {
+                triggerResult = .found(act)
+            } else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
             }
         case .finalAct:
             guard let first = timeline.deadlineFirst else {
@@ -302,6 +355,9 @@ enum DeadlineRuleEngine {
         switch triggerResult {
         case .missing(let requirements):
             return insufficient(rule, binding: binding, requirements)
+        case .notApplicable:
+            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                    status: .notApplicable))
         case .found:
             break
         }
@@ -364,6 +420,16 @@ enum DeadlineRuleEngine {
             }?.policyID
         }
         func ids(_ values: String?...) -> [String] { values.compactMap { $0 } }
+        let isElectionRule = rule.ruleID == "KAS-APPEAL-ELECTION"
+            || rule.ruleID == "KAS-PRIVATE-ELECTION"
+        let filingPolicyIDs: [String]
+        if isElectionRule {
+            filingPolicyIDs = ids(policy(["END", "POST", "NO", "SAFE", "HARBOR", "ELECTION"]))
+        } else if rule.ruleID == "KAS-PRIVATE-GENERAL" {
+            filingPolicyIDs = ids(policy(["END", "POST", "24H", "GENERAL"]))
+        } else {
+            filingPolicyIDs = []
+        }
         let result: Date
         let policyIDs: [String]
         let endNonworking: String?
@@ -388,8 +454,8 @@ enum DeadlineRuleEngine {
         case .calendarDays:
             result = DateUtil.addDays(triggerDate, value)
             policyIDs = ids(policy(["START", "NEXT", "DAY"]),
-                            policy(["DAYS", "CALENDAR"]))
-            endNonworking = policy(["END", "NONWORKING"])
+                            policy(["COUNTING", "DAY", "CALENDAR"])) + filingPolicyIDs
+            endNonworking = isElectionRule ? nil : policy(["END", "NONWORKING"])
         case .calendarSutki:
             result = DateUtil.addDays(triggerDate, value)
             policyIDs = ids(policy(["COUNTING", "UNITS"]),
@@ -409,7 +475,7 @@ enum DeadlineRuleEngine {
                 date: date,
                 policyIDs: ids(policy(["COUNTING", "START", "NEXT", "DAY"]),
                                policy(["COUNTING", "DAY"]))
-                    + calculated.trace.proceduralPolicyIDs,
+                    + filingPolicyIDs + calculated.trace.proceduralPolicyIDs,
                 calendarTrace: calculated.trace))
         case .relative, .none:
             return .unsupported([])
@@ -482,13 +548,18 @@ enum DeadlineRuleEngine {
             return ["упрощенн", "возвращени ребен", "доступ к ребен", "усынов",
                     "заочн", "иностранн государств"].contains { value.contains($0) }
         case "KAS":
-            return ["избират", "муниципальн", "иностранн граждан", "административн надзор",
+            return ["избират", "референдум", "муниципальн", "иностранн граждан", "административн надзор",
                     "недобровольн", "психиатр"].contains { value.contains($0) }
         case "KOAP":
             return value.contains("избират")
         default:
             return false
         }
+    }
+
+    private static func isElectionCategory(_ category: String?) -> Bool {
+        let value = normalized(category)
+        return value.contains("избират") || value.contains("референдум")
     }
 
     private static func finalAct(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
@@ -498,6 +569,26 @@ enum DeadlineRuleEngine {
             return (date, index, provenance(for: session, in: instance))
         }
         .max { left, right in left.0 == right.0 ? left.1 < right.1 : left.0 < right.0 }?.2
+    }
+
+    private static func decision(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) { session in
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            guard CaseLifecycleResolver.isFinalActAnnouncement(
+                event: session.event, result: session.result) else { return false }
+            return value.contains("решен")
+                || value.contains("иск")
+                    && (value.contains("удовлетвор") || value.contains("отказано"))
+        }
+    }
+
+    private static func termination(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) { session in
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            return CaseLifecycleResolver.isFinalActAnnouncement(
+                event: session.event, result: session.result)
+                && value.contains("производств") && value.contains("прекращ")
+        }
     }
 
     private static func finalForm(in instance: CaseInstance) -> DeadlineTriggerProvenance? {

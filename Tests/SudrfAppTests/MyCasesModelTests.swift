@@ -175,9 +175,13 @@ final class MyCasesModelTests: XCTestCase {
             courtLevelRaw: CourtLevel.district.rawValue, courtCode: "11RS0001",
             cartotekaId: "g1", cartotekaLevelRaw: CourtLevel.district.rawValue,
             caseNumber: "2-91/2026")
+        let future = DateUtil.addDays(DateUtil.today, 30)
+        let futureParts = DateUtil.cal.dateComponents([.day, .month, .year], from: future)
+        let futureDate = String(format: "%02d.%02d.%04d",
+                                futureParts.day!, futureParts.month!, futureParts.year!)
         let sessions = [
             CaseSession(date: "29.08.2026", event: "Передача материалов судье"),
-            CaseSession(date: "15.09.2026", event: "Судебное заседание"),
+            CaseSession(date: futureDate, event: "Судебное заседание"),
         ]
         let movement = CaseMovement(
             uid: "", caseNumber: context.caseNumber, inForce: false,

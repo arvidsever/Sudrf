@@ -128,7 +128,14 @@ public enum MovementCachePolicy {
                             reviewProcedure: freshEvidence?.reviewProcedure ?? cachedEvidence.reviewProcedure,
                             lowerCourt: freshEvidence?.lowerCourt ?? cachedEvidence.lowerCourt,
                             receiptDate: freshEvidence?.receiptDate ?? cachedEvidence.receiptDate,
-                            decisionDate: freshEvidence?.decisionDate ?? cachedEvidence.decisionDate)
+                            decisionDate: freshEvidence?.decisionDate ?? cachedEvidence.decisionDate,
+                            judicialUID: freshEvidence?.judicialUID ?? cachedEvidence.judicialUID,
+                            cartotekaID: freshEvidence?.cartotekaID ?? cachedEvidence.cartotekaID,
+                            sourceCourtLevel: freshEvidence?.sourceCourtLevel ?? cachedEvidence.sourceCourtLevel,
+                            sourceBranch: freshEvidence?.sourceBranch ?? cachedEvidence.sourceBranch,
+                            category: freshEvidence?.category ?? cachedEvidence.category,
+                            ownProcessKind: freshEvidence?.ownProcessKind ?? cachedEvidence.ownProcessKind,
+                            ownProcessKindConflict: freshEvidence?.ownProcessKindConflict ?? cachedEvidence.ownProcessKindConflict)
                         if freshEvidence != evidence {
                             instances[freshIndex].sourceEvidence = evidence
                             changed = true

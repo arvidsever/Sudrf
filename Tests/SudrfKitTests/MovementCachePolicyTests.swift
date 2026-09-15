@@ -303,6 +303,10 @@ final class MovementCachePolicyTests: XCTestCase {
         cachedBase.sourceEvidence = .init(
             appealKinds: ["Частная жалоба"], reviewProcedure: "Единоличное рассмотрение дела",
             lowerCourt: .init(caseNumber: "9-1/2026"), receiptDate: "01.06.2026", decisionDate: "02.06.2026")
+        cachedBase.sourceEvidence?.judicialUID = "11RS0001-01-2026-000100-11"
+        cachedBase.sourceEvidence?.ownProcessKind = .koap
+        cachedBase.sourceEvidence?.ownProcessKindConflict = true
+        cachedBase.sourceEvidence?.cartotekaID = "m"
         let cached = movement([cachedBase])
         var freshBase = cachedBase
         freshBase.sessions = []
@@ -314,8 +318,9 @@ final class MovementCachePolicyTests: XCTestCase {
         XCTAssertEqual(restored.instances[0].sessions, cachedBase.sessions)
 
         fresh.instances[0].sourceEvidence = .init(appealKinds: [], reviewProcedure: "Коллегиальное рассмотрение",
-                                                 decisionDate: "03.06.2026")
+                                                 decisionDate: "03.06.2026", ownProcessKindConflict: false)
         let updated = MovementCachePolicy.merge(fresh: fresh, cached: cached).instances[0].sourceEvidence
+        XCTAssertEqual(updated?.ownProcessKindConflict, false)
         XCTAssertEqual(updated?.appealKinds, [])
         XCTAssertEqual(updated?.reviewProcedure, "Коллегиальное рассмотрение")
         XCTAssertEqual(updated?.decisionDate, "03.06.2026")

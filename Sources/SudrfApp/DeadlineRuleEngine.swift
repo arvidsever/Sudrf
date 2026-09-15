@@ -166,7 +166,9 @@ enum DeadlineRuleEngine {
     static func evaluate(registry: LegalDeadlineRegistry, movement: CaseMovement,
                          context: Context, timeline: CaseLifecycleResolver.Timeline,
                          today: Date) -> Evaluation {
-        guard let production = production(from: context.movementContext) else {
+        let classification = MaterialProductionContext.resolve(
+            context: context.movementContext, movement: movement)
+        guard !classification.isMaterial, let production = classification.production else {
             return Evaluation(deadlines: [], assessments: [])
         }
 
@@ -196,7 +198,9 @@ enum DeadlineRuleEngine {
     /// fallback or close a terminal case. The known typed candidates remain
     /// visible as requiring review until the resource is restored.
     static func unavailable(context: Context) -> Evaluation {
-        guard let production = production(from: context.movementContext) else {
+        let classification = MaterialProductionContext.resolve(
+            context: context.movementContext, movement: nil)
+        guard !classification.isMaterial, let production = classification.production else {
             return Evaluation(deadlines: [], assessments: [])
         }
         return Evaluation(deadlines: [], assessments: bindings
@@ -527,11 +531,6 @@ enum DeadlineRuleEngine {
         DeadlineRuleAssessment(ruleID: ruleID, kind: kind, statusRaw: status.rawValue,
                                missingEvidenceRaw: missingEvidence.map(\.rawValue),
                                missingPolicyIDs: missingPolicyIDs)
-    }
-
-    private static func production(from context: MovementContext?) -> ProductionType? {
-        guard let id = context?.cartotekaId, !id.isEmpty, id != "m" else { return nil }
-        return ProductionType(cartotekaId: id)
     }
 
     private static func requiresKnownCategory(for code: String) -> Bool {

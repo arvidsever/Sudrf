@@ -102,23 +102,12 @@ enum ProductionType: String, CaseIterable {
     /// намеренно остаются без производственной группы.
     static func classified(caseNumber: String, level: CourtLevel,
                            branch: CourtBranch, cartotekaID: String?) -> ProductionType? {
-        let info = CaseIndexClassifier.classify(
-            caseNumber: caseNumber, courtLevel: level, branch: branch)
-        if info?.processKind == nil,
-           info?.cardRole == .preliminaryIntakeMaterial
-            || info?.cardRole == .otherMaterial {
-            return nil
-        }
-        if cartotekaID == "m" {
-            return info?.processKind.flatMap(ProductionType.init(processKind:))
-        }
-        if let cartotekaID, !cartotekaID.isEmpty {
-            return ProductionType(cartotekaId: cartotekaID)
-        }
-        return info?.processKind.flatMap(ProductionType.init(processKind:))
+        CaseIndexClassifier.classifyMaterialContext(
+            caseNumber: caseNumber, courtLevel: level, branch: branch,
+            cartotekaID: cartotekaID).processKind.flatMap(ProductionType.init(processKind:))
     }
 
-    private init?(processKind: ProcessKind) {
+    init?(processKind: ProcessKind) {
         switch processKind {
         case .upk: self = .crim
         case .koap: self = .koap
@@ -419,6 +408,12 @@ struct TrackedCase: Identifiable {
     /// Вид производства, вычисленный при сборке строки с учётом звена суда
     /// (см. `productionType(for:)`). Читатели фильтров/счётчиков берут готовое.
     var production: ProductionType?
+    var isMaterial: Bool = false
+    var productionLabel: String {
+        isMaterial ? production.map { $0.row + " · материал" }
+            ?? "Материал · вид производства не определён"
+            : production?.row ?? "Вид производства не определён"
+    }
     var partiesShort: String
     /// Статьи подсудимого/привлекаемого — для строки «Списком» (ФИО ⟨щит⟩ статьи).
     var leadCharges: String?

@@ -357,6 +357,7 @@ private struct ResultsPane: View {
                                  onBack: { model.exitMovement() },
                                  sourceURL: model.currentContext()?.cardURLString
                                      .flatMap(URL.init(string:)),
+                                 sourceContext: model.currentContext(),
                                  onSolveCaptcha: { model.beginCaptcha(for: $0) },
                                  isTracked: model.currentContext().map { router.isTracked($0) } ?? false,
                                  onTrack: {

@@ -158,10 +158,24 @@ enum MovementDerivation {
 
     /// Главная функция: движение + контекст → снимок. `today` — для расчёта
     /// «дальше», заседаний и сроков (по умолчанию системная дата).
+    static func classifiedParties(from movement: CaseMovement, context: MovementContext?) -> CaseParties {
+        var parties = movement.parties
+        let classification = MaterialProductionContext.resolve(context: context, movement: movement)
+        guard classification.isMaterial else { return parties }
+        switch classification.production {
+        case .koap?: parties.kind = .koap
+        case .kas?: parties.kind = .administrative
+        case .crim?: parties.kind = .upk
+        case .civil?: if parties.kind != .special { parties.kind = .civil }
+        case nil: break
+        }
+        return parties
+    }
+
     static func snapshot(from mv: CaseMovement, context: MovementContext,
                          today: Date = DateUtil.today) -> CaseSnapshot {
 
-        let production = production(from: context)
+        let production = MaterialProductionContext.resolve(context: context, movement: mv).production
 
         // Сессии всех инстанций.
         var sessions: [StoredSession] = []
@@ -182,9 +196,10 @@ enum MovementDerivation {
                       < (DateUtil.parse($1.dateRaw) ?? .distantPast) }
 
         // Стороны (короткая строка + статьи ведущего лица + вторая строка «Списком»).
-        let partiesShort = self.partiesShort(mv.parties)
-        let leadCharges = mv.parties.leadCharges
-        let secondPartyLine = self.partiesSecondLine(mv.parties)
+        let parties = classifiedParties(from: mv, context: context)
+        let partiesShort = self.partiesShort(parties)
+        let leadCharges = parties.leadCharges
+        let secondPartyLine = self.partiesSecondLine(parties)
 
         // Заседания (будущие, со временем) и сроки. Registry is the single
         // source of normative wording; a missing resource fails closed.
@@ -284,7 +299,7 @@ enum MovementDerivation {
                                               assessments: [DeadlineRuleAssessment],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
-        let production = production(from: context)
+        let production = MaterialProductionContext.resolve(context: context, movement: mv).production
         let resolution = CaseLifecycleResolver.resolve(movement: mv, production: production,
                                                        deadlines: deadlines,
                                                        deadlineAssessments: assessments,
@@ -444,12 +459,6 @@ enum MovementDerivation {
     /// Стадия определяется по исходной картотеке дела, а не по номеру
     /// вышестоящего производства: одинаковые индексы на разных звеньях имеют
     /// разную отраслевую семантику.
-    private static func production(from context: MovementContext?) -> ProductionType? {
-        guard let cartotekaID = context?.cartotekaId,
-              !cartotekaID.isEmpty,
-              cartotekaID != "m" else { return nil }
-        return ProductionType(cartotekaId: cartotekaID)
-    }
 
     /// Название суда, пригодное для подписи. Отсеивает пустое значение и
     /// placeholder-прочерк карточки-заглушки — тем же набором, что и

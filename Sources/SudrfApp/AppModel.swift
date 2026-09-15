@@ -229,6 +229,10 @@ final class AppRouter: ObservableObject {
     }
 
     var openEnforcementError: String? { refreshCenter.enforcementError(forKey: openedKey) }
+    var openMovementContext: MovementContext? {
+        openedKey.flatMap { store.record(forKey: $0)?.context }
+    }
+
     var openCaseSourceURL: URL? {
         openedKey
             .flatMap { store.record(forKey: $0)?.context?.cardURLString }
@@ -2234,12 +2238,7 @@ final class AppRouter: ObservableObject {
     /// (`MovementService.courtLevel`) по умолчанию даёт `.subject` и спутала бы
     /// районные дела с делами суда субъекта.
     private func productionType(for rec: TrackedCaseRecord) -> ProductionType? {
-        // Старые записи с повреждённым/недекодируемым contextData всё ещё
-        // можно безопасно классифицировать по номеру, как до этой миграции.
-        guard let context = rec.context else { return ProductionType.of(rec.caseNumber) }
-        return ProductionType.classified(
-            caseNumber: rec.caseNumber, level: context.courtLevel,
-            branch: context.branch, cartotekaID: context.cartotekaId)
+        MaterialProductionContext.resolve(context: rec.context, movement: rec.movement).production
     }
 
     static func caseNumberAliases(for rec: TrackedCaseRecord)
@@ -2415,6 +2414,7 @@ final class AppRouter: ObservableObject {
                         MovementDerivation.inferredTier(
                             stage: stage, production: production, context: $0) }),
                 production: production,
+                isMaterial: MaterialProductionContext.resolve(context: rec.context, movement: rec.movement).isMaterial,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.
                 partiesShort: snap.partiesShort.replacingOccurrences(of: " → ", with: " ⚔ "),
                 leadCharges: snap.leadCharges,
@@ -2444,6 +2444,7 @@ final class AppRouter: ObservableObject {
             recordCourt: rec.courtTitle,
             courtTier: ctx.map { MovementDerivation.tier(for: $0.courtLevel) },
             production: production,
+            isMaterial: MaterialProductionContext.resolve(context: rec.context, movement: rec.movement).isMaterial,
             partiesShort: ctx.map { MovementDerivation.partiesShort(
                 CaseParties.split(essence: $0.essence).parties ?? CaseParties()) } ?? "—",
             leadCharges: nil,

@@ -253,6 +253,8 @@ public struct CaseCard: Sendable {
     public var legalForceDate: String?  // дата вступления в законную силу
     public var acts: [CaseActText]      // все судебные акты карточки (инлайн-тексты)
     public var reviewProcedure: String? // исходный признак рассмотрения дела
+    public var processKind: ProcessKind? // явный вид производства собственной карточки
+    public var processKindConflict: Bool? // противоречащие явные реквизиты, nil для старых данных
     public var appeals: [AppealRecord]  // вкладка «Обжалование» (в карточке 1-й инстанции)
     public var parties: CaseParties     // вкладка «СТОРОНЫ ПО ДЕЛУ» (истцы/ответчики/третьи)
     public var lowerCourt: LowerCourtReference? // «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ»
@@ -270,7 +272,8 @@ public struct CaseCard: Sendable {
                 parties: CaseParties = CaseParties(),
                 lowerCourt: LowerCourtReference? = nil,
                 previousRegistration: PreviousRegistrationReference? = nil,
-                executionDocuments: [CourtEnforcementDocument] = [], reviewProcedure: String? = nil) {
+                executionDocuments: [CourtEnforcementDocument] = [], reviewProcedure: String? = nil,
+                processKind: ProcessKind? = nil, processKindConflict: Bool? = nil) {
         self.rawText = rawText
         self.actText = actText
         self.sessions = sessions
@@ -289,6 +292,8 @@ public struct CaseCard: Sendable {
         self.previousRegistration = previousRegistration
         self.executionDocuments = executionDocuments
         self.reviewProcedure = reviewProcedure
+        self.processKind = processKind
+        self.processKindConflict = processKindConflict
     }
 }
 

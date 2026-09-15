@@ -16,7 +16,7 @@ final class MovementDerivationTests: XCTestCase {
                         displayDomain: "syktsud.komi.sudrf.ru",
                         courtTitle: "Сыктывкарский городской суд",
                         courtLevelRaw: "district", courtCode: "11RS0001",
-                        cartotekaId: cartoteka, cartotekaLevelRaw: "district",
+                        cartotekaId: ["g": "g1", "p": "p1", "u": "u1"][cartoteka] ?? cartoteka, cartotekaLevelRaw: "district",
                         caseNumber: "2-100/2026")
     }
 

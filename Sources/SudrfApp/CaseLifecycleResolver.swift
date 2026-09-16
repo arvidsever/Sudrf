@@ -316,12 +316,6 @@ enum CaseLifecycleResolver {
         }
         let visited = Set(instances.compactMap { stage(for: $0, production: production) })
 
-        if timeline.hasAmbiguousAppealEffect, let first = timeline.latestFirst?.instance {
-            return Resolution(stage: .first, currentInstance: first,
-                              steps: steps(visited: visited, active: .first, production: production),
-                              completionReason: nil, graceDeadline: nil)
-        }
-
         // Будущее заседание — наиболее сильный сигнал активного производства.
         // Берём ближайшее; при одинаковой дате более поздний круг выигрывает.
         let hearingInstances = instances.filter { instance in
@@ -337,6 +331,12 @@ enum CaseLifecycleResolver {
             let active = stage(for: hearingInstance, production: production) ?? .first
             return Resolution(stage: active, currentInstance: hearingInstance,
                               steps: steps(visited: visited, active: active, production: production),
+                              completionReason: nil, graceDeadline: nil)
+        }
+
+        if timeline.hasAmbiguousAppealEffect, let first = timeline.latestFirst?.instance {
+            return Resolution(stage: .first, currentInstance: first,
+                              steps: steps(visited: visited, active: .first, production: production),
                               completionReason: nil, graceDeadline: nil)
         }
 

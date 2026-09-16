@@ -573,6 +573,12 @@ final class CaseCardParserTests: XCTestCase {
 
         XCTAssertEqual(card.caseNumber, "8Г-162/2019")
         XCTAssertNil(card.uid)
+        XCTAssertEqual(card.lowerCourt, LowerCourtReference(
+            region: "78 - Город Санкт-Петербург",
+            courtTitle: "Фрунзенский районный суд Санкт-Петербурга",
+            caseNumber: "2-1975/2019",
+            decisionDate: "05.02.2019",
+            judge: "Подольская Наталья Валентиновна"))
         XCTAssertEqual(card.sessions, [
             CaseSession(date: "09.10.2019",
                         event: "Поступление жалобы (представления) в суд"),

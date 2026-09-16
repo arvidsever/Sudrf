@@ -228,7 +228,8 @@ struct CaseMovementView: View {
             HStack(spacing: 8) {
                 Text("Дело № \(movement.caseNumber) · движение")
                     .font(.system(size: 14.5, weight: .bold))
-                ForceBadge(inForce: movement.inForce)
+                ForceBadge(inForce: MovementDerivation.effectiveLegalForce(
+                    from: movement, context: sourceContext))
             }
             if !previousCaseNumbers.isEmpty {
                 Text("Предыдущие номера: \(previousCaseNumbers.joined(separator: ", "))")

@@ -22,6 +22,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
 
     private func presentation(_ tag: String) -> CaseLifecyclePresentation {
         CaseLifecyclePresentation(
+            inForce: false,
             stage: .first,
             stageTag: tag,
             statusText: tag,

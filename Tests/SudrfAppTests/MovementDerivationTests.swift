@@ -1097,6 +1097,144 @@ final class MovementDerivationTests: XCTestCase {
         }
     }
 
+    func testKoAPEffectiveLegalForceUsesExactIssue86Appeals() {
+        func dossier(caseNumber: String, appealNumber: String,
+                     firstSessions: [CaseSession]) -> CaseMovement {
+            let first = CaseInstance(
+                level: .first, court: "Сыктывкарский городской суд Республики Коми",
+                caseNumber: caseNumber, judge: nil, domain: "syktsud--komi.sudrf.ru",
+                foundByUID: false,
+                result: "Вынесено постановление о назначении административного наказания",
+                sessions: firstSessions)
+            let appeal = CaseInstance(
+                level: .appeal, court: "Верховный Суд Республики Коми",
+                caseNumber: appealNumber, judge: nil, domain: "vs--komi.sudrf.ru",
+                foundByUID: true, result: "Оставлено без изменения",
+                sessions: [CaseSession(
+                    date: appealNumber == "12-77/2026" ? "24.06.2026" : "17.06.2026",
+                    event: "Судебное заседание", result: "Оставлено без изменения")])
+            return CaseMovement(
+                uid: caseNumber == "5-469/2026"
+                    ? "11RS0001-01-2026-005022-94" : "issue-86-5-470",
+                caseNumber: caseNumber, inForce: false,
+                instances: [first, appeal], complaints: [:], acts: [])
+        }
+        let cases = [
+            dossier(
+                caseNumber: "5-469/2026", appealNumber: "12-77/2026",
+                firstSessions: [CaseSession(
+                    date: "20.05.2026", event: "Рассмотрение дела по существу",
+                    result: "Вынесено постановление о назначении административного наказания")]),
+            dossier(
+                caseNumber: "5-470/2026", appealNumber: "12-76/2026",
+                firstSessions: [CaseSession(
+                    date: "17.06.2026",
+                    event: "Вступление постановления (определения) в законную силу")]),
+        ]
+        let context = context(cartoteka: "adm")
+
+        for movement in cases {
+            let snapshot = MovementDerivation.snapshot(
+                from: movement, context: context, today: today)
+            let presentation = MovementDerivation.lifecyclePresentation(
+                from: movement, snapshot: snapshot, context: context, today: today)
+
+            XCTAssertTrue(snapshot.inForce, movement.caseNumber)
+            XCTAssertTrue(presentation.inForce, movement.caseNumber)
+            XCTAssertTrue(MovementDerivation.effectiveLegalForce(
+                from: movement, context: context), movement.caseNumber)
+            XCTAssertEqual(snapshot.statusText, "Оставлено без изменения")
+        }
+    }
+
+    func testKoAPEffectiveLegalForceAcceptsTerminalAppealButNotActiveOrRemanded() {
+        func dossier(_ result: String?, event: String = "Судебное заседание") -> CaseMovement {
+            let first = CaseInstance(
+                level: .first, court: "Сыктывкарский городской суд",
+                caseNumber: "5-469/2026", judge: nil, domain: "syktsud--komi.sudrf.ru",
+                foundByUID: false, result: "Назначено наказание",
+                sessions: [CaseSession(date: "20.05.2026", event: "Рассмотрено")])
+            let appeal = CaseInstance(
+                level: .appeal, court: "Верховный Суд Республики Коми",
+                caseNumber: "12-77/2026", judge: nil, domain: "vs--komi.sudrf.ru",
+                foundByUID: true, result: result,
+                sessions: [CaseSession(date: "24.06.2026", event: event, result: result)])
+            return CaseMovement(
+                uid: "11RS0001-01-2026-005022-94", caseNumber: first.caseNumber,
+                inForce: false, instances: [first, appeal], complaints: [:], acts: [])
+        }
+        let context = context(cartoteka: "adm")
+
+        for result in [
+            "Постановление изменено",
+            "Постановление отменено с принятием нового решения",
+            "Производство по жалобе прекращено",
+        ] {
+            let movement = dossier(result)
+            XCTAssertTrue(MovementDerivation.effectiveLegalForce(
+                from: movement, context: context), result)
+            XCTAssertEqual(MovementDerivation.snapshot(
+                from: movement, context: context, today: today).statusText, result)
+        }
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: dossier(nil, event: "Жалоба принята к производству"), context: context))
+        var activeAfterForce = dossier(nil, event: "Жалоба принята к производству")
+        activeAfterForce.instances[0].sessions.append(CaseSession(
+            date: "01.06.2026", event: "Вступление постановления в законную силу"))
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: activeAfterForce, context: context))
+        activeAfterForce.instances[0].sessions.append(CaseSession(
+            date: "25.06.2026", event: "Вступление постановления в законную силу"))
+        XCTAssertTrue(MovementDerivation.effectiveLegalForce(
+            from: activeAfterForce, context: context))
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: dossier("Постановление отменено с направлением на новое рассмотрение"),
+            context: context))
+    }
+
+    func testKoAPEffectiveLegalForceRespectsReactivationAndPostForceReview() {
+        let koapContext = context(cartoteka: "adm")
+        var reactivated = koapMovement(
+            caseNumber: "5-469/2026", appealNumber: "12-77/2026", reviews: [])
+        reactivated.inForce = false
+        reactivated.instances[0].sessions.append(CaseSession(
+            date: "01.07.2026", event: "Производство возобновлено"))
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: reactivated, context: koapContext))
+
+        let ksoyu = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "16-4990/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil, sessions: [])
+        var postForce = koapMovement(
+            caseNumber: "5-470/2026", appealNumber: "12-76/2026", reviews: [ksoyu])
+        postForce.inForce = false
+        XCTAssertTrue(MovementDerivation.effectiveLegalForce(
+            from: postForce, context: koapContext))
+
+        var stubOnly = CaseMovement(
+            uid: "uid", caseNumber: "5-1/2026", inForce: false,
+            instances: [CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "—", judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+                result: nil, sessions: [],
+                captchaFormURL: URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo"))],
+            complaints: [:], acts: [])
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: stubOnly, context: koapContext))
+        stubOnly.instances[0].captchaFormURL = nil
+        stubOnly.instances[0].transientError = true
+        XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+            from: stubOnly, context: koapContext))
+
+        for cartoteka in ["g", "p", "u"] {
+            let other = movement(inForce: false, sessions: [CaseSession(
+                date: "20.04.2026", event: "Решение вступило в законную силу")])
+            XCTAssertFalse(MovementDerivation.effectiveLegalForce(
+                from: other, context: context(cartoteka: cartoteka)), cartoteka)
+        }
+    }
+
     /// Реальная карточка 3 КСОЮ по КоАП может ещё не иметь таблицы движения.
     /// Сам номер производства и точный суд уже подтверждают надзорный круг.
     func testUndatedConfirmedKSOYUCardStartsKoAPSupervisoryStage() {

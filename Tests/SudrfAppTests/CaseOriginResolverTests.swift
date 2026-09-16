@@ -718,6 +718,10 @@ final class CaseOriginResolverTests: XCTestCase {
 
     func testCourtTitleMatchesOnlyRegionalSuffix() {
         XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
+            "Фрунзенский районный суд Санкт-Петербурга",
+            "Фрунзенский районный суд города Санкт-Петербурга",
+            region: "Город Санкт-Петербург"))
+        XCTAssertTrue(CaseOriginResolver.sameCourtTitle(
             "Сыктывкарский городской суд Республики Коми",
             "Сыктывкарский городской суд",
             region: "Республика Коми"))
@@ -741,6 +745,14 @@ final class CaseOriginResolverTests: XCTestCase {
             "Сыктывдинский районный суд Республики Коми",
             "Сыктывкарский городской суд",
             region: "Республика Коми"))
+        XCTAssertFalse(CaseOriginResolver.sameCourtTitle(
+            "Фрунзенский районный суд Санкт-Петербурга",
+            "Московский районный суд города Санкт-Петербурга",
+            region: "Город Санкт-Петербург"))
+        XCTAssertFalse(CaseOriginResolver.sameCourtTitle(
+            "Фрунзенский районный суд Санкт-Петербурга",
+            "Фрунзенский районный суд города Саратова",
+            region: "Город Санкт-Петербург"))
     }
 
     func test22KToStandaloneJudicialControlMaterialKeepsMaterialOrigin() async throws {

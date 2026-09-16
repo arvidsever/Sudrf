@@ -710,24 +710,28 @@ actor CaseOriginResolver {
             .filter { $0.isLetter || $0.isNumber }
     }
 
-    /// Сравнение названий внутри уже выбранного региона. Разрешает только
-    /// территориальное окончание полного справочного названия; похожие номера
-    /// участков и разные суды по префиксу совпавшими не считаются.
+    /// Сравнение названий внутри уже выбранного региона. Разрешает служебные
+    /// территориальные слова и окончание полного справочного названия; похожие
+    /// номера участков и разные суды по префиксу совпавшими не считаются.
     static func sameCourtTitle(_ lhs: String, _ rhs: String, region: String) -> Bool {
         let left = titleWords(lhs)
         let right = titleWords(rhs)
         if left == right { return true }
+        let genericTerritoryWords: Set<String> = [
+            "республика", "республики", "область", "области", "край", "края",
+            "автономный", "автономного", "автономная", "автономной", "округ", "округа",
+            "город", "города", "федерального", "значения"
+        ]
+        if left.filter({ !genericTerritoryWords.contains($0) })
+            == right.filter({ !genericTerritoryWords.contains($0) }) {
+            return true
+        }
         let short: [String]
         let long: [String]
         if left.count < right.count { short = left; long = right }
         else { short = right; long = left }
         guard !short.isEmpty, Array(long.prefix(short.count)) == short else { return false }
 
-        let genericTerritoryWords: Set<String> = [
-            "республика", "республики", "область", "области", "край", "края",
-            "автономный", "автономного", "автономная", "автономной", "округ", "округа",
-            "город", "города", "федерального", "значения"
-        ]
         let regionCore = Set(titleWords(region)
             .filter { !genericTerritoryWords.contains($0) }
             .map(regionWordStem))

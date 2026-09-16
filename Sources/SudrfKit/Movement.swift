@@ -61,19 +61,37 @@ public struct CaseInstance: Sendable, Equatable, Identifiable, Codable {
         public var lowerCourt: LowerCourtReference?
         public var receiptDate: String?
         public var decisionDate: String?
+        public var judicialUID: String?
+        public var cartotekaID: String?
+        public var sourceCourtLevel: CourtLevel?
+        public var sourceBranch: CourtBranch?
+        public var category: String?
+        public var ownProcessKind: ProcessKind?
+        public var ownProcessKindConflict: Bool?
 
         public init(appealKinds: [String]? = nil, reviewProcedure: String? = nil,
                     lowerCourt: LowerCourtReference? = nil,
-                    receiptDate: String? = nil, decisionDate: String? = nil) {
+                    receiptDate: String? = nil, decisionDate: String? = nil,
+                    judicialUID: String? = nil, cartotekaID: String? = nil,
+                    sourceCourtLevel: CourtLevel? = nil, sourceBranch: CourtBranch? = nil,
+                    category: String? = nil, ownProcessKind: ProcessKind? = nil,
+                    ownProcessKindConflict: Bool? = nil) {
             self.appealKinds = appealKinds; self.reviewProcedure = reviewProcedure
             self.lowerCourt = lowerCourt; self.receiptDate = receiptDate
             self.decisionDate = decisionDate
+            self.judicialUID = judicialUID; self.cartotekaID = cartotekaID
+            self.sourceCourtLevel = sourceCourtLevel; self.sourceBranch = sourceBranch
+            self.category = category; self.ownProcessKind = ownProcessKind
+            self.ownProcessKindConflict = ownProcessKindConflict
         }
 
-        init(card: CaseCard) {
+        init(card: CaseCard, cartotekaID: String? = nil, courtLevel: CourtLevel? = nil, branch: CourtBranch? = nil) {
             self.init(appealKinds: card.appeals.isEmpty ? nil : card.appeals.map(\.rawKind),
                       reviewProcedure: card.reviewProcedure, lowerCourt: card.lowerCourt,
-                      receiptDate: card.receiptDate, decisionDate: card.decisionDate)
+                      receiptDate: card.receiptDate, decisionDate: card.decisionDate,
+                      judicialUID: card.uid, cartotekaID: cartotekaID,
+                      sourceCourtLevel: courtLevel, sourceBranch: branch, category: card.category, ownProcessKind: card.processKind,
+                      ownProcessKindConflict: card.processKindConflict)
         }
     }
     public var sourceEvidence: SourceEvidence?
@@ -386,6 +404,7 @@ public actor MovementService: MovementProviding {
     /// Реальный уровень базовой карточки. По умолчанию `.first` для
     /// совместимости с существующими вызывающими сторонами и тестами.
     let baseInstanceLevel: CaseInstance.Level
+    let branch: CourtBranch
     /// УИД, сохранённый в фоне из ранее подтверждённой карточки. Он нужен
     /// только как безопасный якорь для временного fallback базовой карточки:
     /// живая интерактивная ветка этот параметр не передаёт.
@@ -402,13 +421,14 @@ public actor MovementService: MovementProviding {
                 baseInstanceLevel: CaseInstance.Level = .first,
                 vsrf: (any VSRFProviding)? = nil,
                 mosgorsud: (any MosGorSudProviding)? = nil,
-                judicialUID: String? = nil) {
+                judicialUID: String? = nil, branch: CourtBranch = .general) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
         self.higherCourtTargets = higherCourtTargets
             ?? higherCourtDomains.map { MovementSearchTarget(domain: $0) }
         self.knownCards = knownCards
         self.baseInstanceLevel = baseInstanceLevel
+        self.branch = branch
         let normalizedUID = judicialUID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.judicialUID = normalizedUID.flatMap { $0.isEmpty || $0 == "—" ? nil : $0 }
         self.vsrf = vsrf
@@ -559,7 +579,7 @@ public actor MovementService: MovementProviding {
             actID: baseActID,
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
             previousRegistration: baseCard.previousRegistration,
-            sourceEvidence: .init(card: baseCard))]
+            sourceEvidence: .init(card: baseCard, cartotekaID: cartoteka.id, courtLevel: court.level, branch: branch))]
         var unavailableMaterialFallbacks: [CaseInstance] = []
         var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
             ? [court.domain] : []
@@ -646,7 +666,7 @@ public actor MovementService: MovementProviding {
                     note: "Предыдущая регистрация",
                     sourceURL: loaded.sourceURL,
                     previousRegistration: loaded.card.previousRegistration,
-                    sourceEvidence: .init(card: loaded.card)))
+                    sourceEvidence: .init(card: loaded.card, cartotekaID: loaded.cartoteka.id, courtLevel: court.level, branch: branch)))
                 registrations.append(loaded)
                 return true
             }
@@ -970,7 +990,7 @@ public actor MovementService: MovementProviding {
                             sourceURL: Self.sourceURL(for: r, court: higherCourt,
                                                       cartoteka: higherCart),
                             previousRegistration: higherCard.previousRegistration,
-                            sourceEvidence: .init(card: higherCard))
+                            sourceEvidence: .init(card: higherCard, cartotekaID: higherCart.id, courtLevel: higherCourt.level, branch: branch))
                         rounds.append((inst, act, body,
                                        Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
                     }
@@ -1221,7 +1241,7 @@ public actor MovementService: MovementProviding {
                                 actID: act?.id,
                                 sourceURL: Self.sourceURL(for: kc),
                                 previousRegistration: card.previousRegistration,
-                                sourceEvidence: .init(card: card))
+                                sourceEvidence: .init(card: card, cartotekaID: kc.cartotekaID, courtLevel: fetchCourt.level, branch: branch))
         return (inst, act, body)
     }
 

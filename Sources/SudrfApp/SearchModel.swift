@@ -330,7 +330,7 @@ final class SearchModel: ObservableObject {
                                 region: routingRegionName(), displayDomain: court.domain),
                                higherCourtTargets: movementTargets(for: court, base: base),
                                vsrf: vsrfClient,
-                               mosgorsud: mosGorSudClient)
+                               mosgorsud: mosGorSudClient, branch: branch)
     }
 
     var busy: Bool { resolving || searching || loadingCard }

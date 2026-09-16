@@ -127,6 +127,7 @@ public enum CaseCardParser {
             throw SudrfError.parsing("страница не содержит признаков карточки дела")
         }
 
+        let process = publishedProcessKind(in: doc)
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
                         sessions: sessions,
@@ -144,7 +145,79 @@ public enum CaseCardParser {
                         lowerCourt: lowerCourt,
                         previousRegistration: previousRegistration,
                         executionDocuments: executionDocuments,
-                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions))
+                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions),
+                        processKind: process.kind, processKindConflict: process.conflict)
+    }
+
+    /// Только точные реквизиты собственной вкладки. Текст актов, статьи и
+    /// участники не являются опубликованным видом производства.
+    private static func publishedProcessKind(in doc: Document) -> (kind: ProcessKind?, conflict: Bool?) {
+        let rows: [Element]
+        if isVintage(doc) {
+            guard let container = vintageTab(doc, "Case") else { return (nil, nil) }
+            rows = ownMetadataRows(in: container)
+        } else {
+            switch complaintMetadata(in: doc) {
+            case .invalid: return (nil, nil)
+            case .values:
+                let tab = ((try? doc.select("ul.tabs li").array()) ?? []).first {
+                    normalizeHeader((try? $0.text()) ?? "") == "жалоба"
+                }
+                guard let tab, let n = number(in: (try? tab.attr("id")) ?? ""),
+                      let container = tabContainers(doc).first(where: {
+                          ((try? $0.attr("id")) ?? "") == "cont\(n)"
+                      }), let table = metadataTables(in: container, headers: ["дело"]).first
+                else { return (nil, nil) }
+                rows = directRows(table)
+            case .absent:
+                guard let container = ownMetadataContainer(in: doc) else { return (nil, nil) }
+                rows = ownMetadataRows(in: container)
+            }
+        }
+        var kinds: [ProcessKind] = []
+        var unknown = false
+        for row in rows {
+            let cells = directCells(row, tags: ["td", "th"])
+            guard cells.count == 2 else { continue }
+            let key = normalizeHeader((try? cells[0].text()) ?? "")
+            guard key == "вид производства" || key == "вид судопроизводства" else { continue }
+            let value = normalizeHeader((try? cells[1].text()) ?? "")
+            let kind: ProcessKind
+            switch value {
+            case "гражданское", "гражданское производство", "гражданское судопроизводство", "гпк рф":
+                kind = .civil
+            case "административное (кас)", "административное судопроизводство", "кас рф":
+                kind = .administrative
+            case "уголовное", "уголовное производство", "уголовное судопроизводство", "упк рф":
+                kind = .upk
+            case "административное правонарушение", "административные правонарушения",
+                 "производство по делам об административных правонарушениях", "коап рф":
+                kind = .koap
+            default: unknown = true; continue
+            }
+            kinds.append(kind)
+        }
+        guard let first = kinds.first else { return (nil, nil) }
+        guard kinds.allSatisfy({ $0 == first }) else { return (nil, true) }
+        return unknown ? (nil, nil) : (first, false)
+    }
+
+    private static func ownMetadataRows(in container: Element) -> [Element] {
+        ((try? container.select("table").array()) ?? []).filter { table in
+            var parent = table.parent()
+            while let element = parent, element !== container {
+                if element.tagName().lowercased() == "table" { return false }
+                parent = element.parent()
+            }
+            return parent === container
+        }.flatMap(directRows)
+    }
+
+    private static func ownMetadataContainer(in doc: Document) -> Element? {
+        tabContainers(doc).first { container in
+            ((try? container.text()) ?? "").lowercased().contains("уникальный идентификатор дела")
+                && !isLowerCourtTabContainer(container, in: doc)
+        }
     }
 
     private static func reviewProcedure(meta: [String: String], sessions: [CaseSession]) -> String? {
@@ -201,6 +274,7 @@ public enum CaseCardParser {
             throw SudrfError.parsing("страница не содержит признаков винтажной карточки дела")
         }
 
+        let process = publishedProcessKind(in: doc)
         return CaseCard(rawText: rawText,
                         actText: acts.first?.body,
                         sessions: sessions,
@@ -222,7 +296,8 @@ public enum CaseCardParser {
                         lowerCourt: lowerCourt,
                         previousRegistration: previousRegistration,
                         executionDocuments: executionDocuments,
-                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions))
+                        reviewProcedure: reviewProcedure(meta: meta, sessions: sessions),
+                        processKind: process.kind, processKindConflict: process.conflict)
     }
 
     /// Вкладка по имени: #tab_content_<name>.
@@ -542,12 +617,7 @@ public enum CaseCardParser {
         case .absent: break
         }
 
-        let marker = "уникальный идентификатор дела"
-        let cont = tabContainers(doc).first { container in
-            ((try? container.text()) ?? "").lowercased().contains(marker)
-                && !isLowerCourtTabContainer(container, in: doc)
-        }
-        return cont.map(legacyMetadataMap) ?? [:]
+        return ownMetadataContainer(in: doc).map(legacyMetadataMap) ?? [:]
     }
 
     /// КСОЮ КоАП: реквизиты принадлежат только единственной точной вкладке

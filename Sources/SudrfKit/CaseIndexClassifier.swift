@@ -30,6 +30,19 @@ public enum CaseIndexCardRole: String, Sendable, Codable, Equatable {
     case courtCorrespondence
 }
 
+public extension CaseIndexCardRole {
+    var isMaterial: Bool {
+        switch self {
+        case .preliminaryIntakeMaterial, .judicialControlMaterial, .sentenceExecutionMaterial,
+             .decisionExecutionMaterial, .proceduralMaterial, .disciplinaryMaterial,
+             .operationalSearchMaterial, .otherMaterial:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// Насколько номер материала позволяет восстанавливать его основное дело.
 ///
 /// Политика намеренно консервативна: номер материала сам по себе не является
@@ -72,6 +85,63 @@ public struct CaseIndexInfo: Sendable, Codable, Equatable {
 /// эвристику `ProcessKind.detect`: он даёт потребителю явную, проверяемую
 /// семантику номера, включая материалы и специальные военные звенья.
 public enum CaseIndexClassifier {
+    public struct MaterialContext: Sendable, Equatable {
+        public enum Basis: String, Sendable, Equatable {
+            case ownSource, verifiedRelation, index, unknown, conflict
+        }
+        public let cardRole: CaseIndexCardRole?
+        public let processKind: ProcessKind?
+        public let basis: Basis
+    }
+
+    /// `sourceProcessKind` — явный реквизит собственной карточки, не значение
+    /// по умолчанию участников. Связанные виды передаются только после проверки
+    /// опубликованной ссылки или полного судебного УИД обеих карточек.
+    public static func classifyMaterialContext(
+        caseNumber: String, courtLevel: CourtLevel? = nil, branch: CourtBranch = .general,
+        cardRole: CaseIndexCardRole? = nil, cartotekaID: String? = nil, sourceProcessKind: ProcessKind? = nil,
+        sourceProcessKindConflict: Bool? = nil, verifiedRelatedKinds: [ProcessKind] = []
+    ) -> MaterialContext {
+        let info = courtLevel.flatMap { classify(caseNumber: caseNumber, courtLevel: $0, branch: branch) }
+        let tier = courtLevel.flatMap { level in CourtTier.allCases.first { $0.level == level } }
+        let cart = tier.flatMap { CartotekaRegistry.searchDimensions(branch: branch, tier: $0)
+            .cartoteki.first { $0.id == cartotekaID } }
+        let role = info?.cardRole ?? cardRole ?? (cart?.id == "m" ? .otherMaterial : nil)
+        func result(_ kind: ProcessKind?, _ basis: MaterialContext.Basis) -> MaterialContext {
+            MaterialContext(cardRole: role, processKind: kind, basis: basis)
+        }
+        if sourceProcessKindConflict == true { return result(nil, .conflict) }
+        // Особое производство имеет тот же кодекс, что и гражданское.
+        func code(_ kind: ProcessKind) -> ProcessKind { kind == .special ? .civil : kind }
+        let cartKind: ProcessKind?
+        switch cart?.id {
+        case "u1", "u2", "u3", "u33": cartKind = .upk
+        case "p1", "p2", "p3", "p33": cartKind = .administrative
+        // Картотека мировых объединяет гражданские и административные дела.
+        case "g1", "g2", "g3", "g33": cartKind = courtLevel == .magistrate ? nil : .civil
+        case "adm", "adm1", "adm2", "adm3", "adm33", "admj": cartKind = .koap
+        default: cartKind = nil
+        }
+        if let sourceProcessKind, let cartKind, code(sourceProcessKind) != code(cartKind) {
+            return result(nil, .conflict)
+        }
+        let ownKind = sourceProcessKind ?? cartKind
+        let related = role?.isMaterial == true ? verifiedRelatedKinds : []
+        if let first = related.first, related.contains(where: { code($0) != code(first) }) {
+            return result(nil, .conflict)
+        }
+        if let ownKind, let first = related.first, code(ownKind) != code(first) {
+            return result(nil, .conflict)
+        }
+        if let ownKind { return result(ownKind, .ownSource) }
+        if let first = related.first { return result(first, .verifiedRelation) }
+        // Дисциплинарные материалы не следует объявлять КоАП только по ДА.
+        if let info, info.cardRole != .disciplinaryMaterial, let kind = info.processKind {
+            return result(kind, .index)
+        }
+        return result(nil, .unknown)
+    }
+
     /// Нормализованный каталог. Индексы с подвидом (`3/1`, `4/17`) идут перед
     /// базовым индексом, поэтому их можно искать точным совпадением.
     public static let catalog: [CaseIndexInfo] = {

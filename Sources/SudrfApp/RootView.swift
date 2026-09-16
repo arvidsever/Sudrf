@@ -945,6 +945,7 @@ private struct CaseCardHost: View {
                     backTitle: "Назад",
                     onBack: { router.closeCase() },
                     sourceURL: router.openCaseSourceURL,
+                    sourceContext: router.openMovementContext,
                     onSolveCaptcha: { router.beginCaptcha(for: $0) },
                     onUntrack: { router.untrackOpenCase() },
                     lastUpdated: router.movementFetchedAt,

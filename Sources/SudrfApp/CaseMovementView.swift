@@ -40,6 +40,7 @@ struct CaseMovementView: View {
     /// Ссылка базовой карточки из сохранённого контекста. Нужна как fallback
     /// для старого movement-кэша, созданного до появления per-instance URL.
     var sourceURL: URL? = nil
+    var sourceContext: MovementContext? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Отслеживание (раздел «Мои дела»): кнопка показывается, только если задан
     /// onTrack (из поиска). Из самой карточки мониторинга — не передаётся.
@@ -77,7 +78,7 @@ struct CaseMovementView: View {
                     // отдельной секцией в конце: они идут в рамках дела, но инстанциями
                     // не являются.
                     ForEach(Self.activeInstances(in: movement)) { inst in
-                        InstanceBlock(instance: inst, onSolveCaptcha: onSolveCaptcha,
+                        InstanceBlock(instance: inst, classification: MaterialProductionContext.resolve(instance: inst, movement: movement, baseContext: sourceContext), onSolveCaptcha: onSolveCaptcha,
                                       onRefresh: onRefresh)
                     }
                     let materials = Self.materialInstances(in: movement)
@@ -89,7 +90,7 @@ struct CaseMovementView: View {
                             .padding(.horizontal, 4)
                             .padding(.top, 6)
                         ForEach(materials) { inst in
-                            InstanceBlock(instance: inst, onSolveCaptcha: onSolveCaptcha,
+                            InstanceBlock(instance: inst, classification: MaterialProductionContext.resolve(instance: inst, movement: movement, baseContext: sourceContext), onSolveCaptcha: onSolveCaptcha,
                                           onRefresh: onRefresh)
                                 .id(inst.id)
                         }
@@ -240,7 +241,7 @@ struct CaseMovementView: View {
                  : "УИД \(movement.uid) · поиск вышестоящих инстанций по УИД")
                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             if movement.category != nil || !movement.parties.isEmpty {
-                PartiesCard(category: movement.category, parties: movement.parties)
+                PartiesCard(category: movement.category, parties: MovementDerivation.classifiedParties(from: movement, context: sourceContext))
                     .padding(.top, 4)
             }
         }
@@ -685,6 +686,7 @@ private struct PartiesCard: View {
 
 private struct InstanceBlock: View {
     let instance: CaseInstance
+    var classification: MaterialProductionContext.Classification? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Опциональный callback «повторить» для transient-stub (A16). В поиске
     /// не передаётся → кнопка скрыта. В мониторинге прокидывается из
@@ -694,6 +696,12 @@ private struct InstanceBlock: View {
     var body: some View {
         VStack(spacing: 0) {
             headerRow
+            if let classification, classification.isMaterial {
+                Text(classification.label)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+            }
             if instance.captchaFormURL != nil {
                 captchaPrompt
             } else if instance.transientError == true {

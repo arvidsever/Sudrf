@@ -179,12 +179,15 @@ enum TrackedStorePreparation {
         for record in records {
             guard var snapshot = record.snapshot,
                   let movement = record.movement,
-                  movement.parties.kind == .koap,
                   !movement.parties.isEmpty else { continue }
+            guard movement.parties.kind == .koap
+                    || MaterialProductionContext.resolve(context: record.context, movement: movement).isMaterial
+            else { continue }
 
-            let partiesShort = MovementDerivation.partiesShort(movement.parties)
-            let leadCharges = movement.parties.leadCharges
-            let secondPartyLine = MovementDerivation.partiesSecondLine(movement.parties)
+            let parties = MovementDerivation.classifiedParties(from: movement, context: record.context)
+            let partiesShort = MovementDerivation.partiesShort(parties)
+            let leadCharges = parties.leadCharges
+            let secondPartyLine = MovementDerivation.partiesSecondLine(parties)
             guard snapshot.partiesShort != partiesShort
                     || snapshot.leadCharges != leadCharges
                     || snapshot.secondPartyLine != secondPartyLine else { continue }

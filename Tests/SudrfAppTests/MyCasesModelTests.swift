@@ -319,9 +319,10 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertEqual(ProductionType.classified(
             caseNumber: "13а-8/2025", level: .district,
             branch: .general, cartotekaID: "m"), .kas)
-        XCTAssertEqual(ProductionType.classified(
+        // Дисциплинарный материал не означает производство по КоАП.
+        XCTAssertNil(ProductionType.classified(
             caseNumber: "ДА-4/2026", level: .district,
-            branch: .military, cartotekaID: "m"), .koap)
+            branch: .military, cartotekaID: "m"))
     }
 
     func testUnknownMaterialsHaveNoProductionGroup() {

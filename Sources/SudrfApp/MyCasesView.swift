@@ -223,6 +223,9 @@ struct MyCasesView: View {
                         caseActionsMenu(for: c)
                     }
                     .frame(height: 20)
+                    if c.isMaterial {
+                        Text(c.productionLabel).font(.caption).foregroundStyle(.secondary)
+                    }
                     // Главный текст карточки — стороны. Две строки бронируются
                     // всегда: иначе дело с коротким названием поднимает свою
                     // карточку выше соседей, и ряд сетки идёт волной.
@@ -542,7 +545,7 @@ struct MyCasesView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(prod?.row ?? "материал")
+                    Text(c.productionLabel)
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(prod?.color ?? Color.secondary)
                 }

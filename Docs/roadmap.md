@@ -17,7 +17,7 @@
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.21 | [#309](https://github.com/arvidsever/Sudrf/issues/309) | Будущее заседание последующей кассации имеет приоритет над неоднозначной историей апелляций. | — |
+| 0.58.21 | [#309](https://github.com/arvidsever/Sudrf/issues/309) | Будущее заседание последующей кассации имеет приоритет над неоднозначной историей апелляций. | [#310](https://github.com/arvidsever/Sudrf/pull/310) |
 | 0.58.20 | [#276](https://github.com/arvidsever/Sudrf/issues/276) | Цепочка `8Г-162/2019` восстановлена через официальную нижестоящую карточку и её судебный УИД. | [#307](https://github.com/arvidsever/Sudrf/pull/307) |
 | 0.58.19 | [#275](https://github.com/arvidsever/Sudrf/issues/275) | Возврат кассационной жалобы по подсудности завершает производство без изменения статуса законной силы. | [#306](https://github.com/arvidsever/Sudrf/pull/306) |
 | 0.58.18 | [#86](https://github.com/arvidsever/Sudrf/issues/86) | Единый effective legal-force status КоАП по прямому событию и завершённой апелляции. | [#305](https://github.com/arvidsever/Sudrf/pull/305) |

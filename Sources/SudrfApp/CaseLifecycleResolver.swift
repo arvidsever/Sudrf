@@ -943,7 +943,15 @@ enum CaseLifecycleResolver {
         let complaintReturned = (value.contains("возврат") || value.contains("возвращ"))
             && (value.contains("жалоб") || value.contains("представлен"))
             && value.contains("заявител")
-        let returned = complaintReturned
+        // КСОЮ также публикует возврат без адресата и слов «без рассмотрения»,
+        // но с точным основанием: жалоба/представление поданы с нарушением
+        // правил подсудности. Все три признака обязательны, поэтому возврат
+        // дела из вышестоящего суда сюда не попадает (#275).
+        let wrongJurisdictionComplaintReturn =
+            (value.contains("возврат") || value.contains("возвращ"))
+            && (value.contains("жалоб") || value.contains("представлен"))
+            && value.contains("подсудн")
+        let returned = complaintReturned || wrongJurisdictionComplaintReturn
             || ((value.contains("возврат") || value.contains("возвращ"))
                 && value.contains("без рассмотр"))
         let wholeProceedingSubject = isWholeProceedingSubject(value)

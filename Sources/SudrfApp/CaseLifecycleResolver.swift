@@ -418,6 +418,45 @@ enum CaseLifecycleResolver {
                           completionReason: nil, graceDeadline: nil)
     }
 
+    /// Effective legal force shown to the user. The source flag remains the
+    /// fallback for other productions; КоАП additionally publishes stronger
+    /// evidence in movement rows and review cards.
+    static func effectiveLegalForce(in movement: CaseMovement,
+                                    production: ProductionType?) -> Bool {
+        guard production == .koap else { return movement.inForce }
+        let timeline = timeline(in: movement, production: production)
+        let direct = timeline.deadlineFirst.flatMap(explicitLegalForceState)
+
+        if let appeal = timeline.currentAppeal {
+            switch latestSignal(for: appeal) {
+            case .legalForce, .terminal:
+                // A later reactivation/new first-instance round wins over an
+                // historical appeal result.
+                if direct?.effective == false,
+                   isLater(direct?.date, than: reviewEventDate(in: appeal)) {
+                    return false
+                }
+                return true
+            case .remand:
+                return false
+            case .active, nil:
+                // An active appeal cancels older force evidence. A later
+                // direct row may still settle the status before the appeal
+                // card exposes its terminal result.
+                guard direct?.effective == true else { return false }
+                return isLater(direct?.date, than: reviewEventDate(in: appeal))
+            }
+        }
+
+        if let direct { return direct.effective }
+        // КСОЮ/ВС РФ review under КоАП is post-force. `Timeline` has already
+        // removed CAPTCHA/transient stubs and historical reviews before a new
+        // round, so a remaining card is authoritative evidence.
+        if timeline.hasCassationInCurrentRound { return true }
+        // Do not carry the raw flag across a proved new first-instance round.
+        return timeline.currentRoundStart == nil ? movement.inForce : false
+    }
+
     private static func completed(current: CaseInstance?, visited: Set<CaseStageKind>,
                                   reason: CompletionReason,
                                   production: ProductionType?) -> Resolution {
@@ -598,6 +637,31 @@ enum CaseLifecycleResolver {
 
     static func hasLegalForceEvidence(event: String, result: String?) -> Bool {
         hasLegalForceEvidence(in: event + " " + (result ?? ""))
+    }
+
+    private static func explicitLegalForceState(
+        in instance: CaseInstance
+    ) -> (effective: Bool, date: Date?)? {
+        let ordered = instance.sessions.enumerated().sorted { left, right in
+            let leftDate = DateUtil.parse(left.element.date) ?? .distantPast
+            let rightDate = DateUtil.parse(right.element.date) ?? .distantPast
+            return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
+        }
+        var state: (effective: Bool, date: Date?)?
+        for (_, session) in ordered {
+            if isReactivation(event: session.event, result: session.result) {
+                state = (false, DateUtil.parse(session.date))
+            } else if hasLegalForceEvidence(event: session.event, result: session.result) {
+                state = (true, DateUtil.parse(session.date))
+            }
+        }
+        return state
+    }
+
+    private static func isLater(_ candidate: Date?, than reference: Date?) -> Bool {
+        guard let candidate else { return false }
+        guard let reference else { return true }
+        return candidate > reference
     }
 
     static func isReactivation(event: String, result: String?) -> Bool {

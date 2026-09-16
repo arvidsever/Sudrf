@@ -131,6 +131,7 @@ struct CaseSnapshot: Codable, Equatable {
 /// обычном `AppRouter.reload`, чтобы наступление подтверждённого срока меняло
 /// стадию без записи нового формата в SwiftData.
 struct CaseLifecyclePresentation {
+    var inForce: Bool
     var stage: CaseStageKind
     var stageTag: String
     var statusText: String
@@ -264,7 +265,7 @@ enum MovementDerivation {
         }
 
         return CaseSnapshot(
-            uid: mv.uid, inForce: mv.inForce, category: mv.category,
+            uid: mv.uid, inForce: presentation.inForce, category: mv.category,
             partiesShort: partiesShort, leadCharges: leadCharges,
             secondPartyLine: secondPartyLine,
             stageRaw: presentation.stage.rawValue, stageTag: presentation.stageTag,
@@ -300,6 +301,8 @@ enum MovementDerivation {
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
         let production = MaterialProductionContext.resolve(context: context, movement: mv).production
+        let inForce = CaseLifecycleResolver.effectiveLegalForce(
+            in: mv, production: production)
         let resolution = CaseLifecycleResolver.resolve(movement: mv, production: production,
                                                        deadlines: deadlines,
                                                        deadlineAssessments: assessments,
@@ -394,6 +397,7 @@ enum MovementDerivation {
         }
 
         return CaseLifecyclePresentation(
+            inForce: inForce,
             stage: resolution.stage,
             stageTag: stageTag(stage: resolution.stage, prefix: prefix),
             statusText: statusText,
@@ -407,6 +411,14 @@ enum MovementDerivation {
                 ?? inferredTier(stage: resolution.stage, production: production, context: context),
             currentReviewNumber: currentReviewNumber,
             nextEventCourt: nextEventCourt)
+    }
+
+    static func effectiveLegalForce(from movement: CaseMovement,
+                                    context: MovementContext?) -> Bool {
+        let production = MaterialProductionContext.resolve(
+            context: context, movement: movement).production
+        return CaseLifecycleResolver.effectiveLegalForce(
+            in: movement, production: production)
     }
 
     /// Короткое, локализованное объяснение fail-closed результата. Здесь нет

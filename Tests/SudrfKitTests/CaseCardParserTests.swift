@@ -565,6 +565,28 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.sessions[4].result, "ВОЗБУЖДЕНО КАССАЦИОННОЕ ПРОИЗВОДСТВО")
     }
 
+    func testIssue275KSOYuReturnForWrongJurisdictionKeepsPublishedTimelineAndResult() throws {
+        let result = "возвращено - кассационные жалоба, представление поданы с нарушением "
+            + "правил подсудности, установленных ст.377 настоящего Кодекса"
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("ksoyu_civil_returned_wrong_jurisdiction"))
+
+        XCTAssertEqual(card.caseNumber, "8Г-162/2019")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "09.10.2019",
+                        event: "Поступление жалобы (представления) в суд"),
+            CaseSession(date: "09.10.2019",
+                        event: "Поступление исправленной жалобы (представления) в суд"),
+            CaseSession(date: "10.10.2019",
+                        event: "Передача жалобы (представления) на изучение"),
+            CaseSession(date: "15.10.2019",
+                        event: "Определение по итогам изучения жалобы (представления)",
+                        result: result),
+        ])
+        XCTAssertNil(card.result)
+    }
+
     func testKSOYuSevenColumnVariantPreservesRowsAndStableSameDateOrder() throws {
         let card = try CaseCardParser.parse(
             html: try loadFixture("ksoyu_complaint_movement_7_columns"))

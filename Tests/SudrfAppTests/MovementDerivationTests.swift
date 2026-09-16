@@ -545,6 +545,120 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
     }
 
+    // MARK: Возврат кассационной жалобы по подсудности (#275)
+
+    private var issue275Result: String {
+        "возвращено - кассационные жалоба, представление поданы с нарушением "
+            + "правил подсудности, установленных ст.377 настоящего Кодекса"
+    }
+
+    private func issue275Snapshot(
+        preceding: [CaseInstance] = [],
+        cassationSessions: [CaseSession]? = nil,
+        laterCassationSessions: [CaseSession]? = nil,
+        result: String?
+    ) -> CaseSnapshot {
+        let sessions = cassationSessions ?? [
+            CaseSession(date: "09.10.2019",
+                        event: "Поступление жалобы (представления) в суд"),
+            CaseSession(date: "10.10.2019",
+                        event: "Передача жалобы (представления) на изучение"),
+            CaseSession(date: "15.10.2019",
+                        event: "Определение по итогам изучения жалобы (представления)",
+                        result: issue275Result),
+        ]
+        let cassation = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-162/2019", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: false, result: result, sessions: sessions)
+        var instances = preceding + [cassation]
+        if let laterCassationSessions {
+            instances.append(CaseInstance(
+                level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+                caseNumber: "8Г-500/2020", judge: nil, domain: "3kas.sudrf.ru",
+                foundByUID: true, result: nil, sessions: laterCassationSessions))
+        }
+        let movement = CaseMovement(
+            uid: "", caseNumber: preceding.first?.caseNumber ?? "8Г-162/2019",
+            inForce: false, instances: instances, complaints: [:], acts: [])
+        let context = MovementContext(
+            branchRaw: "general", region: "Санкт-Петербург",
+            searchDomain: "3kas.sudrf.ru", displayDomain: "3kas.sudrf.ru",
+            courtTitle: "Третий кассационный суд общей юрисдикции",
+            courtLevelRaw: "cassation", courtCode: nil,
+            cartotekaId: "g3", cartotekaLevelRaw: "cassation",
+            caseNumber: movement.caseNumber)
+        return MovementDerivation.snapshot(
+            from: movement, context: context, today: DateUtil.parse("20.10.2019")!)
+    }
+
+    func testIssue275WrongJurisdictionReturnCompletesStandaloneCassation() {
+        let snapshot = issue275Snapshot(result: issue275Result)
+
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot.statusText, issue275Result)
+        XCTAssertFalse(snapshot.inForce)
+        XCTAssertEqual(snapshot.steps, ["todo", "todo", "done", "todo"])
+    }
+
+    func testIssue275WrongJurisdictionReturnCompletesFullChain() {
+        let first = CaseInstance(
+            level: .first, court: "Фрунзенский районный суд Санкт-Петербурга",
+            caseNumber: "2-1975/2019", judge: nil, domain: "frn--spb.sudrf.ru",
+            foundByUID: true, result: "Иск удовлетворён",
+            sessions: [CaseSession(date: "10.04.2019", event: "Судебное заседание",
+                                   result: "Иск удовлетворён")])
+        let appeal = CaseInstance(
+            level: .appeal, court: "Санкт-Петербургский городской суд",
+            caseNumber: "33-12345/2019", judge: nil, domain: "sankt-peterburgsky--spb.sudrf.ru",
+            foundByUID: true, result: "Оставлено без изменения",
+            sessions: [CaseSession(date: "20.06.2019", event: "Судебное заседание",
+                                   result: "Оставлено без изменения")])
+        let snapshot = issue275Snapshot(preceding: [first, appeal], result: issue275Result)
+
+        XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(snapshot.statusText, issue275Result)
+        XCTAssertFalse(snapshot.inForce)
+        XCTAssertEqual(snapshot.sessions.count, 5)
+    }
+
+    func testIssue275OnlyExactReturnFormulaIsTerminalAndLaterActivityReopens() {
+        let nonTerminalResults = [
+            "Жалоба оставлена без движения",
+            "Возвращено из вышестоящей инстанции после рассмотрения жалобы",
+            "Возвращено дело в суд первой инстанции",
+            "Возвращено",
+        ]
+        for result in nonTerminalResults {
+            let snapshot = issue275Snapshot(
+                cassationSessions: [CaseSession(date: "15.10.2019",
+                                                event: "Рассмотрение", result: result)],
+                result: result)
+            XCTAssertEqual(snapshot.stageRaw, CaseStageKind.cassation.rawValue, result)
+        }
+
+        let reopened = issue275Snapshot(
+            cassationSessions: [
+                CaseSession(date: "15.10.2019", event: "Определение", result: issue275Result),
+                CaseSession(date: "20.10.2019", event: "Жалоба принята к производству"),
+            ],
+            result: nil)
+        XCTAssertEqual(reopened.stageRaw, CaseStageKind.cassation.rawValue)
+
+        let clerical = issue275Snapshot(cassationSessions: [
+            CaseSession(date: "15.10.2019", event: "Определение", result: issue275Result),
+            CaseSession(date: "18.10.2019", event: "Передано в экспедицию"),
+        ], result: nil)
+        XCTAssertEqual(clerical.stageRaw, CaseStageKind.done.rawValue)
+
+        let separateProduction = issue275Snapshot(
+            laterCassationSessions: [
+                CaseSession(date: "10.01.2020", event: "Жалоба принята к производству"),
+            ],
+            result: issue275Result)
+        XCTAssertEqual(separateProduction.stageRaw, CaseStageKind.cassation.rawValue)
+    }
+
     /// Прекращение промежуточного объекта итогом дела не является.
     func testIntermediateObjectTerminationIsNotACaseOutcome() {
         let snap = appealRound(result: nil, sessions: [

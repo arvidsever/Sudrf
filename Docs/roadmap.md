@@ -14,7 +14,7 @@
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.18 | [#86](https://github.com/arvidsever/Sudrf/issues/86) | Единый effective legal-force status КоАП по прямому событию и завершённой апелляции. | — |
+| 0.58.18 | [#86](https://github.com/arvidsever/Sudrf/issues/86) | Единый effective legal-force status КоАП по прямому событию и завершённой апелляции. | [#305](https://github.com/arvidsever/Sudrf/pull/305) |
 | 0.58.17 | [#246](https://github.com/arvidsever/Sudrf/issues/246) | Актуальная гражданская регистрация после отмены возврата; прежние карточки и сроки сохранены исторически. | [#304](https://github.com/arvidsever/Sudrf/pull/304) |
 | 0.58.16 | [#247](https://github.com/arvidsever/Sudrf/issues/247) | Кодекс материала по реквизитам и подтверждённой связи с основным делом; неизвестные материалы не становятся гражданскими. | [#303](https://github.com/arvidsever/Sudrf/pull/303) |
 | 0.58.15 | [#294](https://github.com/arvidsever/Sudrf/issues/294) | Специальные сроки избирательных дел КАС; сохранение ручных дат и единая проекция срока. | [#302](https://github.com/arvidsever/Sudrf/pull/302) |

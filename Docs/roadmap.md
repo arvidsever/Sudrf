@@ -20,7 +20,7 @@
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.22 | [#285](https://github.com/arvidsever/Sudrf/issues/285), [#286](https://github.com/arvidsever/Sudrf/issues/286), [#289](https://github.com/arvidsever/Sudrf/issues/289) | Завершённые апелляции определяются по точному исходу карточки и резолютивной части связанного акта. | — |
+| 0.58.22 | [#285](https://github.com/arvidsever/Sudrf/issues/285), [#286](https://github.com/arvidsever/Sudrf/issues/286), [#289](https://github.com/arvidsever/Sudrf/issues/289) | Завершённые апелляции определяются по точному исходу карточки и резолютивной части связанного акта. | [#311](https://github.com/arvidsever/Sudrf/pull/311) |
 | 0.58.21 | [#309](https://github.com/arvidsever/Sudrf/issues/309) | Будущее заседание последующей кассации имеет приоритет над неоднозначной историей апелляций. | [#310](https://github.com/arvidsever/Sudrf/pull/310) |
 | 0.58.20 | [#276](https://github.com/arvidsever/Sudrf/issues/276) | Цепочка `8Г-162/2019` восстановлена через официальную нижестоящую карточку и её судебный УИД. | [#307](https://github.com/arvidsever/Sudrf/pull/307) |
 | 0.58.19 | [#275](https://github.com/arvidsever/Sudrf/issues/275) | Возврат кассационной жалобы по подсудности завершает производство без изменения статуса законной силы. | [#306](https://github.com/arvidsever/Sudrf/pull/306) |

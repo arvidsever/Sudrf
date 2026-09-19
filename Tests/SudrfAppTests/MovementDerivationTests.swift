@@ -10,14 +10,15 @@ final class MovementDerivationTests: XCTestCase {
     // Фиксированное «сегодня», чтобы тесты не зависели от системной даты.
     private let today = DateUtil.parse("01.05.2026")!
 
-    private func context(cartoteka: String = "g") -> MovementContext {
+    private func context(cartoteka: String = "g",
+                         caseNumber: String = "2-100/2026") -> MovementContext {
         MovementContext(branchRaw: "general", region: "Республика Коми",
                         searchDomain: "syktsud--komi.sudrf.ru",
                         displayDomain: "syktsud.komi.sudrf.ru",
                         courtTitle: "Сыктывкарский городской суд",
                         courtLevelRaw: "district", courtCode: "11RS0001",
                         cartotekaId: ["g": "g1", "p": "p1", "u": "u1"][cartoteka] ?? cartoteka, cartotekaLevelRaw: "district",
-                        caseNumber: "2-100/2026")
+                        caseNumber: caseNumber)
     }
 
     private func movement(inForce: Bool = false,
@@ -1973,6 +1974,214 @@ final class MovementDerivationTests: XCTestCase {
         let presentation = MovementDerivation.lifecyclePresentation(
             from: mv, snapshot: snap, context: context(), today: today)
         XCTAssertNil(presentation.nextEventDate)
+    }
+
+    func testIssues285And286UseOnlyLinkedActOperativeDisposition() {
+        let remandAppeal = CaseInstance(
+            level: .appeal, court: "Сыктывкарский городской суд Республики Коми",
+            caseNumber: "10-25/2026", judge: "Котов Р.В.",
+            domain: "syktsud.komi.sudrf.ru", foundByUID: false,
+            result: "Вынесено другое ПОСТАНОВЛЕНИЕ", sessions: [
+                CaseSession(date: "23.03.2026", event: "Судебное заседание",
+                            result: "Вынесено другое ПОСТАНОВЛЕНИЕ"),
+                CaseSession(date: "27.03.2026",
+                            event: "Дело сдано в отдел судебного делопроизводства"),
+            ], actID: "issue-285-act")
+        let remandAct = CaseAct(
+            id: "issue-285-act", title: "Апелляционное постановление",
+            date: "23.03.2026", courtShort: remandAppeal.court,
+            instanceLevel: .appeal)
+        let remandBody = """
+        АПЕЛЛЯЦИОННОЕ ПОСТАНОВЛЕНИЕ
+        Суд установил: заявитель просил направить дело на новое рассмотрение.
+        постановил:
+        Постановление мирового судьи отменить. Уголовное дело направить на новое судебное рассмотрение мировому судье.
+        """
+        let remandMovement = CaseMovement(
+            uid: "11MS0006-01-2026-000251-54", caseNumber: "10-25/2026",
+            inForce: false, instances: [remandAppeal], complaints: [:],
+            acts: [remandAct], actBodies: [remandAct.id: remandBody])
+
+        let remand = CaseLifecycleResolver.resolve(
+            movement: remandMovement, production: .crim,
+            deadlines: [], today: today)
+        XCTAssertEqual(remand.stage, .first)
+        XCTAssertNil(remand.completionReason)
+        XCTAssertEqual(CaseLifecycleResolver.realInstances(in: remandMovement)[0].sessions.count, 2)
+
+        var remandChain = remandMovement
+        remandChain.instances.insert(CaseInstance(
+            level: .first, court: "Мировой судья", caseNumber: "1-10/2026",
+            judge: nil, domain: "mirsud11.ru", foundByUID: true,
+            result: "Постановление", sessions: [
+                CaseSession(date: "01.03.2026", event: "Постановление"),
+            ]), at: 0)
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: remandChain, production: .crim,
+            deadlines: [], today: today).stage, .first)
+
+        var genericOnly = remandMovement
+        genericOnly.actBodies = [:]
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: genericOnly, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        var unlinked = remandMovement
+        unlinked.instances[0].actID = nil
+        unlinked.instances[0].actIDs = nil
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: unlinked, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        var reactivated = remandMovement
+        reactivated.instances[0].sessions.append(CaseSession(
+            date: "28.03.2026", event: "Жалоба принята к производству"))
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: reactivated, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        let changedAppeal = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми",
+            caseNumber: "12-149/2021", judge: "Щенникова Е.В.",
+            domain: "vs.komi.sudrf.ru", foundByUID: true,
+            result: "Изменено", sessions: [
+                CaseSession(date: "07.04.2021", event: "Судебное заседание",
+                            result: "Изменено"),
+                CaseSession(date: "15.03.2022", event: "Сдача материалов дела в архив"),
+            ], actID: "issue-286-act")
+        let changedAct = CaseAct(
+            id: "issue-286-act", title: "Решение", date: "07.04.2021",
+            courtShort: changedAppeal.court, instanceLevel: .appeal)
+        let changedBody = """
+        РЕШЕНИЕ
+        Суд установил: защитник просил отменить постановление и направить дело на новое рассмотрение.
+        решил:
+        Постановление судьи изменить, исключив часть описания. В остальной части постановление оставить без изменения, жалобу без удовлетворения.
+        """
+        let first = CaseInstance(
+            level: .first, court: "Сыктывкарский городской суд",
+            caseNumber: "5-619/2021", judge: nil,
+            domain: "syktsud.komi.sudrf.ru", foundByUID: true,
+            result: "Назначено административное наказание", sessions: [
+                CaseSession(date: "27.01.2021", event: "Судебное заседание",
+                            result: "Назначено административное наказание"),
+            ])
+        let changedMovement = CaseMovement(
+            uid: "11RS0001-01-2021-000619-01", caseNumber: "5-619/2021",
+            inForce: false, instances: [first, changedAppeal], complaints: [:],
+            acts: [changedAct], actBodies: [changedAct.id: changedBody])
+        let koapContext = context(cartoteka: "adm1", caseNumber: "5-619/2021")
+        let changedSnapshot = MovementDerivation.snapshot(
+            from: changedMovement, context: koapContext, today: today)
+
+        XCTAssertEqual(changedSnapshot.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(changedSnapshot.statusText, "Изменено")
+        XCTAssertTrue(changedSnapshot.inForce)
+
+        var standaloneChanged = changedMovement
+        standaloneChanged.instances = [changedAppeal]
+        XCTAssertEqual(MovementDerivation.snapshot(
+            from: standaloneChanged, context: koapContext, today: today
+        ).stageRaw, CaseStageKind.done.rawValue)
+
+        var bareChanged = changedMovement
+        bareChanged.actBodies = [:]
+        XCTAssertEqual(MovementDerivation.snapshot(
+            from: bareChanged, context: koapContext, today: today
+        ).stageRaw, CaseStageKind.appeal.rawValue)
+    }
+
+    func testIssue289ExactRemovalClosesOnlyThatReviewAndLaterAcceptanceReopensIt() {
+        func snapshot(result: String, sessions: [CaseSession], inChain: Bool = false) -> CaseSnapshot {
+            let appeal = CaseInstance(
+                level: .appeal, court: "Санкт-Петербургский городской суд",
+                caseNumber: "22-227/2020", judge: nil,
+                domain: "sankt-peterburgsky.spb.sudrf.ru", foundByUID: false,
+                result: result, sessions: sessions)
+            let first = CaseInstance(
+                level: .first, court: "Октябрьский районный суд",
+                caseNumber: "4-111/2019", judge: nil,
+                domain: "oktibrsky.spb.sudrf.ru", foundByUID: true,
+                result: "Рассмотрено", sessions: [
+                    CaseSession(date: "01.12.2019", event: "Рассмотрено"),
+                ])
+            let movement = CaseMovement(
+                uid: "", caseNumber: "22-227/2020", inForce: false,
+                instances: inChain ? [first, appeal] : [appeal], complaints: [:], acts: [])
+            return MovementDerivation.snapshot(
+                from: movement, context: context(cartoteka: "u2"), today: today)
+        }
+
+        let removed = snapshot(result: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ", sessions: [
+            CaseSession(date: "23.01.2020", event: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ"),
+            CaseSession(date: "24.01.2020", event: "Дело сдано в архив"),
+        ])
+        XCTAssertEqual(removed.stageRaw, CaseStageKind.done.rawValue)
+        XCTAssertEqual(removed.statusText, "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ")
+        XCTAssertFalse(removed.inForce)
+        XCTAssertTrue(removed.deadlines.isEmpty)
+        XCTAssertFalse(CaseLifecycleResolver.isFinalActAnnouncement(
+            event: "", result: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ"))
+        XCTAssertEqual(snapshot(
+            result: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ",
+            sessions: [CaseSession(date: "23.01.2020", event: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ")],
+            inChain: true
+        ).stageRaw, CaseStageKind.done.rawValue)
+
+        let reopened = snapshot(result: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ", sessions: [
+            CaseSession(date: "23.01.2020", event: "СНЯТО ПО ДРУГИМ ОСНОВАНИЯМ"),
+            CaseSession(date: "03.02.2020", event: "Жалоба принята к производству"),
+        ])
+        XCTAssertEqual(reopened.stageRaw, CaseStageKind.appeal.rawValue)
+
+        for text in ["Судебное заседание снято с рассмотрения до другой даты",
+                     "СНЯТО ПО ИНЫМ ОСНОВАНИЯМ", "Рассмотрение отложено",
+                     "Производство приостановлено"] {
+            XCTAssertEqual(snapshot(
+                result: text,
+                sessions: [CaseSession(date: "23.01.2020", event: text)]
+            ).stageRaw, CaseStageKind.appeal.rawValue, text)
+        }
+    }
+
+    func testActReasoningAloneAndIntermediateOperativePartAreNotLifecycleEvidence() {
+        let appeal = CaseInstance(
+            level: .appeal, court: "Суд", caseNumber: "10-1/2026", judge: nil,
+            domain: "court.sudrf.ru", foundByUID: true,
+            result: "Вынесено другое ПОСТАНОВЛЕНИЕ", sessions: [
+                CaseSession(date: "20.04.2026", event: "Регистрация производства"),
+            ], actID: "intermediate-act")
+        let act = CaseAct(id: "intermediate-act", title: "Постановление",
+                          date: "21.04.2026", courtShort: "Суд",
+                          instanceLevel: .appeal)
+        let body = """
+        ПОСТАНОВЛЕНИЕ
+        Суд установил: заявитель просил отменить акт и направить дело на новое рассмотрение.
+        постановил:
+        Назначить судебное заседание на другую дату.
+        """
+        let movement = CaseMovement(
+            uid: "uid", caseNumber: appeal.caseNumber, inForce: false,
+            instances: [appeal], complaints: [:], acts: [act],
+            actBodies: [act.id: body])
+
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: movement, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        var completedAppeal = appeal
+        completedAppeal.result = "Оставлено без изменения"
+        completedAppeal.sessions = [
+            CaseSession(date: "20.04.2026", event: "Судебное заседание",
+                        result: "Оставлено без изменения"),
+        ]
+        let completedMovement = CaseMovement(
+            uid: "uid", caseNumber: completedAppeal.caseNumber, inForce: false,
+            instances: [completedAppeal], complaints: [:], acts: [act],
+            actBodies: [act.id: body])
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: completedMovement, production: .crim,
+            deadlines: [], today: today).stage, .done)
     }
 
     func testExpandedTerminalReviewResultsAndBareChangedWord() {

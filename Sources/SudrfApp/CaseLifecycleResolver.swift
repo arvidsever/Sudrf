@@ -139,12 +139,16 @@ enum CaseLifecycleResolver {
     }
 
     static func realInstances(in movement: CaseMovement) -> [CaseInstance] {
-        timeline(in: movement).instances
+        movement.instances.filter {
+            $0.level != .material
+                && $0.captchaFormURL == nil
+                && $0.transientError != true
+        }.sorted(by: MovementService.precedesInChronology)
     }
 
     static func timeline(in movement: CaseMovement,
                          production: ProductionType? = nil) -> Timeline {
-        let sourceOrdered = movement.instances.enumerated()
+        let sourceOrdered = lifecycleInstances(in: movement).enumerated()
             .filter { _, instance in
                 instance.level != .material
                     && instance.captchaFormURL == nil
@@ -370,7 +374,8 @@ enum CaseLifecycleResolver {
                                  production: production)
             case .terminal(let result) where isReview(latest.level):
                 return completed(current: latest, visited: visited,
-                                 reason: .terminalReview(result), production: production)
+                                 reason: .terminalReview(nonempty(latest.result) ?? result),
+                                 production: production)
             case .terminal(let result) where latest.level == .first:
                 // Неполная карточка реального пересмотра нового круга не доказывает
                 // повышение стадии, но исключает автоматическое закрытие
@@ -769,8 +774,10 @@ enum CaseLifecycleResolver {
             if let current = result.flatMap(signal)
                 ?? event.flatMap(signal)
                 ?? (combined.isEmpty ? nil : signal(in: combined)) {
+                let previous = latest
                 latest = current
-                if isReactivation(normalized(combined)) {
+                if case .active = current,
+                   isReactivation(normalized(combined)) || isConcluding(previous) {
                     reactivationStillDominant = true
                 } else if case .legalForce = current {
                     reactivationStillDominant = false
@@ -813,6 +820,13 @@ enum CaseLifecycleResolver {
             return .terminal(result)
         }
         return latest
+    }
+
+    private static func isConcluding(_ signal: InstanceSignal?) -> Bool {
+        switch signal {
+        case .remand, .legalForce, .terminal: return true
+        case .active, nil: return false
+        }
     }
 
     static func hasAmbiguousKoAPKSOYUComplaintResult(_ instance: CaseInstance) -> Bool {
@@ -927,6 +941,7 @@ enum CaseLifecycleResolver {
     }
 
     private static func isTerminalDisposition(_ value: String) -> Bool {
+        let removedFromReview = isRemovedFromReview(value)
         let unchanged = value.contains("остав")
             && (value.contains("без удовлетвор") || value.contains("без изменен"))
         let transferDenied = value.contains("отказ") && value.contains("передач")
@@ -976,10 +991,69 @@ enum CaseLifecycleResolver {
         let satisfiedWithoutRemand = value.contains("жалоб") && value.contains("удовлетвор")
             && !value.contains("без удовлетвор")
             && !(value.contains("направ") && value.contains("рассмотр"))
-        return unchanged || transferDenied || terminated || returned || leftWithoutConsideration
+        return removedFromReview
+            || unchanged || transferDenied || terminated || returned || leftWithoutConsideration
             || restorationDenied || acceptanceDenied
             || changedWithoutRemand || cancelledWithoutDirection || cancelledActWithNewDecision
             || meritsDecision || satisfiedWithoutRemand
+    }
+
+    private static func isRemovedFromReview(_ value: String) -> Bool {
+        normalized(value).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            == "снято по другим основаниям"
+    }
+
+    /// A review card may publish only a generic short result while its linked
+    /// act contains the exact disposition. Add that disposition to a local
+    /// lifecycle copy; the saved movement and the user-facing source wording
+    /// remain untouched.
+    private static func lifecycleInstances(in movement: CaseMovement) -> [CaseInstance] {
+        let acts = Dictionary(movement.acts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return movement.instances.map { source in
+            guard isReview(source.level) else { return source }
+            var instance = source
+            for actID in source.linkedActIDs {
+                guard let act = acts[actID], act.instanceLevel == source.level,
+                      DateUtil.parse(act.date) != nil,
+                      let body = movement.actBodies[actID],
+                      let disposition = operativeDisposition(in: body),
+                      let dispositionSignal = signal(in: disposition),
+                      isConcluding(dispositionSignal),
+                      !instance.sessions.contains(where: {
+                          $0.date == act.date && normalized($0.result ?? "") == normalized(disposition)
+                      }) else { continue }
+                instance.sessions.append(CaseSession(
+                    date: act.date,
+                    event: "Резолютивная часть опубликованного акта",
+                    result: disposition))
+            }
+            return instance
+        }
+    }
+
+    private static func operativeDisposition(in source: String) -> String? {
+        let paragraphs = ActParagraphizer.paragraphs(in: source)
+        let markers = Set(["решил", "постановил", "определил", "приговорил"])
+        var marker: (paragraph: Int, colon: String.Index)?
+        for paragraphIndex in paragraphs.indices.reversed() {
+            let text = paragraphs[paragraphIndex].text
+            for colon in text.indices.reversed() where text[colon] == ":" {
+                let prefix = normalized(String(text[..<colon])).filter(\.isLetter)
+                if markers.contains(where: prefix.hasSuffix) {
+                    marker = (paragraphIndex, colon)
+                    break
+                }
+            }
+            if marker != nil { break }
+        }
+        guard let marker else { return nil }
+        let markerText = paragraphs[marker.paragraph].text
+        let inline = String(markerText[markerText.index(after: marker.colon)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trailing = paragraphs.dropFirst(marker.paragraph + 1).map(\.text)
+        let disposition = ([inline] + trailing).filter { !$0.isEmpty }.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return disposition.isEmpty ? nil : disposition
     }
 
     /// Событие движения, которым объявлен обжалуемый итоговый акт первой
@@ -992,6 +1066,7 @@ enum CaseLifecycleResolver {
     /// событию — по уголовным делам особенно заметно.
     static func isFinalActAnnouncement(event: String, result: String?) -> Bool {
         let value = normalized(event + " " + (result ?? ""))
+        guard !isRemovedFromReview(value) else { return false }
         // Два уже существующих словаря дополняют друг друга: конечные формулы
         // первой инстанции знают «приговор» и «иск удовлетворён», словарь
         // терминальных исходов — «производство прекращено», «оставлено без

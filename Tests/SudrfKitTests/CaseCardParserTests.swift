@@ -252,6 +252,32 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.result, "Возвращено без рассмотрения")
     }
 
+    func testIssue289SubjectAppealKeepsExactRemovalTimelineWithoutUID() throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://sankt-peterburgsky.spb.sudrf.ru/modules.php?name=sud_delo"
+                + "&srv_num=1&name_op=case&case_id=107129947"
+                + "&case_uid=1e76ee9f-cdd4-496e-9162-558c3888f91e&delo_id=4&new=4"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("issue289_subject_appeal_removed"), cardURL: url)
+
+        XCTAssertEqual(card.caseNumber, "22-227/2020 (22-8976/2019;)")
+        XCTAssertNil(card.uid)
+        XCTAssertNil(card.receiptDate)
+        XCTAssertNil(card.decisionDate)
+        XCTAssertNil(card.result)
+        XCTAssertTrue(card.rawText.contains("Дата поступления\n11.12.2019"))
+        XCTAssertTrue(card.rawText.contains("Результат рассмотрения\nСНЯТО по ДРУГИМ ОСНОВАНИЯМ"))
+        XCTAssertEqual(card.sessions, [
+            CaseSession(date: "12.12.2019", time: "09:17", event: "Передача дела судье"),
+            CaseSession(date: "23.12.2019", time: "10:40", event: "Судебное заседание",
+                        result: "Заседание отложено"),
+            CaseSession(date: "23.01.2020", time: "16:00", event: "Судебное заседание",
+                        result: "СНЯТО по ДРУГИМ ОСНОВАНИЯМ"),
+        ])
+        XCTAssertEqual(card.lowerCourt?.courtTitle, "Октябрьский районный суд")
+        XCTAssertEqual(card.lowerCourt?.caseNumber, "4-111/2019")
+    }
+
     func testComplaintMetadataRejectsAmbiguousTabsAndConflictingValues() throws {
         let duplicatedTabs = try CaseCardParser.parse(html: """
         <div class="casenumber">ДЕЛО № 16-1/2026</div>

@@ -759,6 +759,7 @@ enum CaseLifecycleResolver {
             return leftDate == rightDate ? left.offset < right.offset : leftDate < rightDate
         }
         var latest: InstanceSignal?
+        var hasOperativeActSignal = false
         // Возобновление остаётся доминирующим состоянием через последующие
         // регистрации/принятие жалобы; сбросить его может только более поздний
         // конечный сигнал, а не очередная активная административная строка.
@@ -774,6 +775,9 @@ enum CaseLifecycleResolver {
             if let current = result.flatMap(signal)
                 ?? event.flatMap(signal)
                 ?? (combined.isEmpty ? nil : signal(in: combined)) {
+                if normalized(session.event) == "резолютивная часть опубликованного акта" {
+                    hasOperativeActSignal = true
+                }
                 let previous = latest
                 latest = current
                 if case .active = current,
@@ -791,7 +795,8 @@ enum CaseLifecycleResolver {
         // Итог карточки обычно не датирован и должен перебивать старые строки,
         // но опубликованное позднее вступление в силу/возобновление — более
         // сильный, явно хронологический сигнал.
-        if let result = nonempty(instance.result), let resultSignal = signal(in: result) {
+        if !hasOperativeActSignal,
+           let result = nonempty(instance.result), let resultSignal = signal(in: result) {
             if let latest {
                 switch latest {
                 case .legalForce:
@@ -905,9 +910,25 @@ enum CaseLifecycleResolver {
     private static func remandTarget(in source: String) -> CaseStageKind? {
         let value = normalized(source)
         guard !value.contains("без направ") else { return nil }
+        let returnedToAcceptance = (value.contains("возврат") || value.contains("возвращ"))
+            && value.contains("рассмотр") && value.contains("стади")
+            && value.contains("принят") && value.contains("производств")
+        if returnedToAcceptance { return .first }
         guard value.contains("направ"), value.contains("нов"),
               value.contains("рассмотр") else { return nil }
         return value.contains("апелляцион") ? .appeal : .first
+    }
+
+    /// Датированный официальный итог пересмотра, который возвращает материал
+    /// в первую инстанцию. Используется identity-repair только как независимое
+    /// доказательство перед поиском следующей регистрации.
+    static func confirmedFirstInstanceRemandDate(in movement: CaseMovement) -> Date? {
+        lifecycleInstances(in: movement).compactMap { instance -> Date? in
+            guard isReview(instance.level),
+                  remandTarget(from: latestSignal(for: instance)) == .first
+            else { return nil }
+            return reviewEventDate(in: instance)
+        }.max()
     }
 
     private static func hasLegalForceEvidence(in source: String) -> Bool {
@@ -1043,7 +1064,8 @@ enum CaseLifecycleResolver {
 
     private static func operativeDisposition(in source: String) -> String? {
         let paragraphs = ActParagraphizer.paragraphs(in: source)
-        let markers = Set(["решил", "постановил", "определил", "приговорил"])
+        let markers = Set(["решил", "решила", "постановил", "постановила",
+                           "определил", "определила", "приговорил", "приговорила"])
         var marker: (paragraph: Int, colon: String.Index)?
         for paragraphIndex in paragraphs.indices.reversed() {
             let text = paragraphs[paragraphIndex].text

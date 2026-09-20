@@ -48,12 +48,21 @@ protocol CaseOriginResolving: Sendable {
     /// самостоятельным основным делом только после точного подтверждения УИД.
     func resolveMainCase(anchorContext: MovementContext,
                          anchorCard: CaseCard) async throws -> ResolvedCaseOrigin
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard,
+                         evidenceMovement: CaseMovement?) async throws -> ResolvedCaseOrigin
 }
 
 extension CaseOriginResolving {
     func resolveMainCase(anchorContext: MovementContext,
                          anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
         throw CaseOriginResolutionError.noReference
+    }
+
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard,
+                         evidenceMovement: CaseMovement?) async throws -> ResolvedCaseOrigin {
+        try await resolveMainCase(anchorContext: anchorContext, anchorCard: anchorCard)
     }
 }
 
@@ -64,7 +73,8 @@ struct OriginCourtResolution: Sendable {
 }
 
 /// Восстанавливает первую инстанцию по УИД и вкладке
-/// «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ». Никогда не сопоставляет по сторонам.
+/// «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ». Стороны могут сузить поиск только при
+/// независимом подтверждении продолжения официальными актами.
 actor CaseOriginResolver {
     private let districtResolver: DistrictCourtResolver
     private let magistrateResolver: MagistrateCourtResolver
@@ -187,6 +197,13 @@ actor CaseOriginResolver {
     /// проверку, а совпадение допускается ровно одно.
     func resolveMainCase(anchorContext: MovementContext,
                          anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        try await resolveMainCase(anchorContext: anchorContext, anchorCard: anchorCard,
+                                  evidenceMovement: nil)
+    }
+
+    func resolveMainCase(anchorContext: MovementContext,
+                         anchorCard: CaseCard,
+                         evidenceMovement: CaseMovement?) async throws -> ResolvedCaseOrigin {
         guard let preliminary = CaseIndexClassifier.classify(
             caseNumber: anchorContext.caseNumber, courtLevel: anchorContext.courtLevel,
             branch: anchorContext.branch),
@@ -301,14 +318,186 @@ actor CaseOriginResolver {
             }
         }
         if incomplete { throw CaseOriginResolutionError.incompleteCandidates }
-        guard matches.count == 1, let match = matches.values.first else {
-            throw matches.isEmpty ? CaseOriginResolutionError.notFound
-                                  : CaseOriginResolutionError.ambiguous
+        if matches.count > 1 { throw CaseOriginResolutionError.ambiguous }
+        if let match = matches.values.first {
+            return ResolvedCaseOrigin(court: court, branch: anchorContext.branch,
+                                      region: anchorContext.region,
+                                      courtCode: anchorContext.courtCode,
+                                      cartoteka: match.cartoteka, result: match.result,
+                                      card: match.card)
         }
-        return ResolvedCaseOrigin(court: court, branch: anchorContext.branch,
-                                  region: anchorContext.region, courtCode: anchorContext.courtCode,
-                                  cartoteka: match.cartoteka, result: match.result,
-                                  card: match.card)
+        return try await resolveContinuedMainCase(
+            anchorContext: anchorContext, anchorCard: anchorCard,
+            evidenceMovement: evidenceMovement, court: court,
+            cartotekas: cartotekas, expectedSRV: anchorSRV)
+    }
+
+    /// Последовательная регистрация с новым УИД допустима только после
+    /// доказанного возврата в первую инстанцию и совпадения независимых
+    /// реквизитов двух полных карточек. Поиск по ФИО лишь находит кандидатов.
+    private func resolveContinuedMainCase(
+        anchorContext: MovementContext, anchorCard: CaseCard,
+        evidenceMovement: CaseMovement?, court: Court,
+        cartotekas: [Cartoteka], expectedSRV: String
+    ) async throws -> ResolvedCaseOrigin {
+        guard let movement = evidenceMovement,
+              let remandDate = CaseLifecycleResolver.confirmedFirstInstanceRemandDate(
+                in: movement),
+              let anchorReceipt = anchorCard.receiptDate.flatMap(DateUtil.parse),
+              anchorCard.parties.plaintiffs.count == 1,
+              let plaintiff = Self.nonEmpty(anchorCard.parties.plaintiffs[0]),
+              Self.nonEmpty(anchorCard.category) != nil
+        else { throw CaseOriginResolutionError.notFound }
+
+        let calendar = Calendar(identifier: .gregorian)
+        let start = DateUtil.startOfDay(remandDate)
+        guard let end = calendar.date(byAdding: .day, value: 180, to: start)
+        else { throw CaseOriginResolutionError.notFound }
+
+        var matches: [String: ResolvedOriginCard] = [:]
+        var incomplete = false
+        for candidateCart in cartotekas {
+            try Task.checkCancellation()
+            let rows = try await regularProvider.search(
+                court: court, cartoteka: candidateCart, field: .name, value: plaintiff)
+            for row in rows {
+                try Task.checkCancellation()
+                guard Self.continuedMainNumber(
+                    row.caseNumber, courtLevel: court.level,
+                    branch: anchorContext.branch, cartoteka: candidateCart)
+                else { continue }
+                guard let rowReceipt = row.receiptDate.flatMap(DateUtil.parse) else {
+                    incomplete = true
+                    continue
+                }
+                let receipt = DateUtil.startOfDay(rowReceipt)
+                guard receipt >= start, receipt <= end else { continue }
+                guard let sourceKey = Self.validatedSourceKey(
+                    row: row, court: court, cartoteka: candidateCart,
+                    expectedSRV: expectedSRV)
+                else {
+                    incomplete = true
+                    continue
+                }
+
+                let card: CaseCard
+                do {
+                    card = try await fetchCard(
+                        row: row, court: court, cartoteka: candidateCart,
+                        provider: regularProvider)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as URLError where error.code == .cancelled {
+                    throw error
+                } catch let error as SudrfError {
+                    switch error {
+                    case .captchaRequired, .transientNetworkError,
+                         .caseCardTemporarilyUnavailable, .sourceMaintenance:
+                        throw error
+                    default:
+                        incomplete = true
+                        continue
+                    }
+                } catch {
+                    incomplete = true
+                    continue
+                }
+
+                guard Self.continuedMainNumber(
+                    card.caseNumber ?? row.caseNumber, courtLevel: court.level,
+                    branch: anchorContext.branch, cartoteka: candidateCart),
+                      Self.samePublishedCaseNumber(
+                        CaseNumberPresentation.primary(card.caseNumber ?? ""),
+                        CaseNumberPresentation.primary(row.caseNumber)),
+                      card.sessions.contains(where: Self.isAcceptanceSession),
+                      Self.sameCoreParties(anchorCard.parties, card.parties),
+                      Self.sameIdentityText(anchorCard.category, card.category),
+                      let cardReceipt = card.receiptDate.flatMap(DateUtil.parse),
+                      DateUtil.startOfDay(cardReceipt) == receipt,
+                      Self.originalFilingDates(in: card) == [DateUtil.startOfDay(anchorReceipt)]
+                else { continue }
+
+                let match = ResolvedOriginCard(
+                    court: court, cartoteka: candidateCart, result: row, card: card)
+                if let existing = matches[sourceKey],
+                   !Self.samePublishedCaseNumber(
+                    existing.card.caseNumber, match.card.caseNumber) {
+                    throw CaseOriginResolutionError.ambiguous
+                }
+                matches[sourceKey] = match
+            }
+        }
+        if incomplete { throw CaseOriginResolutionError.incompleteCandidates }
+        guard matches.count == 1, let match = matches.values.first else {
+            throw matches.isEmpty ? CaseOriginResolutionError.notFound : .ambiguous
+        }
+        return ResolvedCaseOrigin(
+            court: court, branch: anchorContext.branch, region: anchorContext.region,
+            courtCode: anchorContext.courtCode, cartoteka: match.cartoteka,
+            result: match.result, card: match.card)
+    }
+
+    private static func continuedMainNumber(
+        _ published: String, courtLevel: CourtLevel,
+        branch: CourtBranch, cartoteka: Cartoteka
+    ) -> Bool {
+        let primary = CaseNumberPresentation.primary(published)
+        guard let info = CaseIndexClassifier.classify(
+            caseNumber: primary, courtLevel: courtLevel, branch: branch),
+              info.cardRole == .firstInstanceCase
+        else { return false }
+        return CartotekaRegistry.matches(caseNumber: primary, level: courtLevel)
+            .contains { $0.id == cartoteka.id }
+    }
+
+    private static func isAcceptanceSession(_ session: CaseSession) -> Bool {
+        let value = identityText(session.event + " " + (session.result ?? ""))
+        return value.contains("принят") && value.contains("производств")
+    }
+
+    private static func sameCoreParties(_ lhs: CaseParties, _ rhs: CaseParties) -> Bool {
+        let leftPlaintiffs = Set(lhs.plaintiffs.map(identityText))
+        let rightPlaintiffs = Set(rhs.plaintiffs.map(identityText))
+        let leftDefendants = Set(lhs.defendants.map(identityText))
+        let rightDefendants = Set(rhs.defendants.map(identityText))
+        return !leftPlaintiffs.isEmpty && !leftDefendants.isEmpty
+            && leftPlaintiffs == rightPlaintiffs && leftDefendants == rightDefendants
+    }
+
+    private static func sameIdentityText(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = nonEmpty(lhs), let rhs = nonEmpty(rhs) else { return false }
+        return identityText(lhs) == identityText(rhs)
+    }
+
+    private static func identityText(_ source: String) -> String {
+        source.lowercased().replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "российской федерации", with: "рф")
+            .replacingOccurrences(of: "российская федерация", with: "рф")
+            .replacingOccurrences(
+                of: "федеральное государственное бюджетное учреждение высшего образования",
+                with: "фгбоу во")
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .joined(separator: " ")
+    }
+
+    private static func originalFilingDates(in card: CaseCard) -> Set<Date> {
+        let texts = [card.actText].compactMap { $0 } + card.acts.map(\.body)
+        guard let regex = try? NSRegularExpression(
+            pattern: #"срока?\s+обращения\s+в\s+суд\s*\(?\s*(\d{2}[./]\d{2}[./]\d{4})\s*\)?"#,
+            options: [.caseInsensitive])
+        else { return [] }
+        var dates = Set<Date>()
+        for text in texts {
+            let range = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: range) where match.numberOfRanges > 1 {
+                guard let valueRange = Range(match.range(at: 1), in: text),
+                      let date = DateUtil.parse(
+                        String(text[valueRange]).replacingOccurrences(of: "/", with: "."))
+                else { continue }
+                dates.insert(DateUtil.startOfDay(date))
+            }
+        }
+        return dates
     }
 
     private struct MainRegistration {

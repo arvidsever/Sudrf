@@ -548,7 +548,8 @@ final class TrackedCaseRepairCoordinator {
             }
             if Self.mayBecomeMainCase(effectiveContext) {
                 let origin = try await originResolver.resolveMainCase(
-                    anchorContext: effectiveContext, anchorCard: anchorCard)
+                    anchorContext: effectiveContext, anchorCard: anchorCard,
+                    evidenceMovement: rec.movement)
                 guard let current = try store.recordForMutation(forKey: anchorKey),
                       current.context == effectiveContext else { return }
                 rec = current

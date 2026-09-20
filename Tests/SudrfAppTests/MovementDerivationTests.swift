@@ -2026,11 +2026,46 @@ final class MovementDerivationTests: XCTestCase {
             movement: genericOnly, production: .crim,
             deadlines: [], today: today).stage, .appeal)
 
+        var cardDatedPrimary = remandMovement
+        cardDatedPrimary.acts[0].date = "—"
+        cardDatedPrimary.instances[0].sourceEvidence = .init(
+            receiptDate: "20.03.2026", decisionDate: "23.03.2026")
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: cardDatedPrimary, production: .crim,
+            deadlines: [], today: today).stage, .first)
+
+        var cardDatedSecondary = cardDatedPrimary
+        cardDatedSecondary.instances[0].actID = "issue-285-primary"
+        cardDatedSecondary.instances[0].actIDs = ["issue-285-primary", remandAct.id]
+        cardDatedSecondary.acts.insert(CaseAct(
+            id: "issue-285-primary", title: "Апелляционное постановление",
+            date: "—", courtShort: remandAppeal.court,
+            instanceLevel: .appeal), at: 0)
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: cardDatedSecondary, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        var cardDatedPrimaryAmongMultiple = cardDatedSecondary
+        cardDatedPrimaryAmongMultiple.instances[0].actID = remandAct.id
+        cardDatedPrimaryAmongMultiple.instances[0].actIDs = [
+            remandAct.id, "issue-285-primary",
+        ]
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: cardDatedPrimaryAmongMultiple, production: .crim,
+            deadlines: [], today: today).stage, .first)
+
         var unlinked = remandMovement
         unlinked.instances[0].actID = nil
         unlinked.instances[0].actIDs = nil
         XCTAssertEqual(CaseLifecycleResolver.resolve(
             movement: unlinked, production: .crim,
+            deadlines: [], today: today).stage, .appeal)
+
+        var withoutEvidenceDate = cardDatedPrimary
+        withoutEvidenceDate.instances[0].sourceEvidence = .init(
+            receiptDate: "20.03.2026", decisionDate: "—")
+        XCTAssertEqual(CaseLifecycleResolver.resolve(
+            movement: withoutEvidenceDate, production: .crim,
             deadlines: [], today: today).stage, .appeal)
 
         var reactivated = remandMovement

@@ -1013,17 +1013,27 @@ enum CaseLifecycleResolver {
             guard isReview(source.level) else { return source }
             var instance = source
             for actID in source.linkedActIDs {
-                guard let act = acts[actID], act.instanceLevel == source.level,
-                      DateUtil.parse(act.date) != nil,
+                guard let act = acts[actID], act.instanceLevel == source.level else { continue }
+                let actDate: String?
+                if DateUtil.parse(act.date) != nil {
+                    actDate = act.date
+                } else if source.actID == actID || source.linkedActIDs.count == 1,
+                          let decisionDate = source.sourceEvidence?.decisionDate,
+                          DateUtil.parse(decisionDate) != nil {
+                    actDate = decisionDate
+                } else {
+                    actDate = nil
+                }
+                guard let actDate,
                       let body = movement.actBodies[actID],
                       let disposition = operativeDisposition(in: body),
                       let dispositionSignal = signal(in: disposition),
                       isConcluding(dispositionSignal),
                       !instance.sessions.contains(where: {
-                          $0.date == act.date && normalized($0.result ?? "") == normalized(disposition)
+                          $0.date == actDate && normalized($0.result ?? "") == normalized(disposition)
                       }) else { continue }
                 instance.sessions.append(CaseSession(
-                    date: act.date,
+                    date: actDate,
                     event: "Резолютивная часть опубликованного акта",
                     result: disposition))
             }

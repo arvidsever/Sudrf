@@ -278,6 +278,27 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.lowerCourt?.caseNumber, "4-111/2019")
     }
 
+    func testIssue312AppealCardKeepsDecisionDateAndLinkedRemandAct() throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo"
+                + "&srv_num=1&name_op=case&case_id=33631846"
+                + "&case_uid=3e2fa88d-bd5a-41f8-89d4-b557ef48a55c&delo_id=4&new=4"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("issue312_appeal_remand"), cardURL: url)
+
+        XCTAssertEqual(card.caseNumber, "10-25/2026")
+        XCTAssertEqual(card.uid, "11MS0006-01-2026-000251-54")
+        XCTAssertEqual(card.receiptDate, "05.03.2026")
+        XCTAssertEqual(card.decisionDate, "23.03.2026")
+        XCTAssertEqual(card.result, "Вынесено другое ПОСТАНОВЛЕНИЕ")
+        XCTAssertEqual(card.sessions.count, 6)
+        XCTAssertEqual(card.sessions.last, CaseSession(
+            date: "27.03.2026", event: "Дело сдано в отдел судебного делопроизводства"))
+        XCTAssertEqual(card.acts.first?.label, "Судебный акт #1 (Постановление)")
+        XCTAssertTrue(card.actText?.contains(
+            "направить на новое судебное рассмотрение мировому судье Пушкинского судебного участка") == true)
+    }
+
     func testComplaintMetadataRejectsAmbiguousTabsAndConflictingValues() throws {
         let duplicatedTabs = try CaseCardParser.parse(html: """
         <div class="casenumber">ДЕЛО № 16-1/2026</div>

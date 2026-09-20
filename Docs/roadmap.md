@@ -30,7 +30,7 @@
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.24 | [#288](https://github.com/arvidsever/Sudrf/issues/288), [#287](https://github.com/arvidsever/Sudrf/issues/287) | Новая регистрация после отмены возврата обнаруживается по составному официальному доказательству и атомарно продолжает прежнюю цепочку. | — |
+| 0.58.24 | [#288](https://github.com/arvidsever/Sudrf/issues/288), [#287](https://github.com/arvidsever/Sudrf/issues/287) | Новая регистрация после отмены возврата обнаруживается по составному официальному доказательству и атомарно продолжает прежнюю цепочку. | [PR #314](https://github.com/arvidsever/Sudrf/pull/314) |
 | 0.58.23 | [#312](https://github.com/arvidsever/Sudrf/issues/312) | Дата основного апелляционного акта берётся из полной карточки; старые точные связи безопасно используют дату источника. | [PR #313](https://github.com/arvidsever/Sudrf/pull/313) |
 | 0.58.22 | [#285](https://github.com/arvidsever/Sudrf/issues/285), [#286](https://github.com/arvidsever/Sudrf/issues/286), [#289](https://github.com/arvidsever/Sudrf/issues/289) | Завершённые апелляции определяются по точному исходу карточки и резолютивной части связанного акта. | [#311](https://github.com/arvidsever/Sudrf/pull/311) |
 | 0.58.21 | [#309](https://github.com/arvidsever/Sudrf/issues/309) | Будущее заседание последующей кассации имеет приоритет над неоднозначной историей апелляций. | [#310](https://github.com/arvidsever/Sudrf/pull/310) |

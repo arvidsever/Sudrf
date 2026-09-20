@@ -44,11 +44,16 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
 
         for context in contexts {
             let movement = try XCTUnwrap(full[context.caseNumber])
-            var stale = MovementDerivation.snapshot(from: movement, context: context, today: today)
+            var storedMovement = movement
+            if context.caseNumber == "10-25/2026" {
+                storedMovement.acts[0].date = "—"
+            }
+            var stale = MovementDerivation.snapshot(
+                from: storedMovement, context: context, today: today)
             stale.stageRaw = CaseStageKind.appeal.rawValue
             stale.stageTag = "Апелляция"
             stale.statusText = "В производстве"
-            stale.semanticProjectionVersion = 3
+            stale.semanticProjectionVersion = 4
             stale.deadlines.append(StoredDeadline(
                 kind: "custom", what: "Пользовательский срок", basis: "fixture",
                 calLabel: "ручной",
@@ -56,15 +61,29 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
                 statusRaw: DeadlineStatus.confirmed.rawValue,
                 occurrenceKey: "\(context.caseNumber)-manual"))
             let record = try store.upsert(
-                context: context, snapshot: stale, movement: movement,
+                context: context, snapshot: stale, movement: storedMovement,
                 collections: ["Регрессия 285-286-289"])
             let seed = CaseEvent.make(
                 kind: .complaintRegistered, occurrence: ["\(context.caseNumber)-seed"],
                 observedAt: Date(timeIntervalSinceReferenceDate: 1), evidence: .init())
-            record.eventJournal = CaseEventJournal(derivationVersion: 3, events: [seed])
+            record.eventJournal = CaseEventJournal(derivationVersion: 4, events: [seed])
             keys[context.caseNumber] = record.key
         }
         try store.save()
+
+        let issue285Key = try XCTUnwrap(keys["10-25/2026"])
+        let partialOnly = AppealDispositionMovements(full: partial, partial: partial)
+        let partialCenter = RefreshCenter(store: store, client: SudrfClient(),
+                                          serviceBuilder: { _ in partialOnly })
+        guard case .partial = await partialCenter.refresh(key: issue285Key)?.value.outcome else {
+            return XCTFail("старый movement № 285 должен пережить partial refresh")
+        }
+        let repairedFromEvidence = try XCTUnwrap(store.record(forKey: issue285Key))
+        XCTAssertEqual(repairedFromEvidence.snapshot?.stageRaw, CaseStageKind.first.rawValue)
+        XCTAssertEqual(repairedFromEvidence.movement?.acts.first?.date, "—")
+        XCTAssertEqual(repairedFromEvidence.snapshot?.semanticProjectionVersion, 5)
+        XCTAssertEqual(repairedFromEvidence.eventJournal?.derivationVersion, 5)
+        XCTAssertEqual(repairedFromEvidence.eventJournal?.events.count, 1)
 
         let service = AppealDispositionMovements(full: full, partial: partial)
         let center = RefreshCenter(store: store, client: SudrfClient(),
@@ -115,7 +134,8 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
             }
             XCTAssertEqual(record.snapshot?.inForce, expected.2, number)
             XCTAssertEqual(record.collectionNames, ["Регрессия 285-286-289"])
-            XCTAssertEqual(record.eventJournal?.derivationVersion, 4)
+            XCTAssertEqual(record.snapshot?.semanticProjectionVersion, 5)
+            XCTAssertEqual(record.eventJournal?.derivationVersion, 5)
             XCTAssertEqual(record.eventJournal?.events.count, 1)
             XCTAssertEqual(record.snapshot?.deadlines.first {
                 $0.occurrenceKey == "\(number)-manual"
@@ -180,7 +200,9 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
                             result: "Вынесено другое ПОСТАНОВЛЕНИЕ"),
                 CaseSession(date: "27.03.2026",
                             event: "Дело сдано в отдел судебного делопроизводства"),
-            ], actID: "issue-285-act")
+            ], actID: "issue-285-act", sourceEvidence: .init(
+                receiptDate: "05.03.2026", decisionDate: "23.03.2026",
+                judicialUID: "11MS0006-01-2026-000251-54"))
         let issue285Act = CaseAct(
             id: "issue-285-act", title: "Апелляционное постановление",
             date: "23.03.2026", courtShort: issue285Appeal.court, instanceLevel: .appeal)

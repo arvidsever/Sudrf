@@ -786,6 +786,41 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(movement.acts.first?.title, "Апелляционное определение")
     }
 
+    func testIssue312AppealAnchorUsesFetchedCardDecisionDate() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo"
+                + "&srv_num=1&name_op=case&case_id=33631846"
+                + "&case_uid=3e2fa88d-bd5a-41f8-89d4-b557ef48a55c&delo_id=4&new=4"))
+        let card = try CaseCardParser.parse(
+            html: try fixture("issue312_appeal_remand"), cardURL: url)
+        let mock = MockClient(firstCardID: "33631846", firstCard: card,
+                              higherResults: [], higherCards: [:],
+                              homeDomain: districtCourt().domain)
+        let service = MovementService(client: mock, higherCourtDomains: [],
+                                      baseInstanceLevel: .appeal)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "u2"))
+        let sparse = CaseSearchResult(
+            caseNumber: "10-25/2026", caseID: "33631846",
+            caseUID: "3e2fa88d-bd5a-41f8-89d4-b557ef48a55c")
+
+        let movement = try await service.movement(
+            for: sparse, court: districtCourt(), cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.first?.level, .appeal)
+        XCTAssertEqual(movement.acts.first?.date, "23.03.2026")
+        XCTAssertEqual(movement.instances.first?.sourceEvidence?.decisionDate, "23.03.2026")
+        XCTAssertTrue(movement.actBodies.values.first?.contains(
+            "направить на новое судебное рассмотрение мировому судье Пушкинского судебного участка") == true)
+
+        let staleListing = CaseSearchResult(
+            caseNumber: sparse.caseNumber, receiptDate: "01.03.2026",
+            decisionDate: "22.03.2026", caseID: sparse.caseID,
+            caseUID: sparse.caseUID)
+        let refreshed = try await service.movement(
+            for: staleListing, court: districtCourt(), cartoteka: cart)
+        XCTAssertEqual(refreshed.acts.first?.date, "23.03.2026")
+    }
+
     func testMSAdmjCardOverridesLegacyFirstLevel() async throws {
         let uid = "11MS0062-01-2025-000100-10"
         let card = CaseCard(rawText: "", actText: "Решение по жалобе",

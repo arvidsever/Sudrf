@@ -555,7 +555,8 @@ public actor MovementService: MovementProviding {
 
         if let actText = baseCard.actText {
             let actID = "act_\(court.domain)"
-            let date = base.decisionDate ?? base.receiptDate ?? "—"
+            let date = baseCard.decisionDate ?? base.decisionDate
+                ?? baseCard.receiptDate ?? base.receiptDate ?? "—"
             acts.append(CaseAct(id: actID,
                                 title: Self.actTitle(cartotekaID: cartoteka.id,
                                                      level: effectiveBaseLevel),

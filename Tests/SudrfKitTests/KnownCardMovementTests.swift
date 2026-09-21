@@ -60,6 +60,254 @@ final class KnownCardMovementTests: XCTestCase {
                  uid: Self.uid, caseNumber: number, decisionDate: "01.09.2026")
     }
 
+    private func directKnownCard(url: URL, domain: String = "3kas.sudrf.ru",
+                                 number: String = "8Г-10837/2026") -> KnownCard {
+        KnownCard(domain: domain,
+                  courtTitle: "Третий кассационный суд общей юрисдикции",
+                  caseID: "", caseUID: "", deloID: "2800001", new: "2800001",
+                  caseNumber: number, levelRaw: CaseInstance.Level.cassation.rawValue,
+                  cartotekaID: "g3", sourceURL: url)
+    }
+
+    func testKnownCardWithoutSourceURLStillDecodes() throws {
+        let json = """
+        {"domain":"3kas.sudrf.ru","courtTitle":"Третий кассационный суд общей юрисдикции",\
+        "caseID":"1","caseUID":"guid","deloID":"2800001","new":"2800001",\
+        "caseNumber":"8Г-1/2026","levelRaw":"cassation","cartotekaID":"g3"}
+        """
+
+        let decoded = try JSONDecoder().decode(KnownCard.self, from: Data(json.utf8))
+
+        XCTAssertNil(decoded.sourceURL)
+    }
+
+    func testExactKnownCardURLWithSingleIdentifierIsFetchedAndEffectiveURLIsStored() async throws {
+        let requested = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&_uid=legacy"
+            + "&_deloId=2800001&_new=2800001&srv_num=1"))
+        let effective = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case&_uid=legacy"
+            + "&_deloId=2800001&_new=2800001&srv_num=2"))
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            directResults: [requested.absoluteString:
+                SudrfCaseCardFetchResult(card: cassationCard(), responseURL: effective)])
+        let service = MovementService(client: mock, knownCards: [directKnownCard(url: requested)])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+        let directFetchCalls = await mock.directFetchCalls
+
+        XCTAssertEqual(movement.instances.first { $0.level == .cassation }?.sourceURL, effective)
+        XCTAssertEqual(directFetchCalls, [requested])
+    }
+
+    func testKnownCardRejectsExactURLFromAnotherCourt() async throws {
+        let foreign = try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=5&new=5"))
+        let mock = ScriptedClient(cards: ["30636693": firstCard(uid: nil)])
+        let service = MovementService(client: mock, knownCards: [directKnownCard(url: foreign)])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+        let directFetchCalls = await mock.directFetchCalls
+
+        XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["3kas.sudrf.ru"])
+        XCTAssertTrue(directFetchCalls.isEmpty)
+    }
+
+    func testKnownCardRejectsEffectiveRedirectToAnotherCourt() async throws {
+        let requested = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=2800001&new=2800001"))
+        let redirected = try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=5&new=5"))
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            directResults: [requested.absoluteString:
+                .init(card: cassationCard(), responseURL: redirected)])
+        let service = MovementService(client: mock, knownCards: [directKnownCard(url: requested)])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+
+        XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["3kas.sudrf.ru"])
+    }
+
+    func testExactKnownCardFailuresStayPartialAndDoNotPublishEmptyCard() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=2800001&new=2800001"))
+        let failures: [SudrfError] = [
+            .http(status: 404), .http(status: 410),
+            .sourceMaintenance(domain: "3kas.sudrf.ru"),
+            .transientNetworkError(domain: "3kas.sudrf.ru", code: .timedOut, attempt: 3),
+            .parsing("карточка")
+        ]
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        for failure in failures {
+            let mock = ScriptedClient(
+                cards: ["30636693": firstCard(uid: nil)],
+                directErrors: [url.absoluteString: failure])
+            let service = MovementService(
+                client: mock, knownCards: [directKnownCard(url: url)])
+
+            let movement = try await service.movement(
+                for: base(), court: districtCourt(), cartoteka: cart)
+
+            XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+            XCTAssertEqual(movement.incompleteHigherCourtDomains, ["3kas.sudrf.ru"])
+        }
+    }
+
+    func testExactKnownCardCancellationPropagates() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=2800001&new=2800001"))
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            cancelledDirectURLs: [url.absoluteString])
+        let service = MovementService(client: mock, knownCards: [directKnownCard(url: url)])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        do {
+            _ = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+            XCTFail("отмена direct fetch не должна превращаться в partial")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testOneExactCardFailureDoesNotBlockSiblingAndCacheRestoresOnlyMissingRound() async throws {
+        func url(_ id: String) throws -> URL {
+            try XCTUnwrap(URL(string:
+                "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+                + "&case_id=\(id)&case_uid=\(id)-guid&delo_id=2800001&new=2800001"))
+        }
+        let freshURL = try url("fresh")
+        let unavailableURL = try url("unavailable")
+        let freshCard = CaseCard(
+            rawText: "", actText: nil,
+            sessions: [CaseSession(date: "21.09.2026", event: "Новое заседание")],
+            result: "Свежий результат", caseNumber: "8Г-238/2026")
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            directResults: [freshURL.absoluteString: .init(
+                card: freshCard, responseURL: freshURL)],
+            directErrors: [unavailableURL.absoluteString: .http(status: 404)])
+        let service = MovementService(client: mock, knownCards: [
+            directKnownCard(url: freshURL, number: "8Г-238/2026"),
+            directKnownCard(url: unavailableURL, number: "8Г-239/2026")
+        ])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let partial = try await service.movement(
+            for: base(), court: districtCourt(), cartoteka: cart)
+        let cachedMissing = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-239/2026", judge: "Старый судья",
+            domain: "3kas.sudrf.ru", foundByUID: true,
+            result: "Сохранённый результат",
+            sessions: [CaseSession(date: "01.09.2026", event: "Старое заседание")],
+            sourceURL: unavailableURL)
+        let cached = CaseMovement(
+            uid: "", caseNumber: base().caseNumber, inForce: false,
+            instances: [cachedMissing], complaints: [:], acts: [])
+
+        let merged = MovementCachePolicy.merge(fresh: partial, cached: cached)
+
+        XCTAssertEqual(partial.incompleteHigherCourtDomains, ["3kas.sudrf.ru"])
+        XCTAssertEqual(merged.instances.first { $0.caseNumber == "8Г-238/2026" }?.result,
+                       "Свежий результат")
+        XCTAssertEqual(merged.instances.first { $0.caseNumber == "8Г-239/2026" }?.result,
+                       "Сохранённый результат")
+        XCTAssertEqual(merged.instances.filter { $0.level == .cassation }.count, 2)
+    }
+
+    func testKnownCardAcceptsEffectiveRedirectToAliasOfSameCourt() async throws {
+        let requested = try XCTUnwrap(URL(string:
+            "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=5&new=5"))
+        let effective = try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=5&new=5"))
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            directResults: [requested.absoluteString:
+                .init(card: cassationCard(), responseURL: effective)])
+        let service = MovementService(client: mock, knownCards: [
+            directKnownCard(url: requested, domain: "vs--komi.sudrf.ru")
+        ])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.first { $0.level == .cassation }?.sourceURL, effective)
+    }
+
+    func testSearchAndExactKnownCardWithSameLocatorAreNotDuplicated() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=24352048&case_uid=guid-kas&delo_id=5&new=2800001"))
+        let row = CaseSearchResult(caseNumber: "8Г-10837/2026", caseID: "24352048",
+                                   caseUID: "guid-kas")
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(), "24352048": cassationCard()],
+            searchResults: ["3kas.sudrf.ru/g3": [row]])
+        let service = MovementService(client: mock, higherCourtDomains: ["3kas.sudrf.ru"],
+                                      knownCards: [directKnownCard(
+                                        url: url, number: "8Г-10837/2026 ~ alias")])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+        let directFetchCalls = await mock.directFetchCalls
+
+        XCTAssertEqual(movement.instances.filter { $0.level == .cassation }.count, 1)
+        XCTAssertTrue(directFetchCalls.isEmpty)
+    }
+
+    func testDifferentRoundsWithDifferentNativeLocatorsAreBothKept() async throws {
+        func url(_ uid: String) throws -> URL {
+            try XCTUnwrap(URL(string:
+                "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+                + "&case_id=1&case_uid=\(uid)&delo_id=2800001&new=2800001"))
+        }
+        let firstURL = try url("round-1")
+        let secondURL = try url("round-2")
+        let firstRound = CaseCard(rawText: "", actText: nil, result: "Рассмотрено",
+                                  caseNumber: "8Г-1/2026")
+        let secondRound = CaseCard(rawText: "", actText: nil, result: "Рассмотрено",
+                                   caseNumber: "8Г-2/2026")
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard(uid: nil)],
+            directResults: [
+                firstURL.absoluteString: .init(card: firstRound, responseURL: firstURL),
+                secondURL.absoluteString: .init(card: secondRound, responseURL: secondURL)
+            ])
+        let service = MovementService(client: mock, knownCards: [
+            directKnownCard(url: firstURL, number: "8Г-1/2026"),
+            directKnownCard(url: secondURL, number: "8Г-2/2026")
+        ])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(for: base(), court: districtCourt(),
+                                                  cartoteka: cart)
+        let directFetchCalls = await mock.directFetchCalls
+
+        XCTAssertEqual(movement.instances.filter { $0.level == .cassation }.count, 2)
+        XCTAssertEqual(Set(directFetchCalls), Set([firstURL, secondURL]))
+    }
+
     // MARK: Капча → прямая ссылка вместо заглушки
 
     func testCaptchaRescuedByKnownCard() async throws {
@@ -301,16 +549,26 @@ private actor ScriptedClient: CaseProviding {
     private let searchResults: [String: [CaseSearchResult]]
     private let captchaDomains: Set<String>
     private let captchaCartotekas: Set<String>
+    private let directResults: [String: SudrfCaseCardFetchResult]
+    private let directErrors: [String: SudrfError]
+    private let cancelledDirectURLs: Set<String>
     private(set) var searchCalls: [String] = []
+    private(set) var directFetchCalls: [URL] = []
 
     init(cards: [String: CaseCard],
          searchResults: [String: [CaseSearchResult]] = [:],
          captchaDomains: Set<String> = [],
-         captchaCartotekas: Set<String> = []) {
+         captchaCartotekas: Set<String> = [],
+         directResults: [String: SudrfCaseCardFetchResult] = [:],
+         directErrors: [String: SudrfError] = [:],
+         cancelledDirectURLs: Set<String> = []) {
         self.cards = cards
         self.searchResults = searchResults
         self.captchaDomains = captchaDomains
         self.captchaCartotekas = captchaCartotekas
+        self.directResults = directResults
+        self.directErrors = directErrors
+        self.cancelledDirectURLs = cancelledDirectURLs
     }
 
     func search(court: Court, cartoteka: Cartoteka,
@@ -324,6 +582,16 @@ private actor ScriptedClient: CaseProviding {
 
     func fetchCard(url: URL) async throws -> CaseCard {
         throw SudrfError.http(status: 404)   // в этих сценариях путь по ссылке не используется
+    }
+
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        directFetchCalls.append(url)
+        if cancelledDirectURLs.contains(url.absoluteString) { throw CancellationError() }
+        if let error = directErrors[url.absoluteString] { throw error }
+        guard let result = directResults[url.absoluteString] else {
+            throw SudrfError.http(status: 404)
+        }
+        return result
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,

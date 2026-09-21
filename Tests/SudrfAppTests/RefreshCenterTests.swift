@@ -2550,7 +2550,15 @@ final class RefreshCenterTests: XCTestCase {
         var original = try XCTUnwrap(record.context)
         original.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=5&new=5"
         record.context = original
-        record.movement = successMV
+        var cached = successMV!
+        let savedReviewURL = URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_uid=review-guid-238&delo_id=2800001&new=2800001")!
+        cached.instances.append(CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "88-238/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil, sessions: [], sourceURL: savedReviewURL))
+        record.movement = cached
         record.snapshot = MovementDerivation.snapshot(from: successMV, context: original)
         let previousSuccess = Date(timeIntervalSince1970: 1_700_000_000)
         record.movementFetchedAt = previousSuccess
@@ -2559,8 +2567,12 @@ final class RefreshCenterTests: XCTestCase {
         var partial = successMV!
         partial.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
         let service = ParserThenMovement(partial)
+        var builtContexts: [MovementContext] = []
         let center = RefreshCenter(store: store, client: SudrfClient(),
-                                   serviceBuilder: { _ in service })
+                                   serviceBuilder: { context in
+            builtContexts.append(context)
+            return service
+        })
         center.recoverCard = { context in
             var verified = context
             verified.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0"
@@ -2581,6 +2593,12 @@ final class RefreshCenterTests: XCTestCase {
                        "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0")
         XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, previousSuccess)
         XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertEqual(builtContexts.count, 2)
+        XCTAssertTrue(builtContexts.allSatisfy { context in
+            context.knownCards?.contains {
+                $0.caseUID == "review-guid-238" && $0.sourceURL == savedReviewURL
+            } == true
+        }, "resolved-card retry must keep exact saved higher-court inputs")
     }
 
     func testPartialMaterialRefreshKeepsCachedHistoryAndLastSuccess() async throws {

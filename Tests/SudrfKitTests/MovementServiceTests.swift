@@ -1246,25 +1246,41 @@ private actor SavedUIDFallbackClient: CaseProviding {
     let higherRow: CaseSearchResult
     let higherCard: CaseCard
     let baseError: SudrfError
+    let higherSearchError: SudrfError?
+    let directResults: [String: SudrfCaseCardFetchResult]
     private(set) var searchLocators: [String] = []
+    private(set) var directFetchURLs: [URL] = []
 
     init(baseCardID: String, higherDomain: String, higherRow: CaseSearchResult,
-         higherCard: CaseCard, baseError: SudrfError) {
+         higherCard: CaseCard, baseError: SudrfError,
+         higherSearchError: SudrfError? = nil,
+         directResults: [String: SudrfCaseCardFetchResult] = [:]) {
         self.baseCardID = baseCardID
         self.higherDomain = higherDomain
         self.higherRow = higherRow
         self.higherCard = higherCard
         self.baseError = baseError
+        self.higherSearchError = higherSearchError
+        self.directResults = directResults
     }
 
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult] {
         searchLocators.append(court.domain + "/" + cartoteka.id)
+        if court.domain == higherDomain, let higherSearchError { throw higherSearchError }
         return court.domain == higherDomain ? [higherRow] : []
     }
 
     func fetchCard(url: URL) async throws -> CaseCard {
         throw SudrfError.http(status: 404)
+    }
+
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        directFetchURLs.append(url)
+        guard let result = directResults[url.absoluteString] else {
+            throw SudrfError.http(status: 404)
+        }
+        return result
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,
@@ -1352,6 +1368,47 @@ final class MovementServiceSavedUIDFallbackTests: XCTestCase {
         XCTAssertNil(movement.instances.first?.transientError)
         let locators = await client.searchLocators
         XCTAssertEqual(locators, [higherDomain + "/g2"])
+    }
+
+    func testUnavailableBaseAndHigherSearchStillRefreshExactSavedCard() async throws {
+        let higherRow = CaseSearchResult(caseNumber: "33-1/2026")
+        let directURL = try XCTUnwrap(URL(string:
+            "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_uid=direct-guid&delo_id=5&new=5"))
+        let higherCard = CaseCard(
+            rawText: "", actText: "ОПРЕДЕЛИЛ: оставить жалобу без удовлетворения.",
+            sessions: [CaseSession(date: "20.09.2026", event: "Судебное заседание")],
+            result: "Оставлено без изменения", caseNumber: higherRow.caseNumber,
+            decisionDate: "20.09.2026")
+        let client = SavedUIDFallbackClient(
+            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+            higherCard: higherCard,
+            baseError: .sourceMaintenance(domain: districtCourt().domain),
+            higherSearchError: .sourceMaintenance(domain: higherDomain),
+            directResults: [directURL.absoluteString: .init(
+                card: higherCard, responseURL: directURL)])
+        let known = KnownCard(
+            domain: higherDomain, courtTitle: "ВС Коми", caseID: "", caseUID: "direct-guid",
+            deloID: "5", new: "5", caseNumber: higherRow.caseNumber,
+            levelRaw: CaseInstance.Level.appeal.rawValue, cartotekaID: "g2",
+            sourceURL: directURL)
+        let service = MovementService(
+            client: client, higherCourtTargets: [target()], knownCards: [known],
+            judicialUID: savedUID)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.movement(
+            for: base(), court: districtCourt(), cartoteka: cart)
+
+        let refreshed = try XCTUnwrap(movement.instances.first { $0.sourceURL == directURL })
+        XCTAssertEqual(refreshed.sessions, higherCard.sessions)
+        XCTAssertEqual(refreshed.result, higherCard.result)
+        XCTAssertNotNil(refreshed.actID)
+        XCTAssertEqual(movement.actBodies[try XCTUnwrap(refreshed.actID)], higherCard.actText)
+        XCTAssertEqual(Set(movement.incompleteHigherCourtDomains ?? []),
+                       Set([districtCourt().domain, higherDomain]))
+        let directFetchURLs = await client.directFetchURLs
+        XCTAssertEqual(directFetchURLs, [directURL])
     }
 
     func testMissingLocatorDoesNotQueryHigherCourtsWithoutValidJudicialUID() async throws {

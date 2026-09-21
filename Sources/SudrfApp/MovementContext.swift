@@ -103,6 +103,133 @@ struct MovementContext: Codable, Equatable, Sendable {
                          cardURL: cardURLString.flatMap(URL.init(string:)))
     }
 
+    /// Saved movement is also a source of exact, already verified card links.
+    /// Keep this enrichment ephemeral: every refresh rebuilds it from the
+    /// persisted movement, while the stored context remains backward-compatible.
+    func addingKnownCards(from movement: CaseMovement?) -> MovementContext {
+        guard let movement else { return self }
+        var result = self
+        var cards: [KnownCard] = []
+        for card in knownCards ?? [] { Self.mergeKnownCard(card, into: &cards) }
+        let baseLocator = Self.baseCardLocator(self)
+
+        for instance in movement.instances {
+            guard let rawURL = instance.sourceURL,
+                  let link = try? SudrfCaseCardLink(url: rawURL),
+                  link.moduleHost == SudrfHost.moduleHost(instance.domain.lowercased())
+            else { continue }
+
+            let candidate = KnownCard(
+                domain: instance.domain,
+                courtTitle: instance.court,
+                caseID: link.caseID ?? "",
+                caseUID: link.caseUID ?? "",
+                deloID: link.deloID,
+                new: link.resolvedNew,
+                caseNumber: instance.caseNumber,
+                levelRaw: instance.level.rawValue,
+                cartotekaID: instance.sourceEvidence?.cartotekaID,
+                sourceURL: link.sanitizedURL)
+            if let baseLocator, let candidateLocator = Self.knownCardLocator(candidate),
+               Self.sameSourceCard(baseLocator, candidateLocator) {
+                continue
+            }
+
+            Self.mergeKnownCard(candidate, into: &cards)
+        }
+
+        if !cards.isEmpty { result.knownCards = cards }
+        return result
+    }
+
+    private struct KnownCardLocator {
+        var host: String
+        var caseID: String?
+        var caseUID: String?
+        var deloID: String
+        var new: String
+        var srvNum: String?
+    }
+
+    private static func sameSourceCard(_ lhs: KnownCard, _ rhs: KnownCard) -> Bool {
+        guard let left = knownCardLocator(lhs), let right = knownCardLocator(rhs),
+              sameSourceCard(left, right) else { return false }
+        return true
+    }
+
+    private static func mergeKnownCard(_ candidate: KnownCard,
+                                       into cards: inout [KnownCard]) {
+        guard let index = cards.firstIndex(where: { sameSourceCard($0, candidate) }) else {
+            cards.append(candidate)
+            return
+        }
+        guard candidate.sourceURL != nil else { return }
+        var enriched = cards[index]
+        enriched.domain = candidate.domain
+        enriched.courtTitle = candidate.courtTitle
+        if enriched.caseID.isEmpty { enriched.caseID = candidate.caseID }
+        if enriched.caseUID.isEmpty { enriched.caseUID = candidate.caseUID }
+        enriched.deloID = candidate.deloID
+        enriched.new = candidate.new
+        enriched.caseNumber = candidate.caseNumber
+        enriched.levelRaw = candidate.levelRaw
+        enriched.cartotekaID = candidate.cartotekaID ?? enriched.cartotekaID
+        enriched.sourceURL = candidate.sourceURL
+        cards[index] = enriched
+    }
+
+    private static func sameSourceCard(_ left: KnownCardLocator,
+                                       _ right: KnownCardLocator) -> Bool {
+        guard left.host == right.host, left.deloID == right.deloID,
+              left.new == right.new else { return false }
+        if let leftUID = left.caseUID, let rightUID = right.caseUID {
+            return leftUID == rightUID
+        }
+        guard let leftID = left.caseID, let rightID = right.caseID,
+              leftID == rightID else { return false }
+        return left.srvNum == nil || right.srvNum == nil || left.srvNum == right.srvNum
+    }
+
+    private static func knownCardLocator(_ card: KnownCard) -> KnownCardLocator? {
+        if let url = card.sourceURL,
+           let link = try? SudrfCaseCardLink(url: url),
+           link.moduleHost == SudrfHost.moduleHost(card.domain.lowercased()) {
+            return KnownCardLocator(
+                host: link.moduleHost, caseID: link.caseID, caseUID: link.caseUID,
+                deloID: link.deloID, new: link.resolvedNew, srvNum: link.srvNum)
+        }
+        let caseID = card.caseID.isEmpty ? nil : card.caseID
+        let caseUID = card.caseUID.isEmpty ? nil : card.caseUID
+        guard caseID != nil || caseUID != nil, !card.deloID.isEmpty else { return nil }
+        return KnownCardLocator(
+            host: SudrfHost.moduleHost(card.domain.lowercased()),
+            caseID: caseID, caseUID: caseUID, deloID: card.deloID,
+            new: card.new.isEmpty ? "0" : card.new, srvNum: nil)
+    }
+
+    private static func baseCardLocator(_ context: MovementContext) -> KnownCardLocator? {
+        if let rawURL = context.cardURLString.flatMap(URL.init(string:)),
+           let link = try? SudrfCaseCardLink(url: rawURL),
+           link.moduleHost == SudrfHost.moduleHost(context.searchDomain.lowercased()) {
+            return KnownCardLocator(
+                host: link.moduleHost, caseID: link.caseID, caseUID: link.caseUID,
+                deloID: link.deloID, new: link.resolvedNew, srvNum: link.srvNum)
+        }
+        if let source = context.sourceKnownCard,
+           let locator = knownCardLocator(source) {
+            return locator
+        }
+        let caseID = context.caseID.flatMap { $0.isEmpty ? nil : $0 }
+        let caseUID = context.caseUID.flatMap { $0.isEmpty ? nil : $0 }
+        guard caseID != nil || caseUID != nil, let cartoteka = context.cartoteka else {
+            return nil
+        }
+        return KnownCardLocator(
+            host: SudrfHost.moduleHost(context.searchDomain.lowercased()),
+            caseID: caseID, caseUID: caseUID, deloID: cartoteka.deloID,
+            new: cartoteka.new, srvNum: nil)
+    }
+
     /// Display-derived legacy locator: домашний суд + номер дела. Он остаётся
     /// совместимым адресом поиска и deep links, но не является identity
     /// логического дела (её задаёт `TrackedCaseRecord.logicalCaseID`).

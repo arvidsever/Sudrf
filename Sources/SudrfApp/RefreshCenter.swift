@@ -717,7 +717,7 @@ final class RefreshCenter: ObservableObject {
            JudicialUIDObservation.validity(of: cachedUID) == .valid {
             ctx.judicialUID = cachedUID
         }
-        let service = serviceBuilder(ctx)
+        let service = makeService(context: ctx, movement: rec.movement)
         do {
             let outcome = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
             guard !Task.isCancelled else {
@@ -797,7 +797,10 @@ final class RefreshCenter: ObservableObject {
                             operation: .discovery, sourceFamily: "sudrf",
                             host: context.searchDomain)
                         return try await handle(.captcha(formURL: repeatedFormURL, repeatedAttempt),
-                                                service: serviceBuilder(context), key: key,
+                                                service: makeService(
+                                                    context: context,
+                                                    movement: store.record(forKey: key)?.movement),
+                                                key: key,
                                                 ctx: context, cart: cartoteka, mayAutoSolve: false)
                     } catch {
                         let latestAttempt = (error as? CaseCardRecoveryError)?
@@ -813,7 +816,10 @@ final class RefreshCenter: ObservableObject {
             // Manual retry restarts this bounded resolver with the accepted
             // token in the shared client.
             return try await handle(.captcha(formURL: formURL, attempt),
-                                    service: serviceBuilder(context), key: key,
+                                    service: makeService(
+                                        context: context,
+                                        movement: store.record(forKey: key)?.movement),
+                                    key: key,
                                     ctx: context, cart: cartoteka, mayAutoSolve: false)
         } catch {
             // An ambiguous recovery must not be shown as a successful empty
@@ -864,7 +870,8 @@ final class RefreshCenter: ObservableObject {
         guard let cartoteka = verifiedContext.cartoteka else {
             return failure(persisted.key, "Не удалось восстановить параметры поиска по делу.")
         }
-        let retryService = serviceBuilder(verifiedContext)
+        let retryService = makeService(context: verifiedContext,
+                                       movement: persisted.movement)
         let retry = try await fetchOutcome(service: retryService, ctx: verifiedContext,
                                            cart: cartoteka)
         guard !Task.isCancelled else {
@@ -875,6 +882,11 @@ final class RefreshCenter: ObservableObject {
         }
         return try await handle(retry, service: retryService, key: persisted.key,
                                 ctx: verifiedContext, cart: cartoteka, mayAutoSolve: true)
+    }
+
+    private func makeService(context: MovementContext,
+                             movement: CaseMovement?) -> any MovementProviding {
+        serviceBuilder(context.addingKnownCards(from: movement))
     }
 
     private func fetchOutcome(service: any MovementProviding, ctx: MovementContext,

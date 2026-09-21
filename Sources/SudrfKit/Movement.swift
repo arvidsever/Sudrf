@@ -309,16 +309,20 @@ public struct KnownCard: Sendable, Equatable, Codable {
     public var caseNumber: String?   // № дела/материала, если известен
     public var levelRaw: String      // CaseInstance.Level.rawValue
     public var cartotekaID: String?  // id картотеки (для названия акта), напр. "g3"
+    /// Точная опубликованная ссылка. Опционал сохраняет декодирование старых
+    /// контекстов; при наличии ссылка приоритетнее реконструкции из полей выше.
+    public var sourceURL: URL?
 
     public var level: CaseInstance.Level { CaseInstance.Level(rawValue: levelRaw) ?? .material }
 
     public init(domain: String, courtTitle: String, caseID: String, caseUID: String,
                 deloID: String, new: String, caseNumber: String? = nil,
-                levelRaw: String, cartotekaID: String? = nil) {
+                levelRaw: String, cartotekaID: String? = nil, sourceURL: URL? = nil) {
         self.domain = domain; self.courtTitle = courtTitle
         self.caseID = caseID; self.caseUID = caseUID
         self.deloID = deloID; self.new = new; self.caseNumber = caseNumber
         self.levelRaw = levelRaw; self.cartotekaID = cartotekaID
+        self.sourceURL = sourceURL
     }
 }
 
@@ -1062,6 +1066,8 @@ public actor MovementService: MovementProviding {
                         // последовательный, гонок нет.
                         if let n = kc.caseNumber,
                            Self.containsInstance(instances, domain: kc.domain, caseNumber: n,
+                                                 sourceURL: Self.sourceURL(for: kc),
+                                                 preferSourceIdentity: kc.sourceURL != nil,
                                                  usingCanonicalHost: true) {
                             rescued = true
                             continue
@@ -1081,6 +1087,7 @@ public actor MovementService: MovementProviding {
                         // rescue (на случай, если fetched-круг совпадает с уже
                         // добавленным от предыдущего `kc`/`target`).
                         guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                               preferSourceIdentity: kc.sourceURL != nil,
                                                to: &instances, acts: &acts, actBodies: &actBodies)
                         else {
                             rescued = true
@@ -1141,6 +1148,8 @@ public actor MovementService: MovementProviding {
             // (dash+dot) приведёт к дублю инстанции при доборе.
             if let n = kc.caseNumber,
                Self.containsInstance(instances, domain: kc.domain, caseNumber: n,
+                                     sourceURL: Self.sourceURL(for: kc),
+                                     preferSourceIdentity: kc.sourceURL != nil,
                                      usingCanonicalHost: true) { continue }
             let entry: (inst: CaseInstance, act: CaseAct?, body: String?)
             do {
@@ -1168,6 +1177,7 @@ public actor MovementService: MovementProviding {
                 continue
             }
             guard Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                   preferSourceIdentity: kc.sourceURL != nil,
                                    to: &instances, acts: &acts, actBodies: &actBodies)
             else { continue }
         }
@@ -1176,6 +1186,9 @@ public actor MovementService: MovementProviding {
         // material after a broken m-row URL. Publish unresolved headers only
         // after every known card has been tried.
         for fallback in unavailableMaterialFallbacks {
+            if Self.containsInstance(instances, domain: fallback.domain,
+                                     caseNumber: fallback.caseNumber,
+                                     usingCanonicalHost: true) { continue }
             _ = Self.appendIfNew(fallback, act: nil, body: nil,
                                  to: &instances, acts: &acts, actBodies: &actBodies)
         }
@@ -1248,9 +1261,25 @@ public actor MovementService: MovementProviding {
         async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
         let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle, level: .district)
-        let card = try await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
-                                              caseUID: kc.caseUID, deloID: kc.deloID,
-                                              new: kc.new)
+        let fetched: (card: CaseCard, sourceURL: URL?)
+        if let sourceURL = kc.sourceURL {
+            let link = try SudrfCaseCardLink(url: sourceURL)
+            guard link.moduleHost == SudrfHost.moduleHost(kc.domain) else {
+                throw SudrfError.parsing("ссылка KnownCard относится к другому суду")
+            }
+            let response = try await client.fetchCardWithResponseURL(url: link.sanitizedURL)
+            let effective = try SudrfCaseCardLink(url: response.effectiveURL)
+            guard effective.moduleHost == SudrfHost.moduleHost(kc.domain) else {
+                throw SudrfError.parsing("карточка KnownCard перенаправлена в другой суд")
+            }
+            fetched = (response.card, effective.sanitizedURL)
+        } else {
+            fetched = (try await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
+                                                  caseUID: kc.caseUID, deloID: kc.deloID,
+                                                  new: kc.new),
+                       Self.sourceURL(for: kc))
+        }
+        let card = fetched.card
         let number = card.caseNumber ?? kc.caseNumber ?? "—"
         var act: CaseAct? = nil
         var body: String? = nil
@@ -1270,7 +1299,7 @@ public actor MovementService: MovementProviding {
                                 judge: card.judge, domain: kc.domain, foundByUID: false,
                                 result: card.result, sessions: card.sessions,
                                 actID: act?.id,
-                                sourceURL: Self.sourceURL(for: kc),
+                                sourceURL: fetched.sourceURL,
                                 previousRegistration: card.previousRegistration,
                                 sourceEvidence: .init(card: card, cartotekaID: kc.cartotekaID, courtLevel: fetchCourt.level, branch: branch))
         return (inst, act, body)
@@ -1281,8 +1310,15 @@ public actor MovementService: MovementProviding {
     /// домашнего суда сохраняется прежнее точное сравнение домена.
     private static func containsInstance(_ instances: [CaseInstance], domain: String,
                                          caseNumber: String? = nil,
+                                         sourceURL: URL? = nil,
+                                         preferSourceIdentity: Bool = false,
                                          usingCanonicalHost: Bool) -> Bool {
         instances.contains { instance in
+            if preferSourceIdentity,
+               let sourceURL, let existingURL = instance.sourceURL,
+               let sameSource = sameSourceCard(existingURL, sourceURL) {
+                return sameSource
+            }
             let sameDomain = usingCanonicalHost
                 ? SudrfHost.moduleHost(instance.domain) == SudrfHost.moduleHost(domain)
                 : instance.domain == domain
@@ -1296,10 +1332,13 @@ public actor MovementService: MovementProviding {
     /// инстанция не оказалась дублем по каноническому хосту и номеру дела.
     @discardableResult
     private static func appendIfNew(_ instance: CaseInstance, act: CaseAct?, body: String?,
+                                    preferSourceIdentity: Bool = false,
                                     to instances: inout [CaseInstance], acts: inout [CaseAct],
                                     actBodies: inout [String: String]) -> Bool {
         guard !containsInstance(instances, domain: instance.domain,
-                                caseNumber: instance.caseNumber, usingCanonicalHost: true)
+                                caseNumber: instance.caseNumber, sourceURL: instance.sourceURL,
+                                preferSourceIdentity: preferSourceIdentity,
+                                usingCanonicalHost: true)
         else { return false }
         if let act, let body {
             acts.append(act)
@@ -1582,10 +1621,33 @@ extension MovementService {
     }
 
     static func sourceURL(for knownCard: KnownCard) -> URL? {
+        if let url = knownCard.sourceURL {
+            guard let link = try? SudrfCaseCardLink(url: url),
+                  link.moduleHost == SudrfHost.moduleHost(knownCard.domain) else { return nil }
+            return link.sanitizedURL
+        }
         let court = Court(domain: knownCard.domain, title: knownCard.courtTitle, level: .district)
         return try? SudrfURLBuilder(court: court).cardURL(
             caseID: knownCard.caseID, caseUID: knownCard.caseUID,
             deloID: knownCard.deloID, new: knownCard.new)
+    }
+
+    /// `nil` means at least one URL is not a validated SUDRF card locator and
+    /// callers should retain the legacy host + number fallback.
+    static func sameSourceCard(_ lhs: URL, _ rhs: URL) -> Bool? {
+        guard let left = try? SudrfCaseCardLink(url: lhs),
+              let right = try? SudrfCaseCardLink(url: rhs) else { return nil }
+        guard left.moduleHost == right.moduleHost,
+              left.deloID == right.deloID,
+              left.resolvedNew == right.resolvedNew else { return false }
+        if let leftUID = left.caseUID, let rightUID = right.caseUID {
+            return leftUID == rightUID
+        }
+        if let leftID = left.caseID, let rightID = right.caseID {
+            guard leftID == rightID else { return false }
+            return left.srvNum == nil || right.srvNum == nil || left.srvNum == right.srvNum
+        }
+        return false
     }
 
     /// Для нового УИД-маршрута в АСОЮ и военный апелляционный суд ссылка выдачи является доказательством

@@ -35,7 +35,7 @@
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.25 | [#290](https://github.com/arvidsever/Sudrf/issues/290) | Индекс `4-…` маршрутизируется в картотеку уголовных материалов; официальная ссылка вниз восстанавливает единую цепочку без УИД. | — |
+| 0.58.25 | [#290](https://github.com/arvidsever/Sudrf/issues/290) | Индекс `4-…` маршрутизируется в картотеку уголовных материалов; официальная ссылка вниз восстанавливает единую цепочку без УИД. | [PR #315](https://github.com/arvidsever/Sudrf/pull/315) |
 | 0.58.24 | [#288](https://github.com/arvidsever/Sudrf/issues/288), [#287](https://github.com/arvidsever/Sudrf/issues/287) | Новая регистрация после отмены возврата обнаруживается по составному официальному доказательству и атомарно продолжает прежнюю цепочку. | [PR #314](https://github.com/arvidsever/Sudrf/pull/314) |
 | 0.58.23 | [#312](https://github.com/arvidsever/Sudrf/issues/312) | Дата основного апелляционного акта берётся из полной карточки; старые точные связи безопасно используют дату источника. | [PR #313](https://github.com/arvidsever/Sudrf/pull/313) |
 | 0.58.22 | [#285](https://github.com/arvidsever/Sudrf/issues/285), [#286](https://github.com/arvidsever/Sudrf/issues/286), [#289](https://github.com/arvidsever/Sudrf/issues/289) | Завершённые апелляции определяются по точному исходу карточки и резолютивной части связанного акта. | [#311](https://github.com/arvidsever/Sudrf/pull/311) |

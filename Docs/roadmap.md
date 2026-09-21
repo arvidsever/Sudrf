@@ -46,7 +46,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.27 | [#238](https://github.com/arvidsever/Sudrf/issues/238) | Сохранённые точные URL вышестоящих карточек обновляются напряму независимо от UID-поиска. | — |
+| 0.58.27 | [#238](https://github.com/arvidsever/Sudrf/issues/238) | Сохранённые точные URL вышестоящих карточек обновляются напрямую независимо от UID-поиска. | [PR #317](https://github.com/arvidsever/Sudrf/pull/317) |
 | 0.58.26 | [#237](https://github.com/arvidsever/Sudrf/issues/237) | Вышестоящие суды обновляются независимо при недоступности базовой карточки по подтверждённому сохранённому УИД. | [PR #316](https://github.com/arvidsever/Sudrf/pull/316) |
 | 0.58.25 | [#290](https://github.com/arvidsever/Sudrf/issues/290) | Индекс `4-…` маршрутизируется в картотеку уголовных материалов; официальная ссылка вниз восстанавливает единую цепочку без УИД. | [PR #315](https://github.com/arvidsever/Sudrf/pull/315) |
 | 0.58.24 | [#288](https://github.com/arvidsever/Sudrf/issues/288), [#287](https://github.com/arvidsever/Sudrf/issues/287) | Новая регистрация после отмены возврата обнаруживается по составному официальному доказательству и атомарно продолжает прежнюю цепочку. | [PR #314](https://github.com/arvidsever/Sudrf/pull/314) |

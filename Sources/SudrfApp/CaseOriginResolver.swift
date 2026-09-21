@@ -681,6 +681,7 @@ actor CaseOriginResolver {
         let exact = rows.filter { Self.sameCaseNumber($0.caseNumber, number) }
         guard !exact.isEmpty else { throw CaseOriginResolutionError.notFound }
         var matches: [(CaseSearchResult, CaseCard)] = []
+        var incomplete = false
         for row in exact {
             let card: CaseCard
             do {
@@ -689,16 +690,29 @@ actor CaseOriginResolver {
             } catch let error as SudrfError {
                 if case .captchaRequired = error { throw error }
                 if case .transientNetworkError = error { throw error }
+                incomplete = true
                 continue
             } catch {
+                incomplete = true
                 continue
             }
             if let uid = Self.nonEmpty(uid) {
                 guard let found = Self.nonEmpty(card.uid),
                       Self.normalizedUID(found) == Self.normalizedUID(uid) else { continue }
+            } else {
+                // Без судебного УИД точный номер строки недостаточен: сама
+                // карточка и её проверяемый source locator должны подтвердить
+                // ту же публикацию. Это также не позволяет принять строку,
+                // чья карточка после загрузки содержит другой номер.
+                guard let cardNumber = card.caseNumber,
+                      Self.sameCaseNumber(cardNumber, number),
+                      Self.validatedSourceKey(row: row, court: court,
+                                              cartoteka: cartoteka, expectedSRV: "1") != nil
+                else { continue }
             }
             matches.append((row, card))
         }
+        if incomplete { throw CaseOriginResolutionError.incompleteCandidates }
         guard matches.count == 1, let match = matches.first else {
             throw matches.isEmpty ? CaseOriginResolutionError.notFound
                                   : CaseOriginResolutionError.ambiguous

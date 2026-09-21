@@ -105,6 +105,7 @@ final class CartotekaRegistryTests: XCTestCase {
         XCTAssertEqual(single("12-150/2025", .district), "admj")
         XCTAssertEqual(single("3/1-44/2026", .district), "m")
         XCTAssertEqual(single("4/17-9/2026", .district), "m")
+        XCTAssertEqual(single("4-111/2019", .district), "m")
         XCTAssertEqual(single("6-9/2026", .district), "m")
         XCTAssertEqual(single("8/2-9/2026", .district), "m")
         XCTAssertEqual(single("13-21/2026", .district), "m")

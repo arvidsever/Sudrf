@@ -278,6 +278,25 @@ final class CaseCardParserTests: XCTestCase {
         XCTAssertEqual(card.lowerCourt?.caseNumber, "4-111/2019")
     }
 
+    func testIssue290LowerMaterialKeepsPublishedMetadataWithoutTechnicalUID() throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://oktibrsky.spb.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=892526215"
+                + "&case_uid=7c9bc768-720c-4537-a3b3-6ab56e36fc5f&delo_id=1610001"))
+        let card = try CaseCardParser.parse(
+            html: try loadFixture("issue290_lower_material"), cardURL: url)
+
+        XCTAssertEqual(card.caseNumber, "4-111/2019")
+        XCTAssertNil(card.uid)
+        XCTAssertEqual(card.receiptDate, "28.05.2019")
+        XCTAssertEqual(card.decisionDate, "28.10.2019")
+        XCTAssertEqual(card.result, "Удовлетворено")
+        XCTAssertEqual(card.judge, "Сопилова Ирина Васильевна")
+        XCTAssertEqual(card.parties.plaintiffs,
+                       ["ООО «Инвестиционная компания „Пулковская“»"])
+        XCTAssertTrue(card.rawText.contains("4-111/2019"))
+    }
+
     func testIssue312AppealCardKeepsDecisionDateAndLinkedRemandAct() throws {
         let url = try XCTUnwrap(URL(string:
             "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo"

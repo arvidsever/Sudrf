@@ -311,7 +311,7 @@ public enum CartotekaRegistry {
                   uidField: "adm1_case__JUDICIAL_UIDSS",
                   nameField: "adm1_parts__NAMESS"),
         Cartoteka(id: "m",    title: "Материалы",
-                  prefixes: ["3/", "4/", "6", "8/", "13", "13а", "14", "15", "да"],
+                  prefixes: ["3/", "4/", "4", "6", "8/", "13", "13а", "14", "15", "да"],
                   deloID: "1610001", deloTable: "m_case",
                   caseNumberField: "m_case__CASE_NUMBERSS",
                   uidField: "m_case__JUDICIAL_UIDSS",

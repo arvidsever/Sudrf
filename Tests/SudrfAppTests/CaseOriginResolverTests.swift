@@ -140,6 +140,91 @@ final class CaseOriginResolverTests: XCTestCase {
         XCTAssertEqual(fields, [.caseNumber])
     }
 
+    func testIssue290SubjectAppealWithoutUIDResolvesExactDistrictMaterial() async throws {
+        let lowerURL = try XCTUnwrap(URL(string:
+            "https://oktibrsky--spb.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=892526215"
+                + "&case_uid=7c9bc768-720c-4537-a3b3-6ab56e36fc5f&delo_id=1610001"))
+        let lower = CaseSearchResult(
+            caseNumber: "4-111/2019", caseID: "892526215",
+            caseUID: "7c9bc768-720c-4537-a3b3-6ab56e36fc5f", cardURL: lowerURL)
+        let lowerCard = CaseCard(
+            rawText: "", actText: nil, caseNumber: lower.caseNumber,
+            parties: CaseParties(plaintiffs: ["ООО «Инвестиционная компания „Пулковская“»"]))
+        let provider = OriginProviderStub(numberRows: [lower],
+                                          cards: ["892526215": lowerCard])
+        let lowerCourt = OriginCourtResolution(
+            court: Court(domain: "oktibrsky--spb.sudrf.ru",
+                         title: "Октябрьский районный суд города Санкт-Петербурга",
+                         level: .district),
+            branch: .general, code: "78RS0016")
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: lowerCourt)
+        var context = anchor(uid: nil).0
+        context.region = "Город Санкт-Петербург"
+        context.searchDomain = "sankt-peterburgsky--spb.sudrf.ru"
+        context.displayDomain = "sankt-peterburgsky.spb.sudrf.ru"
+        context.courtTitle = "Санкт-Петербургский городской суд"
+        context.courtCode = "78OS0000"
+        context.cartotekaId = "u2"
+        context.caseNumber = "22-227/2020"
+        let appealCard = CaseCard(
+            rawText: "", actText: nil, caseNumber: "22-227/2020 (22-8976/2019;)",
+            parties: CaseParties(defendants: ["Ефремов Алексей Кимович"]),
+            lowerCourt: LowerCourtReference(courtTitle: "Октябрьский районный суд",
+                                            caseNumber: lower.caseNumber))
+
+        let result = try await resolver.resolve(anchorContext: context,
+                                                anchorCard: appealCard)
+        let fields = await provider.fields
+
+        XCTAssertEqual(result.cartoteka.id, "m")
+        XCTAssertEqual(result.result.caseNumber, lower.caseNumber)
+        XCTAssertEqual(result.card.caseNumber, lower.caseNumber)
+        XCTAssertEqual(result.card.parties.plaintiffs,
+                       ["ООО «Инвестиционная компания „Пулковская“»"])
+        XCTAssertEqual(fields, [.caseNumber])
+    }
+
+    func testMissingUIDRejectsExactRowWithContradictorySourceLocator() async throws {
+        let rowURL = try XCTUnwrap(URL(string:
+            "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=exact&case_uid=guid&delo_id=1540006&new=0"))
+        let exact = CaseSearchResult(caseNumber: "2-7212/2025", caseID: "exact",
+                                     caseUID: "guid", cardURL: rowURL)
+        let provider = OriginProviderStub(
+            numberRows: [exact],
+            cards: ["exact": CaseCard(rawText: "", actText: nil,
+                                       caseNumber: exact.caseNumber)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = anchor(uid: nil)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: card)
+            XCTFail("строка другой картотеки не подтверждает точную нижнюю карточку")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testUnreadableExactNoUIDCandidateIsIncomplete() async throws {
+        let exact = CaseSearchResult(caseNumber: "2-7212/2025",
+                                     caseID: "unreadable", caseUID: "guid")
+        let provider = OriginProviderStub(numberRows: [exact], cards: [:],
+                                          unreadableCardIDs: ["unreadable"])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = anchor(uid: nil)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: card)
+            XCTFail("непрочитанный точный кандидат не доказывает отсутствие связи")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .incompleteCandidates)
+        }
+    }
+
     func testPreliminaryNumberResolvesOnlySingleSameCartotekaMainCaseByExactUID() async throws {
         let main = CaseSearchResult(caseNumber: "2а-5090/2026 ~ М-2417/2026",
                                     caseID: "main", caseUID: "guid")
@@ -708,6 +793,8 @@ final class CaseOriginResolverTests: XCTestCase {
     func testLowerNumberChoosesActualMaterialAndAppealCartotekas() throws {
         XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
             anchorID: "g2", lowerNumber: "13-14/2026", level: .district).id, "m")
+        XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
+            anchorID: "u2", lowerNumber: "4-111/2019", level: .district).id, "m")
         XCTAssertEqual(try CaseOriginResolver.firstCartoteka(
             anchorID: "u3", lowerNumber: "22К-7/2026", level: .subject).id, "u2")
         XCTAssertEqual(try CaseOriginResolver.firstCartoteka(

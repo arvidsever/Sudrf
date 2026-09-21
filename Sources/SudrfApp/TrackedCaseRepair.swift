@@ -286,6 +286,11 @@ final class TrackedCaseRepairCoordinator {
     /// existed. Clear each affected record's stale exclusions once; new
     /// failures keep the ordinary V6 retry policy.
     private static let subjectKASRetryResetKey = "importChainRepair.v6.subjectKASRetryReset"
+    /// Subject-court criminal appeals without a published judicial UID may
+    /// retain a terminal V6 marker from an earlier pass. Exact material
+    /// routing now supports 4-… → m, so clear only those exclusions once;
+    /// subsequent failures use the ordinary retry policy.
+    private static let subjectUPKRetryResetKey = "importChainRepair.v6.subjectUPKRetryReset"
     private var attemptsKey: String { "\(Self.migrationID).attempts" }
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
@@ -415,6 +420,7 @@ final class TrackedCaseRepairCoordinator {
         var summary = CaseRepairSummary()
         do {
             try resetPreexistingSubjectKASExclusionsIfNeeded()
+            try resetPreexistingSubjectUPKExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes()
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -445,6 +451,7 @@ final class TrackedCaseRepairCoordinator {
         var summary = CaseRepairSummary()
         do {
             try resetPreexistingSubjectKASExclusionsIfNeeded()
+            try resetPreexistingSubjectUPKExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes(keys: keys)
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -777,6 +784,33 @@ final class TrackedCaseRepairCoordinator {
         }
         defaults.set(Array(resetRecords.union(targets.map(\.key))).sorted(),
                      forKey: Self.subjectKASRetryResetKey)
+    }
+
+    private static func isNewlySupportedSubjectUPK(_ context: MovementContext) -> Bool {
+        context.branch == .general
+            && context.courtLevel == .subject
+            && context.cartotekaId == "u2"
+            && context.baseInstanceLevel == .appeal
+            && (context.judicialUID ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func resetPreexistingSubjectUPKExclusionsIfNeeded() throws {
+        let records = try store.allForMutation()
+        let resetRecords = Set(defaults.stringArray(forKey: Self.subjectUPKRetryResetKey) ?? [])
+        let targets = records.filter { record in
+            guard let context = record.context else { return false }
+            return Self.isNewlySupportedSubjectUPK(context) && !resetRecords.contains(record.key)
+        }
+        guard !targets.isEmpty else { return }
+        let keys = Set(targets.flatMap { [$0.key] + $0.legacyKeyAliases })
+        for defaultsKey in [unsupportedKey, completedKey] {
+            let retained = (defaults.stringArray(forKey: defaultsKey) ?? [])
+                .filter { !keys.contains($0) }
+            defaults.set(retained, forKey: defaultsKey)
+        }
+        defaults.set(Array(resetRecords.union(targets.map(\.key))).sorted(),
+                     forKey: Self.subjectUPKRetryResetKey)
     }
 
     private func appendEvent(_ kind: CaseRepairEvent.Kind, caseKey: String,

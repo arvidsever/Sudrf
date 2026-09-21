@@ -554,6 +554,73 @@ final class TrackedCaseRepairTests: XCTestCase {
             .contains(unrelatedRecord.key))
     }
 
+    func testHistoricalSubjectUPKAppealClearsStaleMarkersOnceAndRestoresMaterial() async throws {
+        let store = TrackedStore(inMemory: true)
+        var appeal = context(level: .appeal, number: "22-227/2020",
+                             domain: "sankt-peterburgsky--spb.sudrf.ru", cartoteka: "u2",
+                             courtLevel: .subject)
+        appeal.region = "Санкт-Петербург"
+        appeal.courtTitle = "Санкт-Петербургский городской суд"
+        appeal.judicialUID = nil
+        let anchor = try store.upsert(context: appeal, snapshot: nil, collections: ["Import"])
+
+        var unrelated = context(level: .appeal, number: "22-228/2020",
+                                domain: "sankt-peterburgsky--spb.sudrf.ru", cartoteka: "u2",
+                                courtLevel: .subject)
+        unrelated.region = "Санкт-Петербург"
+        unrelated.courtTitle = appeal.courtTitle
+        let unrelatedRecord = try store.upsert(context: unrelated, snapshot: nil, collections: [])
+        let suite = defaults()
+        suite.set([anchor.key, unrelatedRecord.key], forKey: "importChainRepair.v6.unsupported")
+        suite.set([anchor.key, unrelatedRecord.key], forKey: "importChainRepair.v6.completed")
+
+        let lower = CaseSearchResult(caseNumber: "4-111/2019",
+                                     caseID: "lower-id", caseUID: "lower-guid")
+        let origin = ResolvedCaseOrigin(
+            court: Court(domain: "oktibrsky--spb.sudrf.ru",
+                         title: "Октябрьский районный суд Санкт-Петербурга", level: .district),
+            branch: .general, region: "Санкт-Петербург", courtCode: "78RS0016",
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "m")),
+            result: lower,
+            card: CaseCard(rawText: "", actText: nil, caseNumber: lower.caseNumber),
+            intermediateCards: [])
+        let resolver = StubOriginResolver(.resolved(origin))
+        var fetches = 0
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: suite, anchorCardFetcher: { context in
+                fetches += 1
+                XCTAssertEqual(context.caseNumber, appeal.caseNumber)
+                return CaseCard(
+                    rawText: "", actText: nil, caseNumber: appeal.caseNumber,
+                    lowerCourt: LowerCourtReference(
+                        courtTitle: "Октябрьский районный суд", caseNumber: "4-111/2019"))
+            })
+
+        let first = try await coordinator.runAll()
+        XCTAssertEqual(first.restoredMaterials, 1)
+        XCTAssertEqual(fetches, 1)
+        XCTAssertFalse((suite.stringArray(forKey: "importChainRepair.v6.unsupported") ?? [])
+            .contains(anchor.key))
+        XCTAssertFalse((suite.stringArray(forKey: "importChainRepair.v6.completed") ?? [])
+            .contains(anchor.key))
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.unsupported") ?? [])
+            .contains(unrelatedRecord.key))
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.completed") ?? [])
+            .contains(unrelatedRecord.key))
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.subjectUPKRetryReset") ?? [])
+            .contains(anchor.key))
+        let repaired = try XCTUnwrap(store.record(forLocator:
+            "oktibrsky.spb.sudrf.ru/4-111/2019"))
+        XCTAssertEqual(repaired.context?.baseInstanceLevel, .material)
+        XCTAssertEqual(repaired.context?.knownCards?.first?.caseNumber, appeal.caseNumber)
+
+        _ = try await coordinator.runAll()
+        XCTAssertEqual(fetches, 1, "успешное переякоривание не запускается повторно")
+        let resolverCalls = await resolver.calls
+        XCTAssertEqual(resolverCalls, 1)
+    }
+
     func testCompleteUIDMergesPreliminaryAndHigherCourtCardsUnderIdentityPolicy() async throws {
         let store = TrackedStore(inMemory: true)
         let preliminary = context(level: .first, number: "М-2417/2026",

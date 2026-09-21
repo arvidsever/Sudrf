@@ -484,7 +484,7 @@ public actor MovementService: MovementProviding {
                 cartoteka: cartoteka)
         }
 
-        guard Self.hasCardAccess(base) else {
+        guard Self.hasCardAccess(base) || Self.validSavedUID(judicialUID) != nil else {
             return Self.minimalMovement(base: base, court: court, cartoteka: cartoteka,
                                         level: baseInstanceLevel)
         }
@@ -496,17 +496,39 @@ public actor MovementService: MovementProviding {
         // вышестоящие запросы, не выдавая пустую карточку за свежую.
         let baseCard: CaseCard
         let usedSavedUIDFallback: Bool
-        do {
-            baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
-            usedSavedUIDFallback = false
-        } catch let error as SudrfError {
-            guard let savedUID = judicialUID,
-                  Self.isSavedUIDFallbackError(error) else {
-                throw error
+        var baseFallbackCaptchaURL: URL? = nil
+        var baseFallbackTransientError = false
+        if !Self.hasCardAccess(base) {
+            // The base row may lose its locator while the previously confirmed
+            // UID remains usable.  Do not turn this case into a synthetic 404:
+            // the saved UID is enough to continue independent higher-court
+            // searches.
+            guard let savedUID = Self.validSavedUID(judicialUID) else {
+                return Self.minimalMovement(base: base, court: court, cartoteka: cartoteka,
+                                            level: baseInstanceLevel)
             }
             baseCard = CaseCard(rawText: "", actText: nil, uid: savedUID,
                                 caseNumber: base.caseNumber)
             usedSavedUIDFallback = true
+        } else {
+            do {
+                baseCard = try await fetchCard(row: base, court: court, cartoteka: cartoteka)
+                usedSavedUIDFallback = false
+            } catch let error as SudrfError {
+                try Task.checkCancellation()
+                guard let savedUID = Self.validSavedUID(judicialUID),
+                      Self.isSavedUIDFallbackError(error) else {
+                    throw error
+                }
+                baseCard = CaseCard(rawText: "", actText: nil, uid: savedUID,
+                                    caseNumber: base.caseNumber)
+                usedSavedUIDFallback = true
+                if case let .captchaRequired(formURL) = error {
+                    baseFallbackCaptchaURL = formURL
+                } else if case .transientNetworkError = error {
+                    baseFallbackTransientError = true
+                }
+            }
         }
 
         // УИД дела (вида 11RS0001-01-2025-011255-03) — из метаданных карточки.
@@ -581,6 +603,14 @@ public actor MovementService: MovementProviding {
             sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka),
             previousRegistration: baseCard.previousRegistration,
             sourceEvidence: .init(card: baseCard, cartotekaID: cartoteka.id, courtLevel: court.level, branch: branch))]
+        // Keep the base-source failure visible through the same ephemeral stub
+        // fields used by higher-court recovery.  `MovementCachePolicy` strips
+        // CAPTCHA stubs and merges transient stubs with a cached real card.
+        if let formURL = baseFallbackCaptchaURL {
+            instances[0].captchaFormURL = formURL
+        } else if baseFallbackTransientError {
+            instances[0].transientError = true
+        }
         var unavailableMaterialFallbacks: [CaseInstance] = []
         var incompleteHigherCourtDomains: [String] = usedSavedUIDFallback
             ? [court.domain] : []
@@ -1306,12 +1336,21 @@ public actor MovementService: MovementProviding {
 
     private static func isSavedUIDFallbackError(_ error: SudrfError) -> Bool {
         switch error {
-        case .caseCardTemporarilyUnavailable, .sourceMaintenance,
+        case .captchaRequired, .caseCardTemporarilyUnavailable, .sourceMaintenance,
+             .searchModuleUnavailable, .parsing, .decodingFailed,
              .transientNetworkError:
             return true
+        case .http(let status):
+            return status != 404 && status != 410
         default:
             return false
         }
+    }
+
+    private static func validSavedUID(_ value: String?) -> String? {
+        guard let value,
+              JudicialUIDObservation.validity(of: value) == .valid else { return nil }
+        return value
     }
 }
 

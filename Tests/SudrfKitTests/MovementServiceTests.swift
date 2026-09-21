@@ -1290,6 +1290,10 @@ final class MovementServiceSavedUIDFallbackTests: XCTestCase {
                          caseUID: "base-link-guid")
     }
 
+    private func baseWithoutLocator() -> CaseSearchResult {
+        CaseSearchResult(caseNumber: "2-1/2026")
+    }
+
     private func target() -> MovementSearchTarget {
         MovementSearchTarget(domain: higherDomain, courtTitle: "ВС Коми",
                               courtLevel: .subject, instanceLevel: .appeal,
@@ -1326,24 +1330,124 @@ final class MovementServiceSavedUIDFallbackTests: XCTestCase {
         }
     }
 
-    func testSavedUIDFallbackDoesNotHideParserOrMissingUIDErrors() async throws {
+    func testSavedUIDFallbackAllowsMissingBaseLocator() async throws {
+        let higherRow = CaseSearchResult(caseNumber: "33-1/2026", result: "оставлено без изменения",
+                                         caseID: "higher-card", caseUID: "higher-link-guid")
+        let higherCard = CaseCard(rawText: "", actText: nil, result: higherRow.result,
+                                  caseNumber: higherRow.caseNumber)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let client = SavedUIDFallbackClient(
+            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+            higherCard: higherCard, baseError: .http(status: 404))
+        let service = MovementService(client: client, higherCourtTargets: [target()],
+                                      judicialUID: savedUID)
+
+        let movement = try await service.movement(
+            for: baseWithoutLocator(), court: districtCourt(), cartoteka: cart)
+
+        XCTAssertEqual(movement.uid, savedUID)
+        XCTAssertEqual(movement.instances.map(\.caseNumber), ["2-1/2026", "33-1/2026"])
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, [districtCourt().domain])
+        XCTAssertNil(movement.instances.first?.captchaFormURL)
+        XCTAssertNil(movement.instances.first?.transientError)
+        let locators = await client.searchLocators
+        XCTAssertEqual(locators, [higherDomain + "/g2"])
+    }
+
+    func testMissingLocatorDoesNotQueryHigherCourtsWithoutValidJudicialUID() async throws {
+        let higherRow = CaseSearchResult(caseNumber: "33-1/2026",
+                                         caseID: "higher-card", caseUID: "higher-link-guid")
+        let higherCard = CaseCard(rawText: "", actText: nil,
+                                  caseNumber: higherRow.caseNumber)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        for invalidUID in [nil, "", "base-link-guid", "11RS0001"] as [String?] {
+            let client = SavedUIDFallbackClient(
+                baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+                higherCard: higherCard, baseError: .http(status: 404))
+            let service = MovementService(client: client, higherCourtTargets: [target()],
+                                          judicialUID: invalidUID)
+
+            let movement = try await service.movement(
+                for: baseWithoutLocator(), court: districtCourt(), cartoteka: cart)
+
+            XCTAssertEqual(movement.instances.map(\.caseNumber), ["2-1/2026"])
+            let locators = await client.searchLocators
+            XCTAssertTrue(locators.isEmpty)
+        }
+    }
+
+    func testSavedUIDFallbackCoversSourceFailuresAndPreservesFatalErrors() async throws {
         let higherRow = CaseSearchResult(caseNumber: "33-1/2026", result: "оставлено без изменения",
                                          caseID: "higher-card", caseUID: "higher-link-guid")
         let higherCard = CaseCard(rawText: "", actText: nil, result: higherRow.result,
                                   caseNumber: higherRow.caseNumber)
         let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
 
-        let parserClient = SavedUIDFallbackClient(
-            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
-            higherCard: higherCard, baseError: .parsing("карточка"))
-        let parserService = MovementService(client: parserClient, higherCourtTargets: [target()],
-                                            judicialUID: savedUID)
-        do {
-            _ = try await parserService.movement(for: base(), court: districtCourt(), cartoteka: cart)
-            XCTFail("ошибка разбора не должна превращаться в sparse fallback")
-        } catch let error as SudrfError {
-            guard case .parsing = error else {
-                return XCTFail("ожидалась ошибка разбора, получено \(error)")
+        let formURL = try XCTUnwrap(URL(string: "https://syktsud--komi.sudrf.ru/captcha"))
+        let fallbackErrors: [SudrfError] = [
+            .captchaRequired(formURL: formURL),
+            .caseCardTemporarilyUnavailable,
+            .sourceMaintenance(domain: districtCourt().domain),
+            .searchModuleUnavailable(domain: districtCourt().domain),
+            .parsing("карточка"),
+            .decodingFailed,
+            .transientNetworkError(domain: districtCourt().domain, code: .timedOut, attempt: 3),
+            .http(status: 500)
+        ]
+        for error in fallbackErrors {
+            let client = SavedUIDFallbackClient(
+                baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+                higherCard: higherCard, baseError: error)
+            let service = MovementService(client: client, higherCourtTargets: [target()],
+                                          judicialUID: savedUID)
+            let movement = try await service.movement(
+                for: base(), court: districtCourt(), cartoteka: cart)
+
+            XCTAssertEqual(movement.uid, savedUID)
+            XCTAssertEqual(movement.instances.map(\.caseNumber), ["2-1/2026", "33-1/2026"])
+            XCTAssertEqual(movement.incompleteHigherCourtDomains, [districtCourt().domain])
+            if case .captchaRequired = error {
+                XCTAssertEqual(movement.instances.first?.captchaFormURL, formURL)
+            } else {
+                XCTAssertNil(movement.instances.first?.captchaFormURL)
+            }
+            if case .transientNetworkError = error {
+                XCTAssertEqual(movement.instances.first?.transientError, true)
+            } else {
+                XCTAssertNil(movement.instances.first?.transientError)
+            }
+        }
+
+        for status in [404, 410] {
+            let client = SavedUIDFallbackClient(
+                baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+                higherCard: higherCard, baseError: .http(status: status))
+            let service = MovementService(client: client, higherCourtTargets: [target()],
+                                          judicialUID: savedUID)
+            do {
+                _ = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+                XCTFail("HTTP \(status) не должен превращаться в fallback")
+            } catch let error as SudrfError {
+                guard case .http(let actual) = error else {
+                    return XCTFail("ожидался HTTP \(status), получено \(error)")
+                }
+                XCTAssertEqual(actual, status)
+            }
+        }
+
+        for fatal in [SudrfError.invalidValue("контекст"),
+                      SudrfError.unknownCartoteka("bad")] {
+            let client = SavedUIDFallbackClient(
+                baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+                higherCard: higherCard, baseError: fatal)
+            let service = MovementService(client: client, higherCourtTargets: [target()],
+                                          judicialUID: savedUID)
+            do {
+                _ = try await service.movement(for: base(), court: districtCourt(), cartoteka: cart)
+                XCTFail("локальная ошибка контекста не должна превращаться в fallback")
+            } catch let error as SudrfError {
+                XCTAssertEqual(error.description, fatal.description)
             }
         }
 
@@ -1355,6 +1459,21 @@ final class MovementServiceSavedUIDFallbackTests: XCTestCase {
         do {
             _ = try await missingUIDService.movement(for: base(), court: districtCourt(), cartoteka: cart)
             XCTFail("без сохранённого УИД ошибка источника должна быть проброшена")
+        } catch let error as SudrfError {
+            guard case .sourceMaintenance = error else {
+                XCTFail("ожидалась sourceMaintenance, получено \(error)")
+                return
+            }
+        }
+
+        let invalidUIDClient = SavedUIDFallbackClient(
+            baseCardID: baseID, higherDomain: higherDomain, higherRow: higherRow,
+            higherCard: higherCard, baseError: .sourceMaintenance(domain: districtCourt().domain))
+        let invalidUIDService = MovementService(client: invalidUIDClient,
+                                                 higherCourtTargets: [target()], judicialUID: "base-link-guid")
+        do {
+            _ = try await invalidUIDService.movement(for: base(), court: districtCourt(), cartoteka: cart)
+            XCTFail("неполный УИД не должен включать fallback")
         } catch let error as SudrfError {
             guard case .sourceMaintenance = error else {
                 XCTFail("ожидалась sourceMaintenance, получено \(error)")

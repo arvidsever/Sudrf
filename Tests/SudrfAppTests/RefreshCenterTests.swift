@@ -1499,6 +1499,174 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
     }
 
+    func testBaseCaptchaPartialQueuesExactManualRequestAfterSavingHigherCourtUpdate() async throws {
+        let key = store.all()[0].key
+        let record = try XCTUnwrap(store.record(forKey: key))
+        let previousSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        record.movement = successMV
+        record.snapshot = MovementDerivation.snapshot(from: successMV, context: makeContext())
+        record.movementFetchedAt = previousSuccess
+        let journalBefore = record.eventJournal
+        let baseFormURL = URL(
+            string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1")!
+
+        var partial = successMV!
+        partial.instances.append(CaseInstance(
+            level: .first,
+            court: "Сыктывкарский городской суд",
+            caseNumber: "—",
+            judge: nil,
+            domain: "syktsud--komi.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: baseFormURL))
+        partial.instances.append(CaseInstance(
+            level: .cassation,
+            court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "8Г-237/2026",
+            judge: "Иванов И. И.",
+            domain: "3kas.sudrf.ru",
+            foundByUID: true,
+            result: "Оставлено без изменения",
+            sessions: []))
+        partial.incompleteHigherCourtDomains = ["syktsud--komi.sudrf.ru"]
+        let movement = FixedMovement(partial)
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("CAPTCHA базовой карточки должна сохранить partial результат")
+        }
+        let callsAfterPartial = await movement.calls
+        XCTAssertEqual(callsAfterPartial, 1, "без токена повтор не выполняется")
+        XCTAssertEqual(center.captchaPendingRequest(forKey: key)?.formURL, baseFormURL)
+        let saved = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertEqual(saved.movementFetchedAt, previousSuccess)
+        XCTAssertEqual(saved.eventJournal, journalBefore)
+        XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertEqual(saved.movement?.instances.first {
+            $0.domain == "3kas.sudrf.ru"
+        }?.caseNumber, "8Г-237/2026")
+        XCTAssertFalse(saved.movement?.instances.contains {
+            $0.captchaFormURL != nil
+        } ?? true, "CAPTCHA URL не должен сохраняться в базе")
+    }
+
+    func testFullRefreshAfterBaseCaptchaPartialClearsManualRequestAndAdvancesTTL() async throws {
+        let key = store.all()[0].key
+        let baseFormURL = URL(
+            string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1")!
+        var partial = successMV!
+        partial.instances.append(CaseInstance(
+            level: .first,
+            court: "Сыктывкарский городской суд",
+            caseNumber: "—",
+            judge: nil,
+            domain: "syktsud--komi.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            captchaFormURL: baseFormURL))
+        partial.incompleteHigherCourtDomains = ["syktsud--komi.sudrf.ru"]
+        let movement = EmbeddedCaptchaMovement(first: partial, retry: successMV)
+        let center = makeCenter(service: movement) { _, _, _, _ in
+            AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let first = await center.refresh(key: key)?.value
+        guard case .partial = first?.outcome else {
+            return XCTFail("первая попытка должна остаться partial")
+        }
+        XCTAssertNotNil(center.captchaPendingRequest(forKey: key))
+        XCTAssertNil(store.record(forKey: key)?.movementFetchedAt)
+
+        let second = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(second?.outcome, .refreshed)
+        let totalCalls = await movement.calls
+        XCTAssertEqual(totalCalls, 2)
+        XCTAssertNil(center.captchaPendingRequest(forKey: key))
+        XCTAssertNotNil(store.record(forKey: key)?.movementFetchedAt)
+        XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .usableSnapshot)
+    }
+
+    func testAllSourcesUnavailableKeepsMovementSnapshotJournalAndFullSuccessTTL() async throws {
+        let key = store.all()[0].key
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var cached = successMV!
+        cached.instances.append(CaseInstance(
+            level: .appeal,
+            court: "Верховный суд Республики Коми",
+            caseNumber: "33-237/2026",
+            judge: "Сохранённый судья",
+            domain: "vs--komi.sudrf.ru",
+            foundByUID: true,
+            result: "Оставлено без изменения",
+            sessions: []))
+        let cachedSnapshot = MovementDerivation.snapshot(from: cached, context: makeContext())
+        let previousSuccess = Date(timeIntervalSince1970: 1_700_000_000)
+        let seed = CaseEvent.make(
+            kind: .complaintRegistered,
+            occurrence: ["issue-237-all-unavailable"],
+            observedAt: Date(timeIntervalSinceReferenceDate: 1),
+            evidence: .init())
+        record.movement = cached
+        record.snapshot = cachedSnapshot
+        record.movementFetchedAt = previousSuccess
+        record.eventJournal = CaseEventJournal(events: [seed])
+        try store.save()
+
+        let baseStub = CaseInstance(
+            level: .first,
+            court: "Сыктывкарский городской суд",
+            caseNumber: cached.caseNumber,
+            judge: nil,
+            domain: "syktsud--komi.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            transientError: true)
+        let appealStub = CaseInstance(
+            level: .appeal,
+            court: "Верховный суд Республики Коми",
+            caseNumber: "—",
+            judge: nil,
+            domain: "vs--komi.sudrf.ru",
+            foundByUID: false,
+            result: nil,
+            sessions: [],
+            transientError: true)
+        let partial = CaseMovement(
+            uid: cached.uid,
+            caseNumber: cached.caseNumber,
+            inForce: false,
+            instances: [baseStub, appealStub],
+            complaints: [:],
+            acts: [],
+            incompleteHigherCourtDomains: [
+                "syktsud--komi.sudrf.ru", "vs--komi.sudrf.ru"
+            ])
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            serviceBuilder: { _ in FixedMovement(partial) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        guard case .partial = execution?.outcome else {
+            return XCTFail("полный отказ источников должен быть partial")
+        }
+        let saved = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertEqual(saved.movement, cached)
+        XCTAssertEqual(saved.snapshot, cachedSnapshot)
+        XCTAssertEqual(saved.eventJournal?.events, [seed])
+        XCTAssertEqual(saved.movementFetchedAt, previousSuccess)
+        XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
+    }
+
     func testIntentRefreshReportsSuccessAfterAutoSolve() async throws {
         let token = CaptchaToken(value: "12345", id: "intent-success")
         let center = makeCenter { _, _, _, _ in

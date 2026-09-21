@@ -963,6 +963,10 @@ final class RefreshCenter: ObservableObject {
                 try persistAttempt(key, attempt)
                 return failure(key, "Суд вернул неполный ответ без пригодного движения дела.")
             }
+            let baseCaptchaURL = movement.instances.compactMap(\.captchaFormURL).first {
+                SudrfHost.moduleHost($0.host?.lowercased() ?? "")
+                    == SudrfHost.moduleHost(ctx.searchDomain)
+            }
             if let retry = try await retryEmbeddedCaptchaIfNeeded(
                 movement: movement, service: service, key: key, ctx: ctx, cart: cart,
                 mayAutoSolve: mayAutoSolve) {
@@ -982,10 +986,20 @@ final class RefreshCenter: ObservableObject {
                         + "сохранены последние успешные данные."
                     : "Часть источников не дала полного снимка (\(failedCount)); сохранены последние успешные данные."
             }
-            return try applyMovement(key: key, ctx: ctx, mv: movement,
-                                     attempt: attempt, isComplete: false,
-                                     partialMessage: message,
-                                     reportsPartialFailure: failedCount > 0)
+            let execution = try applyMovement(key: key, ctx: ctx, mv: movement,
+                                              attempt: attempt, isComplete: false,
+                                              partialMessage: message,
+                                              reportsPartialFailure: failedCount > 0)
+            // A base-card CAPTCHA is embedded in an otherwise useful partial
+            // movement: higher courts may already have refreshed successfully.
+            // `applyMovement` strips transient stubs and clears an old pending
+            // request, so restore only the base host's exact form URL after the
+            // atomic merge. Higher-court embedded CAPTCHAs keep their existing
+            // published-stub behavior.
+            if let baseCaptchaURL {
+                queueCaptcha(key: execution.effectiveKey, formURL: baseCaptchaURL)
+            }
+            return execution
         case .honestZero(let attempt):
             try persistAttempt(key, attempt)
             return failure(key, "Источник подтвердил пустую выдачу; сохранённое дело не удалено.")

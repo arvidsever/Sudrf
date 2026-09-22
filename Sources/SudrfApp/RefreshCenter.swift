@@ -188,6 +188,12 @@ final class RefreshCenter: ObservableObject {
     /// своим завершением сбросить walkTask/walkProgress нового обхода.
     private var walkGeneration = 0
     private var timerTask: Task<Void, Never>? = nil
+    /// In-flight work has not persisted `sourceRefreshAttempt` yet. Remember
+    /// its scheduling time so a force restart does not put it at the head
+    /// again while the previous generation is still unwinding.
+    private var walkScheduledAt: [String: Date] = [:]
+    private let initialTimerDelay: Duration
+    private let timerInterval: Duration
     private static let persistenceFailureMessage =
         "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
 
@@ -201,11 +207,15 @@ final class RefreshCenter: ObservableObject {
             -> EnforcementLookup)? = nil,
          fsspClient: FSSPClient? = nil,
          fsspAutoModelEnabled: Bool? = nil,
-         fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil) {
+         fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil,
+         initialTimerDelay: Duration = .seconds(5),
+         timerInterval: Duration = .seconds(600)) {
         self.store = store
         self.client = client
         self.captchaSolver = captchaSolver
         self.captchaSettings = captchaSettings
+        self.initialTimerDelay = initialTimerDelay
+        self.timerInterval = timerInterval
         // Локальные копии — чтобы default-замыкания не захватывали self
         // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
@@ -294,21 +304,28 @@ final class RefreshCenter: ObservableObject {
         lastErrors[key] = nil
         enforcementErrors[key] = nil
         captchaPending.remove(key: key)
+        walkScheduledAt[key] = nil
     }
 
     // MARK: Периодический цикл
 
-    /// Идемпотентный запуск таймера: первый проход ~через 5 с после старта,
-    /// далее проверка каждые 10 мин (реально обновляются только устаревшие).
-    func start() {
-        guard timerTask == nil else { return }
+    /// Идемпотентно запускает первый проход и таймер последующих проверок.
+    /// Возвращаемая задача позволяет startup-repair дождаться due-обхода,
+    /// не блокируя его своей общей сетевой очередью.
+    @discardableResult
+    func start() -> Task<Void, Never>? {
+        guard timerTask == nil else { return walkTask }
+        let initialWalk = refreshAll(force: false)
+        let initialTimerDelay = initialTimerDelay
+        let timerInterval = timerInterval
         timerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: initialTimerDelay)
             while !Task.isCancelled {
-                self?.refreshAll(force: false)
-                try? await Task.sleep(for: .seconds(600))
+                _ = self?.refreshAll(force: false)
+                try? await Task.sleep(for: timerInterval)
             }
         }
+        return initialWalk
     }
 
     // MARK: Обход всех дел
@@ -317,32 +334,49 @@ final class RefreshCenter: ObservableObject {
     /// иначе только те, чей кэш старше TTL. Периодический (не-force) вызов —
     /// no-op, если обход уже идёт; force (кнопка «Проверить все») отменяет
     /// текущий обход и начинает заново.
-    func refreshAll(force: Bool) {
+    @discardableResult
+    func refreshAll(force: Bool) -> Task<Void, Never>? {
         if force {
             walkTask?.cancel()
             walkTask = nil
         } else if walkTask != nil {
-            return
+            return walkTask
         }
         let now = Date()
         let ttl = RefreshSettings.ttl
-        var courtKeys = Set<String>()
-        let keys = store.all().compactMap { rec -> String? in
+        let items = store.all().compactMap { rec -> (
+            key: String, courtDue: Bool, lastAttempt: Date?, lastSuccess: Date?
+        )? in
             let courtDue = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
             let enforcementDue = needsEnforcementRefresh(rec, now: now, ttl: ttl)
-            if courtDue { courtKeys.insert(rec.key) }
-            return courtDue || enforcementDue ? rec.key : nil
+            guard courtDue || enforcementDue else { return nil }
+            let persistedAttempt = courtDue
+                ? rec.sourceRefreshAttempt?.provenance.observedAt
+                : rec.enforcementRecords.compactMap(\.lastAttemptAt).max()
+            return (
+                rec.key,
+                courtDue,
+                [persistedAttempt, walkScheduledAt[rec.key]].compactMap { $0 }.max(),
+                courtDue
+                    ? rec.movementFetchedAt
+                    : rec.enforcementRecords.compactMap(\.lastSuccessAt).max()
+            )
+        }.sorted { lhs, rhs in
+            if lhs.lastAttempt != rhs.lastAttempt {
+                if lhs.lastAttempt == nil { return true }
+                if rhs.lastAttempt == nil { return false }
+                return lhs.lastAttempt! < rhs.lastAttempt!
+            }
+            if lhs.lastSuccess != rhs.lastSuccess {
+                if lhs.lastSuccess == nil { return true }
+                if rhs.lastSuccess == nil { return false }
+                return lhs.lastSuccess! < rhs.lastSuccess!
+            }
+            return lhs.key < rhs.key
         }
-        guard !keys.isEmpty else { return }
-        let dueCourtKeys = courtKeys
-
-        // Группируем дела по домашнему суду (displayDomain денормализован в записи —
-        // декодировать контекст не нужно). Порядок дел внутри суда сохраняется.
-        let groups = Dictionary(grouping: keys) { key in
-            store.record(forKey: key)?.displayDomain ?? key
-        }
-        let total = keys.count
+        guard !items.isEmpty else { return nil }
+        let total = items.count
 
         walkGeneration += 1
         let gen = walkGeneration
@@ -355,36 +389,27 @@ final class RefreshCenter: ObservableObject {
             guard let self else { return }
             self.walkProgress = WalkProgress(done: 0, total: total)
 
-            // Один последовательный воркер на суд; при production-лимите 1
-            // следующая группа запускается после завершения предыдущей. Ручные
-            // запросы в это время встают в общую FIFO-очередь SudrfClient.
-            let courts = Array(groups.values)
-            let limit = max(1, RefreshSettings.maxConcurrentCourts)
-            await withTaskGroup(of: Void.self) { group in
-                var next = 0
-                func addWorker() {
-                    guard next < courts.count else { return }
-                    let caseKeys = courts[next]
-                    next += 1
-                    group.addTask { [weak self] in
-                        for key in caseKeys {
-                            if Task.isCancelled { return }
-                            if dueCourtKeys.contains(key) {
-                                _ = await self?.refresh(key: key, forceEnforcement: false)?.value
-                            } else {
-                                _ = await self?.startEnforcementRefresh(key: key, force: false)?.value
-                            }
-                            await self?.bumpWalkProgress(total: total, generation: gen)
-                        }
-                    }
+            // Один последовательный воркер сохраняет общий сетевой throttle.
+            // Давность попытки, а не порядок SwiftData/словаря, не даёт
+            // повторным запускам постоянно начинать с одних и тех же дел.
+            for item in items {
+                if Task.isCancelled { return }
+                self.walkScheduledAt[item.key] = Date()
+                if item.courtDue {
+                    _ = await self.refresh(key: item.key, forceEnforcement: false)?.value
+                } else {
+                    _ = await self.startEnforcementRefresh(key: item.key, force: false)?.value
                 }
-                for _ in 0..<limit { addWorker() }
-                while await group.next() != nil {
-                    if Task.isCancelled { break }
-                    addWorker()
-                }
+                self.bumpWalkProgress(total: total, generation: gen)
             }
         }
+        return walkTask
+    }
+
+    /// Startup repair waits for whichever walk is current, including a force
+    /// replacement started while an older generation was completing.
+    func waitUntilWalkIdle() async {
+        while let task = walkTask { await task.value }
     }
 
     /// Инкремент счётчика завершённых дел обхода (вызывается воркерами по мере

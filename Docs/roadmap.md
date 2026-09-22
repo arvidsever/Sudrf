@@ -5,14 +5,19 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.58.27**, build 197. Полный локальный набор:
-1448 XCTest (5 штатных пропусков) и 28 Swift Testing, без ошибок; Xcode 27 build.
+Текущий baseline: **main 0.58.28**, build 198. Полный локальный набор:
+1452 XCTest (5 штатных пропусков) и 28 Swift Testing, без ошибок; Xcode 27 build.
+Приёмка #87 проведена на изолированной дисковой базе: первый non-force обход
+начинается сразу после готовности store и до общего startup-repair, а стандартный
+UID-поиск обнаруживает `16-5132/2026` без открытия detail view. Последовательная
+очередь на 215 делах ставит первыми записи с самой старой попыткой, поэтому
+принудительный перезапуск не создаёт starvation. Partial/CAPTCHA/error сохраняют
+отдельную попытку, не продлевают TTL полного успеха и не блокируют следующее дело.
 Приёмка #238 проведена на изолированной дисковой базе: точные
 сохранённые `sourceURL` вышестоящих карточек обновляются напрямую
 при недоступном UID-поиске, а неудача одной ссылки не блокирует остальные
 источники. Одновременные search/direct ответы не дублируют инстанции и
-акты; partial-refresh сохраняет кэш недоступного круга, TTL и журнал. #87
-остаётся отдельной задачей обнаружения ещё неизвестных производств.
+акты; partial-refresh сохраняет кэш недоступного круга, TTL и журнал.
 Приёмка #237 проведена на изолированной дисковой базе: при недоступности базовой
 карточки сохранённый валидный судебный УИД позволяет независимо обновить
 вышестоящие суды, а кэш недоступных host, TTL полного успеха и журнал сохраняются.
@@ -46,6 +51,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
+| 0.58.28 | [#87](https://github.com/arvidsever/Sudrf/issues/87) | Фоновый обход сразу после старта и справедливая очередь обнаруживают новые вышестоящие карточки без открытия дела. | [PR #318](https://github.com/arvidsever/Sudrf/pull/318) |
 | 0.58.27 | [#238](https://github.com/arvidsever/Sudrf/issues/238) | Сохранённые точные URL вышестоящих карточек обновляются напрямую независимо от UID-поиска. | [PR #317](https://github.com/arvidsever/Sudrf/pull/317) |
 | 0.58.26 | [#237](https://github.com/arvidsever/Sudrf/issues/237) | Вышестоящие суды обновляются независимо при недоступности базовой карточки по подтверждённому сохранённому УИД. | [PR #316](https://github.com/arvidsever/Sudrf/pull/316) |
 | 0.58.25 | [#290](https://github.com/arvidsever/Sudrf/issues/290) | Индекс `4-…` маршрутизируется в картотеку уголовных материалов; официальная ссылка вниз восстанавливает единую цепочку без УИД. | [PR #315](https://github.com/arvidsever/Sudrf/pull/315) |
@@ -79,7 +85,7 @@ CAPTCHA базового суда получает одну попытку ав�
 ## Очередь
 
 Все открытые GitHub Issues распределены ниже как активные, зависимые или отложенные.
-Сверка 22 сентября 2026 года: после завершения #238 остаётся 44 открытых issue.
+Сверка 22 сентября 2026 года: после завершения #87 остаётся 43 открытых issue.
 Ссылки ведут к подробным критериям приёмки. Закрытые issues упоминаются только
 как выполненные основания или reference cases, а не как открытые задачи.
 
@@ -94,10 +100,9 @@ CAPTCHA базового суда получает одну попытку ав�
 
 ### 2. Обновление, импорт и источники
 
-- **[#87](https://github.com/arvidsever/Sudrf/issues/87)** — фоновое обнаружение новых вышестоящих производств; после него
-  **[#156](https://github.com/arvidsever/Sudrf/issues/156) + [#76](https://github.com/arvidsever/Sudrf/issues/76)** добавляют registry `r_juid` и правильную маршрутизацию как evidence.
+- **[#156](https://github.com/arvidsever/Sudrf/issues/156) + [#76](https://github.com/arvidsever/Sudrf/issues/76)** добавляют registry `r_juid` и правильную маршрутизацию как evidence поверх завершённого фонового обхода #87.
   Апелляционная часть #76 для общих и военных судов выполнена в #291; остаются следующий кассационный маршрут и его приёмка, включая недопустимость территориального КСОЮ для соответствующего уголовного дела суда субъекта.
-  **[#104](https://github.com/arvidsever/Sudrf/issues/104)** использует [#87](https://github.com/arvidsever/Sudrf/issues/87) и выполненный [#56](https://github.com/arvidsever/Sudrf/issues/56) для привязки производств ВС РФ.
+  **[#104](https://github.com/arvidsever/Sudrf/issues/104)** использует выполненные [#87](https://github.com/arvidsever/Sudrf/issues/87) и [#56](https://github.com/arvidsever/Sudrf/issues/56) для привязки производств ВС РФ.
 - **[#165](https://github.com/arvidsever/Sudrf/issues/165)** — прямой уголовный поиск ВС РФ поднимается сразу после получения
   конкретного номера и HTML-fixture; [#76](https://github.com/arvidsever/Sudrf/issues/76) — соседняя регрессия, а не блокер.
 - **[#250](https://github.com/arvidsever/Sudrf/issues/250)** — проверка связей импорта с определённым прогрессом, продолжением в фоне
@@ -114,7 +119,7 @@ CAPTCHA базового суда получает одну попытку ав�
   общий routing, затем СПб. Основания [#88](https://github.com/arvidsever/Sudrf/issues/88), этап 1 [#164](https://github.com/arvidsever/Sudrf/issues/164) и level-1 fixtures [#181](https://github.com/arvidsever/Sudrf/issues/181) готовы;
   новые источники разблокируют соответствующие части [#248](https://github.com/arvidsever/Sudrf/issues/248), существующие их не ждут.
 - **[#68](https://github.com/arvidsever/Sudrf/issues/68) + [#65](https://github.com/arvidsever/Sudrf/issues/65)** — диагностика источников и независимый live canary.
-  **[#180](https://github.com/arvidsever/Sudrf/issues/180)** начинается с измерений [#87](https://github.com/arvidsever/Sudrf/issues/87) и host-health instrumentation [#68](https://github.com/arvidsever/Sudrf/issues/68) на 200+ делах;
+  **[#180](https://github.com/arvidsever/Sudrf/issues/180)** начинается с измерений завершённого фонового обхода [#87](https://github.com/arvidsever/Sudrf/issues/87) и host-health instrumentation [#68](https://github.com/arvidsever/Sudrf/issues/68) на 200+ делах;
   новый scheduler допустим лишь при подтверждённом starvation/лишней нагрузке.
   Полный Diagnostics UI и [#65](https://github.com/arvidsever/Sudrf/issues/65) не являются техническими блокерами этих измерений.
 

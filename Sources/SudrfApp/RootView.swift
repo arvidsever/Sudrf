@@ -103,8 +103,10 @@ final class AppBootstrap: ObservableObject {
         operationInFlight = true
         do {
             let container = try await loader()
-            state = .ready(try AppRouter(
-                modelContainer: container, modelContainerIsPrepared: true))
+            let router = try AppRouter(
+                modelContainer: container, modelContainerIsPrepared: true)
+            router.startBackgroundWork()
+            state = .ready(router)
         } catch {
             let failure = makeFailure(from: error)
             if let quarantined {

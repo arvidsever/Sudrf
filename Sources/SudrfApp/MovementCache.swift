@@ -37,7 +37,4 @@ enum RefreshSettings {
     }
     static var ttl: TimeInterval { TimeInterval(ttlHours) * 3600 }
 
-    /// Разные домены SUDRF могут вести на один backend. Один судебный воркер
-    /// не создаёт конкурирующие цепочки запросов поверх общей очереди клиента.
-    static let maxConcurrentCourts = 1
 }

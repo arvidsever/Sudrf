@@ -192,6 +192,7 @@ final class AppRouter: ObservableObject {
     private let summaryConfigurationProvider: @MainActor @Sendable () throws
         -> ConfiguredActSummarizer
     private var refreshCenterSink: AnyCancellable? = nil
+    private var backgroundWorkStarted = false
     private var currentEntityActivity: NSUserActivity?
     private var summaryOperationState = SummaryOperationState()
     private var summaryTask: Task<Void, Never>?
@@ -480,12 +481,22 @@ final class AppRouter: ObservableObject {
         }
         reload()
         SudrfIntentRuntime.shared.install(self)
+    }
+
+    /// Production bootstrap calls this once after the persistent store is
+    /// ready. The due refresh starts before the broad repair pass so hundreds
+    /// of legacy repair candidates cannot postpone ordinary monitoring.
+    func startBackgroundWork() {
+        guard !backgroundWorkStarted else { return }
+        backgroundWorkStarted = true
+        _ = refreshCenter.start()
         Task { [weak self] in
             guard let self else { return }
             await CaseCatalogRegistry.shared.install(self.caseCatalog)
             if !self.spotlightOnboardingRequired {
                 await self.spotlightIndexer.scheduleSynchronization(scope: .full)
             }
+            await self.refreshCenter.waitUntilWalkIdle()
             do {
                 let summary = try await self.repairCoordinator.runAll()
                 self.applyRepair(summary)
@@ -496,7 +507,6 @@ final class AppRouter: ObservableObject {
                 // visible and leave retry to the next explicit refresh/start.
                 self.reload()
             }
-            self.refreshCenter.start()
         }
     }
 

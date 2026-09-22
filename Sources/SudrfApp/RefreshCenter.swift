@@ -115,6 +115,14 @@ final class RefreshCenter: ObservableObject {
 
     struct WalkProgress: Equatable { var done: Int; var total: Int }
 
+    private struct WalkItem {
+        var key: String
+        var courtDue: Bool
+        var lastAttempt: Date?
+        var lastSuccess: Date?
+        var diagnostic: RefreshWalkMeasurement.Candidate
+    }
+
     @Published private(set) var refreshing: Set<String> = []
     @Published private(set) var refreshingEnforcement: Set<String> = []
     @Published private(set) var walkProgress: WalkProgress? = nil
@@ -194,6 +202,7 @@ final class RefreshCenter: ObservableObject {
     private var walkScheduledAt: [String: Date] = [:]
     private let initialTimerDelay: Duration
     private let timerInterval: Duration
+    private let walkDiagnostics: RefreshWalkDiagnostics
     private static let persistenceFailureMessage =
         "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
 
@@ -209,13 +218,15 @@ final class RefreshCenter: ObservableObject {
          fsspAutoModelEnabled: Bool? = nil,
          fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil,
          initialTimerDelay: Duration = .seconds(5),
-         timerInterval: Duration = .seconds(600)) {
+         timerInterval: Duration = .seconds(600),
+         walkDiagnostics: RefreshWalkDiagnostics = .disabled) {
         self.store = store
         self.client = client
         self.captchaSolver = captchaSolver
         self.captchaSettings = captchaSettings
         self.initialTimerDelay = initialTimerDelay
         self.timerInterval = timerInterval
+        self.walkDiagnostics = walkDiagnostics
         // Локальные копии — чтобы default-замыкания не захватывали self
         // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
@@ -342,11 +353,9 @@ final class RefreshCenter: ObservableObject {
         } else if walkTask != nil {
             return walkTask
         }
-        let now = Date()
+        let now = walkDiagnostics.now()
         let ttl = RefreshSettings.ttl
-        let items = store.all().compactMap { rec -> (
-            key: String, courtDue: Bool, lastAttempt: Date?, lastSuccess: Date?
-        )? in
+        let items: [WalkItem] = store.all().compactMap { rec in
             let courtDue = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
             let enforcementDue = needsEnforcementRefresh(rec, now: now, ttl: ttl)
@@ -354,13 +363,30 @@ final class RefreshCenter: ObservableObject {
             let persistedAttempt = courtDue
                 ? rec.sourceRefreshAttempt?.provenance.observedAt
                 : rec.enforcementRecords.compactMap(\.lastAttemptAt).max()
-            return (
-                rec.key,
-                courtDue,
-                [persistedAttempt, walkScheduledAt[rec.key]].compactMap { $0 }.max(),
-                courtDue
-                    ? rec.movementFetchedAt
-                    : rec.enforcementRecords.compactMap(\.lastSuccessAt).max()
+            let lastAttempt = [persistedAttempt, walkScheduledAt[rec.key]]
+                .compactMap { $0 }.max()
+            let lastSuccess = courtDue
+                ? rec.movementFetchedAt
+                : rec.enforcementRecords.compactMap(\.lastSuccessAt).max()
+            let host = courtDue
+                ? rec.context.map { SudrfHost.moduleHost($0.searchDomain) }
+                : nil
+            let eligibleSince = force || !courtDue
+                ? nil
+                : rec.movementFetchedAt.map { $0.addingTimeInterval(ttl) } ?? rec.addedAt
+            return WalkItem(
+                key: rec.key,
+                courtDue: courtDue,
+                lastAttempt: lastAttempt,
+                lastSuccess: lastSuccess,
+                diagnostic: RefreshWalkMeasurement.Candidate(
+                    key: rec.key,
+                    courtDue: courtDue,
+                    host: host,
+                    lastAttempt: persistedAttempt,
+                    lastSuccess: lastSuccess,
+                    previousAttempt: courtDue ? rec.sourceRefreshAttempt : nil,
+                    eligibleSince: eligibleSince)
             )
         }.sorted { lhs, rhs in
             if lhs.lastAttempt != rhs.lastAttempt {
@@ -381,12 +407,20 @@ final class RefreshCenter: ObservableObject {
         walkGeneration += 1
         let gen = walkGeneration
         walkTask = Task { [weak self] in
+            guard let self else { return }
+            var measurement = self.walkDiagnostics.makeMeasurement(
+                trigger: force ? "forced" : "background",
+                ttl: ttl,
+                candidates: items.map(\.diagnostic))
             defer {
-                if let self, self.walkGeneration == gen {
+                let report = measurement.report(
+                    finishedAt: self.walkDiagnostics.now(),
+                    cancelled: Task.isCancelled || measurement.completions.count < total)
+                self.walkDiagnostics.save(report)
+                if self.walkGeneration == gen {
                     self.walkTask = nil; self.walkProgress = nil
                 }
             }
-            guard let self else { return }
             self.walkProgress = WalkProgress(done: 0, total: total)
 
             // Один последовательный воркер сохраняет общий сетевой throttle.
@@ -394,12 +428,28 @@ final class RefreshCenter: ObservableObject {
             // повторным запускам постоянно начинать с одних и тех же дел.
             for item in items {
                 if Task.isCancelled { return }
-                self.walkScheduledAt[item.key] = Date()
+                let startedAt = self.walkDiagnostics.now()
+                self.walkScheduledAt[item.key] = startedAt
+                let executionOutcome: String
+                var sourceAttempt: SourceAttempt? = nil
                 if item.courtDue {
-                    _ = await self.refresh(key: item.key, forceEnforcement: false)?.value
+                    let execution = await self.refresh(
+                        key: item.key, forceEnforcement: false)?.value
+                        ?? RefreshExecution(effectiveKey: item.key, outcome: .notFound)
+                    executionOutcome = execution.outcome.diagnosticsName
+                    let currentAttempt = self.store.record(
+                        forKey: execution.effectiveKey)?.sourceRefreshAttempt
+                    sourceAttempt = currentAttempt == item.diagnostic.previousAttempt
+                        ? nil : currentAttempt
                 } else {
                     _ = await self.startEnforcementRefresh(key: item.key, force: false)?.value
+                    executionOutcome = "enforcementCompleted"
                 }
+                measurement.append(
+                    candidate: item.diagnostic,
+                    startedAt: startedAt,
+                    executionOutcome: executionOutcome,
+                    sourceAttempt: sourceAttempt)
                 self.bumpWalkProgress(total: total, generation: gen)
             }
         }

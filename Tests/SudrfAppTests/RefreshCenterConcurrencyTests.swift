@@ -175,6 +175,64 @@ final class RefreshCenterConcurrencyTests: XCTestCase {
         XCTAssertNil(center.walkProgress, "после завершения полного обхода прогресс очищается")
     }
 
+    func testBackgroundReportMeasuresQueueAndEligibilityDelayFromPersistedDates() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = MovementContext(
+            branchRaw: "general", region: "Республика Коми",
+            searchDomain: "timing--komi.sudrf.ru",
+            displayDomain: "timing.komi.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "11RS0068", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: "2-68/2026", caseID: "case-68", caseUID: "guid-68")
+        let record = try store.upsert(
+            context: context, snapshot: nil, movement: nil, collections: [])
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let ttl = RefreshSettings.ttl
+        record.movementFetchedAt = base.addingTimeInterval(-ttl - 60)
+        record.sourceRefreshAttempt = SourceAttempt(
+            kind: .transportFailure,
+            provenance: SourceProvenance(
+                operation: .movement, sourceFamily: "sudrf",
+                host: context.searchDomain,
+                observedAt: base.addingTimeInterval(-ttl - 120)))
+        try store.save()
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("refresh-walk-timing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let times = [base, base.addingTimeInterval(1), base.addingTimeInterval(10),
+                     base.addingTimeInterval(20)]
+        var timeIndex = 0
+        let probe = Probe(delay: .zero)
+        let center = RefreshCenter(
+            store: store,
+            client: SudrfClient(minInterval: 0),
+            serviceBuilder: { _ in probe },
+            walkDiagnostics: RefreshWalkDiagnostics(
+                enabled: true,
+                directory: directory,
+                now: {
+                    defer { timeIndex += 1 }
+                    return times[min(timeIndex, times.count - 1)]
+                },
+                appVersion: "test",
+                appBuild: "1"))
+
+        await center.refreshAll(force: false)?.value
+
+        let url = try XCTUnwrap(FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil).first)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let report = try decoder.decode(RefreshWalkReport.self, from: Data(contentsOf: url))
+        XCTAssertEqual(report.trigger, "background")
+        XCTAssertEqual(report.courtEligible, 1)
+        XCTAssertEqual(report.queueWaitSeconds?.maximum, 9)
+        XCTAssertEqual(report.eligibilityDelaySeconds?.maximum, 70)
+        XCTAssertEqual(report.durationSeconds, 19)
+    }
+
     func testRestartedWalkTriesAll215CasesBeforeRepeatingRecentAttempts() async throws {
         let store = TrackedStore(inMemory: true)
         let count = 215
@@ -194,9 +252,18 @@ final class RefreshCenterConcurrencyTests: XCTestCase {
         }
 
         let probe = Probe(delay: .milliseconds(2))
+        let diagnosticsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("refresh-walk-215-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: diagnosticsDirectory) }
         let center = RefreshCenter(
             store: store, client: SudrfClient(minInterval: 0),
-            serviceBuilder: { _ in probe })
+            serviceBuilder: { _ in probe },
+            walkDiagnostics: RefreshWalkDiagnostics(
+                enabled: true,
+                directory: diagnosticsDirectory,
+                now: Date.init,
+                appVersion: "test",
+                appBuild: "1"))
         center.refreshAll(force: true)
 
         let deadline = Date().addingTimeInterval(10)
@@ -219,5 +286,21 @@ final class RefreshCenterConcurrencyTests: XCTestCase {
                         + "firstDuplicate=\(String(describing: firstDuplicate)), "
                         + "uniqueBefore=\(seen.count), total=\(requests.count)")
         XCTAssertNil(center.walkProgress)
+
+        let reportURLs = try FileManager.default.contentsOfDirectory(
+            at: diagnosticsDirectory, includingPropertiesForKeys: nil)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let reports = try reportURLs.map {
+            try decoder.decode(RefreshWalkReport.self, from: Data(contentsOf: $0))
+        }
+        let completed = try XCTUnwrap(reports.first(where: {
+            !$0.cancelled && $0.completedCourt == count
+        }))
+        XCTAssertEqual(completed.eligibleTotal, count)
+        XCTAssertEqual(completed.duplicateCompletions, 0)
+        XCTAssertEqual(completed.sourceOutcomeCounts["usableSnapshot"], count)
+        XCTAssertTrue(reports.contains(where: \.cancelled),
+                      "отменённый обход должен завершить отдельный, несмешанный отчёт")
     }
 }

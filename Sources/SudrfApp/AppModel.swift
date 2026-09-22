@@ -440,7 +440,8 @@ final class AppRouter: ObservableObject {
         refreshCenter = RefreshCenter(store: store, client: client,
                                        captchaSolver: configuredSolver,
                                        captchaSettings: captchaSettings,
-                                       fsspClient: fsspClient)
+                                       fsspClient: fsspClient,
+                                       walkDiagnostics: .live)
         refreshCenter.repairBeforeRefresh = { [weak self] key in
             guard let self else { return key }
             do {

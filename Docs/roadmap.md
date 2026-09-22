@@ -5,8 +5,13 @@
 
 ## Сделано
 
-Текущий baseline: **main 0.58.29**, build 199. Полный локальный набор:
-1472 XCTest (5 штатных пропусков) и 28 Swift Testing, без ошибок; Xcode 27 build.
+Текущий baseline: **main 0.58.30**, build 200. Полный локальный набор:
+1476 XCTest (5 штатных пропусков) и 28 Swift Testing, без ошибок; Xcode 27 build.
+Первый этап #68 сохраняет отдельный обезличенный JSON каждого фонового обхода:
+wall-clock, очередь и eligibility, typed outcomes, transport retries и
+host-распределение ошибок. Изолированная проверка на 215 делах подтверждает полный
+последовательный охват и раздельные отчёты отменённого и нового поколений. Реальный
+baseline на 200+ eligible-делах остаётся обязательным gate перед решением по #180.
 Приёмка #319 проведена на точных lifecycle/deadline-регрессиях и изолированной
 дисковой базе: итоговые определения ГПК получают срок частной жалобы, маршруты
 КоАП выбираются по процессуальной роли и явному получению, а нерассчитанный срок
@@ -57,6 +62,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
+| 0.58.30 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Локальный обезличенный отчёт измеряет полный фоновый обход и host-level отказы до решения о scheduler #180. | — |
 | 0.58.29 | [#319](https://github.com/arvidsever/Sudrf/issues/319) | Итоговые определения получают правильный срок, завершённые производства и самостоятельные материалы больше не остаются в первой инстанции. | [PR #320](https://github.com/arvidsever/Sudrf/pull/320) |
 | 0.58.28 | [#87](https://github.com/arvidsever/Sudrf/issues/87) | Фоновый обход сразу после старта и справедливая очередь обнаруживают новые вышестоящие карточки без открытия дела. | [PR #318](https://github.com/arvidsever/Sudrf/pull/318) |
 | 0.58.27 | [#238](https://github.com/arvidsever/Sudrf/issues/238) | Сохранённые точные URL вышестоящих карточек обновляются напрямую независимо от UID-поиска. | [PR #317](https://github.com/arvidsever/Sudrf/pull/317) |
@@ -126,7 +132,10 @@ CAPTCHA базового суда получает одну попытку ав�
   общий routing, затем СПб. Основания [#88](https://github.com/arvidsever/Sudrf/issues/88), этап 1 [#164](https://github.com/arvidsever/Sudrf/issues/164) и level-1 fixtures [#181](https://github.com/arvidsever/Sudrf/issues/181) готовы;
   новые источники разблокируют соответствующие части [#248](https://github.com/arvidsever/Sudrf/issues/248), существующие их не ждут.
 - **[#68](https://github.com/arvidsever/Sudrf/issues/68) + [#65](https://github.com/arvidsever/Sudrf/issues/65)** — диагностика источников и независимый live canary.
-  **[#180](https://github.com/arvidsever/Sudrf/issues/180)** начинается с измерений завершённого фонового обхода [#87](https://github.com/arvidsever/Sudrf/issues/87) и host-health instrumentation [#68](https://github.com/arvidsever/Sudrf/issues/68) на 200+ делах;
+  Этап 1 #68 в 0.58.30 сохраняет bounded JSON с wall-clock, задержками,
+  typed outcomes и host-агрегатами без идентификаторов дел; остаются реальный
+  non-force baseline на 200+ eligible-делах и полный пользовательский Diagnostics UI.
+  **[#180](https://github.com/arvidsever/Sudrf/issues/180)** начинается с этого baseline завершённого фонового обхода [#87](https://github.com/arvidsever/Sudrf/issues/87);
   новый scheduler допустим лишь при подтверждённом starvation/лишней нагрузке.
   Полный Diagnostics UI и [#65](https://github.com/arvidsever/Sudrf/issues/65) не являются техническими блокерами этих измерений.
 

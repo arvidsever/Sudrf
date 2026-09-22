@@ -243,23 +243,23 @@ struct CaseEventDeriverTests {
         #expect(thirdEvent.id != firstEvent.id)
     }
 
-    @Test func derivationVersionFiveBaselinesVersionFourProjectionAndPreservesJournal() throws {
+    @Test func derivationVersionSixBaselinesVersionFiveProjectionAndPreservesJournal() throws {
         let event = CaseEvent.make(kind: .complaintRegistered, occurrence: ["legacy"],
                                    observedAt: observedAt, evidence: .init())
-        let legacy = CaseEventJournal(derivationVersion: 4, events: [event])
+        let legacy = CaseEventJournal(derivationVersion: 5, events: [event])
         let decoded = try JSONDecoder().decode(CaseEventJournal.self,
                                                from: JSONEncoder().encode(legacy))
         #expect(decoded == legacy)
 
         var old = koapSnapshot()
-        old.semanticProjectionVersion = 4
+        old.semanticProjectionVersion = 5
         let new = koapSnapshot(sessions: [koapSession(
             "18.05.2023", event: "Истребование дела (материала)")])
         let result = derive(old, new)
         #expect(result.events.isEmpty)
         #expect(result.diagnostics == [.derivationVersionChanged])
         #expect(decoded.events == [event])
-        #expect(CaseEventJournal.currentDerivationVersion == 5)
+        #expect(CaseEventJournal.currentDerivationVersion == 6)
         #expect(CaseEventDeriver.derive(old: nil, new: new,
                                         attempt: usableAttempt(), observedAt: observedAt)
             .diagnostics == [.baseline])

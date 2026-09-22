@@ -224,7 +224,9 @@ final class AppealChronologyLifecycleTests: XCTestCase {
             timeline: CaseLifecycleResolver.timeline(in: mv, production: .kas), today: today)
         XCTAssertTrue(evaluation.deadlines.isEmpty)
         XCTAssertFalse(evaluation.assessments.isEmpty)
-        XCTAssertTrue(evaluation.assessments.allSatisfy { $0.status == .needsLegalReview })
+        XCTAssertFalse(evaluation.assessments.contains { $0.status == .applicable })
+        XCTAssertTrue(evaluation.assessments.contains { $0.status == .notApplicable })
+        XCTAssertTrue(evaluation.assessments.contains { $0.status == .insufficientEvidence })
     }
 
     func testSameCardAcceptedAfterRefusalAndReviewDoesNotKeepOldTerminalResult() {

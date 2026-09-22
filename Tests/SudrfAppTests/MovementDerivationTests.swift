@@ -1970,7 +1970,7 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
-        XCTAssertEqual(snap.nextEvent, "завершено")
+        XCTAssertTrue(snap.nextEvent.contains("GPK-CASSATION-CSOY"))
         let presentation = MovementDerivation.lifecyclePresentation(
             from: mv, snapshot: snap, context: context(), today: today)
         XCTAssertNil(presentation.nextEventDate)
@@ -2320,7 +2320,7 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(resolution.steps, ["active", "todo", "todo", "todo"])
     }
 
-    func testDynamicPresentationRepairsLegacyCaptchaStageWithoutMigration() {
+    func testDynamicPresentationCompletesLegacyCaptchaStageWithoutMigration() {
         let captcha = CaseInstance(
             level: .cassation, court: "3 КСОЮ", caseNumber: "—", judge: nil,
             domain: "3kas.sudrf.ru", foundByUID: false, result: nil, sessions: [],
@@ -2339,12 +2339,12 @@ final class MovementDerivationTests: XCTestCase {
         let presentation = MovementDerivation.lifecyclePresentation(
             from: persisted, snapshot: legacySnapshot, context: context(), today: today)
 
-        XCTAssertEqual(presentation.stage, .first)
-        XCTAssertEqual(presentation.stageTag, "1-я инст.")
-        XCTAssertEqual(presentation.steps, ["active", "todo", "todo", "todo"])
+        XCTAssertEqual(presentation.stage, .done)
+        XCTAssertEqual(presentation.stageTag, "завершено")
+        XCTAssertEqual(presentation.steps, ["done", "todo", "todo", "todo"])
     }
 
-    func testDynamicPresentationRepairsStageWithoutDecodableContext() {
+    func testDynamicPresentationCompletesStageWithoutDecodableContext() {
         let live = movement(sessions: [CaseSession(date: "10.04.2026", event: "Решение")])
         var legacySnapshot = MovementDerivation.snapshot(
             from: live, context: context(), today: today)
@@ -2354,8 +2354,8 @@ final class MovementDerivationTests: XCTestCase {
         let presentation = MovementDerivation.lifecyclePresentation(
             from: live, snapshot: legacySnapshot, context: nil, today: today)
 
-        XCTAssertEqual(presentation.stage, .first)
-        XCTAssertEqual(presentation.stageTag, "1-я инст.")
+        XCTAssertEqual(presentation.stage, .done)
+        XCTAssertEqual(presentation.stageTag, "завершено")
     }
 
     func testMaterialResultCannotOverrideCaseOutcomeStatus() {

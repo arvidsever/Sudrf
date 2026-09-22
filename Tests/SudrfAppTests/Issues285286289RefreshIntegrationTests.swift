@@ -53,7 +53,7 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
             stale.stageRaw = CaseStageKind.appeal.rawValue
             stale.stageTag = "Апелляция"
             stale.statusText = "В производстве"
-            stale.semanticProjectionVersion = 4
+            stale.semanticProjectionVersion = 5
             stale.deadlines.append(StoredDeadline(
                 kind: "custom", what: "Пользовательский срок", basis: "fixture",
                 calLabel: "ручной",
@@ -66,7 +66,7 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
             let seed = CaseEvent.make(
                 kind: .complaintRegistered, occurrence: ["\(context.caseNumber)-seed"],
                 observedAt: Date(timeIntervalSinceReferenceDate: 1), evidence: .init())
-            record.eventJournal = CaseEventJournal(derivationVersion: 4, events: [seed])
+            record.eventJournal = CaseEventJournal(derivationVersion: 5, events: [seed])
             keys[context.caseNumber] = record.key
         }
         try store.save()
@@ -81,8 +81,8 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
         let repairedFromEvidence = try XCTUnwrap(store.record(forKey: issue285Key))
         XCTAssertEqual(repairedFromEvidence.snapshot?.stageRaw, CaseStageKind.first.rawValue)
         XCTAssertEqual(repairedFromEvidence.movement?.acts.first?.date, "—")
-        XCTAssertEqual(repairedFromEvidence.snapshot?.semanticProjectionVersion, 5)
-        XCTAssertEqual(repairedFromEvidence.eventJournal?.derivationVersion, 5)
+        XCTAssertEqual(repairedFromEvidence.snapshot?.semanticProjectionVersion, 6)
+        XCTAssertEqual(repairedFromEvidence.eventJournal?.derivationVersion, 6)
         XCTAssertEqual(repairedFromEvidence.eventJournal?.events.count, 1)
 
         let service = AppealDispositionMovements(full: full, partial: partial)
@@ -134,8 +134,8 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
             }
             XCTAssertEqual(record.snapshot?.inForce, expected.2, number)
             XCTAssertEqual(record.collectionNames, ["Регрессия 285-286-289"])
-            XCTAssertEqual(record.snapshot?.semanticProjectionVersion, 5)
-            XCTAssertEqual(record.eventJournal?.derivationVersion, 5)
+            XCTAssertEqual(record.snapshot?.semanticProjectionVersion, 6)
+            XCTAssertEqual(record.eventJournal?.derivationVersion, 6)
             XCTAssertEqual(record.eventJournal?.events.count, 1)
             XCTAssertEqual(record.snapshot?.deadlines.first {
                 $0.occurrenceKey == "\(number)-manual"

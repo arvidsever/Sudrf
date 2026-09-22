@@ -65,9 +65,9 @@ struct DeadlineRuleAssessment: Codable, Equatable, Identifiable {
         DeadlineAssessmentStatus(rawValue: statusRaw) ?? .notApplicable
     }
 
-    /// Только эти результаты удерживают terminal first-instance case активным:
-    /// rule распознан, но честный ответ невозможен без недостающего факта или
-    /// политики. Простое `notApplicable` сохраняет старое завершение дела.
+    /// Rule распознан, но честный расчёт невозможен без недостающего факта или
+    /// политики. Lifecycle показывает это предупреждение, но не считает его
+    /// бессрочным доказательством активного производства.
     var isIndeterminate: Bool {
         switch status {
         case .insufficientEvidence, .unsupportedCalculation, .needsLegalReview:
@@ -76,8 +76,6 @@ struct DeadlineRuleAssessment: Codable, Equatable, Identifiable {
             false
         }
     }
-
-    var blocksTerminalFirst: Bool { kind == "appeal" && isIndeterminate }
 }
 
 // MARK: - Rules engine
@@ -106,12 +104,14 @@ enum DeadlineRuleEngine {
     }
 
     private enum TriggerMode {
-        case finalForm
         case decisionFinalForm
         case decision
         case termination
+        case kasPrivateDetermination
         case finalAct
-        case deliveryOrReceipt
+        case koapInitialReceipt
+        case koapSubsequentReceipt
+        case koapReturnReceipt
         case gpkCassation
         case legalForce
     }
@@ -144,19 +144,29 @@ enum DeadlineRuleEngine {
     /// remains available in the registry for #222 without a second maintained list.
     private static let bindings = [
         Binding(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", production: .civil,
-                trigger: .finalForm),
+                trigger: .decisionFinalForm),
+        Binding(ruleID: "GPK-PRIVATE-COMPLAINT-GENERAL", kind: "appeal", production: .civil,
+                trigger: .termination),
         Binding(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", production: .kas,
                 trigger: .decisionFinalForm),
         Binding(ruleID: "KAS-APPEAL-ELECTION", kind: "appeal", production: .kas,
                 trigger: .decision, categoryScope: .election),
         Binding(ruleID: "KAS-PRIVATE-GENERAL", kind: "appeal", production: .kas,
-                trigger: .termination),
+                trigger: .kasPrivateDetermination),
         Binding(ruleID: "KAS-PRIVATE-ELECTION", kind: "appeal", production: .kas,
-                trigger: .termination, categoryScope: .election),
+                trigger: .kasPrivateDetermination, categoryScope: .election),
         Binding(ruleID: "UPK-APPEAL-GENERAL", kind: "appeal", production: .crim,
                 trigger: .finalAct),
         Binding(ruleID: "KOAP-APPEAL-INITIAL-GENERAL", kind: "appeal", production: .koap,
-                trigger: .deliveryOrReceipt),
+                trigger: .koapInitialReceipt),
+        Binding(ruleID: "KOAP-APPEAL-INITIAL-ELECTION", kind: "appeal", production: .koap,
+                trigger: .koapInitialReceipt, categoryScope: .election),
+        Binding(ruleID: "KOAP-APPEAL-SUBSEQUENT-GENERAL", kind: "appeal", production: .koap,
+                trigger: .koapSubsequentReceipt),
+        Binding(ruleID: "KOAP-APPEAL-SUBSEQUENT-ELECTION", kind: "appeal", production: .koap,
+                trigger: .koapSubsequentReceipt, categoryScope: .election),
+        Binding(ruleID: "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI", kind: "appeal",
+                production: .koap, trigger: .koapReturnReceipt),
         Binding(ruleID: "GPK-CASSATION-CSOY", kind: "cassation", production: .civil,
                 trigger: .gpkCassation),
         Binding(ruleID: "KAS-CASSATION-KSOYU", kind: "cassation", production: .kas,
@@ -168,7 +178,7 @@ enum DeadlineRuleEngine {
                          today: Date) -> Evaluation {
         let classification = MaterialProductionContext.resolve(
             context: context.movementContext, movement: movement)
-        guard !classification.isMaterial, let production = classification.production else {
+        guard let production = classification.production else {
             return Evaluation(deadlines: [], assessments: [])
         }
 
@@ -178,7 +188,10 @@ enum DeadlineRuleEngine {
         // store preparation may re-evaluate hundreds of cached dossiers.
         // Its absence blocks only rules needing calendar arithmetic.
         let calendar = packagedCalendar
-        for binding in bindings where binding.production == production {
+        for binding in bindings where binding.production == production
+            && (!classification.isMaterial || supportsMaterial(binding)) {
+            if classification.isMaterial,
+               !materialDispositionApplies(binding, timeline: timeline) { continue }
             guard let rule = registry.rule(id: binding.ruleID) else {
                 assessments.append(assessment(ruleID: binding.ruleID, kind: binding.kind,
                                                status: .needsLegalReview))
@@ -204,7 +217,8 @@ enum DeadlineRuleEngine {
             return Evaluation(deadlines: [], assessments: [])
         }
         return Evaluation(deadlines: [], assessments: bindings
-            .filter { $0.production == production }
+            .filter { $0.production == production
+                && (!classification.isMaterial || supportsMaterial($0)) }
             .map { assessment(ruleID: $0.ruleID, kind: $0.kind,
                               status: .needsLegalReview) })
     }
@@ -214,10 +228,6 @@ enum DeadlineRuleEngine {
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
                                  today: Date, calendar: LegalCalendar?)
         -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
-        if timeline.hasAmbiguousAppealEffect {
-            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
-                                    status: .needsLegalReview))
-        }
         switch binding.kind {
         case "appeal":
             // A real higher-court card in the current round proves that this
@@ -241,7 +251,13 @@ enum DeadlineRuleEngine {
                                     status: .notApplicable))
         }
 
-        if binding.kind == "appeal", requiresKnownCategory(for: rule.code),
+        guard routeApplies(binding, movement: movement, context: context.movementContext,
+                           timeline: timeline) else {
+            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                    status: .notApplicable))
+        }
+
+        if binding.kind == "appeal", requiresKnownCategory(for: binding),
            normalized(movement.category).isEmpty {
             return insufficient(rule, binding: binding, [.caseCategory])
         }
@@ -261,26 +277,15 @@ enum DeadlineRuleEngine {
 
         let triggerResult: TriggerExtraction
         switch binding.trigger {
-        case .finalForm:
-            guard let first = timeline.deadlineFirst else {
-                return insufficient(rule, binding: binding, [.finalAct, .finalForm])
-            }
-            let act = finalAct(in: first)
-            let form = finalForm(in: first)
-            if let form, act != nil {
-                triggerResult = .found(form)
-            } else if act == nil, form == nil {
-                triggerResult = .missing([.finalAct, .finalForm])
-            } else if act == nil {
-                triggerResult = .missing([.finalAct])
-            } else {
-                triggerResult = .missing([.finalForm])
-            }
         case .decisionFinalForm:
             guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType, .finalForm])
             }
             guard decision(in: first) != nil else {
+                if binding.production == .kas, kasPrivateDetermination(in: first) != nil {
+                    triggerResult = .notApplicable
+                    break
+                }
                 triggerResult = finalAct(in: first) == nil
                     ? .missing([.finalAct, .actType]) : .notApplicable
                 break
@@ -307,6 +312,16 @@ enum DeadlineRuleEngine {
                 triggerResult = finalAct(in: first) == nil
                     ? .missing([.finalAct, .actType]) : .notApplicable
             }
+        case .kasPrivateDetermination:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct, .actType])
+            }
+            if let act = kasPrivateDetermination(in: first) {
+                triggerResult = .found(act)
+            } else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+            }
         case .finalAct:
             guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType])
@@ -319,12 +334,50 @@ enum DeadlineRuleEngine {
                                         status: .notApplicable))
             }
             triggerResult = .found(act)
-        case .deliveryOrReceipt:
-            guard let first = timeline.deadlineFirst,
-                  finalAct(in: first) != nil else {
+        case .koapInitialReceipt:
+            guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct])
             }
-            guard let receipt = context.deliveryOrReceipt else {
+            guard let act = koapInitialDecision(in: first) else {
+                if koapReturnDetermination(in: first) != nil {
+                    triggerResult = .notApplicable
+                    break
+                }
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+                break
+            }
+            guard let receipt = explicitReceipt(in: first, supplied: context.deliveryOrReceipt,
+                                                act: .initial, after: act) else {
+                return insufficient(rule, binding: binding, [.deliveryOrReceipt])
+            }
+            triggerResult = .found(receipt)
+        case .koapSubsequentReceipt:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct])
+            }
+            guard let act = koapSubsequentDecision(in: first) else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+                break
+            }
+            guard let receipt = explicitReceipt(in: first, supplied: context.deliveryOrReceipt,
+                                                act: .subsequent, after: act) else {
+                return insufficient(rule, binding: binding, [.deliveryOrReceipt])
+            }
+            triggerResult = .found(receipt)
+        case .koapReturnReceipt:
+            guard let first = timeline.deadlineFirst else {
+                return insufficient(rule, binding: binding, [.finalAct])
+            }
+            guard let act = koapReturnDetermination(in: first) else {
+                triggerResult = finalAct(in: first) == nil
+                    ? .missing([.finalAct, .actType]) : .notApplicable
+                break
+            }
+            guard let receipt = explicitReceipt(in: first, supplied: context.deliveryOrReceipt,
+                                                act: .returnDetermination, after: act,
+                                                exactMoment: true) else {
                 return insufficient(rule, binding: binding, [.deliveryOrReceipt])
             }
             triggerResult = .found(receipt)
@@ -357,13 +410,18 @@ enum DeadlineRuleEngine {
         }
 
         switch triggerResult {
-        case .missing(let requirements):
-            return insufficient(rule, binding: binding, requirements)
         case .notApplicable:
             return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
                                     status: .notApplicable))
-        case .found:
+        case .found, .missing:
             break
+        }
+        if timeline.hasAmbiguousAppealEffect {
+            return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                    status: .needsLegalReview))
+        }
+        if case .missing(let requirements) = triggerResult {
+            return insufficient(rule, binding: binding, requirements)
         }
         guard case let .found(trigger) = triggerResult else {
             return insufficient(rule, binding: binding, [])
@@ -374,7 +432,7 @@ enum DeadlineRuleEngine {
                                     status: .needsLegalReview))
         }
 
-        switch calculate(rule: rule, triggerDate: DateUtil.parse(trigger.dateRaw),
+        switch calculate(rule: rule, triggerDate: triggerDate(for: rule, trigger: trigger),
                          registry: registry, calendar: calendar) {
         case .unsupported(let missingPolicies):
             return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
@@ -461,10 +519,18 @@ enum DeadlineRuleEngine {
                             policy(["COUNTING", "DAY", "CALENDAR"])) + filingPolicyIDs
             endNonworking = isElectionRule ? nil : policy(["END", "NONWORKING"])
         case .calendarSutki:
-            result = DateUtil.addDays(triggerDate, value)
-            policyIDs = ids(policy(["COUNTING", "UNITS"]),
-                            policy(["END", "DAY", "24H"]))
-            endNonworking = policy(["END", "NONWORKING"])
+            if rule.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI" {
+                result = triggerDate.addingTimeInterval(TimeInterval(value * 24 * 60 * 60))
+                policyIDs = ids(policy(["COUNTING", "UNITS"]),
+                                policy(["COUNTING", "SUTKI", "END"]),
+                                policy(["NO", "NONWORKING", "ROLL", "SUTKI"]))
+                endNonworking = nil
+            } else {
+                result = DateUtil.addDays(triggerDate, value)
+                policyIDs = ids(policy(["COUNTING", "UNITS"]),
+                                policy(["COUNTING", "SUTKI", "END"]))
+                endNonworking = policy(["END", "NONWORKING"])
+            }
         case .workingDays:
             guard let calendar,
                   let start = LegalCalendarDate(date: triggerDate,
@@ -533,8 +599,55 @@ enum DeadlineRuleEngine {
                                missingPolicyIDs: missingPolicyIDs)
     }
 
-    private static func requiresKnownCategory(for code: String) -> Bool {
-        code == "GPK" || code == "KAS" || code == "KOAP"
+    private static func requiresKnownCategory(for binding: Binding) -> Bool {
+        binding.ruleID != "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
+            && (binding.production == .civil || binding.production == .kas
+                || binding.production == .koap)
+    }
+
+    private static func supportsMaterial(_ binding: Binding) -> Bool {
+        binding.ruleID.hasPrefix("KAS-PRIVATE-")
+            || binding.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
+    }
+
+    private static func materialDispositionApplies(
+        _ binding: Binding, timeline: CaseLifecycleResolver.Timeline
+    ) -> Bool {
+        guard let instance = timeline.deadlineFirst else { return false }
+        if binding.ruleID.hasPrefix("KAS-PRIVATE-") {
+            return kasAcceptanceRefusal(in: instance) != nil
+        }
+        return binding.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
+            && koapReturnDetermination(in: instance) != nil
+    }
+
+    private static func routeApplies(_ binding: Binding, movement: CaseMovement,
+                                     context: MovementContext?,
+                                     timeline: CaseLifecycleResolver.Timeline) -> Bool {
+        guard binding.production == .koap else { return true }
+        guard let context else { return false }
+        let uid = [movement.uid, context.judicialUID ?? ""].compactMap { candidate -> String? in
+            guard candidate.range(
+                of: #"^\d{2}[A-ZА-Я]{2}\d{4}-\d{2}-\d{4}-\d{6}-\d{2}$"#,
+                options: .regularExpression) != nil else { return nil }
+            return candidate
+        }.first
+        let role = KoAPProceduralRole.resolve(
+            courtLevel: context.courtLevel, cartotekaID: context.cartotekaId,
+            judicialUID: uid,
+            lowerCourtTitle: timeline.deadlineFirst?.sourceEvidence?.lowerCourt?.courtTitle)
+        switch binding.trigger {
+        case .koapInitialReceipt:
+            return role == .firstInstance
+                && latestKoAPFirstAct(in: timeline.deadlineFirst) != .returnDetermination
+        case .koapReturnReceipt:
+            return role == .firstInstance
+                && latestKoAPFirstAct(in: timeline.deadlineFirst) == .returnDetermination
+        case .koapSubsequentReceipt:
+            return role == .authorityJudicialReview
+        default:
+            return true
+        }
     }
 
     /// The binding needs only enough case taxonomy to avoid applying a general
@@ -550,7 +663,7 @@ enum DeadlineRuleEngine {
             return ["избират", "референдум", "муниципальн", "иностранн граждан", "административн надзор",
                     "недобровольн", "психиатр"].contains { value.contains($0) }
         case "KOAP":
-            return value.contains("избират")
+            return isElectionCategory(category)
         default:
             return false
         }
@@ -588,6 +701,161 @@ enum DeadlineRuleEngine {
                 event: session.event, result: session.result)
                 && value.contains("производств") && value.contains("прекращ")
         }
+    }
+
+    private static func kasPrivateDetermination(in instance: CaseInstance)
+        -> DeadlineTriggerProvenance? {
+        if let termination = termination(in: instance) { return termination }
+        return kasAcceptanceRefusal(in: instance)
+    }
+
+    private static func kasAcceptanceRefusal(in instance: CaseInstance)
+        -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) { session in
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            return value.contains("отказ") && value.contains("принят")
+                && (value.contains("иск") || value.contains("заявлен"))
+        }
+    }
+
+    private static func koapInitialDecision(in instance: CaseInstance)
+        -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) { session in
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            return CaseLifecycleResolver.isFinalActAnnouncement(
+                event: session.event, result: session.result)
+                && value.contains("постановлен")
+        }
+    }
+
+    private static func koapSubsequentDecision(in instance: CaseInstance)
+        -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) { session in
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            return CaseLifecycleResolver.isFinalActAnnouncement(
+                event: session.event, result: session.result)
+                && value.contains("решен") && value.contains("жалоб")
+        }
+    }
+
+    private static func koapReturnDetermination(in instance: CaseInstance)
+        -> DeadlineTriggerProvenance? {
+        latestSession(in: instance) {
+            isKoAPReturnDetermination($0.event + " " + ($0.result ?? ""))
+        }
+    }
+
+    private static func isKoAPReturnDetermination(_ source: String) -> Bool {
+        let value = normalized(source)
+        return (value.contains("возврат") || value.contains("возвращ"))
+            && value.contains("протокол") && value.contains("материал")
+    }
+
+    private enum KoAPFirstAct: Equatable { case initial, returnDetermination }
+
+    private static func latestKoAPFirstAct(in instance: CaseInstance?) -> KoAPFirstAct? {
+        instance?.sessions.enumerated().compactMap { index, session
+            -> (Date, Int, KoAPFirstAct)? in
+            guard let date = DateUtil.parse(session.date) else { return nil }
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            if isKoAPReturnDetermination(value) {
+                return (date, index, .returnDetermination)
+            }
+            if CaseLifecycleResolver.isFinalActAnnouncement(
+                event: session.event, result: session.result),
+                value.contains("постановлен") {
+                return (date, index, .initial)
+            }
+            return nil
+        }
+        .max { left, right in left.0 == right.0 ? left.1 < right.1 : left.0 < right.0 }?.2
+    }
+
+    private enum KoAPReceiptAct { case initial, subsequent, returnDetermination }
+
+    private static func explicitReceipt(in instance: CaseInstance,
+                                        supplied: DeadlineTriggerProvenance?,
+                                        act: KoAPReceiptAct,
+                                        after finalAct: DeadlineTriggerProvenance,
+                                        exactMoment: Bool = false)
+        -> DeadlineTriggerProvenance? {
+        var candidates = instance.sessions.compactMap { session -> DeadlineTriggerProvenance? in
+            var candidate = provenance(for: session, in: instance)
+            if exactMoment, let time = session.time {
+                candidate.dateRaw = "\(session.date) \(time)"
+            }
+            return isExplicitReceipt(candidate, act: act) ? candidate : nil
+        }
+        if let supplied, isExplicitReceipt(supplied, act: act) { candidates.append(supplied) }
+        let actDate = DateUtil.parse(finalAct.dateRaw) ?? .distantFuture
+        let dated = candidates.compactMap { candidate -> (DeadlineTriggerProvenance, Date)? in
+            let date = exactMoment ? exactMomentDate(candidate.dateRaw) : DateUtil.parse(candidate.dateRaw)
+            guard let date, date >= actDate else { return nil }
+            return (candidate, date)
+        }
+        guard Set(dated.map { $0.1.timeIntervalSinceReferenceDate }).count == 1 else { return nil }
+        return dated.first?.0
+    }
+
+    private static func isExplicitReceipt(_ trigger: DeadlineTriggerProvenance,
+                                          act: KoAPReceiptAct) -> Bool {
+        let value = normalized(trigger.event + " " + (trigger.result ?? ""))
+        guard !value.contains("направ"),
+              !containsNegatedReceipt(in: value),
+              value.contains("вручен") || value.contains("получ")
+                || value.contains("поступлен") else { return false }
+        switch act {
+        case .initial:
+            return value.contains("копи") && value.contains("постановлен")
+        case .subsequent:
+            return value.contains("копи") && value.contains("решен")
+        case .returnDetermination:
+            return value.contains("определен")
+        }
+    }
+
+    private static func containsNegatedReceipt(in value: String) -> Bool {
+        let words = value.split(whereSeparator: \.isWhitespace).map {
+            String($0).trimmingCharacters(in: .punctuationCharacters)
+        }
+        for index in words.indices where words[index] == "не" {
+            let upperBound = min(words.count, index + 4)
+            if words[(index + 1)..<upperBound].contains(where: {
+                $0.hasPrefix("вручен") || $0.hasPrefix("получ") || $0.hasPrefix("поступ")
+            }) {
+                return true
+            }
+        }
+        for index in words.indices where words[index].hasPrefix("вручен")
+            || words[index].hasPrefix("получ") || words[index].hasPrefix("поступ") {
+            let upperBound = min(words.count, index + 4)
+            let tail = words[(index + 1)..<upperBound]
+            if let negative = tail.firstIndex(of: "не"),
+               words[words.index(after: negative)..<upperBound].contains(where: {
+                   $0.hasPrefix("был")
+               }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func triggerDate(for rule: LegalDeadlineRule,
+                                    trigger: DeadlineTriggerProvenance) -> Date? {
+        rule.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
+            ? exactMomentDate(trigger.dateRaw) : DateUtil.parse(trigger.dateRaw)
+    }
+
+    private static func exactMomentDate(_ raw: String) -> Date? {
+        let components = raw.split(whereSeparator: \.isWhitespace)
+        guard components.count == 2, let day = DateUtil.parse(String(components[0])) else {
+            return nil
+        }
+        let time = components[1].split(separator: ":")
+        guard time.count == 2, time[0].count == 2, time[1].count == 2,
+              let hour = Int(time[0]), let minute = Int(time[1]),
+              (0...23).contains(hour), (0...59).contains(minute) else { return nil }
+        return DateUtil.cal.date(bySettingHour: hour, minute: minute, second: 0, of: day)
     }
 
     private static func finalForm(in instance: CaseInstance) -> DeadlineTriggerProvenance? {

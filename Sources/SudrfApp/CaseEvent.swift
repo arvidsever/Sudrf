@@ -98,7 +98,7 @@ enum CaseEventJournalError: Error, Equatable {
 
 struct CaseEventJournal: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
-    static let currentDerivationVersion = 5
+    static let currentDerivationVersion = 6
 
     var schemaVersion: Int
     var derivationVersion: Int

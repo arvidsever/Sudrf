@@ -310,8 +310,29 @@ enum MovementDerivation {
         let prefix = context.map {
             String($0.cartotekaId.prefix(while: { $0.isLetter })).lowercased()
         } ?? ""
+        let rootMaterials = mv.instances.filter {
+            CaseLifecycleResolver.isRootMaterial($0, in: mv)
+        }
+        let rootMaterialNumbers = Set(rootMaterials.map {
+            CaseNumberPresentation.primary($0.caseNumber).lowercased()
+        })
+        let rootMaterialIDs: Set<String>
+        if let context {
+            rootMaterialIDs = Set(rootMaterials.compactMap {
+                CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
+            })
+        } else {
+            rootMaterialIDs = []
+        }
+        let lifecycleSessions = sessions.filter { session in
+            guard session.level == .material else { return true }
+            if let id = session.sourceCardID, rootMaterialIDs.contains(id) { return true }
+            guard let number = session.caseNumber else { return false }
+            return rootMaterialNumbers.contains(
+                CaseNumberPresentation.primary(number).lowercased())
+        }
         let nextHearing = resolution.isCompleted ? nil : futureHearings(
-            sessions.filter { $0.level != .material }, today: today).first
+            lifecycleSessions, today: today).first
         let nextDeadline = deadlines
             .filter(\.isActive)
             .filter { $0.date >= today || $0 == resolution.graceDeadline }
@@ -329,7 +350,10 @@ enum MovementDerivation {
         // «номер апелляции + суд первой инстанции» issue и запрещает.
         let currentReviewNumber = reviewNumber(
             for: resolution.currentInstance, baseCaseNumber: mv.caseNumber)
-        let reviewHearing = nextHearing.flatMap { $0.level == .first ? nil : $0 }
+        let reviewHearing = nextHearing.flatMap { hearing -> StoredSession? in
+            guard hearing.level != .first, hearing.level != .material else { return nil }
+            return hearing
+        }
         let nextEventCourt = courtLabel(reviewHearing?.court)
             ?? (currentReviewNumber == nil ? nil : courtLabel(resolution.currentInstance?.court))
 
@@ -352,10 +376,10 @@ enum MovementDerivation {
             // держим карточку до конца седьмого календарного дня.
             nextEventDate = deadline == resolution.graceDeadline && deadline.date < today
                 ? DateUtil.addDays(deadline.date, 7) : deadline.date
-        } else if !resolution.isCompleted, let reason = deadlineAssessmentReason(assessments) {
+        } else if let reason = deadlineAssessmentReason(assessments) {
             // Норма и формула остаются в registry. В проекции показываем лишь
             // ID рассмотренного правила и отсутствующее поле/политику, чтобы
-            // активная карточка не выглядела как беспричинное «—».
+            // предупреждение не исчезало после корректного завершения lifecycle.
             nextEvent = reason
         } else if resolution.isCompleted {
             nextEvent = "завершено"
@@ -387,7 +411,7 @@ enum MovementDerivation {
             if let result = resolution.currentInstance?.result, !result.isEmpty {
                 statusText = result
                 statusChip = .gray
-            } else if let last = sessions.last(where: { $0.level != .material }) {
+            } else if let last = lifecycleSessions.last {
                 statusText = last.result ?? last.event
                 statusChip = .blue
             } else {

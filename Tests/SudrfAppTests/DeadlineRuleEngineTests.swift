@@ -91,7 +91,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertNotEqual(deadline.date, DateUtil.addDays(DateUtil.parse("02.02.2026")!, 30))
     }
 
-    func testMissingFinalFormFailsClosedAndKeepsTerminalFirstActiveWithReason() {
+    func testMissingFinalFormWarnsWithoutKeepingTerminalFirstActive() {
         let mv = movement(sessions: [
             CaseSession(date: "13.04.2026", event: "Судебное заседание",
                         result: "Иск удовлетворён"),
@@ -105,7 +105,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertTrue(snap.deadlineAssessments?.single(where: {
             $0.ruleID == "GPK-APPEAL-GENERAL"
         })?.missingEvidenceRaw.contains(DeadlineEvidenceRequirement.finalForm.rawValue) ?? false)
-        XCTAssertEqual(snap.stageRaw, CaseStageKind.first.rawValue)
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertTrue(snap.nextEvent.contains("GPK-APPEAL-GENERAL"))
         XCTAssertTrue(snap.nextEvent.contains("окончательная форма акта"))
     }
@@ -145,7 +145,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(result.assessments.single(where: {
             $0.ruleID == "GPK-APPEAL-GENERAL"
         })?.status, .needsLegalReview)
-        XCTAssertTrue(result.assessments.contains(where: \.blocksTerminalFirst))
+        XCTAssertTrue(result.assessments.contains(where: \.isIndeterminate))
     }
 
     func testKASActivatedRulesUseRegistryCalendarMonths() throws {
@@ -393,8 +393,8 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(deadline.provenance?.ruleID, "KOAP-APPEAL-INITIAL-GENERAL")
         XCTAssertEqual(deadline.provenance?.calendarTrace?.operation, .addWorkingDays)
         XCTAssertEqual(deadline.provenance?.calendarTrace?.countedWorkingDays, 3)
-        XCTAssertEqual(evaluated.assessments.count, 1,
-                       "fixture must exercise the already active KoAP binding only")
+        XCTAssertEqual(evaluated.assessments.filter { $0.status == .applicable }.count, 1,
+                       "fixture must calculate only the applicable KoAP route")
     }
 
     func testHistoricalCassationDoesNotSuppressNewRoundAppealRule() {

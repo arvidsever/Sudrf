@@ -50,8 +50,8 @@ enum CaseLifecycleResolver {
         var instances: [CaseInstance] { chronological.map(\.instance) }
 
         var latestFirst: IndexedInstance? {
-            dated.last(where: { $0.instance.level == .first })
-                ?? chronological.last(where: { $0.instance.level == .first })
+            dated.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
+                ?? chronological.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
         }
 
         /// Trigger extraction must not reuse a refusal from before a later
@@ -140,17 +140,34 @@ enum CaseLifecycleResolver {
 
     static func realInstances(in movement: CaseMovement) -> [CaseInstance] {
         movement.instances.filter {
-            $0.level != .material
+            ($0.level != .material || isRootMaterial($0, in: movement))
                 && $0.captchaFormURL == nil
                 && $0.transientError != true
         }.sorted(by: MovementService.precedesInChronology)
+    }
+
+    /// A material participates only when it is the tracked root card itself.
+    /// Materials discovered inside an ordinary case remain supporting history.
+    static func isRootMaterial(_ instance: CaseInstance, in movement: CaseMovement) -> Bool {
+        guard instance.level == .material else { return false }
+        let rootNumber = normalizedCaseNumber(movement.caseNumber)
+        guard !rootNumber.isEmpty else { return false }
+        let matchingMaterials = movement.instances.filter {
+            $0.level == .material && normalizedCaseNumber($0.caseNumber) == rootNumber
+        }
+        let hasNonMaterialRoot = movement.instances.contains {
+            $0.level != .material && normalizedCaseNumber($0.caseNumber) == rootNumber
+        }
+        return matchingMaterials.count == 1
+            && matchingMaterials[0].id == instance.id
+            && !hasNonMaterialRoot
     }
 
     static func timeline(in movement: CaseMovement,
                          production: ProductionType? = nil) -> Timeline {
         let sourceOrdered = lifecycleInstances(in: movement).enumerated()
             .filter { _, instance in
-                instance.level != .material
+                (instance.level != .material || isRootMaterial(instance, in: movement))
                     && instance.captchaFormURL == nil
                     && instance.transientError != true
             }
@@ -188,7 +205,7 @@ enum CaseLifecycleResolver {
         }
         // A published acceptance after a concluded review starts a new round
         // even when the review resolved the issue itself rather than remanding.
-        for first in dated where first.instance.level == .first {
+        for first in dated where isFirstLike(first.instance) {
             guard let acceptance = continuationDate(in: first.instance, acceptanceOnly: true) else { continue }
             if sourceOrdered.contains(where: { review in
                 isReview(review.instance.level)
@@ -198,7 +215,7 @@ enum CaseLifecycleResolver {
                     && reviewEventDate(in: review.instance).map { $0 < acceptance } == true
             }) { roundStarts.append(first) }
         }
-        let latestFirst = dated.last(where: { $0.instance.level == .first })
+        let latestFirst = dated.last(where: { isFirstLike($0.instance) })
         var excludedAppeals = Set<Int>()
         var ambiguousAppeal = false
         // A verified UPK 22К complaint is not an appeal of the main verdict.
@@ -276,7 +293,7 @@ enum CaseLifecycleResolver {
 
     static func resolve(movement: CaseMovement, production: ProductionType? = nil,
                         deadlines: [StoredDeadline],
-                        deadlineAssessments: [DeadlineRuleAssessment] = [],
+                        deadlineAssessments _: [DeadlineRuleAssessment] = [],
                         today: Date = DateUtil.today) -> Resolution {
         let timeline = timeline(in: movement, production: production)
         let eligible = Set(timeline.lifecycleOrdered.map(\.index))
@@ -326,7 +343,7 @@ enum CaseLifecycleResolver {
             if let round = timeline.currentRoundDate,
                instance.id != timeline.currentRoundStart?.instance.id,
                (earliestDatedSessionDate(in: instance) ?? .distantPast) < round { return false }
-            if instance.level == .first,
+            if isFirstLike(instance),
                let reviewDate = instances.filter({ isReview($0.level) }).compactMap({ reviewEventDate(in: $0) }).max(),
                (continuationDate(in: instance) ?? .distantPast) <= reviewDate { return false }
             return true
@@ -339,13 +356,21 @@ enum CaseLifecycleResolver {
         }
 
         if timeline.hasAmbiguousAppealEffect, let first = timeline.latestFirst?.instance {
+            if let result = exactTerminalResultAfterAmbiguousAppeal(
+                first: first, timeline: timeline),
+               !timeline.hasUnresolvedUndatedAppeal,
+               !timeline.hasCassationInCurrentRound {
+                return resolveTerminalFirst(current: first, result: result,
+                                            visited: visited, deadlines: deadlines,
+                                            today: today, production: production)
+            }
             return Resolution(stage: .first, currentInstance: first,
                               steps: steps(visited: visited, active: .first, production: production),
                               completionReason: nil, graceDeadline: nil)
         }
 
         let currentSignal: InstanceSignal?
-        if let latest, latest.level == .first,
+        if let latest, isFirstLike(latest),
            latest.id == timeline.currentRoundStart?.instance.id,
            let start = timeline.currentRoundDate,
            continuationDate(in: latest, acceptanceOnly: true) == start,
@@ -376,7 +401,7 @@ enum CaseLifecycleResolver {
                 return completed(current: latest, visited: visited,
                                  reason: .terminalReview(nonempty(latest.result) ?? result),
                                  production: production)
-            case .terminal(let result) where latest.level == .first:
+            case .terminal(let result) where isFirstLike(latest):
                 // Неполная карточка реального пересмотра нового круга не доказывает
                 // повышение стадии, но исключает автоматическое закрытие
                 // первой инстанции из-за отсутствия расчётного срока.
@@ -387,8 +412,7 @@ enum CaseLifecycleResolver {
                 }
                 return resolveTerminalFirst(current: latest, result: result,
                                             visited: visited, deadlines: deadlines, today: today,
-                                            production: production,
-                                            deadlineAssessments: deadlineAssessments)
+                                            production: production)
             case .active, .terminal, nil:
                 break
             }
@@ -473,16 +497,7 @@ enum CaseLifecycleResolver {
     private static func resolveTerminalFirst(current: CaseInstance, result: String,
                                              visited: Set<CaseStageKind>,
                                              deadlines: [StoredDeadline], today: Date,
-                                             production: ProductionType?,
-                                             deadlineAssessments: [DeadlineRuleAssessment]) -> Resolution {
-        // `notApplicable` means the old terminal classification still stands.
-        // Only a recognized appeal rule that lacks a fact/policy stays active;
-        // otherwise materials and unknown contexts would never complete.
-        if deadlineAssessments.contains(where: \.blocksTerminalFirst) {
-            return Resolution(stage: .first, currentInstance: current,
-                              steps: steps(visited: visited, active: .first, production: production),
-                              completionReason: nil, graceDeadline: nil)
-        }
+                                             production: ProductionType?) -> Resolution {
         guard let deadline = deadlines.first(where: { $0.kind == "appeal" && $0.isActive }) else {
             return completed(current: current, visited: visited, reason: .terminalFirst(result),
                              production: production)
@@ -515,12 +530,11 @@ enum CaseLifecycleResolver {
     private static func stage(for instance: CaseInstance,
                               production: ProductionType?) -> CaseStageKind? {
         switch instance.level {
-        case .first: return .first
+        case .first, .material: return .first
         case .appeal: return .appeal
         case .cassation, .vsCassation:
             return production == .koap ? .supervisory : .cassation
         case .supervisory: return .supervisory
-        case .material: return nil
         }
     }
 
@@ -819,12 +833,49 @@ enum CaseLifecycleResolver {
                 break
             }
         }
-        if instance.level == .first, hasReliableHomeResult(instance),
+        if isFirstLike(instance), hasReliableHomeResult(instance),
            let result = nonempty(instance.result),
            isReliableFirstTerminalResult(normalized(result)) {
             return .terminal(result)
         }
+        if instance.level == .material, hasDatedSession(instance),
+           let result = nonempty(instance.result),
+           isReliableMaterialTerminalResult(normalized(result)) {
+            return .terminal(result)
+        }
         return latest
+    }
+
+    /// #300 remains fail-closed for an ambiguous appeal unless the same root
+    /// card publishes a strictly later, dated terminal outcome in this round.
+    private static func exactTerminalResultAfterAmbiguousAppeal(
+        first: CaseInstance, timeline: Timeline
+    ) -> String? {
+        guard case .terminal(let result)? = latestSignal(for: first),
+              first.id == timeline.currentRoundStart?.instance.id,
+              let roundDate = timeline.currentRoundDate,
+              let terminalDate = terminalEvidenceDate(in: first),
+              terminalDate >= roundDate else { return nil }
+        let latestAppealDate = timeline.lifecycleOrdered.compactMap { candidate -> Date? in
+            guard candidate.instance.level == .appeal else { return nil }
+            return reviewEventDate(in: candidate.instance)
+        }.max()
+        guard latestAppealDate.map({ terminalDate > $0 }) == true else { return nil }
+        return nonempty(first.result) ?? result
+    }
+
+    private static func terminalEvidenceDate(in instance: CaseInstance) -> Date? {
+        var dates = instance.sessions.compactMap { session -> Date? in
+            guard case .terminal? = signal(in: session.event + " " + (session.result ?? ""))
+            else { return nil }
+            return DateUtil.parse(session.date)
+        }
+        if let result = nonempty(instance.result),
+           case .terminal? = signal(in: result),
+           let date = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) {
+            dates.append(date)
+        }
+        return dates.max()
     }
 
     private static func isConcluding(_ signal: InstanceSignal?) -> Bool {
@@ -996,7 +1047,12 @@ enum CaseLifecycleResolver {
         let restorationDenied = isDenied(value) && value.contains("восстанов")
             && value.contains("срок")
         let acceptanceDenied = isDenied(value) && value.contains("принят")
-            && value.contains("производств")
+            && (value.contains("производств")
+                || value.contains("иск") || value.contains("заявлен"))
+            && !mentionsIntermediateObject(value)
+        let koapProtocolReturned = (value.contains("возврат") || value.contains("возвращ"))
+            && value.contains("протокол") && value.contains("материал")
+            && value.contains("административн") && value.contains("правонаруш")
         let judicialAct = value.contains("решен") || value.contains("приговор")
             || value.contains("постановлен") || value.contains("определен")
             || (value.contains("судебн") && value.contains("акт"))
@@ -1014,7 +1070,7 @@ enum CaseLifecycleResolver {
             && !(value.contains("направ") && value.contains("рассмотр"))
         return removedFromReview
             || unchanged || transferDenied || terminated || returned || leftWithoutConsideration
-            || restorationDenied || acceptanceDenied
+            || restorationDenied || acceptanceDenied || koapProtocolReturned
             || changedWithoutRemand || cancelledWithoutDirection || cancelledActWithNewDecision
             || meritsDecision || satisfiedWithoutRemand
     }
@@ -1141,6 +1197,14 @@ enum CaseLifecycleResolver {
             || (value.contains("заявлен") && value.contains("возвращ"))
         let bareDecision = value.contains("решен") && value.contains("вынес")
         return civilOrKAS || criminal || koap || proceduralReturn || bareDecision
+            || isTerminalDisposition(value)
+    }
+
+    private static func isReliableMaterialTerminalResult(_ value: String) -> Bool {
+        let compact = value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return compact == "удовлетворено"
+            || compact == "отказано"
+            || compact == "в удовлетворении отказано"
     }
 
     private static func hasReliableHomeResult(_ instance: CaseInstance) -> Bool {
@@ -1181,5 +1245,14 @@ enum CaseLifecycleResolver {
 
     private static func normalized(_ source: String) -> String {
         source.lowercased().replacingOccurrences(of: "ё", with: "е")
+    }
+
+    private static func isFirstLike(_ instance: CaseInstance) -> Bool {
+        instance.level == .first || instance.level == .material
+    }
+
+    private static func normalizedCaseNumber(_ source: String) -> String {
+        normalized(CaseNumberPresentation.primary(source))
+            .filter { !$0.isWhitespace }
     }
 }

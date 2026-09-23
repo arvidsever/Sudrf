@@ -66,7 +66,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.31 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Ротация HTML-диагностики больше не удаляет JSON завершённого фонового обхода. | — |
+| 0.58.31 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Ротация HTML-диагностики больше не удаляет JSON завершённого фонового обхода. | [PR #325](https://github.com/arvidsever/Sudrf/pull/325) |
 | 0.58.30 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Локальный обезличенный отчёт измеряет полный фоновый обход и host-level отказы до решения о scheduler #180. | [PR #323](https://github.com/arvidsever/Sudrf/pull/323) |
 | 0.58.29 | [#319](https://github.com/arvidsever/Sudrf/issues/319) | Итоговые определения получают правильный срок, завершённые производства и самостоятельные материалы больше не остаются в первой инстанции. | [PR #320](https://github.com/arvidsever/Sudrf/pull/320) |
 | 0.58.28 | [#87](https://github.com/arvidsever/Sudrf/issues/87) | Фоновый обход сразу после старта и справедливая очередь обнаруживают новые вышестоящие карточки без открытия дела. | [PR #318](https://github.com/arvidsever/Sudrf/pull/318) |

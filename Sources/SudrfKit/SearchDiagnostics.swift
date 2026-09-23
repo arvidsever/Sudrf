@@ -5,7 +5,7 @@ import Synchronization
 /// нештатных путях поиска — для отладки изменений в HTML судов,
 /// которые ломают `CaptchaDetector` / `SearchPageClassifier` /
 /// `ResultsParser`. Папка: `~/Library/Application Support/Sudrf/diagnostics/`,
-/// до 50 файлов, FIFO-эвикция. Все методы — best-effort: ошибки записи
+/// до 50 собственных HTML/PNG-файлов, FIFO-эвикция. Все методы — best-effort: ошибки записи
 /// глотаются (не должны ломать основной поток).
 ///
 /// Триггеры (вызывающий код решает, когда):
@@ -138,13 +138,14 @@ public enum SearchDiagnostics {
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else { return }
-        guard entries.count > maxFiles else { return }
-        let sorted: [URL] = entries.sorted { (lhs: URL, rhs: URL) -> Bool in
+        let owned = entries.filter { ["html", "png"].contains($0.pathExtension.lowercased()) }
+        guard owned.count > maxFiles else { return }
+        let sorted: [URL] = owned.sorted { (lhs: URL, rhs: URL) -> Bool in
             let l = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             return l < r
         }
-        let toDelete = sorted.prefix(entries.count - maxFiles)
+        let toDelete = sorted.prefix(owned.count - maxFiles)
         for url in toDelete {
             try? fm.removeItem(at: url)
         }

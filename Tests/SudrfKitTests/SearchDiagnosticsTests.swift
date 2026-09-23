@@ -131,6 +131,9 @@ final class SearchDiagnosticsTests: XCTestCase {
     }
 
     func testFifoEvictionAt50Files() {
+        let refreshReport = tmpDir.appendingPathComponent("refresh-walk_baseline.json")
+        try? Data("{}".utf8).write(to: refreshReport)
+
         // 51-я запись должна вытеснить самую старую.
         for i in 0..<51 {
             let url = tmpDir.appendingPathComponent("test-\(String(format: "%03d", i)).html")
@@ -148,7 +151,10 @@ final class SearchDiagnosticsTests: XCTestCase {
         let entries = (try? FileManager.default.contentsOfDirectory(
             at: tmpDir, includingPropertiesForKeys: nil
         )) ?? []
-        XCTAssertEqual(entries.count, 50, "after eviction at 51, should be exactly 50")
+        XCTAssertEqual(entries.filter { $0.pathExtension == "html" }.count, 50,
+                       "after eviction at 51, should be exactly 50 owned files")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: refreshReport.path),
+                      "search diagnostics must not evict refresh-walk reports")
         XCTAssertFalse(
             entries.contains(where: { $0.lastPathComponent == "test-000.html" }),
             "oldest file should have been evicted"

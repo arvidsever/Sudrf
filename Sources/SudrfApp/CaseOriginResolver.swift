@@ -72,6 +72,16 @@ struct OriginCourtResolution: Sendable {
     var code: String?
 }
 
+/// The Moscow portal is a separate source, not a sud_delo court host.
+protocol MoscowOriginProviding: Sendable {
+    func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                participant: String?, instance: Int,
+                processType: MosGorSudProcessType) async throws -> [MosGorSudResult]
+    func fetchCard(url: URL) async throws -> MosGorSudCard
+}
+
+extension MosGorSudClient: MoscowOriginProviding {}
+
 /// Восстанавливает первую инстанцию по УИД и вкладке
 /// «РАССМОТРЕНИЕ В НИЖЕСТОЯЩЕМ СУДЕ». Стороны могут сузить поиск только при
 /// независимом подтверждении продолжения официальными актами.
@@ -80,6 +90,7 @@ actor CaseOriginResolver {
     private let magistrateResolver: MagistrateCourtResolver
     private let regularProvider: any CaseProviding
     private let magistrateProvider: any CaseProviding
+    private let moscowProvider: any MoscowOriginProviding
     private let courtOverride: OriginCourtResolution?
 
     init(client: SudrfClient,
@@ -87,11 +98,13 @@ actor CaseOriginResolver {
          magistrateResolver: MagistrateCourtResolver? = nil,
          regularProvider: (any CaseProviding)? = nil,
          magistrateProvider: (any CaseProviding)? = nil,
+         moscowProvider: (any MoscowOriginProviding)? = nil,
          courtOverride: OriginCourtResolution? = nil) {
         self.districtResolver = districtResolver ?? DistrictCourtResolver(client: client)
         self.magistrateResolver = magistrateResolver ?? MagistrateCourtResolver(client: client)
         self.regularProvider = regularProvider ?? client
         self.magistrateProvider = magistrateProvider ?? MagistrateClient(sudrfClient: client)
+        self.moscowProvider = moscowProvider ?? MosGorSudClient()
         self.courtOverride = courtOverride
     }
 
@@ -130,6 +143,12 @@ actor CaseOriginResolver {
         let cart = try Self.firstCartoteka(anchorID: anchorContext.cartotekaId,
                                            lowerNumber: lowerNumber,
                                            level: resolved.court.level)
+        if MosGorSudRouting.isMosGorSud(domain: resolved.court.domain) {
+            return try await resolveMoscow(reference: ref, uid: judicialUID,
+                                           anchorDecisionDate: anchorCard.decisionDate,
+                                           court: resolved, cartoteka: cart,
+                                           region: region)
+        }
         let provider: any CaseProviding = resolved.court.level == .magistrate
             ? magistrateProvider : regularProvider
 
@@ -720,6 +739,186 @@ actor CaseOriginResolver {
         return match
     }
 
+    private func resolveMoscow(reference: LowerCourtReference, uid: String?,
+                               anchorDecisionDate: String?,
+                               court: OriginCourtResolution, cartoteka: Cartoteka,
+                               region: String) async throws -> ResolvedCaseOrigin {
+        guard let number = reference.caseNumber else { throw CaseOriginResolutionError.noReference }
+        let alias: String
+        if court.court.level == .subject {
+            alias = MosGorSudCourtDirectory.mgsAlias
+        } else if let code = court.code,
+                  let district = MosGorSudCourtDirectory.districtCourts.first(where: {
+                      $0.code.caseInsensitiveCompare(code) == .orderedSame
+                  }) {
+            alias = district.alias
+        } else { throw CaseOriginResolutionError.unsupportedCourt }
+        let route = MosGorSudRouting.map(cartoteka: cartoteka)
+        var rows: [MosGorSudResult] = []
+        if let uid = Self.nonEmpty(uid) {
+            rows = try await moscowProvider.search(courtAlias: alias, uid: uid,
+                                                   caseNumber: nil, participant: nil,
+                                                   instance: route.instance,
+                                                   processType: route.processType)
+        }
+        if !rows.contains(where: { Self.sameMoscowNumber($0.caseNumber, number) }) {
+            rows = try await moscowProvider.search(courtAlias: alias, uid: nil,
+                                                   caseNumber: number, participant: nil,
+                                                   instance: route.instance,
+                                                   processType: route.processType)
+        }
+        var matches: [(MosGorSudResult, MosGorSudCard)] = []
+        var unreadable = false
+        var seenLocators = Set<String>()
+        for row in rows where Self.sameMoscowNumber(row.caseNumber, number) {
+            guard let url = row.cardURL,
+                  let locator = Self.verifiedMoscowURL(url, alias: alias,
+                                                       cartoteka: cartoteka) else {
+                unreadable = true
+                continue
+            }
+            guard seenLocators.insert(locator).inserted else { continue }
+            let card: MosGorSudCard
+            do { card = try await moscowProvider.fetchCard(url: url) }
+            catch is CancellationError { throw CancellationError() }
+            catch let error as SudrfError {
+                if case .captchaRequired = error { throw error }
+                unreadable = true
+                continue
+            }
+            catch { unreadable = true; continue }
+            guard let cardNumber = card.caseNumber,
+                  Self.sameMoscowNumber(cardNumber, number),
+                  row.uid.map({ Self.normalizedUID($0) == Self.normalizedUID(card.uid ?? "") }) ?? true
+            else { continue }
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if query.contains(where: { $0.name == "caseNumber"
+                && !Self.sameMoscowNumber($0.value ?? "", cardNumber) }) { continue }
+            if query.contains(where: { $0.name == "uid"
+                && Self.normalizedUID($0.value ?? "") != Self.normalizedUID(card.uid ?? "") }) {
+                continue
+            }
+            if let uid = Self.nonEmpty(uid) {
+                guard let found = Self.nonEmpty(card.uid),
+                      Self.normalizedUID(found) == Self.normalizedUID(uid) else { continue }
+            } else {
+                // Without a judicial UID, the official lower-court tab must be
+                // corroborated by both its judge and its decision chronology.
+                guard let judge = Self.nonEmpty(reference.judge),
+                      let publishedJudge = Self.nonEmpty(card.judge ?? row.judge),
+                      Self.samePublishedJudge(judge, publishedJudge),
+                      Self.correlatedChronology(card: card, referenceDate: reference.decisionDate,
+                                                anchorDecisionDate: anchorDecisionDate)
+                else { continue }
+            }
+            if let cardCourt = Self.nonEmpty(card.court),
+               let expected = reference.courtTitle,
+               !Self.sameCourtTitle(cardCourt, expected, region: region) { continue }
+            matches.append((row, card))
+        }
+        if unreadable { throw CaseOriginResolutionError.incompleteCandidates }
+        guard matches.count == 1, let (row, source) = matches.first else {
+            throw matches.isEmpty ? CaseOriginResolutionError.notFound : .ambiguous
+        }
+        let card = CaseCard(rawText: source.rawText, actText: nil,
+                            sessions: source.sessions, judge: source.judge ?? row.judge,
+                            result: source.result ?? row.result, uid: source.uid,
+                            caseNumber: source.caseNumber, category: source.category ?? row.category,
+                            receiptDate: source.receiptDate ?? row.receiptDate,
+                            decisionDate: Self.publishedResultDate(source.result)
+                                ?? reference.decisionDate,
+                            legalForceDate: source.legalForceDate)
+        let result = CaseSearchResult(caseNumber: row.caseNumber,
+                                      receiptDate: row.receiptDate,
+                                      judge: row.judge,
+                                      decisionDate: Self.publishedResultDate(source.result)
+                                          ?? reference.decisionDate,
+                                      result: row.result, cardURL: row.cardURL,
+                                      courtTitle: court.court.title)
+        return ResolvedCaseOrigin(court: court.court, branch: court.branch, region: region,
+                                  courtCode: court.code, cartoteka: cartoteka,
+                                  result: result, card: card)
+    }
+
+    /// Only the leading zeros in Moscow's own registration components vary.
+    /// Other courts continue to use exact case-number comparison.
+    static func sameMoscowNumber(_ lhs: String, _ rhs: String) -> Bool {
+        func normalized(_ value: String) -> String? {
+            let text = CartotekaRegistry.normalizedNumber(value)
+            let parts = text.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[1].count == 4,
+                  let dash = parts[0].firstIndex(of: "-") else { return nil }
+            let prefix = String(parts[0][..<dash])
+            let serial = String(parts[0][parts[0].index(after: dash)...])
+            let index = String(prefix.drop(while: { $0 == "0" }))
+            guard !index.isEmpty, serial.allSatisfy(\.isNumber) else { return nil }
+            return "\(index)-\(Int(serial) ?? -1)/\(parts[1])"
+        }
+        return normalized(lhs) != nil && normalized(lhs) == normalized(rhs)
+    }
+
+    static func verifiedMoscowURL(_ url: URL, alias: String,
+                                  cartoteka: Cartoteka) -> String? {
+        guard url.scheme == "https", ["mos-gorsud.ru", "www.mos-gorsud.ru"].contains(url.host ?? ""),
+              url.user == nil, url.password == nil, url.port == nil else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let prefix = alias == "mgs" ? ["mgs"] : ["rs", alias]
+        guard parts.count == prefix.count + 5,
+              Array(parts.prefix(prefix.count)) == prefix,
+              Array(parts[prefix.count..<(prefix.count + 2)]) == ["services", "cases"],
+              MosGorSudRouting.sectionSegments(cartoteka: cartoteka).contains(parts[prefix.count + 2]),
+              parts[prefix.count + 3] == "details",
+              UUID(uuidString: parts[prefix.count + 4]) != nil else { return nil }
+        return parts[prefix.count + 4].lowercased()
+    }
+
+    private static func samePublishedDate(_ lhs: String?, _ rhs: String) -> Bool {
+        guard let lhs else { return false }
+        let pattern = #"\d{2}\.\d{2}\.\d{4}"#
+        guard let a = lhs.range(of: pattern, options: .regularExpression),
+              let b = rhs.range(of: pattern, options: .regularExpression) else { return false }
+        return lhs[a] == rhs[b]
+    }
+
+    private static func publishedResultDate(_ result: String?) -> String? {
+        guard let result,
+              let range = result.range(of: #"\d{2}\.\d{2}\.\d{4}"#,
+                                       options: .regularExpression) else { return nil }
+        return String(result[range])
+    }
+
+    private static func correlatedChronology(card: MosGorSudCard,
+                                              referenceDate: String?,
+                                              anchorDecisionDate: String?) -> Bool {
+        if let date = nonEmpty(referenceDate) {
+            return card.sessions.contains(where: { samePublishedDate($0.date, date) })
+                || card.actFiles.contains(where: { samePublishedDate($0.date, date) })
+        }
+        // The 1 ASOYu lower-court tab publishes no date. The Moscow case's
+        // document inventory independently names both appellate rulings with
+        // their exact dates; a generic date mention is not sufficient.
+        guard let date = nonEmpty(anchorDecisionDate),
+              date.range(of: #"^\d{2}\.\d{2}\.\d{4}$"#,
+                         options: .regularExpression) != nil else { return false }
+        let pattern = NSRegularExpression.escapedPattern(for: date)
+            + #".{0,100}определени[ея] суда апелляционной инстанции"#
+        return card.rawText.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func samePublishedJudge(_ lhs: String, _ rhs: String) -> Bool {
+        func words(_ value: String) -> [String] {
+            value.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .components(separatedBy: CharacterSet.letters.inverted)
+                .filter { !$0.isEmpty }
+        }
+        let a = words(lhs), b = words(rhs)
+        guard a.count == 3, b.count == 3, a[0] == b[0] else { return false }
+        return zip(a.dropFirst(), b.dropFirst()).allSatisfy { left, right in
+            left == right || (left.count == 1 || right.count == 1)
+                && left.first == right.first
+        }
+    }
+
     private func uniqueUIDMatch(rows: [CaseSearchResult], uid: String, court: Court,
                                 cartoteka: Cartoteka,
                                 provider: any CaseProviding) async throws -> (CaseSearchResult, CaseCard)? {
@@ -743,6 +942,26 @@ actor CaseOriginResolver {
     private func resolveCourt(code: String?, title: String?, region: String) async throws
         -> OriginCourtResolution {
         if let courtOverride { return courtOverride }
+
+        let regionName = region.lowercased().replacingOccurrences(of: "ё", with: "е")
+        if regionName.contains("москва"), !regionName.contains("област"), let title {
+            if Self.sameCourtTitle(title, "Московский городской суд", region: region) {
+                return OriginCourtResolution(
+                    court: Court(domain: MosGorSudEndpoint.host,
+                                 title: "Московский городской суд", level: .subject),
+                    branch: .general, code: "77OS0000")
+            }
+            let matches = MosGorSudCourtDirectory.districtCourts.filter {
+                Self.sameCourtTitle($0.title, title, region: region)
+            }
+            if matches.count > 1 { throw CaseOriginResolutionError.ambiguous }
+            if let found = matches.first {
+                return OriginCourtResolution(
+                    court: Court(domain: MosGorSudEndpoint.host, title: found.title,
+                                 level: .district), branch: .general, code: found.code)
+            }
+            throw CaseOriginResolutionError.unsupportedCourt
+        }
 
         // Официальная вкладка «Рассмотрение в нижестоящем суде» — основной
         // источник маршрута. В справочнике портал часто дописывает субъект

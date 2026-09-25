@@ -14,7 +14,9 @@ enum TrackedCaseIdentity {
         observedAt: Date = .now
     ) -> SourceCardObservation? {
         let known = context.sourceKnownCard
-        let sourceNativeID = nonEmpty(context.caseID) ?? nonEmpty(known?.caseID)
+        let moscowCard = moscowCardIdentity(context)
+        let sourceNativeID = moscowCard?.sourceNativeID
+            ?? nonEmpty(context.caseID) ?? nonEmpty(known?.caseID)
         guard let sourceNativeID else { return nil }
 
         let sourceFamily = nonEmpty(attempt?.provenance.sourceFamily) ?? family(for: context)
@@ -22,7 +24,7 @@ enum TrackedCaseIdentity {
         let provenance = attempt?.provenance ?? SourceProvenance(
             operation: .discovery, sourceFamily: sourceFamily, host: host,
             observedAt: observedAt)
-        let card = SourceNativeCardIdentity(
+        let card = moscowCard ?? SourceNativeCardIdentity(
             sourceFamily: sourceFamily,
             courtKey: nonEmpty(context.courtCode)
                 ?? SudrfHost.moduleHost(known?.domain ?? context.searchDomain),
@@ -243,7 +245,8 @@ enum TrackedCaseIdentity {
         provenance: SourceProvenance,
         excludedHosts: Set<String>
     ) -> [OfficialCardRelation] {
-        guard sourceFamily == "sudrf", context.baseInstanceLevel != .material,
+        guard ["sudrf", "mosgorsud"].contains(sourceFamily),
+              context.baseInstanceLevel != .material,
               let movement else { return [] }
         var seen = Set<SourceNativeCardIdentity>()
         return movement.instances.compactMap { instance in
@@ -365,6 +368,29 @@ enum TrackedCaseIdentity {
         guard let context else { return "legacy" }
         if MosGorSudRouting.isMosGorSud(domain: context.searchDomain) { return "mosgorsud" }
         return context.courtLevel == .magistrate ? "msudrf" : "sudrf"
+    }
+
+    private static func moscowCardIdentity(_ context: MovementContext) -> SourceNativeCardIdentity? {
+        guard MosGorSudRouting.isMosGorSud(domain: context.searchDomain),
+              let url = context.cardURLString.flatMap(URL.init(string:)),
+              let cart = context.cartoteka else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let alias: String
+        if parts.first == "mgs",
+           CaseOriginResolver.sameCourtTitle(context.courtTitle, "Московский городской суд",
+                                             region: context.region) { alias = "mgs" }
+        else if parts.count > 1, parts.first == "rs",
+                MosGorSudCourtDirectory.districtCourts.contains(where: {
+                    $0.alias == parts[1]
+                        && (context.courtCode == nil || $0.code == context.courtCode)
+                        && CaseOriginResolver.sameCourtTitle($0.title, context.courtTitle,
+                                                              region: context.region)
+                }) { alias = parts[1] }
+        else { return nil }
+        guard let id = CaseOriginResolver.verifiedMoscowURL(url, alias: alias,
+                                                            cartoteka: cart) else { return nil }
+        return SourceNativeCardIdentity(sourceFamily: "mosgorsud", courtKey: alias,
+                                        cartotekaKey: cart.id, sourceNativeID: id)
     }
 
     private static func usableProvenance(for record: TrackedCaseRecord) -> SourceProvenance? {

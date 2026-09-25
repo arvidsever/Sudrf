@@ -238,6 +238,38 @@ extension MovementService {
             if result.instances.isEmpty, !result.incomplete { markHonestZero("vsrf.ru") }
         }
 
+        // Some old Moscow cases link to an appellate court only through a
+        // saved card. Restrict this refresh to official ASOYu hosts; the shared
+        // KnownCard loader validates the exact SUDRF URL and effective host.
+        let appellateDomains = Set(CourtDirectory.appealCourts.map {
+            SudrfHost.moduleHost($0.domain)
+        })
+        for knownCard in knownCards
+            where knownCard.level == .appeal
+                && appellateDomains.contains(SudrfHost.moduleHost(knownCard.domain)) {
+            if let number = knownCard.caseNumber,
+               Self.containsInstance(instances, domain: knownCard.domain,
+                                     caseNumber: number,
+                                     sourceURL: Self.sourceURL(for: knownCard),
+                                     preferSourceIdentity: knownCard.sourceURL != nil,
+                                     usingCanonicalHost: true) {
+                continue
+            }
+            do {
+                let entry = try await instanceFromKnownCard(knownCard)
+                _ = Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
+                                     preferSourceIdentity: knownCard.sourceURL != nil,
+                                     to: &instances, acts: &acts,
+                                     actBodies: &actBodies)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                markIncomplete(knownCard.domain)
+            }
+        }
+
         let sortedInst = instances.sorted { Self.instanceOrderKey($0) < Self.instanceOrderKey($1) }
         let sortedActs = acts.sorted { Self.actOrderKey($0) < Self.actOrderKey($1) }
 

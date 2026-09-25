@@ -241,10 +241,26 @@ public enum CaseCardParser {
     }
 
     private static func ownMetadataContainer(in doc: Document) -> Element? {
-        tabContainers(doc).first { container in
+        let containers = tabContainers(doc)
+        if let withUID = containers.first(where: { container in
             ((try? container.text()) ?? "").lowercased().contains("уникальный идентификатор дела")
                 && !isLowerCourtTabContainer(container, in: doc)
+        }) { return withUID }
+        // The 1 ASOYu Moscow cards omit the judicial UID. Their explicitly
+        // named ДЕЛО tab still owns the decision date; the lower-court tab
+        // does not. Keep other no-UID cards on the existing conservative path.
+        guard let lowerTitle = parseLowerCourt(doc)?.courtTitle,
+              normalizeHeader(lowerTitle) == "московский городской суд" else { return nil }
+        let own = containers.filter { container in
+            let id = (try? container.attr("id")) ?? ""
+            guard id.range(of: #"^cont\d+$"#, options: .regularExpression) != nil,
+                  let number = number(in: id) else { return false }
+            return ((try? doc.select("ul.tabs li").array()) ?? []).contains { tab in
+                ((try? tab.attr("id")) ?? "") == "tab\(number)"
+                    && normalizeHeader((try? tab.text()) ?? "") == "дело"
+            }
         }
+        return own.count == 1 ? own.first : nil
     }
 
     private static func reviewProcedure(meta: [String: String], sessions: [CaseSession]) -> String? {

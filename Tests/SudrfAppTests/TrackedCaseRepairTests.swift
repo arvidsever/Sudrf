@@ -1645,6 +1645,133 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertNotNil(store.record(forKey: firstRecord.key))
     }
 
+    func testIssue322TwoAppealsMergeIntoOneMoscowCaseAcrossDiskReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("issue-322-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("test.store")
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let store = try TrackedStore(container: container, prepared: true)
+        let mgsURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322"))
+        let mgsUID = "77OS0000-01-2020-002855-77"
+        var base = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "город Москва",
+            searchDomain: "mos-gorsud.ru", displayDomain: "mos-gorsud.ru",
+            courtTitle: "Московский городской суд", courtLevelRaw: "subject",
+            courtCode: "77OS0000", cartotekaId: "p1", cartotekaLevelRaw: "subject",
+            caseNumber: "3а-3696/2020", cardURLString: mgsURL.absoluteString)
+        base.judicialUID = mgsUID
+        base.baseInstanceLevelRaw = CaseInstance.Level.first.rawValue
+        let baseRecord = try store.upsert(context: base, snapshot: nil,
+                                          collections: ["Москва"])
+        let baseKey = baseRecord.key
+
+        func appeal(_ number: String, id: String) -> MovementContext {
+            var value = MovementContext(
+                branchRaw: CourtBranch.general.rawValue, region: "город Москва",
+                searchDomain: "1ap.sudrf.ru", displayDomain: "1ap.sudrf.ru",
+                courtTitle: "Первый апелляционный суд общей юрисдикции",
+                courtLevelRaw: "appeal", courtCode: nil,
+                cartotekaId: "p2", cartotekaLevelRaw: "appeal",
+                caseNumber: number, caseID: id, caseUID: "guid-\(id)",
+                cardURLString: "https://1ap.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=\(id)&case_uid=guid-\(id)&delo_id=42")
+            value.baseInstanceLevelRaw = CaseInstance.Level.appeal.rawValue
+            return value
+        }
+        let first = appeal("66а-2013/2020", id: "6724440")
+        let second = appeal("66а-4311/2020", id: "6749107")
+        let firstRecord = try store.upsert(context: first, snapshot: nil,
+                                           collections: ["Частная жалоба"])
+        let firstKey = firstRecord.key
+        let secondRecord = try store.upsert(context: second, snapshot: nil,
+                                            collections: ["Апелляция"])
+        let secondKey = secondRecord.key
+        XCTAssertEqual(store.all().count, 3)
+
+        let origin = ResolvedCaseOrigin(
+            court: Court(domain: "mos-gorsud.ru", title: "Московский городской суд",
+                         level: .subject), branch: .general, region: "город Москва",
+            courtCode: "77OS0000",
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "p1")),
+            result: CaseSearchResult(caseNumber: "3а-3696/2020", cardURL: mgsURL),
+            card: CaseCard(rawText: "", actText: nil, judge: "Севастьянова Н.Ю.",
+                           result: "Удовлетворено частично, 26.06.2020",
+                           uid: mgsUID, caseNumber: "3а-3696/2020",
+                           decisionDate: "26.06.2020"))
+        let resolver = StubOriginResolver(.resolved(origin))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { context in
+                CaseCard(rawText: "", actText: nil, caseNumber: context.caseNumber,
+                         lowerCourt: LowerCourtReference(
+                            region: "77 - город Москва",
+                            courtTitle: "Московский городской суд",
+                            caseNumber: "3а-3696/2020",
+                            judge: "Севастьянова Наталия Юрьевна"))
+            })
+        let summary = try await coordinator.run(keys: [firstKey, secondKey])
+        XCTAssertEqual(summary.merged, 2)
+        XCTAssertEqual(store.all().count, 1)
+        let saved = try XCTUnwrap(store.all().first)
+        XCTAssertEqual(saved.caseNumber, "3а-3696/2020")
+        XCTAssertEqual(saved.context?.cardURLString, mgsURL.absoluteString)
+        XCTAssertEqual(Set(saved.collectionNames), ["Москва", "Частная жалоба", "Апелляция"])
+        XCTAssertTrue([baseKey, firstKey, secondKey].contains(saved.key))
+        XCTAssertEqual(saved.context?.knownCards?.count, 2)
+        XCTAssertEqual(Set(saved.context?.knownCards?.compactMap(\.sourceURL) ?? []),
+                       Set([first.cardURLString, second.cardURLString]
+                            .compactMap { $0 }.compactMap { URL(string: $0) }))
+        XCTAssertEqual(Set(saved.movement?.instances.map(\.caseNumber) ?? []),
+                       ["3а-3696/2020"])
+
+        let reopenedContainer = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: storeURL)
+        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+        XCTAssertEqual(reopened.all().count, 1)
+        XCTAssertEqual(reopened.all().first?.caseNumber, "3а-3696/2020")
+        XCTAssertEqual(reopened.all().first?.context?.knownCards?.count, 2)
+        XCTAssertEqual(reopened.all().first?.context?.knownCards?.compactMap(\.sourceURL).count, 2)
+    }
+
+    func testIssue322OnlyOldMoscowCrossPortalMarkersGetOneRetry() async throws {
+        let store = TrackedStore(inMemory: true)
+        func context(_ host: String, number: String) -> MovementContext {
+            var value = MovementContext(
+                branchRaw: CourtBranch.general.rawValue, region: "город Москва",
+                searchDomain: host, displayDomain: host,
+                courtTitle: "Суд общей юрисдикции", courtLevelRaw: "appeal",
+                courtCode: nil, cartotekaId: "p2", cartotekaLevelRaw: "appeal",
+                caseNumber: number, caseID: number, caseUID: "guid",
+                cardURLString: "https://\(host)/modules.php?name=sud_delo&name_op=case"
+                    + "&case_id=\(number)&case_uid=guid&delo_id=42")
+            value.baseInstanceLevelRaw = CaseInstance.Level.appeal.rawValue
+            return value
+        }
+        let target = try store.upsert(context: context("1ap.sudrf.ru", number: "66а-2013/2020"),
+                                      snapshot: nil, collections: [])
+        let other = try store.upsert(context: context("3ap.sudrf.ru", number: "66а-9/2020"),
+                                     snapshot: nil, collections: [])
+        let suite = defaults()
+        suite.set([target.key, other.key], forKey: "importChainRepair.v6.completed")
+        suite.set([target.key, other.key], forKey: "importChainRepair.v6.unsupported")
+        var fetched: [String] = []
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: StubOriginResolver(.noReference),
+            defaults: suite, anchorCardFetcher: { value in
+                fetched.append(value.caseNumber)
+                return CaseCard(rawText: "", actText: nil, caseNumber: value.caseNumber)
+            })
+        _ = try await coordinator.runAll()
+        _ = try await coordinator.runAll()
+        XCTAssertEqual(fetched, ["66а-2013/2020"])
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.unsupported") ?? [])
+            .contains(other.key))
+        XCTAssertTrue((suite.stringArray(forKey: "importChainRepair.v6.moscowCrossPortalRetryReset")
+            ?? []).contains(target.key))
+    }
+
     func testMovementMergeDeduplicatesDashDotActsByHostAndCaseNumber() throws {
         let first = movement(level: .appeal, number: "33-1/2026",
                              domain: "vs--komi.sudrf.ru",

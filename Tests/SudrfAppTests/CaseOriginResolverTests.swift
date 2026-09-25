@@ -60,8 +60,247 @@ private actor OriginProviderStub: CaseProviding {
     }
 }
 
+private actor MoscowOriginStub: MoscowOriginProviding {
+    var rows: [MosGorSudResult]
+    var cards: [URL: MosGorSudCard]
+    var requestedAliases: [String?] = []
+    var unreadable: Set<URL> = []
+
+    init(rows: [MosGorSudResult], cards: [URL: MosGorSudCard], unreadable: Set<URL> = []) {
+        self.rows = rows; self.cards = cards; self.unreadable = unreadable
+    }
+
+    func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                participant: String?, instance: Int,
+                processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+        requestedAliases.append(courtAlias)
+        return rows
+    }
+
+    func fetchCard(url: URL) async throws -> MosGorSudCard {
+        if unreadable.contains(url) { throw SudrfError.http(status: 503) }
+        guard let card = cards[url] else { throw SudrfError.http(status: 404) }
+        return card
+    }
+}
+
 final class CaseOriginResolverTests: XCTestCase {
     private let uid = "11RS0001-01-2025-011255-03"
+
+    private func issue322Fixture(_ name: String) throws -> String {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../SudrfKitTests/Fixtures/\(name).html")
+            .standardizedFileURL
+        return try String(contentsOf: source, encoding: .utf8)
+    }
+
+    private func moscowAnchor(number: String, lowerNumber: String, lowerCourt: String,
+                              lowerDate: String? = nil, lowerJudge: String,
+                              anchorDate: String? = nil,
+                              uid: String? = nil,
+                              courtLevel: CourtLevel = .appeal) -> (MovementContext, CaseCard) {
+        let isCassation = courtLevel == .cassation
+        var context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "город Москва",
+            searchDomain: isCassation ? "2kas.sudrf.ru" : "1ap.sudrf.ru",
+            displayDomain: isCassation ? "2kas.sudrf.ru" : "1ap.sudrf.ru",
+            courtTitle: isCassation ? "Второй кассационный суд общей юрисдикции"
+                : "Первый апелляционный суд общей юрисдикции",
+            courtLevelRaw: isCassation ? "cassation" : "appeal",
+            courtCode: nil, cartotekaId: isCassation ? "p3" : "p2",
+            cartotekaLevelRaw: isCassation ? "cassation" : "appeal",
+            caseNumber: number)
+        context.judicialUID = uid
+        context.baseInstanceLevelRaw = isCassation
+            ? CaseInstance.Level.cassation.rawValue : CaseInstance.Level.appeal.rawValue
+        let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                            caseNumber: number,
+                            decisionDate: anchorDate,
+                            lowerCourt: LowerCourtReference(
+                                region: "77 - город Москва", courtTitle: lowerCourt,
+                                caseNumber: lowerNumber, decisionDate: lowerDate,
+                                judge: lowerJudge))
+        return (context, card)
+    }
+
+    func testIssue322BothAppealsResolveSameMoscowFirstCard() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322?caseNumber=3%D0%B0-3696/2020"))
+        let row = MosGorSudResult(caseNumber: "3а-3696/2020", judge: "Севастьянова Н.Ю.",
+                                  section: "first-admin", cardURL: url)
+        let card = MosGorSudCard(uid: "77OS0000-01-2020-002855-77",
+                                  caseNumber: "3а-3696/2020", judge: "Севастьянова Н.Ю.",
+                                  result: "Удовлетворено частично, 26.06.2020",
+                                  sessions: [CaseSession(date: "26.06.2020", event: "Решение")],
+                                  rawText: "02.04.2020 Определение суда апелляционной инстанции "
+                                    + "10.09.2020 Определение суда апелляционной инстанции")
+        let stub = MoscowOriginStub(rows: [row], cards: [url: card])
+        let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+        for number in ["66а-2013/2020", "66а-4311/2020"] {
+            let appealDate = number.contains("2013") ? "02.04.2020" : "10.09.2020"
+            let (context, anchor) = moscowAnchor(
+                number: number, lowerNumber: "3а-3696/2020",
+                lowerCourt: "Московский городской суд",
+                lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: appealDate)
+            let found = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+            XCTAssertEqual(found.result.cardURL, url)
+            XCTAssertEqual(found.card.uid, card.uid)
+            XCTAssertEqual(found.court.domain, "mos-gorsud.ru")
+            XCTAssertEqual(found.cartoteka.id, "p1")
+        }
+        let aliases = await stub.requestedAliases
+        XCTAssertEqual(aliases, ["mgs", "mgs"])
+        let duplicateListing = CaseOriginResolver(
+            client: SudrfClient(),
+            moscowProvider: MoscowOriginStub(rows: [row, row], cards: [url: card]))
+        let (context, anchor) = moscowAnchor(
+            number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+            lowerCourt: "Московский городской суд",
+            lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: "10.09.2020")
+        let deduplicated = try await duplicateListing.resolve(anchorContext: context,
+                                                              anchorCard: anchor)
+        XCTAssertEqual(deduplicated.result.cardURL, url)
+    }
+
+    func testIssue322ParsedOfficialCardsUseRealCrossPortalRoute() async throws {
+        let firstRows = try MosGorSudResultsParser.parse(
+            html: issue322Fixture("issue322_mgs_search_first"))
+        let firstURL = try XCTUnwrap(firstRows.first?.cardURL)
+        let firstCard = try MosGorSudCardParser.parse(
+            html: issue322Fixture("issue322_mgs_first"))
+        let firstProvider = MoscowOriginStub(rows: firstRows, cards: [firstURL: firstCard])
+        let firstResolver = CaseOriginResolver(client: SudrfClient(),
+                                               moscowProvider: firstProvider)
+        for (fixture, number) in [("issue322_asoy_2013", "66а-2013/2020"),
+                                  ("issue322_asoy_4311", "66а-4311/2020")] {
+            let anchor = try CaseCardParser.parse(html: issue322Fixture(fixture))
+            let (context, _) = moscowAnchor(
+                number: number, lowerNumber: "3а-3696/2020",
+                lowerCourt: "Московский городской суд",
+                lowerJudge: "Севастьянова Наталия Юрьевна")
+            let origin = try await firstResolver.resolve(anchorContext: context,
+                                                         anchorCard: anchor)
+            XCTAssertEqual(origin.result.cardURL, firstURL)
+            XCTAssertEqual(origin.card.uid, "77OS0000-01-2020-002855-77")
+        }
+
+        let uidRows = try MosGorSudResultsParser.parse(
+            html: issue322Fixture("issue322_mgs_search_uid"))
+        let khamov = try MosGorSudCardParser.parse(
+            html: issue322Fixture("issue322_mgs_hamov"))
+        let khamovURL = try XCTUnwrap(uidRows.first(where: {
+            $0.caseNumber == "02а-0419/2021"
+        })?.cardURL)
+        let provider = MoscowOriginStub(rows: uidRows, cards: [khamovURL: khamov])
+        let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: provider)
+        let cassation = try CaseCardParser.parse(html: issue322Fixture("issue322_ksoyu_8501"))
+        let (context, _) = moscowAnchor(
+            number: "8а-7078/2022", lowerNumber: "2а-419/2021",
+            lowerCourt: "Хамовнический районный суд", lowerJudge: "Бугынин Герман Геннадиевич",
+            uid: "77RS0030-02-2021-008181-07", courtLevel: .cassation)
+        let origin = try await resolver.resolve(anchorContext: context, anchorCard: cassation)
+        XCTAssertEqual(origin.result.cardURL, khamovURL)
+        XCTAssertEqual(origin.card.caseNumber, "02а-0419/2021")
+    }
+
+    func testIssue322CassationResolvesZeroPaddedKhamovnikiNumberByUID() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/rs/hamovnicheskij/services/cases/kas/details/1b274aa1-0cb0-11ec-a70f-232197c57890?uid=77RS0030-02-2021-008181-07"))
+        let uid = "77RS0030-02-2021-008181-07"
+        let row = MosGorSudResult(caseNumber: "02а-0419/2021", uid: uid,
+                                  section: "kas", cardURL: url)
+        let card = MosGorSudCard(uid: uid, caseNumber: "02а-0419/2021",
+                                  judge: "Бугынин Г.Г.")
+        let stub = MoscowOriginStub(rows: [row], cards: [url: card])
+        let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+        let (context, anchor) = moscowAnchor(
+            number: "8а-7078/2022", lowerNumber: "2а-419/2021",
+            lowerCourt: "Хамовнический районный суд", lowerDate: "09.09.2021",
+            lowerJudge: "Бугынин Герман Геннадиевич", uid: uid,
+            courtLevel: .cassation)
+        let found = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+        XCTAssertEqual(found.card.caseNumber, "02а-0419/2021")
+        XCTAssertEqual(found.court.title, "Хамовнический районный суд")
+        XCTAssertEqual(found.courtCode, "77RS0030")
+        let aliases = await stub.requestedAliases
+        XCTAssertEqual(aliases, ["hamovnicheskij"])
+    }
+
+    func testIssue322RejectsWrongYearHostUIDAndIncompleteCandidates() async throws {
+        let good = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322"))
+        let wrongHost = try XCTUnwrap(URL(string:
+            "https://example.invalid/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322"))
+        let (context, anchor) = moscowAnchor(
+            number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+            lowerCourt: "Московский городской суд",
+            lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: "10.09.2020")
+        let card = MosGorSudCard(uid: "77OS0000-01-2020-002855-77",
+                                  caseNumber: "3а-3696/2020", judge: "Севастьянова Н.Ю.",
+                                  sessions: [CaseSession(date: "26.06.2020", event: "Решение")])
+        let wrongYear = MoscowOriginStub(
+            rows: [MosGorSudResult(caseNumber: "3а-3696/2019", cardURL: good)],
+            cards: [good: card])
+        let wrongHostStub = MoscowOriginStub(
+            rows: [MosGorSudResult(caseNumber: "3а-3696/2020", cardURL: wrongHost)],
+            cards: [wrongHost: card])
+        for stub in [wrongYear, wrongHostStub] {
+            let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+            do { _ = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+                XCTFail("unverified Moscow card must not join")
+            } catch let error as CaseOriginResolutionError {
+                XCTAssertTrue(error == .notFound || error == .incompleteCandidates)
+            }
+        }
+        let unreadable = MoscowOriginStub(
+            rows: [MosGorSudResult(caseNumber: "3а-3696/2020", cardURL: good)],
+            cards: [:], unreadable: [good])
+        let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: unreadable)
+        do { _ = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+            XCTFail("unreadable candidate must remain transient")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .incompleteCandidates)
+        }
+    }
+
+    func testIssue322RejectsConflictingMoscowQueryAndAmbiguousCards() async throws {
+        let good = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322?caseNumber=3%D0%B0-3696/2020"))
+        let conflicting = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/49e1e932-ca18-4a54-9797-987d15209322?caseNumber=3%D0%B0-3696/2019"))
+        let other = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/b8390500-58cc-11ec-b06c-31916f371c35"))
+        let card = MosGorSudCard(uid: "77OS0000-01-2020-002855-77",
+                                  caseNumber: "3а-3696/2020", judge: "Севастьянова Н.Ю.",
+                                  rawText: "10.09.2020 Определение суда апелляционной инстанции")
+        let (context, anchor) = moscowAnchor(
+            number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+            lowerCourt: "Московский городской суд",
+            lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: "10.09.2020")
+        let wrongQuery = MoscowOriginStub(
+            rows: [MosGorSudResult(caseNumber: "3а-3696/2020", cardURL: conflicting)],
+            cards: [conflicting: card])
+        do {
+            _ = try await CaseOriginResolver(client: SudrfClient(),
+                                             moscowProvider: wrongQuery)
+                .resolve(anchorContext: context, anchorCard: anchor)
+            XCTFail("a contradictory published URL is not evidence")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
+        let ambiguous = MoscowOriginStub(
+            rows: [MosGorSudResult(caseNumber: "3а-3696/2020", cardURL: good),
+                   MosGorSudResult(caseNumber: "3а-3696/2020", cardURL: other)],
+            cards: [good: card, other: card])
+        do {
+            _ = try await CaseOriginResolver(client: SudrfClient(),
+                                             moscowProvider: ambiguous)
+                .resolve(anchorContext: context, anchorCard: anchor)
+            XCTFail("two exact Moscow cards must remain ambiguous")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .ambiguous)
+        }
+    }
 
     private func anchor(uid: String?) -> (MovementContext, CaseCard) {
         var context = MovementContext(

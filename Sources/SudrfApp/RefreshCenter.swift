@@ -118,6 +118,8 @@ final class RefreshCenter: ObservableObject {
     private struct WalkItem {
         var key: String
         var courtDue: Bool
+        var priority: Int
+        var eligibleSince: Date?
         var lastAttempt: Date?
         var lastSuccess: Date?
         var diagnostic: RefreshWalkMeasurement.Candidate
@@ -203,8 +205,74 @@ final class RefreshCenter: ObservableObject {
     private let initialTimerDelay: Duration
     private let timerInterval: Duration
     private let walkDiagnostics: RefreshWalkDiagnostics
+    private static let retryBaseDelay: TimeInterval = 600
+    private static let retryMaxDelay: TimeInterval = 6 * 60 * 60
+    private static let retryMaxFailureCount = 7
+    private static let retryJitterFraction = 0.2
+    private static let priorityAgingInterval: TimeInterval = 24 * 60 * 60
     private static let persistenceFailureMessage =
         "Не удалось сохранить обновление дела в локальной базе. Повторите попытку."
+
+    static func retryDelay(forFailureCount count: Int, key: String) -> TimeInterval {
+        let boundedCount = min(max(1, count), retryMaxFailureCount)
+        let exponential = min(
+            retryMaxDelay,
+            retryBaseDelay * pow(2, Double(boundedCount - 1)))
+        let seed = "\(key)|\(boundedCount)".utf8.reduce(UInt64(14695981039346656037)) {
+            ($0 ^ UInt64($1)) &* 1099511628211
+        }
+        let unit = Double(seed % 1_000_001) / 1_000_000
+        let jitter = (unit * 2 - 1) * retryJitterFraction
+        return min(retryMaxDelay, exponential * (1 + jitter))
+    }
+
+    private static func retryIsDue(_ attempt: SourceAttempt?, key: String,
+                                   now: Date) -> Bool {
+        guard let attempt, carriesRetryState(attempt) else { return true }
+        if let retryAt = attempt.retryNotBefore { return now >= retryAt }
+        let retryAt = attempt.provenance.observedAt.addingTimeInterval(
+            retryDelay(forFailureCount: attempt.consecutiveRefreshFailures ?? 1, key: key))
+        return now >= retryAt
+    }
+
+    private static func isRefreshFailure(_ kind: SourceOutcomeKind) -> Bool {
+        switch kind {
+        case .usableSnapshot, .honestZero: false
+        case .partial, .captcha, .maintenance, .transportFailure, .parserFailure: true
+        }
+    }
+
+    private static func carriesRetryState(_ attempt: SourceAttempt) -> Bool {
+        isRefreshFailure(attempt.kind)
+            || (attempt.kind == .usableSnapshot
+                && attempt.provenance.operation == .discovery
+                && (attempt.consecutiveRefreshFailures != nil || attempt.retryNotBefore != nil))
+    }
+
+    private func priority(for record: TrackedCaseRecord, now: Date,
+                          eligibleSince: Date?, lastAttempt: Date?) -> Int {
+        let recentlyScheduled = walkScheduledAt[record.key].map {
+            now.timeIntervalSince($0) < Self.priorityAgingInterval
+        } ?? false
+        if openedKey?() == record.key && !recentlyScheduled {
+            return 0
+        }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let sevenDaysOut = calendar.date(byAdding: .day, value: 7, to: today)
+            ?? today.addingTimeInterval(7 * 24 * 60 * 60)
+        let upcomingSession = record.snapshot?.sessions.compactMap(\.date)
+            .contains { $0 >= today && $0 <= sevenDaysOut } ?? false
+        let upcomingDeadline = record.snapshot?.deadlines.contains {
+            $0.isActive && $0.date >= today && $0.date <= sevenDaysOut
+        } ?? false
+        let base = upcomingSession || upcomingDeadline ? 1
+            : (record.seenAt == nil || record.movementFetchedAt == nil ? 2 : 3)
+        let waitingSince = [eligibleSince, lastAttempt].compactMap { $0 }.max() ?? now
+        let age = max(0, now.timeIntervalSince(waitingSince))
+        let agingPromotion = min(base, Int(age / Self.priorityAgingInterval))
+        return max(1, base - agingPromotion)
+    }
 
     init(store: TrackedStore, client: SudrfClient,
          captchaSolver: CaptchaSolver? = nil,
@@ -353,11 +421,13 @@ final class RefreshCenter: ObservableObject {
         } else if walkTask != nil {
             return walkTask
         }
-        let now = walkDiagnostics.now()
+        let now = walkDiagnostics.now() // Shared fakeable clock for eligibility and retry scheduling.
         let ttl = RefreshSettings.ttl
         let items: [WalkItem] = store.all().compactMap { rec in
-            let courtDue = force
+            let courtTTLExpired = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
+            let courtDue = courtTTLExpired
+                && (force || Self.retryIsDue(rec.sourceRefreshAttempt, key: rec.key, now: now))
             let enforcementDue = needsEnforcementRefresh(rec, now: now, ttl: ttl)
             guard courtDue || enforcementDue else { return nil }
             let persistedAttempt = courtDue
@@ -371,12 +441,32 @@ final class RefreshCenter: ObservableObject {
             let host = courtDue
                 ? rec.context.map { SudrfHost.moduleHost($0.searchDomain) }
                 : nil
-            let eligibleSince = force || !courtDue
-                ? nil
-                : rec.movementFetchedAt.map { $0.addingTimeInterval(ttl) } ?? rec.addedAt
+            let ttlEligibleAt = rec.movementFetchedAt.map { $0.addingTimeInterval(ttl) }
+                ?? rec.addedAt
+            let retryEligibleAt: Date? = {
+                guard let attempt = rec.sourceRefreshAttempt,
+                      Self.carriesRetryState(attempt) else { return nil }
+                if let retryAt = attempt.retryNotBefore { return retryAt }
+                return attempt.provenance.observedAt.addingTimeInterval(
+                    Self.retryDelay(forFailureCount: attempt.consecutiveRefreshFailures ?? 1,
+                                    key: rec.key))
+            }()
+            let eligibleSince: Date? = if force {
+                walkScheduledAt[rec.key] ?? persistedAttempt ?? rec.addedAt
+            } else if courtDue {
+                [ttlEligibleAt, retryEligibleAt].compactMap { $0 }.max()
+            } else if enforcementDue {
+                rec.addedAt
+            } else {
+                nil
+            }
+            let diagnosticEligibleSince = courtDue && !force ? eligibleSince : nil
             return WalkItem(
                 key: rec.key,
                 courtDue: courtDue,
+                priority: priority(for: rec, now: now,
+                                   eligibleSince: eligibleSince, lastAttempt: lastAttempt),
+                eligibleSince: eligibleSince,
                 lastAttempt: lastAttempt,
                 lastSuccess: lastSuccess,
                 diagnostic: RefreshWalkMeasurement.Candidate(
@@ -386,9 +476,15 @@ final class RefreshCenter: ObservableObject {
                     lastAttempt: persistedAttempt,
                     lastSuccess: lastSuccess,
                     previousAttempt: courtDue ? rec.sourceRefreshAttempt : nil,
-                    eligibleSince: eligibleSince)
+                    eligibleSince: diagnosticEligibleSince)
             )
         }.sorted { lhs, rhs in
+            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+            if lhs.eligibleSince != rhs.eligibleSince {
+                if lhs.eligibleSince == nil { return true }
+                if rhs.eligibleSince == nil { return false }
+                return lhs.eligibleSince! < rhs.eligibleSince!
+            }
             if lhs.lastAttempt != rhs.lastAttempt {
                 if lhs.lastAttempt == nil { return true }
                 if rhs.lastAttempt == nil { return false }
@@ -922,13 +1018,25 @@ final class RefreshCenter: ObservableObject {
         }
         let persisted: TrackedCaseRecord
         if resolution.wasRecovered {
+            var discoveryAttempt = SourceAttempt(
+                kind: .usableSnapshot,
+                provenance: SourceProvenance(operation: .discovery,
+                                             sourceFamily: "sudrf",
+                                             host: resolution.context.searchDomain))
+            if let previous = current.sourceRefreshAttempt {
+                if Self.carriesRetryState(previous) {
+                    discoveryAttempt.consecutiveRefreshFailures =
+                        previous.consecutiveRefreshFailures ?? 1
+                    discoveryAttempt.retryNotBefore = previous.retryNotBefore
+                        ?? previous.provenance.observedAt.addingTimeInterval(
+                            Self.retryDelay(forFailureCount:
+                                discoveryAttempt.consecutiveRefreshFailures ?? 1,
+                                key: current.key))
+                }
+            }
             guard let saved = try store.applyVerifiedCardContext(
                 forLocator: key, context: resolution.context,
-                attempt: SourceAttempt(
-                    kind: .usableSnapshot,
-                    provenance: SourceProvenance(operation: .discovery,
-                                                 sourceFamily: "sudrf",
-                                                 host: resolution.context.searchDomain)),
+                attempt: discoveryAttempt,
                 expectedActiveContext: expectedContext) else {
                 return RefreshExecution(effectiveKey: key, outcome: .cancelled)
             }
@@ -1177,12 +1285,15 @@ final class RefreshCenter: ObservableObject {
     /// авто-солва капчи (A1). Guard на удалённую запись сохранён: пока
     /// шёл сетевой вызов, пользователь мог удалить дело.
     private func applyMovement(key: String, ctx: MovementContext,
-                               mv: CaseMovement, attempt: SourceAttempt,
+                               mv: CaseMovement, attempt incomingAttempt: SourceAttempt,
                                isComplete: Bool, partialMessage: String? = nil,
                                reportsPartialFailure: Bool = true) throws -> RefreshExecution {
         guard let rec = store.record(forKey: key) else {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
         }
+        let attempt = recordedAttempt(
+            incomingAttempt, previous: rec.sourceRefreshAttempt,
+            key: key, at: walkDiagnostics.now())
         let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
         let oldMovement = rec.movement
         let oldSnapshot = rec.snapshot
@@ -1305,8 +1416,28 @@ final class RefreshCenter: ObservableObject {
 
     private func persistAttempt(_ key: String, _ attempt: SourceAttempt) throws {
         guard let rec = store.record(forKey: key) else { return }
-        rec.sourceRefreshAttempt = attempt
+        rec.sourceRefreshAttempt = recordedAttempt(
+            attempt, previous: rec.sourceRefreshAttempt,
+            key: key, at: walkDiagnostics.now())
         try store.save()
+    }
+
+    private func recordedAttempt(_ attempt: SourceAttempt, previous: SourceAttempt?,
+                                 key: String, at: Date) -> SourceAttempt {
+        var recorded = attempt
+        guard Self.isRefreshFailure(recorded.kind) else {
+            recorded.consecutiveRefreshFailures = nil
+            recorded.retryNotBefore = nil
+            return recorded
+        }
+        let previousCount = previous.map {
+            Self.carriesRetryState($0) ? ($0.consecutiveRefreshFailures ?? 1) : 0
+        } ?? 0
+        let count = min(Self.retryMaxFailureCount, previousCount + 1)
+        recorded.consecutiveRefreshFailures = count
+        recorded.retryNotBefore = at.addingTimeInterval(
+            Self.retryDelay(forFailureCount: count, key: key))
+        return recorded
     }
 
     private func queueCaptcha(key: String, formURL: URL) {

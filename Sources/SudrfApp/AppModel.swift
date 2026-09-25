@@ -442,10 +442,11 @@ final class AppRouter: ObservableObject {
                                        captchaSettings: captchaSettings,
                                        fsspClient: fsspClient,
                                        walkDiagnostics: .live)
-        refreshCenter.repairBeforeRefresh = { [weak self] key in
+        refreshCenter.repairBeforeRefresh = { [weak self] key, manually in
             guard let self else { return key }
             do {
-                let outcome = try await self.repairCoordinator.repairIfNeeded(key: key)
+                let outcome = try await self.repairCoordinator.repairIfNeeded(
+                    key: key, forceAttempt: manually)
                 if outcome.summary.hasProjectionChanges {
                     self.applyRepair(outcome.summary, presentReport: false)
                 }
@@ -669,7 +670,7 @@ final class AppRouter: ObservableObject {
     /// Принудительное обновление открытой карточки (кнопка «Обновить»).
     func refreshOpenCase() {
         refreshNote = nil
-        if let key = openedKey { refreshCenter.refresh(key: key, forceEnforcement: true) }
+        if let key = openedKey { refreshCenter.refresh(key: key, manually: true) }
     }
 
     func refreshOpenEnforcement() {

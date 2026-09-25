@@ -120,7 +120,7 @@ final class Issue246RefreshIntegrationTests: XCTestCase {
         let service = Issue246Movements([refreshed, partial])
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in service })
-        center.repairBeforeRefresh = { key in
+        center.repairBeforeRefresh = { key, _ in
             try await coordinator.repairIfNeeded(key: key).effectiveKey
         }
 

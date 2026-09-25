@@ -5,10 +5,12 @@
 //   • периодический обход: start() → каждые ~10 мин проверка, какие дела
 //     старше TTL (RefreshSettings), устаревшие обновляются по очереди;
 //   • принудительный: refreshAll(force: true) — кнопка «Проверить все»;
-//   • точечный: refresh(key:) — первая загрузка без кэша и кнопка «Обновить».
+//   • точечный: refresh(key:) — первая загрузка без кэша;
+//     refresh(key:manually:) — кнопка «Обновить».
 //
 //  Дедупликация по ключу: повторный refresh того же дела возвращает уже
-//  идущую задачу. Полный обход использует один судебный воркер: разные домены
+//  идущую задачу; ручной повтор после фоновой задачи ставится в очередь один
+//  раз. Полный обход использует один судебный воркер: разные домены
 //  могут вести на один backend. Все запросы приложения дополнительно проходят
 //  через общую FIFO-очередь SudrfClient с интервалом стартов 1,5 с.
 //  Ошибка одного дела не прерывает обход и НИКОГДА не трогает уже сохранённый кэш.
@@ -146,7 +148,7 @@ final class RefreshCenter: ObservableObject {
     var openedKey: (() -> String?)?
     /// Точечный repair-preflight. Может переякорить запись и вернуть
     /// новый ключ; отказ commit поднимается в refresh как persistence failure.
-    var repairBeforeRefresh: ((String) async throws -> String)?
+    var repairBeforeRefresh: ((String, Bool) async throws -> String)?
     /// The App layer owns the shared card resolver. A nil seam preserves the
     /// deterministic RefreshCenter tests and leaves the pre-existing outcome
     /// handling untouched for unsupported sources.
@@ -180,6 +182,8 @@ final class RefreshCenter: ObservableObject {
     /// service, while production still uses the actor client.
     private let fsspDiscover: (CourtEnforcementDocument) async throws -> FSSPSearchStep
     private var tasks: [String: Task<RefreshExecution, Never>] = [:]
+    private var manualRefreshTasks: [String: Task<RefreshExecution, Never>] = [:]
+    private var manualTaskKeys: Set<String> = []
     private var enforcementTasks: [String: Task<Void, Never>] = [:]
     /// Поколения не дают позднему завершению отменённой задачи очистить
     /// registry новой задачи того же дела после повторного добавления.
@@ -370,12 +374,14 @@ final class RefreshCenter: ObservableObject {
     /// Останавливает только работу удалённого дела. Общая CAPTCHA-задача суда
     /// может обслуживать соседние дела и потому намеренно остаётся активной.
     func cancelTracking(for key: String) {
-        let courtTaskKeys = tasks.keys.filter {
+        let courtTaskKeys = Set(tasks.keys).union(manualRefreshTasks.keys).filter {
             $0 == key || effectiveKeysByTaskKey[$0] == key
         }
         for taskKey in courtTaskKeys {
             taskGenerations[taskKey, default: 0] += 1
             tasks.removeValue(forKey: taskKey)?.cancel()
+            manualRefreshTasks.removeValue(forKey: taskKey)?.cancel()
+            manualTaskKeys.remove(taskKey)
             effectiveKeysByTaskKey[taskKey] = nil
             refreshing.remove(taskKey)
             lastErrors[taskKey] = nil
@@ -547,7 +553,7 @@ final class RefreshCenter: ObservableObject {
                 if item.courtDue {
                     let execution = await TransportTiming.$collector.withValue(
                         transportCollector) {
-                        await self.refresh(key: item.key, forceEnforcement: false)?.value
+                        await self.refresh(key: item.key)?.value
                             ?? RefreshExecution(effectiveKey: item.key, outcome: .notFound)
                     }
                     executionOutcome = execution.outcome.diagnosticsName
@@ -592,25 +598,40 @@ final class RefreshCenter: ObservableObject {
 
     /// Запускает (или возвращает уже идущее) обновление дела по ключу записи.
     @discardableResult
-    func refresh(key: String, forceEnforcement: Bool = false) -> Task<RefreshExecution, Never>? {
-        if let existing = tasks[key] { return existing }
+    func refresh(key: String, manually: Bool = false) -> Task<RefreshExecution, Never>? {
+        if manually, let queued = manualRefreshTasks[key] { return queued }
+        if let existing = tasks[key] {
+            guard manually, !manualTaskKeys.contains(key) else { return existing }
+            let queued = Task { [weak self] in
+                let previous = await existing.value
+                guard let self, !Task.isCancelled else { return previous }
+                self.manualRefreshTasks[key] = nil
+                let result = await self.refresh(key: previous.effectiveKey,
+                                                manually: true)?.value ?? previous
+                return result
+            }
+            manualRefreshTasks[key] = queued
+            return queued
+        }
         guard store.record(forKey: key) != nil else { return nil }
 
         taskGenerations[key, default: 0] += 1
         let generation = taskGenerations[key]!
         refreshing.insert(key)
+        if manually { manualTaskKeys.insert(key) }
         let task = Task { [weak self] in
             guard let self else {
                 return RefreshExecution(effectiveKey: key, outcome: .notFound)
             }
-            let execution = await self.performRefresh(key: key)
+            let execution = await self.performRefresh(key: key, manually: manually)
             if execution.outcome != .cancelled {
                 _ = await self.startEnforcementRefresh(
-                    key: execution.effectiveKey, force: forceEnforcement)?.value
+                    key: execution.effectiveKey, force: manually)?.value
             }
             if self.taskGenerations[key] == generation {
                 self.refreshing.remove(key)
                 self.tasks[key] = nil
+                self.manualTaskKeys.remove(key)
                 self.effectiveKeysByTaskKey[key] = nil
             }
             return execution
@@ -884,10 +905,10 @@ final class RefreshCenter: ObservableObject {
                           message: message)
     }
 
-    private func performRefresh(key: String) async -> RefreshExecution {
+    private func performRefresh(key: String, manually: Bool) async -> RefreshExecution {
         let effectiveKey: String
         do {
-            effectiveKey = try await repairBeforeRefresh?(key) ?? key
+            effectiveKey = try await repairBeforeRefresh?(key, manually) ?? key
         } catch is TrackedStoreCommitError {
             return failure(key, Self.persistenceFailureMessage)
         } catch {

@@ -279,7 +279,7 @@ final class Issue276ChainRecoveryIntegrationTests: XCTestCase {
                 judicialUID: context.judicialUID, branch: context.branch)
             return Issue276Movements(parsed: parsed, sequence: sequence)
         })
-        center.repairBeforeRefresh = { key in
+        center.repairBeforeRefresh = { key, _ in
             try await coordinator.repairIfNeeded(key: key).effectiveKey
         }
 

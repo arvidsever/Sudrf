@@ -207,7 +207,7 @@ final class Issue288RegistrationDiscoveryTests: XCTestCase {
         let movements = Issue288Movements([full, partial])
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in movements })
-        center.repairBeforeRefresh = { key in
+        center.repairBeforeRefresh = { key, _ in
             try await coordinator.repairIfNeeded(key: key).effectiveKey
         }
 

@@ -613,7 +613,7 @@ final class RefreshCenterTests: XCTestCase {
                                    serviceBuilder: { _ in provider })
         var callbackKey: String?
         center.onRefreshed = { key, _, _ in callbackKey = key }
-        center.repairBeforeRefresh = { [store] key in
+        center.repairBeforeRefresh = { [store] key, _ in
             XCTAssertEqual(key, old.key)
             guard let store else { return key }
             _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
@@ -628,6 +628,40 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(callbackKey, canonical.key)
         XCTAssertEqual(execution?.effectiveKey, canonical.key)
         XCTAssertEqual(execution?.outcome, .refreshed)
+    }
+
+    func testManualRefreshQueuesOneRepairAttemptBehindInFlightBackgroundRefresh() async throws {
+        let key = try XCTUnwrap(store.all().first?.key)
+        let service = FixedMovement(successMV)
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in service })
+        let entered = expectation(description: "background repair preflight")
+        var releaseBackground: CheckedContinuation<Void, Never>?
+        var manualFlags: [Bool] = []
+        center.repairBeforeRefresh = { currentKey, manually in
+            XCTAssertEqual(currentKey, key)
+            manualFlags.append(manually)
+            if !manually {
+                entered.fulfill()
+                await withCheckedContinuation { releaseBackground = $0 }
+            }
+            return key
+        }
+
+        let background = try XCTUnwrap(center.refresh(key: key))
+        await fulfillment(of: [entered], timeout: 2)
+        let manual = try XCTUnwrap(center.refresh(key: key, manually: true))
+        let repeated = try XCTUnwrap(center.refresh(key: key, manually: true))
+        releaseBackground?.resume()
+        releaseBackground = nil
+
+        _ = await background.value
+        let manualResult = await manual.value
+        let repeatedResult = await repeated.value
+        XCTAssertEqual(manualResult, repeatedResult)
+        XCTAssertEqual(manualFlags, [false, true])
+        let serviceCalls = await service.calls
+        XCTAssertEqual(serviceCalls, 2)
     }
 
     func testSuccessfulRefreshAppendsSemanticEventOnceAndPersistsAcrossReopen() async throws {
@@ -1253,7 +1287,7 @@ final class RefreshCenterTests: XCTestCase {
         let unavailable = UnavailableMovement()
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in unavailable })
-        center.repairBeforeRefresh = { [store] _ in
+        center.repairBeforeRefresh = { [store] _, _ in
             guard let store else { return old.key }
             _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
             try store.remove(key: old.key)
@@ -1277,7 +1311,7 @@ final class RefreshCenterTests: XCTestCase {
         let captcha = CaptchaMovement(url: formURL)
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in captcha })
-        center.repairBeforeRefresh = { [store] _ in
+        center.repairBeforeRefresh = { [store] _, _ in
             guard let store else { return old.key }
             _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
             try store.remove(key: old.key)
@@ -2453,7 +2487,7 @@ final class RefreshCenterTests: XCTestCase {
         let service = SuspendedMovement(movement)
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in service })
-        center.repairBeforeRefresh = { [store] _ in
+        center.repairBeforeRefresh = { [store] _, _ in
             guard let store else { return old.key }
             _ = try store.upsert(context: canonical, snapshot: nil, collections: [])
             try store.remove(key: old.key)
@@ -2554,7 +2588,7 @@ final class RefreshCenterTests: XCTestCase {
         let movement = FixedMovement(successMV)
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in movement })
-        center.repairBeforeRefresh = { key in
+        center.repairBeforeRefresh = { key, _ in
             withUnsafeCurrentTask { $0?.cancel() }
             return key
         }

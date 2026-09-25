@@ -1070,6 +1070,14 @@ final class TrackedCaseRepairTests: XCTestCase {
                       "noReference остаётся неошибочным результатом")
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(calls, 1, "завершённый v5-проход не должен повторяться на каждом запуске")
+        _ = try await coordinator.repairIfNeeded(key: appeal.key, forceAttempt: true)
+        let callsAfterManual = await resolver.calls
+        XCTAssertEqual(callsAfterManual, 2,
+                       "ручная попытка повторяет ремонт даже после terminal-маркера")
+        _ = try await coordinator.runAll()
+        let callsAfterBackground = await resolver.calls
+        XCTAssertEqual(callsAfterBackground, 2,
+                       "ручная попытка не снимает terminal-маркер для фона")
         XCTAssertNotNil(store.record(forKey: appeal.key))
     }
 
@@ -1093,14 +1101,22 @@ final class TrackedCaseRepairTests: XCTestCase {
 
         let first = try await coordinator.runAll()
         let second = try await coordinator.runAll()
-        let calls = await resolver.calls
+        let callsBeforeManual = await resolver.calls
+
+        _ = try await coordinator.repairIfNeeded(key: appeal.key, forceAttempt: true)
+        let third = try await coordinator.runAll()
+        let callsAfterManual = await resolver.calls
 
         XCTAssertFalse(first.hasReport)
         XCTAssertTrue(first.notFound.isEmpty)
         XCTAssertEqual(first.events.filter { $0.kind == .firstInstanceNotFound }.map(\.caseKey),
                        [appeal.key])
         XCTAssertFalse(second.hasReport)
-        XCTAssertEqual(calls, 1, "повторный поиск должен ждать backoff, а не запускаться сразу")
+        XCTAssertEqual(callsBeforeManual, 1,
+                       "фоновый повтор должен ждать backoff")
+        XCTAssertEqual(callsAfterManual, 2,
+                       "ручная попытка обходит задержку, но не отменяет фоновый backoff")
+        XCTAssertFalse(third.hasReport)
         XCTAssertNotNil(store.record(forKey: appeal.key))
     }
 

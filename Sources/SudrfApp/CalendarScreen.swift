@@ -255,24 +255,16 @@ struct CalendarScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
-                // Родственные действия — в одной стеклянной группе (гайд Apple:
-                // group related controls). GlassEffectContainer сливает соседние
-                // стеклянные элементы в единую поверхность.
-                GlassEffectContainer(spacing: 4) {
-                    HStack(spacing: 4) {
-                        Button { router.calStep(-1) } label: { Image(systemName: "chevron.left") }
-                            .buttonBorderShape(.circle)
-                        Button { router.calStep(1) } label: { Image(systemName: "chevron.right") }
-                            .buttonBorderShape(.circle)
-                        Button("Сегодня") {
-                            router.calMonth = DateUtil.startOfMonth(DateUtil.today)
-                            router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
-                            router.calSelectedDate = DateUtil.today
-                        }
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-                }
+                navCapsule(title: "Сегодня",
+                           previous: "Предыдущий месяц",
+                           next: "Следующий месяц",
+                           onPrevious: { router.calStep(-1) },
+                           onTitle: {
+                               router.calMonth = DateUtil.startOfMonth(DateUtil.today)
+                               router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
+                               router.calSelectedDate = DateUtil.today
+                           },
+                           onNext: { router.calStep(1) })
                 Spacer()
                 legend
                 calendarModePicker
@@ -317,6 +309,50 @@ struct CalendarScreen: View {
             }
             Text(t)
         }
+    }
+
+    /// #329: навигация «‹ Сегодня ›» — одна стеклянная капсула той же конструкции,
+    /// что переключатели режима календаря и вида «Моих дел»: общая подложка
+    /// .glassEffect, внутри — простые кнопки. Системный ControlGroup и слияние
+    /// .glass-кнопок на macOS 26 дают другой вид (серая плашка, разрозненные стрелки).
+    private func navCapsule(title: LocalizedStringKey,
+                            titleEnabled: Bool = true,
+                            previous: LocalizedStringKey,
+                            next: LocalizedStringKey,
+                            onPrevious: @escaping () -> Void,
+                            onTitle: @escaping () -> Void,
+                            onNext: @escaping () -> Void) -> some View {
+        HStack(spacing: 0) {
+            Button(action: onPrevious) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(previous)
+            Divider().frame(height: 12)
+            Button(action: onTitle) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(titleEnabled ? Color.primary : Color.secondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 22)
+                    .contentShape(Rectangle())
+            }
+            .disabled(!titleEnabled)
+            Divider().frame(height: 12)
+            Button(action: onNext) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(next)
+        }
+        .buttonStyle(.plain)
+        .padding(3)
+        .glassEffect(.regular, in: .capsule)
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
     }
 
     private var calendarModePicker: some View {
@@ -573,13 +609,13 @@ struct CalendarScreen: View {
                 Text(DateUtil.weekTitle(starting: router.calWeekStart))
                     .font(.system(size: 22, weight: .bold))
                     .frame(minWidth: 150, alignment: .leading)
-                Button { router.calStepWeek(-1) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
-                Button { router.calStepWeek(1) } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
-                Button("Эта неделя") { router.calThisWeek() }
-                    .buttonStyle(.glass).controlSize(.small)
-                    .disabled(DateUtil.sameWeek(router.calWeekStart, DateUtil.today))
+                navCapsule(title: "Эта неделя",
+                           titleEnabled: !DateUtil.sameWeek(router.calWeekStart, DateUtil.today),
+                           previous: "Предыдущая неделя",
+                           next: "Следующая неделя",
+                           onPrevious: { router.calStepWeek(-1) },
+                           onTitle: { router.calThisWeek() },
+                           onNext: { router.calStepWeek(1) })
                 Spacer()
                 legend
                 calendarModePicker

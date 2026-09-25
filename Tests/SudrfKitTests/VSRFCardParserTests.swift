@@ -116,6 +116,78 @@ final class VSRFCardParserTests: XCTestCase {
         })
     }
 
+    func testCurrentSearchResultPreservesLinkageAndClaimsURL() throws {
+        let res = try VSRFSearchParser.parse(html: try loadFixture("vsrf_current_search_positive"))
+        XCTAssertEqual(res.total, 1)
+        XCTAssertEqual(res.results.count, 1)
+        let d = try XCTUnwrap(res.results.first)
+        XCTAssertEqual(d.kind, .caseFile)
+        XCTAssertEqual(d.cardID, "12-34154493")
+        XCTAssertEqual(d.cardSection, .claims)
+        XCTAssertEqual(d.cardURL?.absoluteString, "https://www.vsrf.ru/lk/practice/claims/12-34154493")
+        XCTAssertEqual(d.number, "3-КГ23-1-К3")
+        XCTAssertEqual(d.uid, "11RS0001-01-2021-021221-14")
+        XCTAssertEqual(d.firstInstance.court, "Сыктывкарский городской суд")
+        XCTAssertEqual(d.firstInstance.caseNumber, "2-1649/2022")
+        XCTAssertEqual(d.firstInstance.decisionDate, "02.03.2022")
+        XCTAssertEqual(d.firstInstance.judge, "О.А. Машкалева")
+        XCTAssertEqual(d.firstInstance.result, "Иск удовлетворён полностью")
+        XCTAssertEqual(d.claimants, ["Заявитель"])
+        XCTAssertEqual(d.respondents, ["Ответчик"])
+    }
+
+    func testCurrentSearchEmptyResultRequiresExplicitZeroEvidence() throws {
+        let result = try VSRFSearchParser.parse(html: try loadFixture("vsrf_current_search_empty"))
+        XCTAssertEqual(result.total, 0)
+        XCTAssertTrue(result.results.isEmpty)
+    }
+
+    func testUnknownSearchMarkupFailsClosed() {
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: "<html><body><p>blocked</p></body></html>"))
+    }
+
+    func testCurrentSearchContainerWithoutCountCannotBecomeEmptySuccess() {
+        let html = #"<div class="SearchPage_resultsBlock__test"><div class="SearchPage_results__test"></div></div>"#
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+    }
+
+    func testPositiveCountWithoutProductionFailsClosed() {
+        let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 1</span></div>"#
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+    }
+
+    func testZeroCountWithProductionIsInconsistent() {
+        let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 0</span><div class="CaseStyle_case_item__test"><a class="CaseStyle_case_link__test" href="/lk/practice/claims/12-34154493">3-КГ23-1-К3</a><span class="CaseStyle_registerDateRow_attribute__test">Уникальный идентификатор дела:</span><span class="CaseStyle_case_value__test">11RS0001-01-2021-021221-14</span></div></div>"#
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+    }
+
+    func testCurrentRowWithoutLinkageEvidenceFailsClosed() {
+        let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 1</span><div class="CaseStyle_case_item__test"><a class="CaseStyle_case_link__test" href="/lk/practice/claims/12-34154493">3-КГ23-1-К3</a></div></div>"#
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+    }
+
+    func testMalformedUIDWithoutFirstInstanceTripleFailsClosed() {
+        let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 1</span><div class="CaseStyle_case_item__test"><a class="CaseStyle_case_link__test" href="/lk/practice/claims/12-34154493">3-КГ23-1-К3</a><div class="RowElement_container__test"><span class="CaseStyle_registerDateRow_attribute__test">Уникальный идентификатор дела:</span><span class="CaseStyle_case_value__test">not-a-uid</span></div></div></div>"#
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+    }
+
+    func testCurrentComplaintUsesBeneficiaryForLinkage() throws {
+        let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 1</span><div class="CaseStyle_case_item__test"><a class="CaseStyle_case_link__test" href="/lk/practice/claims/21-00000001">3-КФ00-1-К0</a><div class="RowElement_container__test"><span class="CaseStyle_registerDateRow_attribute__test">Суд 1-й инстанции:</span><span class="CaseStyle_case_value__test">Городской суд. Решение от 01.01.2000. Судья: С. Судья Номер дела 1-й инстанции: 2-1/2000</span></div><div class="CaseStyle_case_personalList_item__test"><span class="CaseStyle_registerDateRow_attribute__test">Заявители:</span><span class="CaseStyle_case_personalListName__test">Никулин</span></div><div class="CaseStyle_case_personalList_item__test"><span class="CaseStyle_registerDateRow_attribute__test">В интересах:</span><span class="CaseStyle_case_personalListName__test">Воробьёв</span></div></div></div>"#
+        let result = try VSRFSearchParser.parse(html: html)
+        let complaint = try XCTUnwrap(result.results.first)
+        XCTAssertEqual(complaint.kind, .complaint)
+        XCTAssertEqual(complaint.claimants, ["Никулин"])
+        XCTAssertEqual(complaint.applicant, "Воробьёв")
+    }
+
+    func testSearchCountMayExceedCurrentPageRows() throws {
+        let fixture = try loadFixture("vsrf_search_number")
+        let paginated = fixture.replacingOccurrences(of: "НАЙДЕНО: 10", with: "НАЙДЕНО: 11")
+        let result = try VSRFSearchParser.parse(html: paginated)
+        XCTAssertEqual(result.total, 11)
+        XCTAssertEqual(result.results.count, 10)
+    }
+
     // MARK: - Привязка по тройке (без УИД, иной формат ФИО)
 
     func testLinkToLowerCourtByTriple() throws {
@@ -137,5 +209,7 @@ final class VSRFCardParserTests: XCTestCase {
                        "https://vsrf.ru/lk/practice/cases/12-34154493")
         XCTAssertEqual(VSRFEndpoint.cardURL(productionID: "21-33970283", section: .appeals)?.absoluteString,
                        "https://vsrf.ru/lk/practice/appeals/21-33970283")
+        XCTAssertEqual(VSRFEndpoint.cardURL(productionID: "12-00000001", section: .claims)?.absoluteString,
+                       "https://www.vsrf.ru/lk/practice/claims/12-00000001")
     }
 }

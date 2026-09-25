@@ -60,13 +60,18 @@ final class HTMLCourtTransportTests: XCTestCase {
         }
     }
 
-    func testVSRFClientKeepsWindows1251CompatibilityFallback() async throws {
+    func testVSRFClientDecodesWindows1251BeforeFailClosedParsing() async throws {
         HTMLCourtTransportStub.setBody(windows1251HTML())
         let client = VSRFClient(session: session, minInterval: 0)
 
-        let results = try await client.searchByName("Иванов")
-        XCTAssertEqual(results.total, 0)
-        XCTAssertTrue(results.results.isEmpty)
+        do {
+            _ = try await client.searchByName("Иванов")
+            XCTFail("Неизвестная выдача ВС РФ не должна считаться пустой")
+        } catch let error as SudrfError {
+            guard case .parsing = error else {
+                return XCTFail("Ожидалась ошибка разбора после декодирования, получено: \(error)")
+            }
+        }
     }
 
     private var testURL: URL { URL(string: "https://example.test/page")! }

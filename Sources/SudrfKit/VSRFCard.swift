@@ -1,8 +1,7 @@
 //  VSRFCard.swift — Sudrf
 //
-//  Верховный Суд РФ — ОТДЕЛЬНАЯ платформа (vsrf.ru), не sud_delo. И карточка
-//  производства, и страница выдачи поиска отдаются СЕРВЕРОМ в UTF-8 (а не cp1251,
-//  как sudrf.ru) и БЕЗ капчи.
+//  Верховный Суд РФ — ОТДЕЛЬНАЯ платформа (vsrf.ru), не sud_delo. Карточки и
+//  поисковая выдача отдаются сервером в UTF-8 (а не cp1251, как sudrf.ru), без капчи.
 //
 //  ── Карточка производства ──────────────────────────────────────────────────
 //      https://vsrf.ru/lk/practice/cases/{id}      — для дела
@@ -23,14 +22,10 @@
 //      GET https://vsrf.ru/lk/practice/claims
 //          ?registerDateExact=off&considerationDateExact=off&numberExact=true
 //           [&uniqueNumber=<УИД>] [&oldCaseNumber1=<№ дела 1-й инст.>] [&keywords=<ФИО>]
-//  Каждый результат — заголовок `div.row.vs-items-separate.vs-border`, за которым
-//  идут `div.row.vs-item-detail` до следующего заголовка. «НАЙДЕНО: N» = числу
-//  заголовков (постранички в наблюдавшихся выборках нет — всё на одной странице).
-//  И дело, и жалоба несут ссылку на карточку, но РАЗНОГО вида:
-//    • ДЕЛО (КГ):    a[href*="/lk/practice/cases/{id}"]   (id вида «12-…») + УИД;
-//    • ЖАЛОБА (КФ):  a[href*="/lk/practice/appeals/{id}"] (id вида «21-…»), УИД нет.
-//  На самой странице карточки у производств анкоров нет — только
-//  `data-subscribe-claim-id`, а раздел (cases/appeals) выводится из типа.
+//  Текущая выдача использует `.CaseStyle_case_item__*` и ссылки
+//  `/lk/practice/claims/{id}`; `Найдено: N` — явное число найденных производств.
+//  Более старый формат (`vs-items-separate` + `vs-item-detail`, `/cases/` и
+//  `/appeals/`) тоже поддерживается. Число может превышать видимые строки.
 //
 //  ── Нюанс УИД и тройка ─────────────────────────────────────────────────────
 //  УИД появляется ТОЛЬКО когда в ВС поступило именно ДЕЛО (сплошная кассация
@@ -40,12 +35,10 @@
 //  производстве: (суд 1-й инст., № дела 1-й инст., фамилия заявителя). См.
 //  `VSRFLinkKey`.
 //
-//  ── Единый разбор ──────────────────────────────────────────────────────────
-//  И карточка, и выдача используют один каркас `vs-item-detail`. Производства
-//  выделяются по заголовкам `vs-items-separate` в порядке документа; следующие
-//  `vs-item-detail` принадлежат текущему производству. cardID/раздел берутся из
-//  ссылки `/cases/{id}` либо `/appeals/{id}` заголовка, а на карточке — из
-//  ближайшего предка `[data-subscribe-claim-id]` (раздел — по типу производства).
+//  ── Разбор ──────────────────────────────────────────────────────────────────
+//  Поиск разбирается из текущих result-card блоков либо из legacy
+//  `vs-items-separate`/`vs-item-detail`; карточки дела по-прежнему используют
+//  `data-subscribe-claim-id` и старые production-блоки.
 
 import Foundation
 import SwiftSoup
@@ -63,6 +56,7 @@ public enum VSRFProductionKind: String, Sendable, Equatable {
 public enum VSRFCardSection: String, Sendable, Equatable {
     case cases      // дела:   /lk/practice/cases/{id}
     case appeals    // жалобы: /lk/practice/appeals/{id}
+    case claims     // новый портал: /lk/practice/claims/{id}
 }
 
 /// Реквизиты суда 1-й инстанции из составной ячейки «Суд 1-ой инстанции».
@@ -257,7 +251,8 @@ public enum VSRFEndpoint {
     private static let base = "https://vsrf.ru/lk/practice"
 
     public static func cardURL(productionID: String, section: VSRFCardSection = .cases) -> URL? {
-        URL(string: "\(base)/\(section.rawValue)/\(productionID)")
+        let root = section == .claims ? "https://www.vsrf.ru/lk/practice" : base
+        return URL(string: "\(root)/\(section.rawValue)/\(productionID)")
     }
 
     /// Сборка URL выдачи. Кодировка — UTF-8 (через URLComponents), капчи нет.
@@ -298,21 +293,132 @@ public enum VSRFSearchParser {
     /// Разбор страницы выдачи (`/lk/practice/claims?…`).
     public static func parse(html: String) throws -> VSRFSearchResults {
         let doc = try VSRFCardParser.document(html)
-        let total = Self.foundCount(doc) ?? -1
-        let results = VSRFDOM.extractProductions(doc)
-        return VSRFSearchResults(total: total >= 0 ? total : results.count, results: results)
+        guard VSRFDOM.isSearchResultsPage(doc) else {
+            throw SudrfError.parsing("Неизвестный формат выдачи ВС РФ")
+        }
+        let results = VSRFDOM.extractSearchProductions(doc)
+        guard results.allSatisfy(Self.isLinkable) else {
+            throw SudrfError.parsing("Строка выдачи ВС РФ не содержит ссылку, номер или ключ привязки")
+        }
+        guard let total = Self.foundCount(doc) else {
+            guard !results.isEmpty else {
+                throw SudrfError.parsing("В выдаче ВС РФ нет явного счётчика пустого результата")
+            }
+            return VSRFSearchResults(total: results.count, results: results)
+        }
+        guard total >= results.count,
+              (total == 0) == results.isEmpty else {
+            throw SudrfError.parsing("Счётчик выдачи ВС РФ не согласуется со строками результатов")
+        }
+        return VSRFSearchResults(total: total, results: results)
     }
     private static func foundCount(_ doc: Document) -> Int? {
-        guard let t = (try? doc.select(".count-label").first()) ?? nil,
-              let s = try? t.text() else { return nil }
-        guard let r = s.range(of: #"(\d+)"#, options: .regularExpression) else { return nil }
-        return Int(s[r])
+        let legacy = VSRFDOM.firstEl(doc, ".count-label").flatMap { try? $0.text() }
+        let current = VSRFDOM.firstEl(doc, "[class*=SearchPage_resultsBlock__]")
+            .flatMap { try? $0.text() }
+        for text in [legacy, current].compactMap({ $0 }) {
+            guard let range = text.range(of: #"Найдено\s*[:：]?\s*\d+"#,
+                                         options: [.regularExpression, .caseInsensitive]) else { continue }
+            return Int(text[range].filter(\.isNumber))
+        }
+        return nil
+    }
+
+    private static func isLinkable(_ result: VSRFProduction) -> Bool {
+        guard result.cardID?.isEmpty == false, result.number?.isEmpty == false else { return false }
+        if JudicialUIDObservation.validity(of: result.uid) == .valid { return true }
+        return [result.firstInstance.court, result.firstInstance.caseNumber,
+                result.applicant ?? result.claimants.first]
+            .allSatisfy { $0?.trimmed.isEmpty == false }
     }
 }
 
 // MARK: - Общий извлекатель производств (карточка + выдача)
 
 enum VSRFDOM {
+
+    static func isSearchResultsPage(_ doc: Document) -> Bool {
+        if firstEl(doc, "[class*=SearchPage_resultsBlock__]") != nil { return true }
+        return firstEl(doc, "#filter-form") != nil
+            && (firstEl(doc, "#vs-search-items") != nil || firstEl(doc, ".count-label") != nil)
+    }
+
+    static func extractSearchProductions(_ doc: Document) -> [VSRFProduction] {
+        let currentItems = (try? doc.select("[class*=CaseStyle_case_item__]").array()) ?? []
+        if !currentItems.isEmpty { return currentItems.map(buildCurrentSearchItem) }
+        return extractProductions(doc)
+    }
+
+    private static func buildCurrentSearchItem(_ item: Element) -> VSRFProduction {
+        let link = searchCardLink(of: item)
+        var meta: [String: String] = [:]
+        var firstInstanceCell: Element?
+        for row in (try? item.select("[class*=RowElement_container__]").array()) ?? [] {
+            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]"),
+                  let value = firstEl(row, "[class*=CaseStyle_case_value__]") else { continue }
+            let key = clean((try? label.text()) ?? "").lowercased()
+            let raw = clean((try? value.text()) ?? "")
+            if key.hasPrefix("суд 1-й инстанции") { firstInstanceCell = value }
+            if !raw.isEmpty { meta[key] = raw }
+        }
+
+        var claimants: [String] = []
+        var respondents: [String] = []
+        var applicant: String?
+        for row in (try? item.select("[class*=CaseStyle_case_personalList_item__]").array()) ?? [] {
+            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]") else { continue }
+            let key = clean((try? label.text()) ?? "").lowercased()
+            let value = firstEl(row, "[class*=CaseStyle_case_personalListName__]") ?? row
+            if key.hasPrefix("в интересах") { applicant = names(in: value).first }
+            else if key.hasPrefix("заявител") {
+                claimants = names(in: value)
+                if applicant == nil { applicant = claimants.first }
+            }
+            else if key.hasPrefix("ответчик") { respondents = names(in: value) }
+        }
+
+        var rapporteur: String?
+        var events: [VSRFEvent] = []
+        for row in (try? item.select("[class*=FinalActRow_container__]").array()) ?? [] {
+            if let reporter = firstEl(row, ".vs-reporter-name"),
+               let text = try? reporter.text(), !clean(text).isEmpty {
+                rapporteur = clean(text)
+            }
+            let date = firstEl(row, "[class*=FinalActRow_date__]")
+                .flatMap { (try? $0.text()).map(clean) }
+                .flatMap { firstDate(in: $0) }
+            var text = clean(stripRapporteur(clean((try? row.text()) ?? "")))
+            if let date { text = clean(text.replacingOccurrences(of: date, with: "")) }
+            if !text.isEmpty { events.append(VSRFEvent(date: date, text: text)) }
+        }
+
+        let uid = meta["уникальный идентификатор дела:"]
+        let kind = kind(header: item, uid: uid, cardID: link?.id)
+        return VSRFProduction(
+            cardID: link?.id,
+            cardSection: link?.section ?? (kind == .complaint ? .appeals : .cases),
+            kind: kind,
+            number: link?.number,
+            incomingDate: meta["дата поступления:"].flatMap { firstDate(in: $0) } ?? meta["дата поступления:"],
+            procedureType: meta["вид судопроизводства:"],
+            instanceType: meta["инстанция:"],
+            uid: uid,
+            subject: meta["по иску:"],
+            firstInstance: parseFirstInstance(firstInstanceCell),
+            applicant: applicant ?? claimants.first,
+            claimants: claimants,
+            respondents: respondents,
+            rapporteur: rapporteur,
+            events: events)
+    }
+
+    private static func searchCardLink(of item: Element) -> (id: String, section: VSRFCardSection?, number: String?)? {
+        guard let title = firstEl(item, "[class*=CaseStyle_case_link__]"),
+              let href = try? title.attr("href"),
+              let match = href.firstMatch(of: /\/lk\/practice\/(cases|appeals|claims)\/([0-9-]+)/) else { return nil }
+        return (String(match.2), VSRFCardSection(rawValue: String(match.1)),
+                clean((try? title.text()) ?? "").nonEmpty)
+    }
 
     /// Сегментирует документ по заголовкам `vs-items-separate` в порядке документа;
     /// следующие `vs-item-detail` принадлежат текущему производству.
@@ -412,14 +518,14 @@ enum VSRFDOM {
 
     // MARK: заголовок
 
-    /// id + раздел карточки. В выдаче — из ссылки `/lk/practice/(cases|appeals)/{id}`
+    /// id + раздел карточки. В выдаче — из ссылки `/lk/practice/(cases|appeals|claims)/{id}`
     /// (у ссылки жалобы возможен хвост `#…`, он отбрасывается). На карточке ссылок
     /// нет — id берётся из ближайшего предка `[data-subscribe-claim-id]`, раздел
     /// возвращается nil (выводится из типа выше).
     private static func cardLink(of header: Element) -> (id: String, section: VSRFCardSection?)? {
         if let a = (try? header.select("a[href*='/lk/practice/']").first()) ?? nil,
            let href = try? a.attr("href"),
-           let match = href.firstMatch(of: /\/lk\/practice\/(cases|appeals)\/([0-9-]+)/) {
+           let match = href.firstMatch(of: /\/lk\/practice\/(cases|appeals|claims)\/([0-9-]+)/) {
             return (String(match.2), VSRFCardSection(rawValue: String(match.1)))
         }
         var p: Element? = header.parent()
@@ -472,7 +578,7 @@ enum VSRFDOM {
         court = court?.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).nonEmpty
         return VSRFFirstInstance(
             court: court,
-            caseNumber: text.firstMatch(of: /Номер дела 1-ой инстанции:\s*([0-9А-Яа-яЁё\/-]+)/)
+            caseNumber: text.firstMatch(of: /Номер дела 1-(?:ой|й) инстанции:\s*([0-9А-Яа-яЁё\/-]+)/)
                 .flatMap { clean(String($0.1)).nonEmpty },
             judge: text.firstMatch(of: /Судья:\s*(.+?)\s*(?:Номер дела|$)/)
                 .flatMap { clean(String($0.1)).nonEmpty },

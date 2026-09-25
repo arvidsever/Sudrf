@@ -71,7 +71,7 @@ private final class VSRFThrottleStub: URLProtocol {
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
                                        headerFields: ["Content-Type": "text/html; charset=utf-8"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("<span class='count-label'>0</span>".utf8))
+        client?.urlProtocol(self, didLoad: Data("<div class=\"SearchPage_resultsBlock__stub\"><span>Найдено: 0</span><div>По Вашему запросу информация не найдена</div></div>".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

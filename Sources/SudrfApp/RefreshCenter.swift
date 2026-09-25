@@ -1050,6 +1050,26 @@ final class RefreshCenter: ObservableObject {
                 try persistAttempt(key, attempt)
                 return failure(key, "Суд вернул неполный ответ без пригодного движения дела.")
             }
+            // A verified empty higher-court listing is a complete check when
+            // there is no previously saved production from that court.  A
+            // contradiction with saved history remains partial, so its cache
+            // and last-success timestamp are protected.
+            if (movement.incompleteHigherCourtDomains ?? []).isEmpty,
+               let zeroDomains = movement.honestZeroDomains, !zeroDomains.isEmpty,
+               zeroDomains.allSatisfy({ SudrfHost.moduleHost($0) == "vsrf.ru" }),
+               let rec = store.record(forKey: key),
+               zeroDomains.allSatisfy({ domain in
+                   !(rec.movement?.instances.contains {
+                       SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(domain)
+                           && $0.captchaFormURL == nil && $0.transientError != true
+                   } ?? false)
+               }) {
+                var completeAttempt = attempt
+                completeAttempt.kind = .usableSnapshot
+                completeAttempt.provenance.affectedSources = nil
+                return try applyMovement(key: key, ctx: ctx, mv: movement,
+                                         attempt: completeAttempt, isComplete: true)
+            }
             let baseCaptchaURL = movement.instances.compactMap(\.captchaFormURL).first {
                 SudrfHost.moduleHost($0.host?.lowercased() ?? "")
                     == SudrfHost.moduleHost(ctx.searchDomain)

@@ -2662,12 +2662,17 @@ final class RefreshCenterTests: XCTestCase {
         let key = store.all()[0].key
         let rec = try XCTUnwrap(store.record(forKey: key))
         let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
-        rec.movement = successMV
-        rec.snapshot = MovementDerivation.snapshot(from: successMV, context: ctx)
+        var cached = successMV!
+        cached.instances.append(CaseInstance(
+            level: .cassation, court: "Верховный Суд Российской Федерации",
+            caseNumber: "3-КФ26-187-К3", judge: nil, domain: "vsrf.ru",
+            foundByUID: true, result: "Отказано в передаче", sessions: []))
+        rec.movement = cached
+        rec.snapshot = MovementDerivation.snapshot(from: cached, context: ctx)
         rec.movementFetchedAt = savedFetchedAt
 
         var movement = successMV!
-        movement.honestZeroDomains = ["vs--komi.sudrf.ru"]
+        movement.honestZeroDomains = ["vsrf.ru"]
         let center = RefreshCenter(store: store, client: SudrfClient(),
                                    serviceBuilder: { _ in FixedMovement(movement) })
 
@@ -2679,8 +2684,31 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(rec.movementFetchedAt, savedFetchedAt)
         XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .partial)
         XCTAssertEqual(rec.sourceRefreshAttempt?.provenance.affectedSources,
-                       ["vs--komi.sudrf.ru"])
+                       ["vsrf.ru"])
+        XCTAssertTrue(rec.movement?.instances.contains {
+            $0.domain == "vsrf.ru" && $0.caseNumber == "3-КФ26-187-К3"
+        } == true)
         XCTAssertNil(center.lastErrors[key])
+    }
+
+    func testVerifiedEmptySubsourceWithoutCachedCardAdvancesLastSuccess() async throws {
+        let key = store.all()[0].key
+        let rec = try XCTUnwrap(store.record(forKey: key))
+        let savedFetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        rec.movement = successMV
+        rec.movementFetchedAt = savedFetchedAt
+
+        var movement = successMV!
+        movement.honestZeroDomains = ["vsrf.ru"]
+        let center = RefreshCenter(store: store, client: SudrfClient(),
+                                   serviceBuilder: { _ in FixedMovement(movement) })
+
+        let execution = await center.refresh(key: key)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+        XCTAssertEqual(rec.sourceRefreshAttempt?.kind, .usableSnapshot)
+        XCTAssertNil(rec.sourceRefreshAttempt?.provenance.affectedSources)
+        XCTAssertNotEqual(rec.movementFetchedAt, savedFetchedAt)
     }
 
     func testPartialWarningCountsOnlyIncompleteSources() async throws {

@@ -94,6 +94,26 @@ final class VSRFMovementTests: XCTestCase {
         XCTAssertFalse(mv.instances.contains { $0.level == .vsCassation })
     }
 
+    func testFailedUIDSearchKeepsSuccessfulCaseNumberResultAsPartial() async throws {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
+                                      caseNumber: "2-1649/2022")
+        let complaint = VSRFProduction(
+            cardID: "21-33970283", kind: .complaint, number: "3-КФ22-336-К3",
+            incomingDate: "10.12.2022", firstInstance: first,
+            applicant: "Воробьёв Виктор Викторович")
+        let mock = MockVSRF(
+            uidResults: .init(total: 0, results: []),
+            numberResults: .init(total: 1, results: [complaint]),
+            card: .init(productions: []), failUID: true)
+
+        let result = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: uid, firstInstanceCourt: "Сыктывкарский городской суд",
+            firstInstanceCaseNumber: "2-1649/2022", partySurnames: ["ВОРОБЬЕВ"])
+
+        XCTAssertTrue(result.incomplete)
+        XCTAssertEqual(result.instances.map(\.caseNumber), ["3-КФ22-336-К3"])
+    }
+
     func testIntakeIsAssignedOnlyToNearestFollowingCaseRound() async {
         let first = VSRFFirstInstance(court: "Сыктывкарский городской суд", caseNumber: "2-1649/2022")
         let complaintOne = VSRFProduction(cardID: "c1", kind: .complaint, number: "3-КФ-1",
@@ -145,9 +165,13 @@ private struct MockVSRF: VSRFProviding {
     let uidResults: VSRFSearchResults
     let numberResults: VSRFSearchResults
     let card: VSRFCard
+    var failUID = false
     func search(uniqueNumber: String?, oldCaseNumber: String?,
                 keywords: String?) async throws -> VSRFSearchResults {
-        if uniqueNumber != nil { return uidResults }
+        if uniqueNumber != nil {
+            if failUID { throw SudrfError.parsing("неизвестный формат выдачи ВС РФ") }
+            return uidResults
+        }
         if oldCaseNumber != nil { return numberResults }
         return VSRFSearchResults(total: 0, results: [])
     }

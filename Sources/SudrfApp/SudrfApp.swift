@@ -32,7 +32,11 @@ struct SudrfApp: App {
 
     var body: some Scene {
         WindowGroup("СудРФ — поиск дел ОСЮ") {
+            // #329: единая форма кнопок — капсулы. Модификатор наследуется иерархией
+            // (Button, Menu, Picker .menu/.segmented); кнопки из одной иконки
+            // локально переопределяют его на .circle.
             RootView()
+                .buttonBorderShape(.capsule)
         }
         // Без тайтлбара: светофор ложится на верх стеклянного сайдбара,
         // как в макете (FilterPane оставляет под него отступ сверху).
@@ -52,11 +56,13 @@ struct SudrfApp: App {
         WindowGroup("Текст акта", for: ActWindowPayload.self) { $payload in
             if let payload {
                 ActWindowView(payload: payload)
+                    .buttonBorderShape(.capsule)
             }
         }
 
         Settings {
             SettingsHub()
+                .buttonBorderShape(.capsule)
         }
     }
 }

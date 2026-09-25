@@ -61,6 +61,8 @@ struct CaptchaAssistSheet: View {
             await loadMagistrateChallenge()
         }
         .onDisappear { nativeOperationGeneration &+= 1 }
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 
     private var header: some View {

@@ -96,9 +96,13 @@ struct MyCasesView: View {
                 showingDirectCaseLink = true
             } label: {
                 Label("Добавить дело", systemImage: "plus")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    // Высота кнопки считается от шрифта: при 11,5 pt она
+                    // проседает, поэтому держим её вровень с соседними 28 pt.
+                    .frame(minHeight: 21)
             }
             .buttonStyle(.glassProminent)
-            .controlSize(.small)
+            .controlSize(.regular)
             .help("Добавить дело по прямой ссылке на карточку суда")
             refreshButton
             sortMenu
@@ -123,7 +127,7 @@ struct MyCasesView: View {
                     .opacity(running ? 0 : 1)
                 if running { ProgressView().controlSize(.small) }
             }
-            .frame(width: 26, height: 26)
+            .frame(width: 28, height: 28)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -281,9 +285,9 @@ struct MyCasesView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 10).frame(height: 27)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.06)))
+            .padding(.horizontal, 12).frame(height: 27)
+            .background(Capsule().fill(Color.primary.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06)))
             .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 2)
 
             // Подборки — одновременно drop-цели: строку таблицы можно перетащить
@@ -494,7 +498,7 @@ struct MyCasesView: View {
             Image(systemName: "arrow.up.arrow.down").font(.system(size: 11.5))
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .frame(width: 26, height: 26)
+        .frame(width: 28, height: 28)
         .glassEffect(.regular, in: .capsule)
         .help("Сортировка: \(router.sortBy.label)")
     }

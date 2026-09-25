@@ -173,6 +173,8 @@ struct ActSummarySheet: View {
         }
         .frame(minWidth: 680, minHeight: 620)
         .task { router.loadSelectedActSummary() }
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 }
 

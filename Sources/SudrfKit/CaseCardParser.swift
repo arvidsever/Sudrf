@@ -60,7 +60,8 @@ public enum CaseCardParser {
 
         if isVintage(doc) {
             return try parseVintage(doc, html: html, rawText: rawText,
-                                    previousRegistration: previousRegistration)
+                                    previousRegistration: previousRegistration,
+                                    cardURL: cardURL)
         }
 
         let complaintMetadata = complaintMetadata(in: doc)
@@ -134,6 +135,8 @@ public enum CaseCardParser {
                         judge: judge,
                         result: result,
                         uid: uid,
+                        uidListingURL: uidListingURL(in: doc, cardURL: cardURL,
+                                                     judicialUID: uid),
                         caseNumber: caseNumber,
                         category: category,
                         receiptDate: receipt,
@@ -147,6 +150,30 @@ public enum CaseCardParser {
                         executionDocuments: executionDocuments,
                         reviewProcedure: reviewProcedure(meta: meta, sessions: sessions),
                         processKind: process.kind, processKindConflict: process.conflict)
+    }
+
+    private static func uidListingURL(in doc: Document, cardURL: URL?,
+                                      judicialUID: String?) -> URL? {
+        guard let cardURL, let host = cardURL.host,
+              let judicialUID = judicialUID.map(JudicialUIDObservation.normalize),
+              !judicialUID.isEmpty else { return nil }
+        let links = (try? doc.select("a[href*=name_op=r_juid]").array()) ?? []
+        for anchor in links {
+            guard let href = try? anchor.attr("href"),
+                  let url = URL(string: href, relativeTo: cardURL)?.absoluteURL,
+                  SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(host),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.user == nil, url.password == nil,
+                  url.path.caseInsensitiveCompare("/modules.php") == .orderedSame,
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let items = components.queryItems,
+                  items.first(where: { $0.name == "name" })?.value == "sud_delo",
+                  items.first(where: { $0.name == "name_op" })?.value == "r_juid",
+                  let listedUID = items.first(where: { $0.name == "judicial_uid" })?.value,
+                  JudicialUIDObservation.normalize(listedUID) == judicialUID else { continue }
+            return url
+        }
+        return nil
     }
 
     /// Только точные реквизиты собственной вкладки. Текст актов, статьи и
@@ -248,7 +275,8 @@ public enum CaseCardParser {
     }
 
     private static func parseVintage(_ doc: Document, html _: String, rawText: String,
-                                     previousRegistration: PreviousRegistrationReference?) throws -> CaseCard {
+                                     previousRegistration: PreviousRegistrationReference?,
+                                     cardURL: URL?) throws -> CaseCard {
         // Метаданные: вкладка «Дело». УИД может лежать внутри <a class="dashed">.
         var meta: [String: String] = [:]
         if let cont = vintageTab(doc, "Case") {
@@ -285,6 +313,8 @@ public enum CaseCardParser {
                             ?? meta["решение"]
                             ?? vintageResult(doc),
                         uid: meta["уникальный идентификатор дела"],
+                        uidListingURL: uidListingURL(in: doc, cardURL: cardURL,
+                            judicialUID: meta["уникальный идентификатор дела"]),
                         caseNumber: caseNumber,
                         category: meta["категория"] ?? meta["категория дела"],
                         receiptDate: meta["дата поступления"],

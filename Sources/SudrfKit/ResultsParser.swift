@@ -38,27 +38,36 @@ public enum ResultsParser {
 
             var cells: [String] = []
             var actTextLinks: [CaseActLink] = []
+            var courtTitle: String?
+            var leadingCourtColumn = false
             if let row = closestRow(of: a) {
-                if let tds = try? row.select("td") {
-                    cells = tds.array()
+                if let cellsInRow = try? row.select("td, th") {
+                    cells = cellsInRow.array()
                         .compactMap { try? $0.text() }
                         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                }
+                leadingCourtColumn = hasLeadingCourtColumn(in: row)
+                if leadingCourtColumn {
+                    courtTitle = cell(cells, at: 0)
                 }
                 actTextLinks = parseActTextLinks(in: row, domain: court.domain)
             }
 
+            let columnOffset = leadingCourtColumn ? 1 : 0
+
             results.append(CaseSearchResult(
                 caseNumber: number,
-                receiptDate: cell(cells, at: 1),
-                essence: cell(cells, at: 2),
-                judge: cell(cells, at: 3),
-                decisionDate: cell(cells, at: 4),
-                result: cell(cells, at: 5),
-                legalForceDate: cell(cells, at: 6),
+                receiptDate: cell(cells, at: 1 + columnOffset),
+                essence: cell(cells, at: 2 + columnOffset),
+                judge: cell(cells, at: 3 + columnOffset),
+                decisionDate: cell(cells, at: 4 + columnOffset),
+                result: cell(cells, at: 5 + columnOffset),
+                legalForceDate: cell(cells, at: 6 + columnOffset),
                 caseID: caseID,
                 caseUID: caseUID,
                 cardURL: cardURL,
-                actTextLinks: actTextLinks
+                actTextLinks: actTextLinks,
+                courtTitle: courtTitle
             ))
         }
         return dedupe(results)
@@ -129,6 +138,28 @@ public enum ResultsParser {
         el.parents().array().first { $0.tagName() == "tr" }
     }
 
+    /// UID results may prepend a court column. Detect it from the table header
+    /// so ordinary case searches retain their original positional mapping.
+    private static func hasLeadingCourtColumn(in row: Element) -> Bool {
+        guard let table = row.parents().array().first(where: { $0.tagName() == "table" }) else {
+            return false
+        }
+        let headerRows = (try? table.select("thead tr").array()) ?? []
+        let rows = headerRows.isEmpty
+            ? ((try? table.select("tr").array()) ?? [])
+            : headerRows
+        guard let header = rows.first else { return false }
+        let headerCells = (try? header.select("th, td").array()) ?? []
+        guard let firstCell = headerCells.first,
+              let rawTitle = try? firstCell.text() else { return false }
+
+        let title = rawTitle
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: ":", with: "")
+        return ["суд", "название суда", "наименование суда"].contains(title)
+    }
+
     private static func absoluteURL(_ href: String, domain: String) -> URL? {
         if href.hasPrefix("http") { return URL(string: href) }
         let path = href.hasPrefix("/") ? href : "/\(href)"
@@ -169,7 +200,7 @@ public enum ResultsParser {
 
     private static func richness(_ row: CaseSearchResult) -> Int {
         [row.caseID, row.caseUID, row.receiptDate, row.essence, row.judge,
-         row.decisionDate, row.result, row.legalForceDate]
+         row.decisionDate, row.result, row.legalForceDate, row.courtTitle]
             .compactMap { $0 }.filter { !$0.isEmpty }.count
             + (row.cardURL == nil ? 0 : 1)
     }

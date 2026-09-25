@@ -262,6 +262,9 @@ public protocol CaseProviding: Sendable {
     func searchComplete(court: Court, cartoteka: Cartoteka,
                         field: SearchField, value: String,
                         srvNum: Int) async throws -> [CaseSearchResult]
+    /// The court-spanning listing linked from a card's judicial UID.
+    func uidRegistrations(url: URL, court: Court, cartoteka: Cartoteka,
+                          judicialUID: String) async throws -> [CaseSearchResult]?
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard
     /// Карточка по готовой ссылке из выдачи — для строк без case_id/case_uid
@@ -276,6 +279,11 @@ public extension CaseProviding {
                         field: SearchField, value: String,
                         srvNum: Int) async throws -> [CaseSearchResult] {
         throw IncompleteCaseSearchError()
+    }
+
+    func uidRegistrations(url: URL, court: Court, cartoteka: Cartoteka,
+                          judicialUID: String) async throws -> [CaseSearchResult]? {
+        nil
     }
 
     func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
@@ -391,6 +399,7 @@ public actor MovementService: MovementProviding {
     private struct LoadedRegistration: Sendable {
         let row: CaseSearchResult
         let card: CaseCard
+        let court: Court
         let cartoteka: Cartoteka
         let foundByUID: Bool
         let sourceURL: URL?
@@ -418,6 +427,9 @@ public actor MovementService: MovementProviding {
     /// Клиент портала судов Москвы (mos-gorsud.ru). nil — московская ветка
     /// не обслуживается (движение по делу Москвы не собрать).
     let mosgorsud: (any MosGorSudProviding)?
+    /// The portal directory is consulted only when a UID listing publishes a
+    /// card on another court's host. Tests may supply a fixed directory view.
+    let transferCourts: @Sendable (String) async throws -> [DistrictCourt]
 
     public init(client: any CaseProviding = SudrfClient(), higherCourtDomains: [String] = [],
                 higherCourtTargets: [MovementSearchTarget]? = nil,
@@ -425,7 +437,8 @@ public actor MovementService: MovementProviding {
                 baseInstanceLevel: CaseInstance.Level = .first,
                 vsrf: (any VSRFProviding)? = nil,
                 mosgorsud: (any MosGorSudProviding)? = nil,
-                judicialUID: String? = nil, branch: CourtBranch = .general) {
+                judicialUID: String? = nil, branch: CourtBranch = .general,
+                transferCourts: (@Sendable (String) async throws -> [DistrictCourt])? = nil) {
         self.client = client
         self.higherCourtDomains = higherCourtDomains
         self.higherCourtTargets = higherCourtTargets
@@ -437,6 +450,9 @@ public actor MovementService: MovementProviding {
         self.judicialUID = normalizedUID.flatMap { $0.isEmpty || $0 == "—" ? nil : $0 }
         self.vsrf = vsrf
         self.mosgorsud = mosgorsud
+        self.transferCourts = transferCourts ?? { subjectCode in
+            try await DistrictCourtResolver().allCourts(forSubjectCode: subjectCode)
+        }
     }
 
     /// Supplementary listing requests cross the typed source boundary before
@@ -633,6 +649,7 @@ public actor MovementService: MovementProviding {
             }) else { return }
             honestZeroDomains.append(domain)
         }
+        var verifiedTransferLinks: [(link: SudrfCaseCardLink, number: String)] = []
 
         // 1b. Тот же суд: другие регистрации под тем же УИД. После отмены
         // вышестоящим судом и возврата на новое рассмотрение в том же суде
@@ -642,17 +659,38 @@ public actor MovementService: MovementProviding {
         if !usedSavedUIDFallback,
            let uid, court.level != .magistrate, effectiveBaseLevel != .material {
             var registrations: [LoadedRegistration] = [LoadedRegistration(
-                row: base, card: baseCard, cartoteka: cartoteka, foundByUID: false,
+                row: base, card: baseCard, court: court, cartoteka: cartoteka, foundByUID: false,
                 sourceURL: Self.sourceURL(for: base, court: court, cartoteka: cartoteka))]
             var seenSourceKeys = Self.cardSourceKeys(
                 row: base, court: court, cartoteka: cartoteka)
             var seenPredecessorURLs = Set<String>()
             var registrationQueriesWereEmpty = true
+            let uidListing: [CaseSearchResult]?
+            if let listingURL = baseCard.uidListingURL {
+              do {
+                uidListing = try await client.uidRegistrations(
+                    url: listingURL, court: court, cartoteka: cartoteka,
+                    judicialUID: uid)
+                if let uidListing,
+                   uidListing.isEmpty || uidListing.count > Self.maxRegistrationCards {
+                    markHigherCourtIncomplete(court.domain)
+                }
+              } catch is CancellationError {
+                  throw CancellationError()
+              } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                  throw error
+              } catch {
+                  markHigherCourtIncomplete(court.domain)
+                  uidListing = nil
+              }
+            } else {
+                uidListing = nil
+            }
 
             @discardableResult
             func appendRegistration(_ loaded: LoadedRegistration) -> Bool {
                 let number = loaded.card.caseNumber ?? loaded.row.caseNumber
-                guard !Self.containsInstance(instances, domain: court.domain,
+                guard !Self.containsInstance(instances, domain: loaded.court.domain,
                                               caseNumber: number,
                                               usingCanonicalHost: false) else { return false }
 
@@ -668,7 +706,7 @@ public actor MovementService: MovementProviding {
 
                 var linkedActIDs: [String] = []
                 for (index, cardAct) in cardActs.enumerated() {
-                    let baseID = "act_\(court.domain)#\(number)"
+                    let baseID = "act_\(loaded.court.domain)#\(number)"
                     var actID = index == 0 ? baseID : "\(baseID)#\(index + 1)"
                     var suffix = 2
                     while acts.contains(where: { $0.id == actID }) {
@@ -689,19 +727,19 @@ public actor MovementService: MovementProviding {
 
                 instances.append(CaseInstance(
                     level: effectiveBaseLevel,
-                    court: court.title,
+                    court: loaded.court.title,
                     caseNumber: number,
-                    judge: loaded.row.judge ?? loaded.card.judge,
-                    domain: court.domain,
+                    judge: loaded.card.judge ?? loaded.row.judge,
+                    domain: loaded.court.domain,
                     foundByUID: loaded.foundByUID,
-                    result: loaded.row.result ?? loaded.card.result,
+                    result: loaded.card.result ?? loaded.row.result,
                     sessions: loaded.card.sessions,
                     actID: linkedActIDs.first,
                     actIDs: linkedActIDs.isEmpty ? nil : linkedActIDs,
                     note: "Предыдущая регистрация",
                     sourceURL: loaded.sourceURL,
                     previousRegistration: loaded.card.previousRegistration,
-                    sourceEvidence: .init(card: loaded.card, cartotekaID: loaded.cartoteka.id, courtLevel: court.level, branch: branch)))
+                    sourceEvidence: .init(card: loaded.card, cartotekaID: loaded.cartoteka.id, courtLevel: loaded.court.level, branch: branch)))
                 registrations.append(loaded)
                 return true
             }
@@ -709,8 +747,26 @@ public actor MovementService: MovementProviding {
             for sameCart in Self.sameCourtCartotekas(court: court, cartoteka: cartoteka) {
                 let rows: [CaseSearchResult]
                 do {
-                    rows = try await discoveryRows(court: court, cartoteka: sameCart,
-                                                   field: .uid, value: uid)
+                    if sameCart.id == cartoteka.id, let uidListing {
+                        rows = uidListing
+                    } else {
+                        let discovered = try await discoveryRows(
+                            court: court, cartoteka: sameCart, field: .uid, value: uid)
+                        // A cross-court registration needs the complete listing;
+                        // a first page alone cannot establish the latest round.
+                        if discovered.contains(where: { row in
+                            row.courtTitle != nil && row.cardURL.map {
+                                SudrfHost.moduleHost($0.host ?? "")
+                                    != SudrfHost.moduleHost(court.domain)
+                            } == true
+                        }) {
+                            rows = try await client.searchComplete(
+                                court: court, cartoteka: sameCart, field: .uid,
+                                value: uid, srvNum: 1)
+                        } else {
+                            rows = discovered
+                        }
+                    }
                     if !rows.isEmpty { registrationQueriesWereEmpty = false }
                 } catch is CancellationError {
                     throw CancellationError()
@@ -726,19 +782,45 @@ public actor MovementService: MovementProviding {
                     guard Self.hasCardAccess(row) else { continue }
                     // A display alias in the base row is the same registration,
                     // not a new historical round.
-                    if Self.sameDisplayedCaseNumber(row.caseNumber, base.caseNumber)
-                        || Self.containsInstance(instances, domain: court.domain,
+                    let rowCourt: Court
+                    do {
+                        rowCourt = try await courtForUIDRegistration(
+                            row, searchCourt: court, cartoteka: sameCart, judicialUID: uid)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                        throw error
+                    } catch {
+                        markHigherCourtIncomplete(court.domain)
+                        continue
+                    }
+                    if (Self.sameDisplayedCaseNumber(row.caseNumber, base.caseNumber)
+                        && SudrfHost.moduleHost(rowCourt.domain) == SudrfHost.moduleHost(court.domain))
+                        || Self.containsInstance(instances, domain: rowCourt.domain,
                                                  caseNumber: row.caseNumber,
                                                  usingCanonicalHost: false) {
                         continue
                     }
-                    let rowKeys = Self.cardSourceKeys(row: row, court: court,
+                    let rowKeys = Self.cardSourceKeys(row: row, court: rowCourt,
                                                       cartoteka: sameCart)
                     guard seenSourceKeys.isDisjoint(with: rowKeys) else { continue }
 
                     let card: CaseCard
+                    var confirmedURL = Self.sourceURL(for: row, court: rowCourt,
+                                                      cartoteka: sameCart)
                     do {
-                        card = try await fetchCard(row: row, court: court, cartoteka: sameCart)
+                        if SudrfHost.moduleHost(rowCourt.domain) != SudrfHost.moduleHost(court.domain),
+                           let url = row.cardURL {
+                            let response = try await client.fetchCardWithResponseURL(url: url)
+                            guard let effective = try? SudrfCaseCardLink(url: response.effectiveURL),
+                                  effective.moduleHost == SudrfHost.moduleHost(rowCourt.domain) else {
+                                throw SudrfError.parsing("карточка перенаправлена в другой суд")
+                            }
+                            card = response.card
+                            confirmedURL = effective.sanitizedURL
+                        } else {
+                            card = try await fetchCard(row: row, court: rowCourt, cartoteka: sameCart)
+                        }
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
@@ -751,12 +833,21 @@ public actor MovementService: MovementProviding {
                     // card which confirms the searched judicial UID is a
                     // registration round; a different or missing UID is ignored.
                     guard Self.normalizedJudicialUID(card.uid)
-                            == Self.normalizedJudicialUID(uid) else { continue }
+                            == Self.normalizedJudicialUID(uid),
+                          Self.sameDisplayedCaseNumber(card.caseNumber ?? "", row.caseNumber)
+                    else {
+                        markHigherCourtIncomplete(court.domain)
+                        continue
+                    }
 
                     seenSourceKeys.formUnion(rowKeys)
+                    if SudrfHost.moduleHost(rowCourt.domain) != SudrfHost.moduleHost(court.domain),
+                       let url = confirmedURL, let link = try? SudrfCaseCardLink(url: url) {
+                        verifiedTransferLinks.append((link, card.caseNumber ?? row.caseNumber))
+                    }
                     _ = appendRegistration(LoadedRegistration(
-                        row: row, card: card, cartoteka: sameCart, foundByUID: true,
-                        sourceURL: Self.sourceURL(for: row, court: court, cartoteka: sameCart)))
+                        row: row, card: card, court: rowCourt, cartoteka: sameCart, foundByUID: true,
+                        sourceURL: confirmedURL))
                 }
             }
             if registrationQueriesWereEmpty { markHonestZero(court.domain) }
@@ -837,7 +928,7 @@ public actor MovementService: MovementProviding {
                 guard seenSourceKeys.isDisjoint(with: previousKeys) else { continue }
                 seenSourceKeys.formUnion(previousKeys)
                 if appendRegistration(LoadedRegistration(
-                    row: previousRow, card: previousCard, cartoteka: previousCart,
+                    row: previousRow, card: previousCard, court: court, cartoteka: previousCart,
                     foundByUID: false, sourceURL: reference.url)) {
                     queue.append((index: registrations.count - 1, depth: item.depth + 1))
                 }
@@ -1144,6 +1235,15 @@ public actor MovementService: MovementProviding {
             // Ссылка сохраняется для provenance, но подтверждённая
             // предварительная карточка не является отдельным кругом.
             if isPreliminaryAlias(kc) { continue }
+            // A prior buggy refresh may have stored the very same source-native
+            // card under the searching court's host. Only exact identifiers
+            // of a freshly verified official cross-host row can retire it.
+            if let stale = kc.sourceURL.flatMap({ try? SudrfCaseCardLink(url: $0) }),
+               verifiedTransferLinks.contains(where: {
+                   Self.sameTransferredCard(stale, staleNumber: kc.caseNumber,
+                                            confirmed: $0.link, confirmedNumber: $0.number)
+                       && stale.moduleHost != $0.link.moduleHost
+               }) { continue }
             // A14: дедуп по каноническому moduleHost — иначе `expandedHigherDomains`
             // (dash+dot) приведёт к дублю инстанции при доборе.
             if let n = kc.caseNumber,
@@ -1213,12 +1313,52 @@ public actor MovementService: MovementProviding {
             }
         }
 
+        if !verifiedTransferLinks.isEmpty {
+            for index in instances.indices.reversed() {
+                guard let staleURL = instances[index].sourceURL,
+                      let stale = try? SudrfCaseCardLink(url: staleURL),
+                      let confirmed = verifiedTransferLinks.first(where: {
+                          Self.sameTransferredCard(stale,
+                              staleNumber: instances[index].caseNumber,
+                              confirmed: $0.link, confirmedNumber: $0.number)
+                              && stale.moduleHost != $0.link.moduleHost
+                      }),
+                      let replacementIndex = instances.firstIndex(where: {
+                          $0.sourceURL.flatMap { try? SudrfCaseCardLink(url: $0) }?.moduleHost
+                              == confirmed.link.moduleHost
+                              && Self.sameDisplayedCaseNumber($0.caseNumber, confirmed.number)
+                      }), replacementIndex != index else { continue }
+                let staleInstance = instances.remove(at: index)
+                let adjusted = replacementIndex > index ? replacementIndex - 1 : replacementIndex
+                // Keep locally cached act text even when the correct host no
+                // longer publishes that document in the current response.
+                for actID in staleInstance.linkedActIDs
+                    where !instances[adjusted].linkedActIDs.contains(actID) {
+                    if let staleBody = actBodies[actID],
+                       instances[adjusted].linkedActIDs.contains(where: {
+                           actBodies[$0] == staleBody
+                       }) {
+                        acts.removeAll { $0.id == actID }
+                        actBodies.removeValue(forKey: actID)
+                        continue
+                    }
+                    var ids = instances[adjusted].actIDs ?? instances[adjusted].actID.map { [$0] } ?? []
+                    ids.append(actID)
+                    instances[adjusted].actIDs = ids
+                    if instances[adjusted].actID == nil { instances[adjusted].actID = actID }
+                }
+            }
+        }
+
         var sortedInst = Self.registrationOrder(instances)
         // The tracked anchor can itself be an old registration.  UID discovery
         // then finds a newer round in the same court, so label by chronology
         // rather than assuming that the input row is always current.
-        sortedInst = Self.labelRegistrationRounds(
-            sortedInst, domain: court.domain, level: effectiveBaseLevel)
+        sortedInst = verifiedTransferLinks.isEmpty
+            ? Self.labelRegistrationRounds(sortedInst, domain: court.domain,
+                                           level: effectiveBaseLevel)
+            : Self.labelTransferredRegistrationRounds(sortedInst,
+                                                       level: effectiveBaseLevel)
         var actRanks: [String: Int] = [:]
         for (index, instance) in sortedInst.enumerated() {
             for actID in instance.linkedActIDs where actRanks[actID] == nil {
@@ -1252,6 +1392,54 @@ public actor MovementService: MovementProviding {
                             honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains,
                             executionDocuments: baseCard.executionDocuments.isEmpty
                                 ? nil : baseCard.executionDocuments)
+    }
+
+    /// The court column in an r_juid row is authoritative only together with
+    /// its published card locator and the independently maintained court list.
+    /// Never reconstruct a transferred card on the search court's host.
+    private func courtForUIDRegistration(_ row: CaseSearchResult, searchCourt: Court,
+                                         cartoteka: Cartoteka, judicialUID: String) async throws -> Court {
+        guard let title = row.courtTitle else { return searchCourt }
+        guard let url = row.cardURL,
+              let link = try? SudrfCaseCardLink(url: url),
+              let searchRegion = CourtDirectory.regionCode(forDomain: searchCourt.domain),
+              let linkedRegion = CourtDirectory.regionCode(forDomain: link.host),
+              link.deloID == cartoteka.deloID,
+              link.resolvedNew == cartoteka.new,
+              link.caseID == row.caseID,
+              link.caseUID == row.caseUID,
+              linkedRegion == searchRegion
+        else { throw SudrfError.parsing("несогласованная ссылка в выдаче по УИД") }
+        if link.moduleHost == SudrfHost.moduleHost(searchCourt.domain) {
+            guard Self.sameCourtName(title, searchCourt.title) else {
+                throw SudrfError.parsing("название суда не соответствует домену выдачи")
+            }
+            return searchCourt
+        }
+        guard JudicialUIDObservation.validity(of: judicialUID) == .valid else {
+            throw SudrfError.parsing("нельзя подтвердить регион судебного УИД")
+        }
+        let subjectCode = String(judicialUID.prefix(2))
+        let courts = try await transferCourts(subjectCode)
+        guard let publishedCourt = courts.first(where: {
+            SudrfHost.moduleHost($0.domain) == link.moduleHost
+                && Self.sameCourtName($0.title, title)
+                && $0.kind == .district
+        }) else { throw SudrfError.parsing("суд в выдаче не соответствует домену карточки") }
+        return publishedCourt.court
+    }
+
+    private static func sameCourtName(_ lhs: String, _ rhs: String) -> Bool {
+        func words(_ text: String) -> [String] {
+            let normalized = text.lowercased().replacingOccurrences(of: "ё", with: "е")
+            return normalized.split { !$0.isLetter }.map(String.init)
+                .filter { $0 != "город" && $0 != "города" }
+        }
+        let left = words(lhs), right = words(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        // A UID table often omits only the trailing regional qualification,
+        // e.g. "Кировский районный суд" vs "... города Санкт-Петербурга".
+        return left == right || (left.count >= 3 && right.starts(with: left))
     }
 
     /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).
@@ -1447,6 +1635,20 @@ extension MovementService {
         }
     }
 
+    static func sameTransferredCard(_ stale: SudrfCaseCardLink, staleNumber: String?,
+                                    confirmed: SudrfCaseCardLink, confirmedNumber: String) -> Bool {
+        guard let staleNumber, sameDisplayedCaseNumber(staleNumber, confirmedNumber),
+              let staleUID = stale.caseUID, !staleUID.isEmpty,
+              staleUID.caseInsensitiveCompare(confirmed.caseUID ?? "") == .orderedSame,
+              let staleID = stale.caseID, !staleID.isEmpty,
+              staleID == confirmed.caseID,
+              stale.deloID == confirmed.deloID,
+              stale.resolvedNew == confirmed.resolvedNew,
+              (stale.srvNum ?? "1") == (confirmed.srvNum ?? "1")
+        else { return false }
+        return true
+    }
+
     /// Stable key set for source-native/card-URL de-duplication.  The cartoteka
     /// is part of source-native identity because the same numeric `case_id` may
     /// occur in paired GPK/KAS registers.
@@ -1588,6 +1790,28 @@ extension MovementService {
         return result
     }
 
+    static func labelTransferredRegistrationRounds(_ instances: [CaseInstance],
+                                                   level: CaseInstance.Level) -> [CaseInstance] {
+        var result = instances
+        let candidates = result.indices.filter {
+            result[$0].level == level && result[$0].sourceEvidence?.judicialUID != nil
+        }
+        let dated = candidates.compactMap { index -> (Int, Int)? in
+            let date = dateSortKey(result[index].sourceEvidence?.receiptDate)
+            return date == Int.max ? nil : (index, date)
+        }
+        guard dated.count == candidates.count,
+              let latestDate = dated.map(\.1).max() else {
+            return result
+        }
+        let latest = dated.filter { $0.1 == latestDate }
+        guard latest.count == 1, let current = latest.first?.0 else { return result }
+        for index in candidates {
+            result[index].note = index == current ? nil : "Предыдущая регистрация"
+        }
+        return result
+    }
+
     static func levelLabel(_ level: CaseInstance.Level) -> String {
         switch level {
         case .first: return "1-я инстанция"
@@ -1662,14 +1886,16 @@ extension MovementService {
     }
 
     /// Точная ссылка строки сохраняет фактические `delo_id` / `new` / `srv_num`.
-    /// Принимаем её с приоритетом только с того же суда; иначе безопасно
-    /// откатываемся к каноническому URL по идентификаторам.
+    /// Обычная выдача без колонки «Суд» сохраняет прежний fallback по своим
+    /// идентификаторам; подтверждённая межсудебная выдача его не допускает.
     func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka) async throws -> CaseCard {
-        if let url = row.cardURL,
-           ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-           url.user == nil, url.password == nil,
-           SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(court.domain) {
-            return try await client.fetchCard(url: url)
+        if let url = row.cardURL, let link = try? SudrfCaseCardLink(url: url) {
+            if link.moduleHost == SudrfHost.moduleHost(court.domain) {
+                return try await client.fetchCard(url: link.sanitizedURL)
+            }
+            if row.courtTitle != nil {
+                throw SudrfError.parsing("ссылка выдачи относится к другому суду")
+            }
         }
         if let id = row.caseID, let uid = row.caseUID {
             return try await client.fetchCard(court: court, caseID: id, caseUID: uid,

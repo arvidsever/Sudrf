@@ -602,6 +602,46 @@ public actor SudrfClient {
         }
     }
 
+    /// Read the complete court-spanning table linked from a judicial UID.
+    /// A normal `name_op=r` search is court-local and cannot discover transfers.
+    public func uidRegistrations(url: URL, court: Court, cartoteka: Cartoteka,
+                                 judicialUID: String) async throws
+        -> [CaseSearchResult]? {
+        guard JudicialUIDObservation.validity(of: judicialUID) == .valid,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil,
+              SudrfHost.moduleHost(url.host ?? "") == SudrfHost.moduleHost(court.domain),
+              url.path.caseInsensitiveCompare("/modules.php") == .orderedSame,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              items.first(where: { $0.name == "name" })?.value == "sud_delo",
+              items.first(where: { $0.name == "name_op" })?.value == "r_juid",
+              items.first(where: { $0.name == "delo_id" })?.value == cartoteka.deloID,
+              let listedUID = items.first(where: { $0.name == "judicial_uid" })?.value,
+              JudicialUIDObservation.normalize(listedUID)
+                == JudicialUIDObservation.normalize(judicialUID),
+              items.first(where: { $0.name == "vnkod" })?.value?.isEmpty == false else {
+            throw SudrfError.parsing("ссылка на выдачу по УИД не относится к карточке")
+        }
+        let response = try await fetchHTMLData(url, allowHTTPFallback: true,
+                                               validatesSudrfRedirects: true)
+        guard SudrfHost.moduleHost(response.responseURL.host ?? "")
+                == SudrfHost.moduleHost(court.domain) else {
+            throw SudrfError.parsing("выдача по УИД перенаправлена на другой суд")
+        }
+        switch SearchPageClassifier.classify(html: response.html) {
+        case .results, .empty:
+            return try ResultsParser.parseComplete(html: response.html,
+                court: court.withDomain(response.responseURL.host ?? court.domain))
+        case .captcha, .captchaRejected:
+            throw SudrfError.captchaRequired(
+                formURL: try SudrfURLBuilder(court: court).formURL(cartoteka))
+        case .maintenance:
+            throw SudrfError.sourceMaintenance(domain: court.domain)
+        case .unrecognized:
+            throw IncompleteCaseSearchError()
+        }
+    }
+
     private func searchOnce(court: Court,
                             cartoteka: Cartoteka,
                             field: SearchField,

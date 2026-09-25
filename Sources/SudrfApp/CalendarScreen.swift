@@ -261,7 +261,9 @@ struct CalendarScreen: View {
                 GlassEffectContainer(spacing: 4) {
                     HStack(spacing: 4) {
                         Button { router.calStep(-1) } label: { Image(systemName: "chevron.left") }
+                            .buttonBorderShape(.circle)
                         Button { router.calStep(1) } label: { Image(systemName: "chevron.right") }
+                            .buttonBorderShape(.circle)
                         Button("Сегодня") {
                             router.calMonth = DateUtil.startOfMonth(DateUtil.today)
                             router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
@@ -328,17 +330,17 @@ struct CalendarScreen: View {
                         .padding(.horizontal, 12)
                         .frame(height: 22)
                         .background(
-                            RoundedRectangle(cornerRadius: 8)
+                            Capsule()
                                 .fill(active ? Color(nsColor: .textBackgroundColor).opacity(0.92) : .clear)
                                 .shadow(color: .black.opacity(active ? 0.14 : 0), radius: 2, y: 1))
-                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(3)
-        .background(RoundedRectangle(cornerRadius: 11).fill(Color(nsColor: .textBackgroundColor).opacity(0.7)))
-        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5))
+        .background(Capsule().fill(Color(nsColor: .textBackgroundColor).opacity(0.7)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5))
     }
 
     private var monthGrid: some View {
@@ -542,7 +544,7 @@ struct CalendarScreen: View {
             HStack(alignment: .top, spacing: 11) {
                 Text(DateUtil.shortDM(ev.date)).font(.system(size: 11.5, weight: .bold))
                     .foregroundStyle(ev.accent).frame(width: 62).padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 9).fill(ev.accent.opacity(0.12)))
+                    .background(Capsule().fill(ev.accent.opacity(0.12)))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(ev.title).font(.system(size: 12, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)

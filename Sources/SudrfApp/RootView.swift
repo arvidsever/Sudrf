@@ -315,6 +315,8 @@ private struct SpotlightOnboardingView: View {
         }
         .padding(26)
         .frame(width: 540)
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 }
 
@@ -574,6 +576,8 @@ private struct ImportSheet: View {
                                },
                                onCancel: { router.cancelCaptcha() })
         }
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 
     @ViewBuilder
@@ -771,10 +775,10 @@ private struct GlobalSearchField: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 11)
         .frame(width: 245, height: 26)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07)))
+        .background(Capsule().fill(Color.primary.opacity(0.045)))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.07)))
         .disabled(!router.spotlightEnabled)
         .popover(isPresented: $presented, arrowEdge: .bottom) {
             popover

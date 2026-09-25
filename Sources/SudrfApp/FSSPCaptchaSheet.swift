@@ -119,6 +119,8 @@ struct FSSPCaptchaSheet: View {
             code = ""
             codeFocused = true
         }
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 
     private var captchaImage: some View {

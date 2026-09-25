@@ -281,9 +281,9 @@ struct MyCasesView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 10).frame(height: 27)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.06)))
+            .padding(.horizontal, 12).frame(height: 27)
+            .background(Capsule().fill(Color.primary.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06)))
             .padding(.horizontal, 12).padding(.bottom, 8).padding(.top, 2)
 
             // Подборки — одновременно drop-цели: строку таблицы можно перетащить

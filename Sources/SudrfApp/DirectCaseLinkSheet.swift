@@ -112,6 +112,8 @@ struct DirectCaseLinkSheet: View {
             task?.cancel()
             task = nil
         }
+        // #329: листы не наследуют форму кнопок от сцены — задаём капсулу явно.
+        .buttonBorderShape(.capsule)
     }
 
     private var isResolving: Bool {

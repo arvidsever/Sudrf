@@ -81,7 +81,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.33 | [#180](https://github.com/arvidsever/Sudrf/issues/180) | Срочные дела проверяются раньше, внешние отказы получают ограниченный backoff; транспортный замер отделяет сетевые фазы от сна компьютера. | PR ожидается |
+| 0.58.33 | [#180](https://github.com/arvidsever/Sudrf/issues/180) | Срочные дела проверяются раньше, внешние отказы получают ограниченный backoff; транспортный замер отделяет сетевые фазы от сна компьютера. | [PR #327](https://github.com/arvidsever/Sudrf/pull/327) |
 | 0.58.32 | [#104, этап](https://github.com/arvidsever/Sudrf/issues/104) | Подтверждённый ноль ВС РФ отделён от изменившейся или неполной выдачи; широкий сценарий привязки ещё открыт. | [PR #326](https://github.com/arvidsever/Sudrf/pull/326) |
 | 0.58.31 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Ротация HTML-диагностики больше не удаляет JSON завершённого фонового обхода. | [PR #325](https://github.com/arvidsever/Sudrf/pull/325) |
 | 0.58.30 | [#68, этап 1](https://github.com/arvidsever/Sudrf/issues/68) | Локальный обезличенный отчёт измеряет полный фоновый обход и host-level отказы до решения о scheduler #180. | [PR #323](https://github.com/arvidsever/Sudrf/pull/323) |

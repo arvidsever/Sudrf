@@ -38,6 +38,7 @@ final class ResultsParserTests: XCTestCase {
         XCTAssertEqual(r.receiptDate, "14.05.2026")
         XCTAssertEqual(r.judge, "Петров П.П.")
         XCTAssertEqual(r.result, "Назначено наказание")
+        XCTAssertNil(r.courtTitle, "ordinary search results have no leading court column")
         XCTAssertEqual(r.cardURL?.host, "syktsud--komi.sudrf.ru")
     }
 

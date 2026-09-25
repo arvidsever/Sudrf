@@ -35,6 +35,8 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
     public var caseID: String?             // case_id из ссылки на карточку
     public var caseUID: String?            // case_uid (GUID) из ссылки
     public var cardURL: URL?               // абсолютная ссылка на карточку
+    /// Название суда из выдачи по УИД, если источник показывает отдельную колонку.
+    public var courtTitle: String?
     /// Ссылки на тексты опубликованных актов из последней колонки. Пусто, если
     /// акт не опубликован (262-ФЗ: публикуется не всё) или суд колонку не даёт.
     public var actTextLinks: [CaseActLink]
@@ -67,7 +69,8 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
                 caseID: String? = nil,
                 caseUID: String? = nil,
                 cardURL: URL? = nil,
-                actTextLinks: [CaseActLink] = []) {
+                actTextLinks: [CaseActLink] = [],
+                courtTitle: String? = nil) {
         self.caseNumber = caseNumber
         self.receiptDate = receiptDate
         self.essence = essence
@@ -79,6 +82,7 @@ public struct CaseSearchResult: Sendable, Equatable, Identifiable {
         self.caseUID = caseUID
         self.cardURL = cardURL
         self.actTextLinks = actTextLinks
+        self.courtTitle = courtTitle
     }
 }
 
@@ -246,6 +250,8 @@ public struct CaseCard: Sendable {
     public var judge: String?           // судья из вкладки «ДЕЛО»/«ПРОИЗВОДСТВО»
     public var result: String?          // результат рассмотрения из той же вкладки
     public var uid: String?             // уникальный идентификатор дела (УИД)
+    /// Точная опубликованная ссылка на межсудебную выдачу по УИД.
+    public var uidListingURL: URL?
     public var caseNumber: String?      // номер дела из заголовка карточки
     public var category: String?        // категория дела
     public var receiptDate: String?     // дата поступления
@@ -265,7 +271,8 @@ public struct CaseCard: Sendable {
 
     public init(rawText: String, actText: String?,
                 sessions: [CaseSession] = [], judge: String? = nil, result: String? = nil,
-                uid: String? = nil, caseNumber: String? = nil, category: String? = nil,
+                uid: String? = nil, uidListingURL: URL? = nil,
+                caseNumber: String? = nil, category: String? = nil,
                 receiptDate: String? = nil, decisionDate: String? = nil,
                 legalForceDate: String? = nil,
                 acts: [CaseActText] = [], appeals: [AppealRecord] = [],
@@ -280,6 +287,7 @@ public struct CaseCard: Sendable {
         self.judge = judge
         self.result = result
         self.uid = uid
+        self.uidListingURL = uidListingURL
         self.caseNumber = caseNumber
         self.category = category
         self.receiptDate = receiptDate

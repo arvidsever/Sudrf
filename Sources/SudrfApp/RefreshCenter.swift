@@ -1297,6 +1297,283 @@ final class RefreshCenter: ObservableObject {
         return await task.value
     }
 
+    /// A registration on another court's host is authoritative only after the
+    /// complete UID listing and its direct card were verified by MovementService.
+    /// Dates order registrations; equal latest dates cannot choose an anchor.
+    private static func latestVerifiedRegistration(
+        in movement: CaseMovement, replacing old: MovementContext
+    ) -> MovementContext? {
+        guard old.baseInstanceLevel == .first,
+              JudicialUIDObservation.validity(of: movement.uid) == .valid,
+              JudicialUIDObservation.normalize(movement.uid)
+                == JudicialUIDObservation.normalize(old.judicialUID ?? ""),
+              (movement.incompleteHigherCourtDomains ?? []).isEmpty else { return nil }
+
+        let currentHost = SudrfHost.moduleHost(old.searchDomain)
+        let first = movement.instances.filter {
+            $0.level == .first && $0.captchaFormURL == nil && $0.transientError != true
+        }
+        guard first.count > 1, first.allSatisfy({
+            JudicialUIDObservation.normalize($0.sourceEvidence?.judicialUID ?? "")
+                == JudicialUIDObservation.normalize(movement.uid)
+                && DateUtil.parse($0.sourceEvidence?.receiptDate) != nil
+        }), first.contains(where: {
+            $0.foundByUID && SudrfHost.moduleHost($0.domain) != currentHost
+        }) else { return nil }
+
+        guard let latestDate = first.compactMap({
+            DateUtil.parse($0.sourceEvidence?.receiptDate)
+        }).max() else { return nil }
+        let latest = first.filter {
+            DateUtil.parse($0.sourceEvidence?.receiptDate) == latestDate
+        }
+        guard latest.count == 1, let instance = latest.first, instance.foundByUID,
+              let sourceURL = instance.sourceURL,
+              let link = try? SudrfCaseCardLink(url: sourceURL),
+              let caseID = link.caseID, let caseUID = link.caseUID,
+              link.moduleHost == SudrfHost.moduleHost(instance.domain),
+              !instance.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let cartoteka = CartotekaRegistry.resolve(
+                level: instance.sourceEvidence?.sourceCourtLevel ?? old.courtLevel,
+                deloID: link.deloID, new: link.new,
+                caseNumber: instance.caseNumber),
+              cartoteka.id == instance.sourceEvidence?.cartotekaID else { return nil }
+
+        let currentURL = old.cardURLString.flatMap(URL.init(string:))
+            ?? old.sourceKnownCard?.sourceURL
+        let currentLink = currentURL.flatMap { try? SudrfCaseCardLink(url: $0) }
+        let currentIsMirror = currentLink.map {
+            sameNativeCard($0, link) && old.caseNumber == instance.caseNumber
+                && $0.moduleHost != link.moduleHost
+        } ?? old.sourceKnownCard.map {
+            isFalseHostMirror($0, confirmed: KnownCard(
+                domain: link.moduleHost, courtTitle: instance.court,
+                caseID: caseID, caseUID: caseUID, deloID: link.deloID,
+                new: link.resolvedNew, caseNumber: instance.caseNumber,
+                levelRaw: instance.level.rawValue))
+        } ?? false
+        let currentDate = DateUtil.parse(old.receiptDate) ?? first.first(where: {
+            SudrfHost.moduleHost($0.domain) == currentHost
+                && $0.caseNumber == old.caseNumber
+        }).flatMap { DateUtil.parse($0.sourceEvidence?.receiptDate) }
+        guard (currentDate.map { latestDate > $0 } ?? false) || currentIsMirror else {
+            return nil
+        }
+
+        var corrected = old
+        corrected.searchDomain = link.moduleHost
+        corrected.displayDomain = SudrfHost.alternate(link.moduleHost) ?? link.moduleHost
+        corrected.courtTitle = instance.court
+        corrected.courtLevelRaw = (instance.sourceEvidence?.sourceCourtLevel ?? old.courtLevel).rawValue
+        corrected.courtCode = currentHost == link.moduleHost ? old.courtCode : nil
+        corrected.cartotekaId = cartoteka.id
+        corrected.cartotekaLevelRaw = corrected.courtLevelRaw
+        corrected.caseNumber = instance.caseNumber
+        corrected.caseID = caseID
+        corrected.caseUID = caseUID
+        corrected.judge = instance.judge
+        corrected.receiptDate = instance.sourceEvidence?.receiptDate
+        corrected.decisionDate = instance.sourceEvidence?.decisionDate
+        corrected.resultText = instance.result
+        corrected.legalForceDate = nil
+        corrected.cardURLString = link.sanitizedURL.absoluteString
+        corrected.judicialUID = movement.uid
+        corrected.baseInstanceLevelRaw = instance.level.rawValue
+        corrected.sourceKnownCard = KnownCard(
+            domain: link.moduleHost, courtTitle: instance.court,
+            caseID: caseID, caseUID: caseUID, deloID: link.deloID,
+            new: link.resolvedNew, caseNumber: instance.caseNumber,
+            levelRaw: instance.level.rawValue, cartotekaID: cartoteka.id,
+            sourceURL: link.sanitizedURL)
+
+        var known = corrected.addingKnownCards(from: movement).knownCards ?? []
+        if let previous = TrackedCaseRepairCoordinator.knownCard(from: old) {
+            known.append(previous)
+        }
+        if let confirmed = corrected.sourceKnownCard {
+            known.removeAll {
+                isFalseHostMirror($0, confirmed: confirmed)
+                    || (SudrfHost.moduleHost($0.domain)
+                        == SudrfHost.moduleHost(confirmed.domain)
+                        && $0.caseID == confirmed.caseID
+                        && $0.caseUID.caseInsensitiveCompare(confirmed.caseUID) == .orderedSame
+                        && $0.deloID == confirmed.deloID && $0.new == confirmed.new)
+            }
+        }
+        corrected.knownCards = TrackedCaseRepairCoordinator.dedupKnown(known)
+        return corrected
+    }
+
+    private static func isFalseHostMirror(_ card: KnownCard,
+                                          confirmed: KnownCard) -> Bool {
+        guard SudrfHost.moduleHost(card.domain) != SudrfHost.moduleHost(confirmed.domain),
+              card.caseNumber == confirmed.caseNumber,
+              !card.caseID.isEmpty, !card.caseUID.isEmpty,
+              card.caseID == confirmed.caseID,
+              card.caseUID.caseInsensitiveCompare(confirmed.caseUID) == .orderedSame,
+              card.deloID == confirmed.deloID, card.new == confirmed.new else {
+            return false
+        }
+        if let oldURL = card.sourceURL, let newURL = confirmed.sourceURL,
+           let oldLink = try? SudrfCaseCardLink(url: oldURL),
+           let newLink = try? SudrfCaseCardLink(url: newURL) {
+            return sameNativeCard(oldLink, newLink)
+        }
+        return true
+    }
+
+    private static func sameNativeCard(_ lhs: SudrfCaseCardLink,
+                                       _ rhs: SudrfCaseCardLink) -> Bool {
+        guard let leftID = lhs.caseID, let rightID = rhs.caseID,
+              let leftUID = lhs.caseUID, let rightUID = rhs.caseUID else { return false }
+        return leftID == rightID && leftUID.caseInsensitiveCompare(rightUID) == .orderedSame
+            && lhs.deloID == rhs.deloID && lhs.resolvedNew == rhs.resolvedNew
+            && (lhs.srvNum == nil || rhs.srvNum == nil || lhs.srvNum == rhs.srvNum)
+    }
+
+    /// Correct an earlier mirror's source identity in the comparison baseline.
+    /// The old host served the same source-native card under its own heading;
+    /// replacing that heading must not look like a newly published case event.
+    private static func correctedMirrorBaseline(
+        oldSnapshot: CaseSnapshot?, oldMovement: CaseMovement?,
+        oldContext: MovementContext, fresh: CaseMovement,
+        newSnapshot: CaseSnapshot, newContext: MovementContext
+    ) -> CaseSnapshot? {
+        guard var baseline = oldSnapshot, let oldMovement else { return nil }
+        var corrected = false
+        for current in fresh.instances {
+            guard let currentURL = current.sourceURL,
+                  let currentLink = try? SudrfCaseCardLink(url: currentURL),
+                  let currentID = CaseSnapshotSourceIdentity.sourceCardID(
+                    for: current, context: newContext) else { continue }
+            let matches = oldMovement.instances.filter { previous in
+                guard previous.caseNumber == current.caseNumber,
+                      let previousURL = previous.sourceURL,
+                      let previousLink = try? SudrfCaseCardLink(url: previousURL) else {
+                    return false
+                }
+                return sameNativeCard(previousLink, currentLink)
+            }
+            guard matches.count == 1, let previous = matches.first else { continue }
+            let priorID = CaseSnapshotSourceIdentity.sourceCardID(
+                for: previous, context: oldContext)
+            guard priorID != currentID || previous.court != current.court else { continue }
+
+            // An old anchor may have used a court code for its source ID, and
+            // its mirrors may all have inherited that anchor's ID. Map each
+            // proven card individually; rewriting every observation sharing
+            // the old ID would erase genuinely different historical cards.
+            var observations = baseline.instanceObservations ?? []
+            observations.append(StoredInstanceObservation(
+                sourceCardID: currentID, levelRaw: previous.level.rawValue,
+                court: current.court, caseNumber: previous.caseNumber,
+                judge: previous.judge, result: previous.result))
+            baseline.instanceObservations = observations
+
+            for session in newSnapshot.sessions where session.sourceCardID == currentID {
+                guard previous.sessions.contains(where: {
+                    $0.date == session.dateRaw && $0.time == session.time
+                        && $0.room == session.room && $0.event == session.event
+                        && $0.result == session.result
+                }) else { continue }
+                baseline.sessions.append(session)
+            }
+            // Act IDs contain the host. Suppress a new-act event only when
+            // both published bodies are exactly the same after trimming.
+            for newActID in current.linkedActIDs {
+                guard let newBody = fresh.actBodies[newActID]?.trimmingCharacters(
+                    in: .whitespacesAndNewlines), !newBody.isEmpty,
+                      previous.linkedActIDs.contains(where: {
+                        oldMovement.actBodies[$0]?.trimmingCharacters(
+                            in: .whitespacesAndNewlines) == newBody
+                      }),
+                      let act = newSnapshot.actObservations?.first(where: {
+                        $0.sourceActID == newActID
+                      }) else { continue }
+                var observations = baseline.actObservations ?? []
+                if !observations.contains(where: { $0.sourceActID == newActID }) {
+                    observations.append(act)
+                    baseline.actObservations = observations
+                }
+            }
+            corrected = true
+        }
+        return corrected ? baseline : nil
+    }
+
+    /// A recognized empty auxiliary register can restore a cached mirror even
+    /// after a complete UID listing verified the real court. Compare both
+    /// source-native IDs before retiring that cached instance or its acts.
+    private static func removingVerifiedHostMirrors(
+        from merged: CaseMovement, cached: CaseMovement?, fresh: CaseMovement
+    ) -> CaseMovement {
+        guard let cached else { return merged }
+        var corrected = merged
+        for stale in cached.instances {
+            guard let staleURL = stale.sourceURL,
+                  let staleLink = try? SudrfCaseCardLink(url: staleURL) else { continue }
+            let matches = fresh.instances.filter { confirmed in
+                guard confirmed.foundByUID,
+                      confirmed.caseNumber == stale.caseNumber,
+                      let url = confirmed.sourceURL,
+                      let link = try? SudrfCaseCardLink(url: url),
+                      staleLink.moduleHost != link.moduleHost else { return false }
+                return sameNativeCard(staleLink, link)
+            }
+            guard matches.count == 1, let confirmed = matches.first,
+                  corrected.instances.contains(where: {
+                    $0.domain == confirmed.domain && $0.caseNumber == confirmed.caseNumber
+                  }) else { continue }
+
+            corrected.instances.removeAll { value in
+                guard value.caseNumber == stale.caseNumber,
+                      let url = value.sourceURL,
+                      let link = try? SudrfCaseCardLink(url: url) else { return false }
+                return link.moduleHost == staleLink.moduleHost
+                    && sameNativeCard(link, staleLink)
+            }
+            guard let survivingIndex = corrected.instances.firstIndex(where: {
+                $0.domain == confirmed.domain && $0.caseNumber == confirmed.caseNumber
+            }) else { continue }
+            for staleActID in stale.linkedActIDs {
+                let staleBody = (corrected.actBodies[staleActID]
+                    ?? cached.actBodies[staleActID])?.trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                let isDuplicate = staleBody.map { body in
+                    !body.isEmpty && confirmed.linkedActIDs.contains(where: {
+                        !stale.linkedActIDs.contains($0)
+                            && fresh.actBodies[$0]?.trimmingCharacters(
+                            in: .whitespacesAndNewlines) == body
+                    })
+                } ?? false
+                if isDuplicate {
+                    corrected.acts.removeAll { $0.id == staleActID }
+                    corrected.actBodies[staleActID] = nil
+                    for index in corrected.instances.indices {
+                        let remaining = corrected.instances[index].linkedActIDs.filter {
+                            $0 != staleActID
+                        }
+                        corrected.instances[index].actIDs = remaining.isEmpty ? nil : remaining
+                        corrected.instances[index].actID = remaining.first
+                    }
+                } else {
+                    if !corrected.acts.contains(where: { $0.id == staleActID }),
+                       let act = cached.acts.first(where: { $0.id == staleActID }) {
+                        corrected.acts.append(act)
+                    }
+                    if corrected.actBodies[staleActID] == nil {
+                        corrected.actBodies[staleActID] = cached.actBodies[staleActID]
+                    }
+                    var ids = corrected.instances[survivingIndex].linkedActIDs
+                    if !ids.contains(staleActID) { ids.append(staleActID) }
+                    corrected.instances[survivingIndex].actIDs = ids
+                    corrected.instances[survivingIndex].actID = ids.first
+                }
+            }
+        }
+        return corrected
+    }
+
     /// Success-путь `performRefresh`: merge / snapshot / persist / сброс
     /// `lastErrors` + `captchaPending`. Выделен в helper, чтобы его
     /// выполнял и обычный happy path, и inline-retry после успешного
@@ -1312,11 +1589,25 @@ final class RefreshCenter: ObservableObject {
         let attempt = recordedAttempt(
             incomingAttempt, previous: rec.sourceRefreshAttempt,
             key: key, at: walkDiagnostics.now())
-        let merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
+        let verifiedContext = isComplete
+            ? Self.latestVerifiedRegistration(in: mv, replacing: ctx) : nil
+        var merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
+        let projectionContext = verifiedContext ?? ctx
+        if verifiedContext != nil {
+            merged = Self.removingVerifiedHostMirrors(
+                from: merged, cached: rec.movement, fresh: mv)
+            merged.caseNumber = projectionContext.caseNumber
+        }
         let oldMovement = rec.movement
         let oldSnapshot = rec.snapshot
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
-            MovementDerivation.snapshot(from: merged, context: ctx), old: oldSnapshot)
+            MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot)
+        let correctedBaseline = verifiedContext.flatMap { _ in
+            Self.correctedMirrorBaseline(
+                oldSnapshot: oldSnapshot, oldMovement: oldMovement,
+                oldContext: ctx, fresh: mv, newSnapshot: newSnap,
+                newContext: projectionContext)
+        }
         let persistedMovement = MovementCachePolicy.stripped(forPersist: merged)
         let snapshotSourceChanged = oldSnapshot.map {
             !$0.hasSameRefreshSource(as: newSnap)
@@ -1327,7 +1618,7 @@ final class RefreshCenter: ObservableObject {
         let changed = movementSourceChanged || snapshotSourceChanged
         let identityObservation = isComplete
             ? TrackedCaseIdentity.observation(
-                context: ctx, movement: mv, attempt: attempt,
+                context: projectionContext, movement: mv, attempt: attempt,
                 outcome: .usableSnapshot)
             : TrackedCaseIdentity.partialRefreshObservation(
                 context: ctx, movement: mv, attempt: attempt)
@@ -1352,8 +1643,28 @@ final class RefreshCenter: ObservableObject {
                 let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
                     record in record.snapshot.map { (record.key, $0) }
                 })
+                if let verifiedContext {
+                    // The published UID listing and card have already confirmed
+                    // this registration. Keep the technical key and historical
+                    // card while changing the active presentation in this commit.
+                    guard let anchored = try store.applyVerifiedCardContext(
+                        forLocator: key, context: verifiedContext,
+                        attempt: attempt, expectedActiveContext: ctx,
+                        saveChanges: false) else {
+                        throw CancellationError()
+                    }
+                    if let oldCard = TrackedCaseRepairCoordinator.knownCard(from: ctx),
+                       let confirmed = verifiedContext.sourceKnownCard,
+                       !Self.isFalseHostMirror(oldCard, confirmed: confirmed),
+                       var active = anchored.context {
+                        var known = active.knownCards ?? []
+                        known.append(oldCard)
+                        active.knownCards = TrackedCaseRepairCoordinator.dedupKnown(known)
+                        anchored.context = active
+                    }
+                }
                 let reconciled = try store.reconcileAndUpsert(
-                    context: ctx, snapshot: newSnap, movement: persistedMovement,
+                    context: projectionContext, snapshot: newSnap, movement: persistedMovement,
                     collections: rec.collectionNames,
                     identityObservation: identityObservation,
                     movementFetchedAt: isComplete ? attempt.provenance.observedAt
@@ -1387,6 +1698,7 @@ final class RefreshCenter: ObservableObject {
             persisted.sourceRefreshAttempt = attempt
             let journal = try store.requiredEventJournal(for: persisted)
             let finalSnapshot = persisted.snapshot ?? newSnap
+            if let correctedBaseline { semanticOldSnapshots.append(correctedBaseline) }
             let derivation: CaseEventDerivationResult
             if journal.derivationVersion != CaseEventJournal.currentDerivationVersion {
                 derivation = .init(events: [], diagnostics: [.derivationVersionChanged])

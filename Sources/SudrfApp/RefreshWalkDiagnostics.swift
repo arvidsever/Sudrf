@@ -1,5 +1,5 @@
 import Foundation
-import SudrfKit
+@_spi(Diagnostics) import SudrfKit
 import os
 
 private let refreshWalkLog = Logger(
@@ -38,7 +38,67 @@ struct RefreshWalkReport: Codable, Equatable {
         var transportRetryCount: Int
     }
 
-    var formatVersion = 1
+    /// Транспортные времена относятся только к запросам данного обхода;
+    /// номер дела, URL и последовательность отдельных запросов не сохраняются.
+    /// `attemptCount` — вызовы транспорта, начавшие сеть: автоматические
+    /// redirect hops URLSession у ВС РФ/Мосгорсуда отдельно не считаются.
+    struct TransportTiming: Codable, Equatable {
+        struct Host: Codable, Equatable {
+            var host: String
+            var attemptCount: Int
+            var failureCount: Int
+            var cancelledCount: Int
+            var queueWaitSeconds: Double
+            var queueWaitP95Seconds: Double
+            var throttleWaitSeconds: Double
+            var throttleWaitP95Seconds: Double
+            var sessionPreparationSeconds: Double
+            var sessionPreparationP95Seconds: Double
+            var responseSeconds: Double
+            var responseP95Seconds: Double
+        }
+
+        var attemptCount: Int
+        var failureCount: Int
+        var cancelledCount: Int
+        /// Монотонное время самого обхода: сопоставимо с суммой фаз транспорта,
+        /// в отличие от календарного durationSeconds при сне компьютера.
+        var awakeDurationSeconds: Double
+        var hosts: [Host]
+
+        init(attemptCount: Int, failureCount: Int, cancelledCount: Int,
+             awakeDurationSeconds: Double, hosts: [Host]) {
+            self.attemptCount = attemptCount
+            self.failureCount = failureCount
+            self.cancelledCount = cancelledCount
+            self.awakeDurationSeconds = awakeDurationSeconds
+            self.hosts = hosts
+        }
+
+        init(_ snapshot: TransportTimingSnapshot, awakeDurationSeconds: Double) {
+            attemptCount = snapshot.transportAttemptCount
+            failureCount = snapshot.failureCount
+            cancelledCount = snapshot.cancelledCount
+            self.awakeDurationSeconds = max(0, awakeDurationSeconds)
+            hosts = snapshot.hostTimings.map { timing in
+                Host(
+                    host: timing.host,
+                    attemptCount: timing.attemptCount,
+                    failureCount: timing.failureCount,
+                    cancelledCount: timing.cancelledCount,
+                    queueWaitSeconds: timing.queueWaitSeconds,
+                    queueWaitP95Seconds: timing.queueWaitP95Seconds,
+                    throttleWaitSeconds: timing.throttleWaitSeconds,
+                    throttleWaitP95Seconds: timing.throttleWaitP95Seconds,
+                    sessionPreparationSeconds: timing.sessionPreparationSeconds,
+                    sessionPreparationP95Seconds: timing.sessionPreparationP95Seconds,
+                    responseSeconds: timing.responseSeconds,
+                    responseP95Seconds: timing.responseP95Seconds)
+            }
+        }
+    }
+
+    var formatVersion = 2
     var walkID: UUID
     var trigger: String
     var appVersion: String
@@ -68,6 +128,8 @@ struct RefreshWalkReport: Codable, Equatable {
     var executionOutcomeCounts: [String: Int]
     var sourceOutcomeCounts: [String: Int]
     var hosts: [HostSummary]
+    /// Optional для чтения отчётов формата 1.
+    var transportTiming: TransportTiming? = nil
 }
 
 struct RefreshWalkMeasurement {
@@ -118,7 +180,9 @@ struct RefreshWalkMeasurement {
             sourceAttempt: sourceAttempt))
     }
 
-    func report(finishedAt: Date, cancelled: Bool) -> RefreshWalkReport {
+    func report(finishedAt: Date, cancelled: Bool,
+                transportTiming: RefreshWalkReport.TransportTiming? = nil)
+        -> RefreshWalkReport {
         let court = completions.filter(\.courtDue)
         let completedKeys = completions.map(\.key)
         let duplicateCount = completedKeys.count - Set(completedKeys).count
@@ -229,7 +293,8 @@ struct RefreshWalkMeasurement {
             transportRetryCount: transportRetries,
             executionOutcomeCounts: executionCounts,
             sourceOutcomeCounts: sourceCounts,
-            hosts: hosts)
+            hosts: hosts,
+            transportTiming: transportTiming)
     }
 
     private func continuedAfterFailure(_ court: [Completion]) -> Bool {

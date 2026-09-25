@@ -544,7 +544,7 @@ final class AppRouter: ObservableObject {
             section = .cases
             openCase(key: key)
             if staleAct {
-                refreshNote = "Судебный акт ещё не загружен или ссылка устарела. Дело открыто и поставлено на обновление."
+                refreshNote = "Судебный акт ещё не загружен или ссылка устарела. Дело открыто; при необходимости нажмите «Обновить»."
                 NSApp.activate(ignoringOtherApps: true)
             }
         case .courtAct(let caseKey, let sourceActID):
@@ -635,7 +635,7 @@ final class AppRouter: ObservableObject {
         markSeen(rec)
         movementError = nil; refreshNote = nil
         if let cached = rec.movement {
-            // Кэш есть — показываем мгновенно, свежие данные подъедут тихо.
+            // Сохранённое движение показываем без сетевого запроса при открытии.
             liveMovement = cached
             movementFetchedAt = rec.movementFetchedAt
             selectedActID = cached.acts.first(where: { $0.instanceLevel == .first })?.id
@@ -644,8 +644,10 @@ final class AppRouter: ObservableObject {
         } else {
             liveMovement = nil
             loadingMovement = true
+            // Первую загрузку не откладываем: иначе пустая карточка останется
+            // в состоянии загрузки до ручного обновления.
+            refreshCenter.refresh(key: rec.key)
         }
-        refreshCenter.refresh(key: rec.key)   // SWR: перезапрос всегда
         updateCurrentEntityActivity()
     }
 

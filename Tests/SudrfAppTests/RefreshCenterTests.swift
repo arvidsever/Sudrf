@@ -124,6 +124,43 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor RetryMovement: MovementProviding {
+        let value: CaseMovement
+        private(set) var calls = 0
+
+        init(_ value: CaseMovement) { self.value = value }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            if calls == 1 { throw URLError(.timedOut) }
+            return value
+        }
+    }
+
+    private actor OrderedFailureMovement: MovementProviding {
+        private(set) var caseNumbers: [String] = []
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            caseNumbers.append(base.caseNumber)
+            throw URLError(.timedOut)
+        }
+    }
+
+    private final class TestRefreshClock {
+        var now: Date
+
+        init(_ now: Date) { self.now = now }
+
+        var diagnostics: RefreshWalkDiagnostics {
+            RefreshWalkDiagnostics(
+                enabled: false,
+                directory: FileManager.default.temporaryDirectory,
+                now: { self.now }, appVersion: "test", appBuild: "test")
+        }
+    }
+
     private actor UnavailableMovement: MovementProviding {
         func movement(for base: CaseSearchResult, court: Court,
                       cartoteka: Cartoteka) async throws -> CaseMovement {
@@ -194,6 +231,35 @@ final class RefreshCenterTests: XCTestCase {
             calls += 1
             if calls == 1 { throw SudrfError.parsing("stale base card") }
             return value
+        }
+    }
+
+    private actor ParserThenSuspendedMovement: MovementProviding {
+        let value: CaseMovement
+        private var calls = 0
+        private var secondCallStarted = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        init(_ value: CaseMovement) { self.value = value }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            calls += 1
+            if calls == 1 { throw SudrfError.parsing("stale base card") }
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                secondCallStarted = true
+            }
+            return value
+        }
+
+        func waitUntilSecondCallStarted() async {
+            while !secondCallStarted { await Task.yield() }
+        }
+
+        func resumeSecondCall() {
+            continuation?.resume()
+            continuation = nil
         }
     }
 
@@ -2562,6 +2628,13 @@ final class RefreshCenterTests: XCTestCase {
         record.snapshot = MovementDerivation.snapshot(from: successMV, context: original)
         let previousSuccess = Date(timeIntervalSince1970: 1_700_000_000)
         record.movementFetchedAt = previousSuccess
+        let previousRetryAt = Date().addingTimeInterval(5 * 60)
+        record.sourceRefreshAttempt = SourceAttempt(
+            kind: .transportFailure,
+            provenance: SourceProvenance(operation: .movement, sourceFamily: "sudrf",
+                                         host: original.searchDomain,
+                                         observedAt: Date().addingTimeInterval(-60)),
+            consecutiveRefreshFailures: 3, retryNotBefore: previousRetryAt)
         try store.save()
 
         var partial = successMV!
@@ -2593,12 +2666,67 @@ final class RefreshCenterTests: XCTestCase {
                        "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0")
         XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, previousSuccess)
         XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?
+            .consecutiveRefreshFailures, 4,
+                       "locator-only discovery must preserve the prior failure streak")
+        XCTAssertNotEqual(store.record(forKey: key)?.sourceRefreshAttempt?.retryNotBefore,
+                          previousRetryAt)
         XCTAssertEqual(builtContexts.count, 2)
         XCTAssertTrue(builtContexts.allSatisfy { context in
             context.knownCards?.contains {
                 $0.caseUID == "review-guid-238" && $0.sourceURL == savedReviewURL
             } == true
         }, "resolved-card retry must keep exact saved higher-court inputs")
+    }
+
+    func testCancelledRecoveredLocatorKeepsRetryStateFromPriorFailure() async throws {
+        let key = try XCTUnwrap(store.all().first?.key)
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var original = try XCTUnwrap(record.context)
+        original.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=5&new=5"
+        record.context = original
+        let clock = TestRefreshClock(Date())
+        let retryAt = clock.now.addingTimeInterval(60 * 60)
+        record.movementFetchedAt = clock.now.addingTimeInterval(-RefreshSettings.ttl - 60)
+        record.sourceRefreshAttempt = SourceAttempt(
+            kind: .transportFailure,
+            provenance: SourceProvenance(operation: .movement, sourceFamily: "sudrf",
+                                         host: original.searchDomain,
+                                         observedAt: clock.now.addingTimeInterval(-60 * 60)),
+            consecutiveRefreshFailures: 4, retryNotBefore: retryAt)
+        try store.save()
+
+        let service = ParserThenSuspendedMovement(
+            makeSuccessMovement(court: original.searchCourt))
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(),
+            serviceBuilder: { _ in service }, walkDiagnostics: clock.diagnostics)
+        center.recoverCard = { context in
+            var verified = context
+            verified.cardURLString = "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&case_id=old&case_uid=old&delo_id=1540005&new=0"
+            return CaseCardRecoveryResolution(
+                card: CaseCard(rawText: "", actText: nil, caseNumber: verified.caseNumber),
+                verifiedURL: try XCTUnwrap(URL(string: verified.cardURLString!)),
+                reason: .cartotekaParameters, context: verified)
+        }
+
+        let refresh = try XCTUnwrap(center.refresh(key: key))
+        await service.waitUntilSecondCallStarted()
+        let discoveryAttempt = try XCTUnwrap(
+            store.record(forKey: key)?.sourceRefreshAttempt)
+        XCTAssertEqual(discoveryAttempt.provenance.operation, .discovery)
+        XCTAssertEqual(discoveryAttempt.consecutiveRefreshFailures, 4)
+        XCTAssertEqual(discoveryAttempt.retryNotBefore, retryAt)
+
+        center.cancelTracking(for: key)
+        await service.resumeSecondCall()
+        let refreshOutcome = await refresh.value.outcome
+        XCTAssertEqual(refreshOutcome, .cancelled)
+        let retained = try XCTUnwrap(store.record(forKey: key)?.sourceRefreshAttempt)
+        XCTAssertEqual(retained.consecutiveRefreshFailures, 4)
+        XCTAssertEqual(retained.retryNotBefore, retryAt)
+        XCTAssertNil(center.refreshAll(force: false),
+                     "a cancelled locator recovery must not erase the background cooldown")
     }
 
     func testPartialMaterialRefreshKeepsCachedHistoryAndLastSuccess() async throws {
@@ -2910,6 +3038,242 @@ final class RefreshCenterTests: XCTestCase {
                       "fresh enforcement must remain TTL-driven during forced walk")
         XCTAssertTrue(fsspCalls.isEmpty,
                       "fresh enforcement must remain TTL-driven during forced walk")
+    }
+
+    func testRetryDelayIsStableAndBoundedWithJitter() {
+        let first = RefreshCenter.retryDelay(forFailureCount: 1, key: "case-a")
+        XCTAssertEqual(first, RefreshCenter.retryDelay(forFailureCount: 1, key: "case-a"))
+        XCTAssertGreaterThanOrEqual(first, 8 * 60)
+        XCTAssertLessThanOrEqual(first, 12 * 60)
+        XCTAssertLessThanOrEqual(
+            RefreshCenter.retryDelay(forFailureCount: 99, key: "case-a"), 6 * 60 * 60)
+        XCTAssertNotEqual(first, RefreshCenter.retryDelay(forFailureCount: 1, key: "case-b"))
+    }
+
+    func testBackoffSurvivesStoreReopenAndExpiresAtPersistedDeadline() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("refresh-backoff-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("test.store")
+        let clock = TestRefreshClock(Date(timeIntervalSince1970: 1_900_000_000))
+        let context = makeContext()
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let diskStore = try TrackedStore(container: container, prepared: true)
+        let record = try diskStore.upsert(
+            context: context, snapshot: nil, movement: nil, collections: [])
+        record.addedAt = clock.now.addingTimeInterval(-2 * 24 * 60 * 60)
+        record.seenAt = clock.now.addingTimeInterval(-60)
+        record.movementFetchedAt = clock.now.addingTimeInterval(-RefreshSettings.ttl - 60)
+        try diskStore.save()
+
+        let service = RetryMovement(makeSuccessMovement(court: context.searchCourt))
+        let firstCenter = RefreshCenter(
+            store: diskStore, client: SudrfClient(),
+            serviceBuilder: { _ in service }, walkDiagnostics: clock.diagnostics)
+        firstCenter.refreshAll(force: false)
+        await firstCenter.waitUntilWalkIdle()
+
+        let failedAttempt = try XCTUnwrap(diskStore.record(forKey: record.key)?.sourceRefreshAttempt)
+        let retryAt = try XCTUnwrap(failedAttempt.retryNotBefore)
+        XCTAssertEqual(failedAttempt.kind, .transportFailure)
+        XCTAssertEqual(failedAttempt.consecutiveRefreshFailures, 1)
+        XCTAssertEqual(retryAt, clock.now.addingTimeInterval(
+            RefreshCenter.retryDelay(forFailureCount: 1, key: record.key)))
+        XCTAssertLessThan(failedAttempt.provenance.observedAt, retryAt,
+                          "source observation time must remain distinct from retry time")
+        let firstCallCount = await service.calls
+        XCTAssertEqual(firstCallCount, 1)
+
+        let reopenedContainer = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: storeURL)
+        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+        let restoredAttempt = try XCTUnwrap(
+            reopened.record(forKey: record.key)?.sourceRefreshAttempt)
+        XCTAssertEqual(restoredAttempt.retryNotBefore, retryAt)
+        XCTAssertEqual(restoredAttempt.consecutiveRefreshFailures, 1)
+
+        let restartedCenter = RefreshCenter(
+            store: reopened, client: SudrfClient(),
+            serviceBuilder: { _ in service }, walkDiagnostics: clock.diagnostics)
+        clock.now = retryAt.addingTimeInterval(-0.001)
+        XCTAssertNil(restartedCenter.refreshAll(force: false))
+        await restartedCenter.waitUntilWalkIdle()
+        let suppressedCallCount = await service.calls
+        XCTAssertEqual(suppressedCallCount, 1, "retry must remain suppressed before deadline")
+
+        clock.now = retryAt
+        restartedCenter.refreshAll(force: false)
+        await restartedCenter.waitUntilWalkIdle()
+        let dueCallCount = await service.calls
+        XCTAssertEqual(dueCallCount, 2, "retry must become eligible at its deadline")
+        let recoveredAttempt = try XCTUnwrap(reopened.record(forKey: record.key)?.sourceRefreshAttempt)
+        XCTAssertEqual(recoveredAttempt.kind, .usableSnapshot)
+        XCTAssertNil(recoveredAttempt.consecutiveRefreshFailures)
+        XCTAssertNil(recoveredAttempt.retryNotBefore)
+    }
+
+    func testManualRefreshBypassesBackgroundBackoff() async throws {
+        let context = makeContext()
+        let record = try XCTUnwrap(store.all().first)
+        record.addedAt = Date().addingTimeInterval(-24 * 60 * 60)
+        record.seenAt = Date()
+        record.movementFetchedAt = .distantPast
+        let clock = TestRefreshClock(Date(timeIntervalSince1970: 1_900_000_000))
+        let service = RetryMovement(makeSuccessMovement(court: context.searchCourt))
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(), serviceBuilder: { _ in service },
+            walkDiagnostics: clock.diagnostics)
+
+        center.refreshAll(force: false)
+        await center.waitUntilWalkIdle()
+        XCTAssertEqual(store.record(forKey: record.key)?.sourceRefreshAttempt?
+            .consecutiveRefreshFailures, 1)
+        let beforeManualCallCount = await service.calls
+        XCTAssertEqual(beforeManualCallCount, 1)
+
+        let manual = await center.refresh(key: record.key)?.value
+        XCTAssertEqual(manual?.outcome, .refreshed)
+        let afterManualCallCount = await service.calls
+        XCTAssertEqual(afterManualCallCount, 2)
+        let attempt = try XCTUnwrap(store.record(forKey: record.key)?.sourceRefreshAttempt)
+        XCTAssertEqual(attempt.kind, .usableSnapshot)
+        XCTAssertNil(attempt.retryNotBefore)
+    }
+
+    func testPartialRefreshEntersBackoffWithoutAdvancingSuccessfulTTL() async throws {
+        let context = makeContext()
+        let record = try XCTUnwrap(store.all().first)
+        let cached = makeSuccessMovement(court: context.searchCourt)
+        record.movement = cached
+        record.snapshot = MovementDerivation.snapshot(from: cached, context: context)
+        let clock = TestRefreshClock(Date(timeIntervalSince1970: 1_900_000_000))
+        let lastSuccess = clock.now.addingTimeInterval(-RefreshSettings.ttl - 60)
+        record.movementFetchedAt = lastSuccess
+        record.addedAt = clock.now.addingTimeInterval(-24 * 60 * 60)
+        record.seenAt = clock.now
+        var partial = cached
+        partial.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        let service = FixedMovement(partial)
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(), serviceBuilder: { _ in service },
+            walkDiagnostics: clock.diagnostics)
+
+        center.refreshAll(force: false)
+        await center.waitUntilWalkIdle()
+
+        let attempt = try XCTUnwrap(store.record(forKey: record.key)?.sourceRefreshAttempt)
+        XCTAssertEqual(attempt.kind, .partial)
+        XCTAssertEqual(attempt.consecutiveRefreshFailures, 1)
+        XCTAssertNotNil(attempt.retryNotBefore)
+        XCTAssertEqual(record.movementFetchedAt, lastSuccess,
+                       "partial data must not advance the successful movement TTL")
+        center.refreshAll(force: false)
+        let partialCallCount = await service.calls
+        XCTAssertEqual(partialCallCount, 1,
+                       "a partial result must honor its retry cooldown")
+    }
+
+    func testBackedOffCourtDoesNotBlockDueEnforcementRefresh() async throws {
+        let context = makeContext()
+        let record = try XCTUnwrap(store.all().first)
+        var cached = makeSuccessMovement(court: context.searchCourt)
+        let writ = CourtEnforcementDocument(id: "electronic-1", electronicID: "11RS#1")
+        cached.executionDocuments = [writ]
+        record.movement = cached
+        record.snapshot = MovementDerivation.snapshot(from: cached, context: context)
+        let now = Date()
+        record.movementFetchedAt = now.addingTimeInterval(-RefreshSettings.ttl - 60)
+        record.sourceRefreshAttempt = SourceAttempt(
+            kind: .transportFailure,
+            provenance: SourceProvenance(operation: .movement, sourceFamily: "sudrf",
+                                         host: context.searchDomain,
+                                         observedAt: now.addingTimeInterval(-60)),
+            consecutiveRefreshFailures: 1,
+            retryNotBefore: now.addingTimeInterval(60 * 60))
+        try store.save()
+
+        let service = RetryMovement(makeSuccessMovement(court: context.searchCourt))
+        let fssp = ScriptedFSSP([.step(.notFound(EnforcementLookup(state: .notFound)))])
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(), serviceBuilder: { _ in service },
+            fsspDiscover: { document in try await fssp.discover(document) })
+        center.refreshAll(force: false)
+        await center.waitUntilWalkIdle()
+
+        let courtCallCount = await service.calls
+        XCTAssertEqual(courtCallCount, 0,
+                       "court refresh is in backoff and must not run")
+        let fsspDocuments = await fssp.documents
+        XCTAssertEqual(fsspDocuments, [writ.id],
+                       "due enforcement discovery remains independently eligible")
+        XCTAssertEqual(record.sourceRefreshAttempt?.kind, .transportFailure)
+    }
+
+    func testPriorityWalkProcessesAll458CandidatesWithoutStarvation() async throws {
+        let clock = TestRefreshClock(Date(timeIntervalSince1970: 1_900_000_000))
+        let manyStore = TrackedStore(inMemory: true)
+        let count = 458
+        var records: [TrackedCaseRecord] = []
+        for index in 0..<count {
+            var context = makeContext()
+            context.caseNumber = "2-\(10_000 + index)/2026"
+            records.append(try manyStore.upsert(
+                context: context, snapshot: nil, movement: nil, collections: []))
+        }
+        let eligibleAt = clock.now.addingTimeInterval(-13 * 60 * 60)
+        for record in records {
+            record.addedAt = clock.now.addingTimeInterval(-60 * 60)
+            record.seenAt = clock.now
+            record.movementFetchedAt = eligibleAt.addingTimeInterval(-RefreshSettings.ttl)
+        }
+        let opened = records[17]
+        let urgent = records[203]
+        let unread = records[377]
+        let recentlyAttemptedOrdinary = records[450]
+        let starvedOrdinary = records[451]
+        unread.seenAt = nil
+        urgent.movementFetchedAt = clock.now.addingTimeInterval(-RefreshSettings.ttl - 60)
+        let threeDaysOverdue = clock.now.addingTimeInterval(-3 * 24 * 60 * 60
+                                                            - RefreshSettings.ttl)
+        recentlyAttemptedOrdinary.movementFetchedAt = threeDaysOverdue
+        recentlyAttemptedOrdinary.sourceRefreshAttempt = SourceAttempt(
+            kind: .transportFailure,
+            provenance: SourceProvenance(
+                operation: .movement, sourceFamily: "sudrf", host: "syktsud--komi.sudrf.ru",
+                observedAt: clock.now.addingTimeInterval(-60 * 60)),
+            consecutiveRefreshFailures: 1,
+            retryNotBefore: clock.now.addingTimeInterval(-30 * 60))
+        starvedOrdinary.movementFetchedAt = threeDaysOverdue
+        let urgentContext = try XCTUnwrap(urgent.context)
+        var snapshot = MovementDerivation.snapshot(
+            from: makeSuccessMovement(court: urgentContext.searchCourt), context: urgentContext)
+        snapshot.deadlines = [StoredDeadline(
+            kind: "appeal", what: "Апелляционная жалоба", basis: "test",
+            calLabel: "Срок", dateRef: clock.now.addingTimeInterval(24 * 60 * 60)
+                .timeIntervalSinceReferenceDate, statusRaw: "confirmed")]
+        urgent.snapshot = snapshot
+        try manyStore.save()
+
+        let service = OrderedFailureMovement()
+        let center = RefreshCenter(
+            store: manyStore, client: SudrfClient(),
+            serviceBuilder: { _ in service }, walkDiagnostics: clock.diagnostics)
+        center.openedKey = { opened.key }
+        center.refreshAll(force: false)
+        await center.waitUntilWalkIdle()
+
+        let visited = await service.caseNumbers
+        XCTAssertEqual(visited.count, count)
+        XCTAssertEqual(Set(visited).count, count, "all queued cases must be attempted once")
+        XCTAssertEqual(visited.first, opened.caseNumber)
+        XCTAssertEqual(visited.dropFirst().first, starvedOrdinary.caseNumber,
+                       "a case without a prior attempt must age into the urgent bucket")
+        XCTAssertEqual(visited.dropFirst(2).first, urgent.caseNumber,
+                       "a recent attempt must prevent old TTL age from stealing urgency")
+        XCTAssertEqual(visited.dropFirst(3).first, unread.caseNumber)
+        XCTAssertEqual(center.walkProgress, nil)
+        XCTAssertEqual(manyStore.all().count, count)
     }
 
     func testTreasuryErrorPreservesLastSuccessWithoutNewBadge() async throws {

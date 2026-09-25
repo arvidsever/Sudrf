@@ -149,6 +149,10 @@ public actor SudrfClient {
         maxAttempts = value
     }
 
+    internal func requestWaiterCountForTesting() -> Int {
+        requestWaiters.count
+    }
+
     /// Загрузить страницу и декодировать как windows-1251.
     public func fetchHTML(_ url: URL) async throws -> String {
         try await fetchHTML(url, allowHTTPFallback: true)
@@ -934,23 +938,86 @@ public actor SudrfClient {
         protectsMagistrateCaptchaRedirects: Bool,
         validatesSudrfRedirects: Bool
     ) async throws -> (data: Data, response: URLResponse, redirect: URLRequest?) {
-        try await acquireRequestSlot()
-        defer { releaseRequestSlot() }
-
-        if let lastRequestStartAt {
-            let wait = minInterval - Date().timeIntervalSince(lastRequestStartAt)
-            if wait > 0 {
-                try await Task.sleep(for: .seconds(wait))
+        let collector = TransportTiming.collector
+        let host = TransportTimingCollector.canonicalHost(for: request.url)
+        var queueWaitSeconds = 0.0
+        var throttleWaitSeconds = 0.0
+        var sessionPreparationSeconds = 0.0
+        var responseSeconds = 0.0
+        var failed = false
+        var cancelled = false
+        var didStartNetwork = false
+        defer {
+            if didStartNetwork {
+                collector?.record(
+                    host: host,
+                    queueWaitSeconds: queueWaitSeconds,
+                    throttleWaitSeconds: throttleWaitSeconds,
+                    sessionPreparationSeconds: sessionPreparationSeconds,
+                    responseSeconds: responseSeconds,
+                    failed: failed,
+                    cancelled: cancelled)
             }
         }
-        try Task.checkCancellation()
-        let session = try await session(for: request)
-        let delegate = RedirectCaptureDelegate(
-            protectsMagistrateCaptcha: protectsMagistrateCaptchaRedirects,
-            validatesSudrfRedirects: validatesSudrfRedirects)
-        lastRequestStartAt = Date()
-        let result = try await session.data(for: request, delegate: delegate)
-        return (result.0, result.1, delegate.takeRedirect())
+
+        do {
+            let queueStartedAt = SuspendingClock.now
+            do {
+                try await acquireRequestSlot()
+                queueWaitSeconds = TransportTimingCollector.elapsedSeconds(since: queueStartedAt)
+            } catch {
+                queueWaitSeconds = TransportTimingCollector.elapsedSeconds(since: queueStartedAt)
+                throw error
+            }
+            defer { releaseRequestSlot() }
+
+            if let lastRequestStartAt {
+                let wait = minInterval - Date().timeIntervalSince(lastRequestStartAt)
+                if wait > 0 {
+                    let throttleStartedAt = SuspendingClock.now
+                    do {
+                        try await Task.sleep(for: .seconds(wait))
+                        throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                    } catch {
+                        throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                        throw error
+                    }
+                }
+            }
+            try Task.checkCancellation()
+
+            let preparationStartedAt = SuspendingClock.now
+            let session: URLSession
+            do {
+                session = try await self.session(for: request)
+                sessionPreparationSeconds = TransportTimingCollector.elapsedSeconds(since: preparationStartedAt)
+            } catch {
+                sessionPreparationSeconds = TransportTimingCollector.elapsedSeconds(since: preparationStartedAt)
+                throw error
+            }
+
+            let delegate = RedirectCaptureDelegate(
+                protectsMagistrateCaptcha: protectsMagistrateCaptchaRedirects,
+                validatesSudrfRedirects: validatesSudrfRedirects)
+            let networkStartedAt = SuspendingClock.now
+            lastRequestStartAt = Date()
+            didStartNetwork = true
+            do {
+                let result = try await session.data(for: request, delegate: delegate)
+                responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                if let http = result.1 as? HTTPURLResponse, http.statusCode >= 400 {
+                    failed = true
+                }
+                return (result.0, result.1, delegate.takeRedirect())
+            } catch {
+                responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                throw error
+            }
+        } catch {
+            cancelled = TransportTimingCollector.isCancellation(error)
+            failed = !cancelled
+            throw error
+        }
     }
 
     private func session(for request: URLRequest) async throws -> URLSession {

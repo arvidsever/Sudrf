@@ -129,10 +129,22 @@ final class RefreshWalkDiagnosticsTests: XCTestCase {
             executionOutcome: "enforcementCompleted",
             sourceAttempt: nil)
 
+        let transport = RefreshWalkReport.TransportTiming(
+            attemptCount: 2, failureCount: 1, cancelledCount: 0,
+            awakeDurationSeconds: 38,
+            hosts: [RefreshWalkReport.TransportTiming.Host(
+                host: "court-a--region.sudrf.ru", attemptCount: 2,
+                failureCount: 1, cancelledCount: 0,
+                queueWaitSeconds: 4, queueWaitP95Seconds: 3,
+                throttleWaitSeconds: 1, throttleWaitP95Seconds: 1,
+                sessionPreparationSeconds: 2, sessionPreparationP95Seconds: 2,
+                responseSeconds: 18, responseP95Seconds: 12)])
         let report = measurement.report(
-            finishedAt: start.addingTimeInterval(40), cancelled: false)
+            finishedAt: start.addingTimeInterval(40), cancelled: false,
+            transportTiming: transport)
 
         XCTAssertEqual(report.durationSeconds, 40)
+        XCTAssertEqual(report.transportTiming?.awakeDurationSeconds, 38)
         XCTAssertEqual(report.eligibleTotal, 3)
         XCTAssertEqual(report.courtEligible, 2)
         XCTAssertEqual(report.enforcementOnly, 1)
@@ -156,10 +168,19 @@ final class RefreshWalkDiagnosticsTests: XCTestCase {
         XCTAssertEqual(report.hosts.first(where: {
             $0.host == "higher-a.sudrf.ru"
         })?.affectedSourceCount, 1)
+        XCTAssertEqual(report.formatVersion, 2)
+        XCTAssertEqual(report.transportTiming, transport)
 
         let encoded = String(decoding: try JSONEncoder().encode(report), as: UTF8.self)
         XCTAssertFalse(encoded.contains("secret-case-key"))
         XCTAssertFalse(encoded.contains("secret-enforcement-key"))
+
+        var legacy = report
+        legacy.formatVersion = 1
+        legacy.transportTiming = nil
+        let decodedLegacy = try JSONDecoder().decode(
+            RefreshWalkReport.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decodedLegacy.transportTiming)
     }
 
     func testWriterKeepsOnlyTwentyAtomicDecodableReports() throws {

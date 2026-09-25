@@ -38,7 +38,7 @@ final class AppRouterOpenRefreshTests: XCTestCase {
             collections: [])
         let router = try AppRouter(
             modelContainer: container, modelContainerIsPrepared: true)
-        router.refreshCenter.repairBeforeRefresh = { _ in throw CancellationError() }
+        router.refreshCenter.repairBeforeRefresh = { _, _ in throw CancellationError() }
 
         router.openCase(key: cached.key)
         XCTAssertEqual(router.liveMovement?.caseNumber, cachedContext.caseNumber)

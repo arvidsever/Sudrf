@@ -344,7 +344,7 @@ final class TrackedCaseRepairCoordinator {
 
     /// Импортный batch не должен получить хвост общего startup repair: сначала
     /// завершаем уже идущий проход, затем ремонтируем только его persistent keys.
-    func run(keys: Set<String>) async throws -> CaseRepairSummary {
+    func run(keys: Set<String>, forceAttempt: Bool = false) async throws -> CaseRepairSummary {
         guard !keys.isEmpty else { return CaseRepairSummary() }
         var scopedKeys = keys
         var preceding = CaseRepairSummary()
@@ -380,7 +380,8 @@ final class TrackedCaseRepairCoordinator {
         let keysForPass = scopedKeys
         let task = Task { @MainActor [self] in
             defer { scopedTask = nil }
-            return try await runScopedPass(keys: keysForPass)
+            return try await runScopedPass(keys: keysForPass,
+                                           forceAttempt: forceAttempt)
         }
         scopedTask = task
         do {
@@ -449,7 +450,8 @@ final class TrackedCaseRepairCoordinator {
         }
     }
 
-    private func runScopedPass(keys: Set<String>) async throws -> CaseRepairSummary {
+    private func runScopedPass(keys: Set<String>, forceAttempt: Bool) async throws
+        -> CaseRepairSummary {
         var summary = CaseRepairSummary()
         do {
             try resetPreexistingSubjectKASExclusionsIfNeeded()
@@ -471,7 +473,7 @@ final class TrackedCaseRepairCoordinator {
             for key in repairKeys {
                 guard !Task.isCancelled,
                       try store.recordForMutation(forKey: key) != nil,
-                      shouldAttempt(key: key) else { continue }
+                      shouldAttempt(key: key, forceAttempt: forceAttempt) else { continue }
                 try await repairHigherAnchor(key: key, caseKey: key, summary: &summary)
             }
             summary.notFound = Self.unique(summary.notFound)
@@ -492,8 +494,8 @@ final class TrackedCaseRepairCoordinator {
 
     /// Точечный preflight для RefreshCenter. Общий reconciler гарантирует,
     /// что refresh продолжится уже по каноническому persistent locator.
-    func repairIfNeeded(key: String) async throws -> Outcome {
-        let summary = try await run(keys: [key])
+    func repairIfNeeded(key: String, forceAttempt: Bool = false) async throws -> Outcome {
+        let summary = try await run(keys: [key], forceAttempt: forceAttempt)
         return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
     }
 
@@ -1152,7 +1154,10 @@ final class TrackedCaseRepairCoordinator {
 
     // MARK: Persistent retry policy
 
-    private func shouldAttempt(key: String) -> Bool {
+    private func shouldAttempt(key: String, forceAttempt: Bool = false) -> Bool {
+        // An explicit refresh retries an eligible chain once even after a
+        // previous terminal result; background walks still honor every marker.
+        if forceAttempt { return true }
         let unsupported = Set(defaults.stringArray(forKey: unsupportedKey) ?? [])
         let completed = Set(defaults.stringArray(forKey: completedKey) ?? [])
         guard !unsupported.contains(key), !completed.contains(key) else { return false }

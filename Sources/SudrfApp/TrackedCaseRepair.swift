@@ -291,6 +291,7 @@ final class TrackedCaseRepairCoordinator {
     /// routing now supports 4-… → m, so clear only those exclusions once;
     /// subsequent failures use the ordinary retry policy.
     private static let subjectUPKRetryResetKey = "importChainRepair.v6.subjectUPKRetryReset"
+    private static let moscowCrossPortalRetryResetKey = "importChainRepair.v6.moscowCrossPortalRetryReset"
     private var attemptsKey: String { "\(Self.migrationID).attempts" }
     private var nextRetryKey: String { "\(Self.migrationID).nextRetry" }
     private var unsupportedKey: String { "\(Self.migrationID).unsupported" }
@@ -421,6 +422,7 @@ final class TrackedCaseRepairCoordinator {
         do {
             try resetPreexistingSubjectKASExclusionsIfNeeded()
             try resetPreexistingSubjectUPKExclusionsIfNeeded()
+            try resetPreexistingMoscowCrossPortalExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes()
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -452,6 +454,7 @@ final class TrackedCaseRepairCoordinator {
         do {
             try resetPreexistingSubjectKASExclusionsIfNeeded()
             try resetPreexistingSubjectUPKExclusionsIfNeeded()
+            try resetPreexistingMoscowCrossPortalExclusionsIfNeeded()
             let normalized = try normalizeStoredKoAPRoutes(keys: keys)
             summary.rerouted += normalized.count
             summary.affectedCaseKeys.formUnion(normalized.keys)
@@ -813,6 +816,33 @@ final class TrackedCaseRepairCoordinator {
                      forKey: Self.subjectUPKRetryResetKey)
     }
 
+    private func resetPreexistingMoscowCrossPortalExclusionsIfNeeded() throws {
+        let records = try store.allForMutation()
+        let reset = Set(defaults.stringArray(forKey: Self.moscowCrossPortalRetryResetKey) ?? [])
+        let targets = records.filter { record in
+            guard let context = record.context,
+                  !reset.contains(record.key),
+                  context.branch == .general,
+                  [.appeal, .cassation].contains(context.baseInstanceLevel),
+                  context.courtLevel != .district,
+                  context.cartotekaId.hasPrefix("p"),
+                  (context.region.lowercased().contains("москва")
+                    && !context.region.lowercased().contains("област")
+                    || (context.judicialUID ?? "").hasPrefix("77")),
+                  let url = context.cardURLString.flatMap(URL.init(string:)),
+                  let host = url.host?.lowercased() else { return false }
+            return host == "1ap.sudrf.ru" || host == "2kas.sudrf.ru"
+        }
+        guard !targets.isEmpty else { return }
+        let keys = Set(targets.flatMap { [$0.key] + $0.legacyKeyAliases })
+        for defaultsKey in [unsupportedKey, completedKey] {
+            defaults.set((defaults.stringArray(forKey: defaultsKey) ?? [])
+                .filter { !keys.contains($0) }, forKey: defaultsKey)
+        }
+        defaults.set(Array(reset.union(targets.map(\.key))).sorted(),
+                     forKey: Self.moscowCrossPortalRetryResetKey)
+    }
+
     private func appendEvent(_ kind: CaseRepairEvent.Kind, caseKey: String,
                              oldKey: String, old: MovementContext,
                              newKey: String? = nil, new: MovementContext? = nil,
@@ -942,7 +972,7 @@ final class TrackedCaseRepairCoordinator {
             judicialUID: ctx.judicialUID).rawValue
         ctx.sourceKnownCard = Self.knownCard(from: ctx)
         var known = anchor.knownCards ?? []
-        if let source = anchor.sourceKnownCard ?? Self.knownCard(from: anchor) { known.append(source) }
+        if let source = Self.knownCard(from: anchor) { known.append(source) }
         known.append(contentsOf: origin.intermediateCards.compactMap { intermediate in
             Self.knownCard(court: intermediate.court, cartoteka: intermediate.cartoteka,
                            result: intermediate.result, card: intermediate.card)
@@ -1031,7 +1061,7 @@ final class TrackedCaseRepairCoordinator {
             guard let old = rec.context else { continue }
             known.append(contentsOf: old.knownCards ?? [])
             if old.key != context.key,
-               let source = old.sourceKnownCard ?? Self.knownCard(from: old) { known.append(source) }
+               let source = Self.knownCard(from: old) { known.append(source) }
         }
         context.knownCards = Self.dedupKnown(known)
 
@@ -1546,7 +1576,17 @@ final class TrackedCaseRepairCoordinator {
     }
 
     static func knownCard(from ctx: MovementContext) -> KnownCard? {
-        if let source = ctx.sourceKnownCard { return source }
+        if var source = ctx.sourceKnownCard {
+            if source.sourceURL == nil,
+               let url = ctx.cardURLString.flatMap(URL.init(string:)),
+               let link = try? SudrfCaseCardLink(url: url),
+               link.moduleHost == SudrfHost.moduleHost(source.domain),
+               link.caseID == source.caseID,
+               link.caseUID == source.caseUID {
+                source.sourceURL = link.sanitizedURL
+            }
+            return source
+        }
         guard let url = ctx.cardURLString.flatMap(URL.init(string:)) else { return nil }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func uniqueValue(_ name: String) -> String? {
@@ -1557,13 +1597,16 @@ final class TrackedCaseRepairCoordinator {
         guard let id = uniqueValue("case_id"), let guid = uniqueValue("case_uid") else {
             return nil
         }
+        let link = try? SudrfCaseCardLink(url: url)
         return KnownCard(domain: ctx.searchDomain, courtTitle: ctx.courtTitle,
                          caseID: id, caseUID: guid,
                          deloID: uniqueValue("delo_id") ?? ctx.cartoteka?.deloID ?? "",
                          new: uniqueValue("new") ?? ctx.cartoteka?.new ?? "0",
                          caseNumber: ctx.caseNumber,
                          levelRaw: ctx.baseInstanceLevel.rawValue,
-                         cartotekaID: ctx.cartotekaId)
+                         cartotekaID: ctx.cartotekaId,
+                         sourceURL: link?.moduleHost == SudrfHost.moduleHost(ctx.searchDomain)
+                            ? link?.sanitizedURL : nil)
     }
 
     static func knownCard(court: Court, cartoteka: Cartoteka,
@@ -1579,10 +1622,20 @@ final class TrackedCaseRepairCoordinator {
     }
 
     static func dedupKnown(_ cards: [KnownCard]) -> [KnownCard] {
-        var seen = Set<String>()
-        return cards.filter {
-            seen.insert("\(SudrfHost.moduleHost($0.domain))|\($0.caseID)|\($0.caseUID)|\($0.deloID)|\($0.new)").inserted
+        var indexByLocator: [String: Int] = [:]
+        var result: [KnownCard] = []
+        for card in cards {
+            let locator = "\(SudrfHost.moduleHost(card.domain))|\(card.caseID)|\(card.caseUID)|\(card.deloID)|\(card.new)"
+            if let index = indexByLocator[locator] {
+                if result[index].sourceURL == nil, card.sourceURL != nil {
+                    result[index] = card
+                }
+            } else {
+                indexByLocator[locator] = result.count
+                result.append(card)
+            }
         }
+        return result
     }
 
     private static func canonicalActKey(_ id: String) -> String {

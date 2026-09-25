@@ -1445,7 +1445,7 @@ public actor MovementService: MovementProviding {
     /// Карточка по прямой ссылке → инстанция (+акт, если опубликован).
     /// Ошибка пробрасывается локальному caller'у, который помечает домен как
     /// неполный, но продолжает сборку пригодной части движения.
-    private func instanceFromKnownCard(_ kc: KnownCard)
+    func instanceFromKnownCard(_ kc: KnownCard)
         async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
         let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle, level: .district)
@@ -1496,11 +1496,11 @@ public actor MovementService: MovementProviding {
     /// Проверяет дубль инстанции. Для вышестоящих судов сравнение по
     /// `moduleHost` намеренно объединяет dash- и dot-формы домена; для кругов
     /// домашнего суда сохраняется прежнее точное сравнение домена.
-    private static func containsInstance(_ instances: [CaseInstance], domain: String,
-                                         caseNumber: String? = nil,
-                                         sourceURL: URL? = nil,
-                                         preferSourceIdentity: Bool = false,
-                                         usingCanonicalHost: Bool) -> Bool {
+    static func containsInstance(_ instances: [CaseInstance], domain: String,
+                                 caseNumber: String? = nil,
+                                 sourceURL: URL? = nil,
+                                 preferSourceIdentity: Bool = false,
+                                 usingCanonicalHost: Bool) -> Bool {
         instances.contains { instance in
             if preferSourceIdentity,
                let sourceURL, let existingURL = instance.sourceURL,
@@ -1519,10 +1519,10 @@ public actor MovementService: MovementProviding {
     /// контракт: акт и тело добавляются только вместе и только если сама
     /// инстанция не оказалась дублем по каноническому хосту и номеру дела.
     @discardableResult
-    private static func appendIfNew(_ instance: CaseInstance, act: CaseAct?, body: String?,
-                                    preferSourceIdentity: Bool = false,
-                                    to instances: inout [CaseInstance], acts: inout [CaseAct],
-                                    actBodies: inout [String: String]) -> Bool {
+    static func appendIfNew(_ instance: CaseInstance, act: CaseAct?, body: String?,
+                            preferSourceIdentity: Bool = false,
+                            to instances: inout [CaseInstance], acts: inout [CaseAct],
+                            actBodies: inout [String: String]) -> Bool {
         guard !containsInstance(instances, domain: instance.domain,
                                 caseNumber: instance.caseNumber, sourceURL: instance.sourceURL,
                                 preferSourceIdentity: preferSourceIdentity,

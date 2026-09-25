@@ -211,8 +211,12 @@ final class MosGorSudTests: XCTestCase {
     }
 
     private func mock() -> MockMosGorSud {
+        mock(baseUID: uid)
+    }
+
+    private func mock(baseUID: String?) -> MockMosGorSud {
         let firstCard = MosGorSudCard(
-            uid: uid, caseNumber: "02-1234/2024", court: "Тверской районный суд",
+            uid: baseUID, caseNumber: "02-1234/2024", court: "Тверской районный суд",
             judge: "Сидорова А.А.", category: "Споры ЗПП", result: "Удовлетворено",
             sessions: [CaseSession(date: "17.06.2024", event: "Судебное заседание",
                                    result: "Вынесено решение")],
@@ -324,6 +328,83 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(mv.actBodies[kas.actID ?? ""], "Определение…")
     }
 
+    func testMoscowMovementDirectlyRefreshesKnownAppellateCardsWithoutUID() async throws {
+        let firstURL = try XCTUnwrap(URL(string:
+            "https://1ap.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=2800001&new=2800001"))
+        let secondURL = try XCTUnwrap(URL(string:
+            "https://2ap.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=2&case_uid=guid-2&delo_id=2800001&new=2800001"))
+        let firstKnownCard = KnownCard(
+            domain: "1ap.sudrf.ru", courtTitle: "Первый апелляционный суд",
+            caseID: "1", caseUID: "guid", deloID: "2800001", new: "2800001",
+            caseNumber: "8а-7078/2022", levelRaw: CaseInstance.Level.appeal.rawValue,
+            cartotekaID: "g1", sourceURL: firstURL)
+        let secondKnownCard = KnownCard(
+            domain: "2ap.sudrf.ru", courtTitle: "Второй апелляционный суд",
+            caseID: "2", caseUID: "guid-2", deloID: "2800001", new: "2800001",
+            caseNumber: "8а-601/2022", levelRaw: CaseInstance.Level.appeal.rawValue,
+            cartotekaID: "g1", sourceURL: secondURL)
+        let firstCard = CaseCard(rawText: "", actText: "Апелляционное определение",
+                                 sessions: [CaseSession(date: "01.10.2020", event: "Заседание")],
+                                 judge: "Иванова И.И.", result: "Оставлено без изменения",
+                                 caseNumber: firstKnownCard.caseNumber)
+        let secondCard = CaseCard(rawText: "", actText: "Апелляционное определение",
+                                  judge: "Петров П.П.", result: "Без изменения",
+                                  caseNumber: secondKnownCard.caseNumber)
+        let client = MockEmptyCase(directCards: [firstURL: firstCard,
+                                                  secondURL: secondCard])
+        let service = MovementService(client: client,
+                                      knownCards: [firstKnownCard, secondKnownCard,
+                                                   firstKnownCard],
+                                      mosgorsud: mock(baseUID: nil))
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+
+        XCTAssertEqual(movement.uid, "")
+        XCTAssertEqual(movement.instances.filter { $0.domain == "1ap.sudrf.ru" }.count, 1)
+        XCTAssertEqual(movement.instances.first { $0.domain == "1ap.sudrf.ru" }?.judge,
+                       "Иванова И.И.")
+        XCTAssertEqual(movement.instances.first { $0.domain == "2ap.sudrf.ru" }?.judge,
+                       "Петров П.П.")
+        let directFetchCalls = await client.recordedDirectURLs()
+        XCTAssertEqual(directFetchCalls, [firstURL, secondURL])
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["mos-gorsud.ru"])
+    }
+
+    func testFailedKnownFirstAppellateRefreshStaysPartialAndPreservesCache() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://1ap.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1&case_uid=guid&delo_id=2800001&new=2800001"))
+        let knownCard = KnownCard(
+            domain: "1ap.sudrf.ru", courtTitle: "Первый апелляционный суд",
+            caseID: "1", caseUID: "guid", deloID: "2800001", new: "2800001",
+            caseNumber: "8а-7078/2022", levelRaw: CaseInstance.Level.appeal.rawValue,
+            cartotekaID: "g1", sourceURL: url)
+        let service = MovementService(client: MockEmptyCase(),
+                                      knownCards: [knownCard],
+                                      mosgorsud: mock(baseUID: nil))
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let fresh = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+        let cached = CaseMovement(
+            uid: "", caseNumber: firstRow().caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .appeal, court: knownCard.courtTitle,
+                caseNumber: knownCard.caseNumber ?? "—", judge: "Старый судья",
+                domain: knownCard.domain, foundByUID: false,
+                result: "Сохранённый результат", sessions: [], sourceURL: url)],
+            complaints: [:], acts: [])
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertEqual(Set(fresh.incompleteHigherCourtDomains ?? []),
+                       ["mos-gorsud.ru", "1ap.sudrf.ru"])
+        XCTAssertTrue(merged.instances.contains {
+            $0.domain == "1ap.sudrf.ru" && $0.result == "Сохранённый результат"
+        })
+    }
+
     func testPortalFailureMarksPartialAndPreservesCachedAppeal() async throws {
         let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
         let cached = try await MovementService(client: MockEmptyCase(), higherCourtDomains: [],
@@ -409,6 +490,13 @@ private struct MockMosGorSud: MosGorSudProviding {
 }
 
 private actor MockEmptyCase: CaseProviding {
+    let directCards: [URL: CaseCard]
+    private var directFetchCalls: [URL] = []
+
+    init(directCards: [URL: CaseCard] = [:]) {
+        self.directCards = directCards
+    }
+
     func search(court: Court, cartoteka: Cartoteka,
                 field: SearchField, value: String) async throws -> [CaseSearchResult] { [] }
     func fetchCard(court: Court, caseID: String, caseUID: String,
@@ -418,6 +506,12 @@ private actor MockEmptyCase: CaseProviding {
     func fetchCard(url: URL) async throws -> CaseCard {
         throw SudrfError.http(status: 404)
     }
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        directFetchCalls.append(url)
+        guard let card = directCards[url] else { throw SudrfError.http(status: 404) }
+        return SudrfCaseCardFetchResult(card: card, responseURL: url)
+    }
+    func recordedDirectURLs() -> [URL] { directFetchCalls }
 }
 
 private actor MockKas: CaseProviding {

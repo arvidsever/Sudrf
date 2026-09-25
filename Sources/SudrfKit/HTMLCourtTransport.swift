@@ -69,29 +69,79 @@ actor HTMLCourtTransport {
         let attempts = max(1, maxAttempts)
 
         for attempt in 0..<attempts {
-            try await throttle()
-            var request = URLRequest(url: url)
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-            request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+            let collector = TransportTiming.collector
+            let host = TransportTimingCollector.canonicalHost(for: url)
+            var throttleWaitSeconds = 0.0
+            var responseSeconds = 0.0
+            var failed = false
+            var cancelled = false
+            var didStartNetwork = false
+            defer {
+                if didStartNetwork {
+                    collector?.record(
+                        host: host,
+                        queueWaitSeconds: 0,
+                        throttleWaitSeconds: throttleWaitSeconds,
+                        sessionPreparationSeconds: 0,
+                        responseSeconds: responseSeconds,
+                        failed: failed,
+                        cancelled: cancelled)
+                }
+            }
 
             do {
-                let (data, response) = try await session.data(for: request)
+                let throttleStartedAt = SuspendingClock.now
+                do {
+                    try await throttle()
+                    throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                } catch {
+                    throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                    throw error
+                }
+
+                var request = URLRequest(url: url)
+                request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+                request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+
+                let networkStartedAt = SuspendingClock.now
+                didStartNetwork = true
+                let (data, response): (Data, URLResponse)
+                do {
+                    (data, response) = try await session.data(for: request)
+                    responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                } catch {
+                    responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                    throw error
+                }
                 let http = response as? HTTPURLResponse
                 if let http, (500..<600).contains(http.statusCode) {
+                    failed = true
                     lastError = SudrfError.http(status: http.statusCode)
                     try await backoff(attempt)
                     continue
                 }
                 if let http, !(200..<300).contains(http.statusCode) {
+                    failed = true
                     throw SudrfError.http(status: http.statusCode)
                 }
                 if let html = decodingPolicy.decode(data) { return html }
                 throw SudrfError.decodingFailed
+            } catch is CancellationError {
+                cancelled = true
+                throw CancellationError()
             } catch let error as URLError {
+                if error.code == .cancelled {
+                    cancelled = true
+                    throw error
+                }
+                failed = true
                 lastError = error
                 try await backoff(attempt)
                 continue
+            } catch {
+                failed = true
+                throw error
             }
         }
         throw lastError
@@ -110,50 +160,90 @@ actor HTMLCourtTransport {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
         for attempt in 0..<attempts {
+            let collector = TransportTiming.collector
+            let host = TransportTimingCollector.canonicalHost(for: url)
+            var throttleWaitSeconds = 0.0
+            var responseSeconds = 0.0
+            var failed = false
+            var cancelled = false
+            var didStartNetwork = false
+            defer {
+                if didStartNetwork {
+                    collector?.record(
+                        host: host,
+                        queueWaitSeconds: 0,
+                        throttleWaitSeconds: throttleWaitSeconds,
+                        sessionPreparationSeconds: 0,
+                        responseSeconds: responseSeconds,
+                        failed: failed,
+                        cancelled: cancelled)
+                }
+            }
+
             try Task.checkCancellation()
-            try await throttle()
-            var request = URLRequest(url: url)
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue(
-                "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream;q=0.8,*/*;q=0.1",
-                forHTTPHeaderField: "Accept")
-            request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
 
             do {
-                let (bytes, response) = try await session.bytes(for: request)
-                guard let http = response as? HTTPURLResponse else {
-                    throw PublishedActFileError.unexpectedHTTPStatus(0)
-                }
-                guard http.statusCode == 200 else {
-                    throw PublishedActFileError.unexpectedHTTPStatus(http.statusCode)
-                }
-                let finalURL = http.url ?? url
-                guard Self.isAllowedSecureURL(finalURL, hosts: allowedHosts) else {
-                    throw PublishedActFileError.unsafeFinalURL
-                }
-                if let length = Self.contentLength(http), length > maxBytes {
-                    throw PublishedActFileError.downloadTooLarge(limit: maxBytes)
+                let throttleStartedAt = SuspendingClock.now
+                do {
+                    try await throttle()
+                    throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                } catch {
+                    throttleWaitSeconds = TransportTimingCollector.elapsedSeconds(since: throttleStartedAt)
+                    throw error
                 }
 
-                var data = Data()
-                if let length = Self.contentLength(http) {
-                    data.reserveCapacity(min(length, maxBytes))
-                }
-                for try await byte in bytes {
-                    try Task.checkCancellation()
-                    guard data.count < maxBytes else {
+                var request = URLRequest(url: url)
+                request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                request.setValue(
+                    "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream;q=0.8,*/*;q=0.1",
+                    forHTTPHeaderField: "Accept")
+                request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+
+                let networkStartedAt = SuspendingClock.now
+                didStartNetwork = true
+                do {
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw PublishedActFileError.unexpectedHTTPStatus(0)
+                    }
+                    guard http.statusCode == 200 else {
+                        throw PublishedActFileError.unexpectedHTTPStatus(http.statusCode)
+                    }
+                    let finalURL = http.url ?? url
+                    guard Self.isAllowedSecureURL(finalURL, hosts: allowedHosts) else {
+                        throw PublishedActFileError.unsafeFinalURL
+                    }
+                    if let length = Self.contentLength(http), length > maxBytes {
                         throw PublishedActFileError.downloadTooLarge(limit: maxBytes)
                     }
-                    data.append(byte)
+
+                    var data = Data()
+                    if let length = Self.contentLength(http) {
+                        data.reserveCapacity(min(length, maxBytes))
+                    }
+                    for try await byte in bytes {
+                        try Task.checkCancellation()
+                        guard data.count < maxBytes else {
+                            throw PublishedActFileError.downloadTooLarge(limit: maxBytes)
+                        }
+                        data.append(byte)
+                    }
+                    responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                    return DownloadedFile(
+                        data: data, finalURL: finalURL,
+                        contentType: http.value(forHTTPHeaderField: "Content-Type"))
+                } catch {
+                    responseSeconds = TransportTimingCollector.elapsedSeconds(since: networkStartedAt)
+                    throw error
                 }
-                return DownloadedFile(
-                    data: data, finalURL: finalURL,
-                    contentType: http.value(forHTTPHeaderField: "Content-Type"))
             } catch is CancellationError {
+                cancelled = true
                 throw CancellationError()
             } catch let error as URLError where error.code == .cancelled {
+                cancelled = true
                 throw error
             } catch let error as PublishedActFileError {
+                failed = true
                 if case .unexpectedHTTPStatus(let status) = error,
                    (500..<600).contains(status), attempt + 1 < attempts {
                     lastError = error
@@ -162,9 +252,13 @@ actor HTMLCourtTransport {
                 }
                 throw error
             } catch let error as URLError {
+                failed = true
                 lastError = error
                 guard attempt + 1 < attempts else { throw error }
                 try await backoff(attempt)
+            } catch {
+                failed = true
+                throw error
             }
         }
         throw lastError

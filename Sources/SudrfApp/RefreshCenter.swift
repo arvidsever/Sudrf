@@ -5,7 +5,7 @@
 //   • периодический обход: start() → каждые ~10 мин проверка, какие дела
 //     старше TTL (RefreshSettings), устаревшие обновляются по очереди;
 //   • принудительный: refreshAll(force: true) — кнопка «Проверить все»;
-//   • точечный: refresh(key:) — при открытии дела (SWR) и кнопка «Обновить».
+//   • точечный: refresh(key:) — первая загрузка без кэша и кнопка «Обновить».
 //
 //  Дедупликация по ключу: повторный refresh того же дела возвращает уже
 //  идущую задачу. Полный обход использует один судебный воркер: разные домены
@@ -14,7 +14,7 @@
 //  Ошибка одного дела не прерывает обход и НИКОГДА не трогает уже сохранённый кэш.
 
 import Foundation
-import SudrfKit
+@_spi(Diagnostics) import SudrfKit
 import CaptchaSolver
 import os
 
@@ -249,6 +249,21 @@ final class RefreshCenter: ObservableObject {
                 && (attempt.consecutiveRefreshFailures != nil || attempt.retryNotBefore != nil))
     }
 
+    private func hasTimeSensitiveEvent(_ record: TrackedCaseRecord, now: Date) -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let sevenDaysAgo = calendar.date(byAdding: .day, value: -7, to: today)
+            ?? today.addingTimeInterval(-7 * 24 * 60 * 60)
+        let endOfSeventhDay = calendar.date(byAdding: .day, value: 8, to: today)
+            ?? today.addingTimeInterval(8 * 24 * 60 * 60)
+        let nearbySession = record.snapshot?.sessions.compactMap(\.date)
+            .contains { $0 >= sevenDaysAgo && $0 < endOfSeventhDay } ?? false
+        let upcomingDeadline = record.snapshot?.deadlines.contains {
+            $0.isActive && $0.date >= today && $0.date < endOfSeventhDay
+        } ?? false
+        return nearbySession || upcomingDeadline
+    }
+
     private func priority(for record: TrackedCaseRecord, now: Date,
                           eligibleSince: Date?, lastAttempt: Date?) -> Int {
         let recentlyScheduled = walkScheduledAt[record.key].map {
@@ -257,16 +272,7 @@ final class RefreshCenter: ObservableObject {
         if openedKey?() == record.key && !recentlyScheduled {
             return 0
         }
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: now)
-        let sevenDaysOut = calendar.date(byAdding: .day, value: 7, to: today)
-            ?? today.addingTimeInterval(7 * 24 * 60 * 60)
-        let upcomingSession = record.snapshot?.sessions.compactMap(\.date)
-            .contains { $0 >= today && $0 <= sevenDaysOut } ?? false
-        let upcomingDeadline = record.snapshot?.deadlines.contains {
-            $0.isActive && $0.date >= today && $0.date <= sevenDaysOut
-        } ?? false
-        let base = upcomingSession || upcomingDeadline ? 1
+        let base = hasTimeSensitiveEvent(record, now: now) ? 1
             : (record.seenAt == nil || record.movementFetchedAt == nil ? 2 : 3)
         let waitingSince = [eligibleSince, lastAttempt].compactMap { $0 }.max() ?? now
         let age = max(0, now.timeIntervalSince(waitingSince))
@@ -424,10 +430,12 @@ final class RefreshCenter: ObservableObject {
         let now = walkDiagnostics.now() // Shared fakeable clock for eligibility and retry scheduling.
         let ttl = RefreshSettings.ttl
         let items: [WalkItem] = store.all().compactMap { rec in
+            let timeSensitive = hasTimeSensitiveEvent(rec, now: now)
             let courtTTLExpired = force
                 || rec.movementFetchedAt.map { now.timeIntervalSince($0) > ttl } ?? true
-            let courtDue = courtTTLExpired
-                && (force || Self.retryIsDue(rec.sourceRefreshAttempt, key: rec.key, now: now))
+            let courtDue = courtTTLExpired && (force
+                || timeSensitive
+                || Self.retryIsDue(rec.sourceRefreshAttempt, key: rec.key, now: now))
             let enforcementDue = needsEnforcementRefresh(rec, now: now, ttl: ttl)
             guard courtDue || enforcementDue else { return nil }
             let persistedAttempt = courtDue
@@ -453,6 +461,8 @@ final class RefreshCenter: ObservableObject {
             }()
             let eligibleSince: Date? = if force {
                 walkScheduledAt[rec.key] ?? persistedAttempt ?? rec.addedAt
+            } else if courtDue && timeSensitive {
+                ttlEligibleAt
             } else if courtDue {
                 [ttlEligibleAt, retryEligibleAt].compactMap { $0 }.max()
             } else if enforcementDue {
@@ -502,6 +512,8 @@ final class RefreshCenter: ObservableObject {
 
         walkGeneration += 1
         let gen = walkGeneration
+        let transportCollector = TransportTimingCollector()
+        let walkStartedAt = SuspendingClock.now
         walkTask = Task { [weak self] in
             guard let self else { return }
             var measurement = self.walkDiagnostics.makeMeasurement(
@@ -511,7 +523,11 @@ final class RefreshCenter: ObservableObject {
             defer {
                 let report = measurement.report(
                     finishedAt: self.walkDiagnostics.now(),
-                    cancelled: Task.isCancelled || measurement.completions.count < total)
+                    cancelled: Task.isCancelled || measurement.completions.count < total,
+                    transportTiming: .init(
+                        transportCollector.snapshot(),
+                        awakeDurationSeconds: TransportTimingCollector.elapsedSeconds(
+                            since: walkStartedAt)))
                 self.walkDiagnostics.save(report)
                 if self.walkGeneration == gen {
                     self.walkTask = nil; self.walkProgress = nil
@@ -529,9 +545,11 @@ final class RefreshCenter: ObservableObject {
                 let executionOutcome: String
                 var sourceAttempt: SourceAttempt? = nil
                 if item.courtDue {
-                    let execution = await self.refresh(
-                        key: item.key, forceEnforcement: false)?.value
-                        ?? RefreshExecution(effectiveKey: item.key, outcome: .notFound)
+                    let execution = await TransportTiming.$collector.withValue(
+                        transportCollector) {
+                        await self.refresh(key: item.key, forceEnforcement: false)?.value
+                            ?? RefreshExecution(effectiveKey: item.key, outcome: .notFound)
+                    }
                     executionOutcome = execution.outcome.diagnosticsName
                     let currentAttempt = self.store.record(
                         forKey: execution.effectiveKey)?.sourceRefreshAttempt

@@ -56,10 +56,20 @@ public struct SourceProvenance: Codable, Equatable, Sendable {
 public struct SourceAttempt: Codable, Equatable, Sendable {
     public var kind: SourceOutcomeKind
     public var provenance: SourceProvenance
+    /// Число последовательных неполных фоновых судебных попыток. Отдельно от
+    /// `provenance.attemptCount`, которое считает транспортные retries одного запроса.
+    /// Optional сохраняет чтение JSON, созданного до фонового backoff.
+    public var consecutiveRefreshFailures: Int? = nil
+    /// Зафиксированная граница следующей фоновой попытки (jitter выбирается один
+    /// раз), чтобы перезапуск приложения не передвигал её заново.
+    public var retryNotBefore: Date? = nil
 
-    public init(kind: SourceOutcomeKind, provenance: SourceProvenance) {
+    public init(kind: SourceOutcomeKind, provenance: SourceProvenance,
+                consecutiveRefreshFailures: Int? = nil, retryNotBefore: Date? = nil) {
         self.kind = kind
         self.provenance = provenance
+        self.consecutiveRefreshFailures = consecutiveRefreshFailures
+        self.retryNotBefore = retryNotBefore
     }
 }
 

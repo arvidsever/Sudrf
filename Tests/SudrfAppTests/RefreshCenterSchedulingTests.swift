@@ -1,5 +1,5 @@
 import XCTest
-import SudrfKit
+@_spi(Diagnostics) import SudrfKit
 @testable import SudrfApp
 
 @MainActor
@@ -8,12 +8,14 @@ final class RefreshCenterSchedulingTests: XCTestCase {
     private actor Probe: MovementProviding {
         private let failure: Bool
         private var requestedNumbers: [String] = []
+        private var scopedCalls = 0
 
         init(failure: Bool = false) { self.failure = failure }
 
         func movement(for base: CaseSearchResult, court: Court,
                       cartoteka: Cartoteka) async throws -> CaseMovement {
             requestedNumbers.append(base.caseNumber)
+            if TransportTiming.collector != nil { scopedCalls += 1 }
             if failure { throw SudrfError.caseCardTemporarilyUnavailable }
             return CaseMovement(
                 uid: "uid-\(base.caseNumber)", caseNumber: base.caseNumber,
@@ -26,6 +28,7 @@ final class RefreshCenterSchedulingTests: XCTestCase {
         }
 
         func requests() -> [String] { requestedNumbers }
+        func scopedRequestCount() -> Int { scopedCalls }
     }
 
     private actor FirstCallGate: MovementProviding {
@@ -120,6 +123,8 @@ final class RefreshCenterSchedulingTests: XCTestCase {
 
         let requests = await probe.requests()
         XCTAssertEqual(Array(requests.prefix(2)), [urgent.caseNumber, ordinary.caseNumber])
+        let scopedCalls = await probe.scopedRequestCount()
+        XCTAssertEqual(scopedCalls, 2, "court walk must scope all refresh requests")
     }
 
     func testSameDaySessionHasUrgentPriorityAfterMidnight() async throws {
@@ -145,6 +150,59 @@ final class RefreshCenterSchedulingTests: XCTestCase {
 
         let requests = await probe.requests()
         XCTAssertEqual(requests.first, today.caseNumber)
+    }
+
+    func testRecentAndUpcomingHearingsBypassBackoffButOlderHearingDoesNot() async throws {
+        let store = TrackedStore(inMemory: true)
+        let now = Date()
+        let recent = try store.upsert(
+            context: context(21),
+            snapshot: snapshot(withUpcomingSession: true,
+                               sessionDate: now.addingTimeInterval(-5 * 24 * 60 * 60)),
+            movement: nil, collections: [])
+        let upcoming = try store.upsert(
+            context: context(22),
+            snapshot: snapshot(withUpcomingSession: true,
+                               sessionDate: now.addingTimeInterval(2 * 24 * 60 * 60)),
+            movement: nil, collections: [])
+        let old = try store.upsert(
+            context: context(23),
+            snapshot: snapshot(withUpcomingSession: true,
+                               sessionDate: now.addingTimeInterval(-8 * 24 * 60 * 60)),
+            movement: nil, collections: [])
+        var deadlineSnapshot = snapshot(withUpcomingSession: false)
+        deadlineSnapshot.deadlines = [StoredDeadline(
+            kind: "appeal", what: "Жалоба", basis: "test", calLabel: "Срок",
+            dateRef: now.addingTimeInterval(2 * 24 * 60 * 60)
+                .timeIntervalSinceReferenceDate, statusRaw: "confirmed")]
+        let deadline = try store.upsert(
+            context: context(24), snapshot: deadlineSnapshot,
+            movement: nil, collections: [])
+        for record in [recent, upcoming, old, deadline] {
+            record.movementFetchedAt = now.addingTimeInterval(-RefreshSettings.ttl - 60)
+            record.sourceRefreshAttempt = SourceAttempt(
+                kind: .transportFailure,
+                provenance: SourceProvenance(operation: .movement,
+                                             sourceFamily: "sudrf",
+                                             host: record.context!.searchDomain,
+                                             observedAt: now),
+                consecutiveRefreshFailures: 3,
+                retryNotBefore: now.addingTimeInterval(60 * 60))
+        }
+        try store.save()
+        let probe = Probe()
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(minInterval: 0), serviceBuilder: { _ in probe },
+            walkDiagnostics: RefreshWalkDiagnostics(
+                enabled: false, directory: FileManager.default.temporaryDirectory,
+                now: { now }, appVersion: "test", appBuild: "1"))
+
+        await center.refreshAll(force: false)?.value
+
+        let requests = await probe.requests()
+        XCTAssertEqual(Set(requests),
+                       [recent.caseNumber, upcoming.caseNumber, deadline.caseNumber])
+        XCTAssertFalse(requests.contains(old.caseNumber))
     }
 
     func testSuccessfulRefreshClearsPersistedFailureState() async throws {

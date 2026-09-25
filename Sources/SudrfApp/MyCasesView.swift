@@ -136,7 +136,7 @@ struct MyCasesView: View {
         if let p = router.refreshCenter.walkProgress {
             return "обновляется \(min(p.done + 1, p.total)) из \(p.total)"
         }
-        return "движение обновляется в фоне и при открытии дела"
+        return "движение обновляется в фоне; этой кнопкой можно проверить всё сейчас"
     }
 
     // MARK: Вид карточками (стадии / производства / подборки)

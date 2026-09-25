@@ -94,6 +94,24 @@ final class SourceOutcomeTests: XCTestCase {
         XCTAssertFalse(json.contains("12345"))
         XCTAssertFalse(json.contains("modules.php"))
     }
+
+    func testOptionalRefreshBackoffMetadataRoundTripsAndOldAttemptDecodes() throws {
+        let legacy = SourceAttempt(
+            kind: .partial,
+            provenance: SourceProvenance(operation: .movement, sourceFamily: "sudrf",
+                                         host: "court.test", observedAt: observedAt))
+        let oldJSON = try JSONEncoder().encode(legacy)
+        let decodedOld = try JSONDecoder().decode(SourceAttempt.self, from: oldJSON)
+        XCTAssertNil(decodedOld.consecutiveRefreshFailures)
+        XCTAssertNil(decodedOld.retryNotBefore)
+
+        var scheduled = legacy
+        scheduled.consecutiveRefreshFailures = 3
+        scheduled.retryNotBefore = observedAt.addingTimeInterval(3_600)
+        let roundTrip = try JSONDecoder().decode(
+            SourceAttempt.self, from: JSONEncoder().encode(scheduled))
+        XCTAssertEqual(roundTrip, scheduled)
+    }
 }
 
 private struct EmptyCaseProvider: CaseProviding {

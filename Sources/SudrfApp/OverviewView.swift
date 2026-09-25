@@ -99,9 +99,9 @@ struct OverviewView: View {
                 Text("Проверить сейчас").font(.system(size: 11.5, weight: .medium))
                     .frame(minHeight: 21)
             }
-                .buttonStyle(.glass)
-                .controlSize(.regular)
-                .disabled(router.refreshCenter.walkProgress != nil)
+            .buttonStyle(.glass)
+            .controlSize(.regular)
+            .disabled(router.refreshCenter.walkProgress != nil)
         }
         .padding(.horizontal, 6)
     }

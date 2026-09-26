@@ -258,24 +258,13 @@ struct CalendarScreen: View {
     private var monthMode: some View {
         let model = buildMonthModel()
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
-                navCapsule(title: "Сегодня",
-                           previous: "Предыдущий месяц",
-                           next: "Следующий месяц",
-                           onPrevious: { router.calStep(-1) },
-                           onTitle: {
-                               router.calMonth = DateUtil.startOfMonth(DateUtil.today)
-                               router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
-                               router.calSelectedDate = DateUtil.today
-                           },
-                           onNext: { router.calStep(1) })
-                if !model.overlapDayList.isEmpty {
-                    overlapCounterButton(model)
-                }
-                Spacer()
-                monthLegend
-                calendarModePicker
+            // Варианты всей строки, а не одной легенды: внутри общего HStack со
+            // Spacer легенда не получает честного предложения ширины и выталкивает
+            // шапку (а с ней всё окно) за края. Легенда уступает первой.
+            ViewThatFits(in: .horizontal) {
+                monthHeader(model) { monthLegendFull }
+                monthHeader(model) { monthLegendTiersOnly }
+                monthHeader(model) { EmptyView() }
             }
             .padding(.horizontal, 2)
             productionCalendarNotice
@@ -288,6 +277,30 @@ struct CalendarScreen: View {
                 }
             }
             .animation(.easeOut(duration: 0.2), value: router.calSelectedDate)
+        }
+    }
+
+    private func monthHeader<Legend: View>(_ model: MonthModel,
+                                           @ViewBuilder legend: () -> Legend) -> some View {
+        HStack(spacing: 10) {
+            Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
+                .lineLimit(1).fixedSize()
+            navCapsule(title: "Сегодня",
+                       previous: "Предыдущий месяц",
+                       next: "Следующий месяц",
+                       onPrevious: { router.calStep(-1) },
+                       onTitle: {
+                           router.calMonth = DateUtil.startOfMonth(DateUtil.today)
+                           router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
+                           router.calSelectedDate = DateUtil.today
+                       },
+                       onNext: { router.calStep(1) })
+            if !model.overlapDayList.isEmpty {
+                overlapCounterButton(model).fixedSize()
+            }
+            Spacer(minLength: 10)
+            legend().fixedSize()
+            calendarModePicker.fixedSize()
         }
     }
 
@@ -399,19 +412,7 @@ struct CalendarScreen: View {
 
     /// Легенда месяца: цвета звеньев суда + статусы сроков + метка накладки.
     /// Легенда недели (`legend`) — отдельная и не меняется (#332 — только месяц).
-    /// Заголовок месяца (заголовок + навигация + счётчик накладок + легенда +
-    /// переключатель вида) не должен переполняться на 1100–1180pt — легенда
-    /// схлопывается по ширине первой (решение автора при ревью): полная →
-    /// только звенья → ничего.
-    private var monthLegend: some View {
-        // fixedSize: без него подписи переносятся по слогам, и полная легенда
-        // «помещается» в две строки вместо того, чтобы уступить короткой.
-        ViewThatFits(in: .horizontal) {
-            monthLegendFull.fixedSize()
-            monthLegendTiersOnly.fixedSize()
-            EmptyView()
-        }
-    }
+    /// По ширине сворачивается в `monthHeader`: полная → только звенья → ничего.
     private var monthLegendFull: some View {
         HStack(spacing: 12) {
             monthLegendTiersOnly

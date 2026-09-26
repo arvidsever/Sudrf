@@ -200,6 +200,57 @@ final class FirstInstanceStageRegressionTests: XCTestCase {
         XCTAssertTrue(resolution.isCompleted)
     }
 
+    func testPostJudgmentMotionDoesNotReopenCompletedMainCase() {
+        let scenarios: [(number: String, result: String, decision: String,
+                         registered: String, assigned: String, hearing: String, returned: String)] = [
+            ("2-3767/2014", "Иск (заявление, жалоба) УДОВЛЕТВОРЕН",
+             "25.07.2014", "24.03.2017", "29.03.2017", "05.05.2017", "07.06.2017"),
+            ("2-3109/2017", "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+             "17.07.2017", "16.10.2017", "17.10.2017", "01.12.2017", "08.12.2017"),
+        ]
+
+        for scenario in scenarios {
+            let main = card(.first, scenario.number, court: "Районный суд",
+                            result: scenario.result, sessions: [
+                                CaseSession(date: scenario.decision, event: "Судебное заседание",
+                                            result: "Вынесено решение по делу"),
+                                CaseSession(date: scenario.decision,
+                                            event: "Изготовлено мотивированное решение в окончательной форме"),
+                                CaseSession(date: scenario.registered,
+                                            event: "Регистрация ходатайства/заявления лица, участвующего в деле"),
+                                CaseSession(date: scenario.assigned,
+                                            event: "Изучение поступившего ходатайства/заявления",
+                                            result: "Назначено судебное заседание для рассмотрения ходатайства/заявления/вопроса"),
+                                CaseSession(date: scenario.hearing, event: "Судебное заседание",
+                                            result: "Ходатайство/заявление УДОВЛЕТВОРЕНО"),
+                                CaseSession(date: scenario.returned,
+                                            event: "Дело сдано в отдел судебного делопроизводства после рассмотрения ходатайства/заявления/вопроса"),
+                            ])
+
+            let resolution = resolve(scenario.number, [main])
+
+            XCTAssertEqual(resolution.stage, .done, scenario.number)
+            XCTAssertTrue(resolution.isCompleted, scenario.number)
+        }
+    }
+
+    func testNewMainProceedingAfterTerminalRemainsActive() {
+        let main = card(.first, "2-100/2025", court: "Районный суд",
+                        result: "Иск удовлетворён", sessions: [
+                            CaseSession(date: "12.12.2025", event: "Судебное заседание",
+                                        result: "Вынесено решение по делу"),
+                            CaseSession(date: "02.09.2026",
+                                        event: "Исковое заявление принято к производству"),
+                            CaseSession(date: "20.09.2026", event: "Судебное заседание"),
+                        ], evidence: .init(decisionDate: "12.12.2025"))
+
+        let resolution = resolve("2-100/2025", [main])
+
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertFalse(resolution.isCompleted)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "2-100/2025")
+    }
+
     func testRealRemandAndFutureFirstInstanceHearingRemainActive() {
         let main = card(.first, "2-100/2025", court: "Районный суд",
                         result: "Иск удовлетворён", sessions: [

@@ -784,13 +784,20 @@ enum CaseLifecycleResolver {
             let namesFirstProceeding = words.contains {
                 $0.hasPrefix("иск") || $0.hasPrefix("заявлен") || $0 == "дело" || $0 == "дела"
             }
+            let namesMainCase = words.contains {
+                $0.hasPrefix("иск") || $0 == "дело" || $0 == "дела"
+            }
+            let ancillary = mentionsIntermediateObject(text)
             let accepted = text.contains("принят") && text.contains("производств")
                 && (!text.contains("жалоб") || namesFirstProceeding)
+                && (!ancillary || namesMainCase)
             let resumed = text.contains("возобнов") && !text.contains("срок")
+                && (!ancillary || text.contains("производство по делу")
+                    || text.contains("дело возобнов"))
             let event = normalized(session.event)
             let explicitAssignment = event.contains("назнач") && event.contains("заседан")
             let assigned = !acceptanceOnly && text.contains("назнач") && text.contains("заседан")
-                && (explicitAssignment || !isHearingEvent(event: session.event))
+                && !ancillary && (explicitAssignment || !isHearingEvent(event: session.event))
             guard accepted || resumed || assigned else { return nil }
             return DateUtil.parse(session.date)
         }.max()
@@ -1067,6 +1074,15 @@ enum CaseLifecycleResolver {
 
     private static func isActiveProceeding(_ value: String) -> Bool {
         guard !isDenied(value) else { return false }
+        if mentionsIntermediateObject(value) {
+            let words = value.split(whereSeparator: { !$0.isLetter })
+            let namesMainCase = words.contains {
+                $0.hasPrefix("иск") || $0 == "дело" || $0 == "дела"
+            }
+            let namesMainAcceptance = value.contains("принят") && value.contains("производств")
+                && namesMainCase
+            guard namesMainAcceptance else { return false }
+        }
         return (value.contains("принят") && value.contains("производств"))
             || (value.contains("регистрац")
                 && (value.contains("жалоб") || value.contains("производств")

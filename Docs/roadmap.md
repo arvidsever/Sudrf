@@ -110,7 +110,7 @@ CAPTCHA базового суда получает одну попытку ав�
 
 | Версия | Задача | Результат | PR |
 |---|---|---|---|
-| 0.58.38 | [#336](https://github.com/arvidsever/Sudrf/issues/336) | Отказ московского repair виден отдельно от обновления 2 КСОЮ и не теряется при отсутствии изменений карточек. | PR ожидается |
+| 0.58.38 | [#336](https://github.com/arvidsever/Sudrf/issues/336) | Отказ московского repair виден отдельно от обновления 2 КСОЮ и не теряется при отсутствии изменений карточек. | [PR #338](https://github.com/arvidsever/Sudrf/pull/338) |
 | 0.58.37 | Ручной repair после [#322](https://github.com/arvidsever/Sudrf/issues/322) | Кнопка «Обновить» не теряет repair-попытку из-за фонового обновления, backoff или прежнего terminal-маркера. | [PR #334](https://github.com/arvidsever/Sudrf/pull/334) |
 | 0.58.36 | [#322](https://github.com/arvidsever/Sudrf/issues/322) | Нижестоящие карточки московского портала подтверждаются и объединяются с апелляцией/кассацией SUDRF; известные карточки 1 АСОЮ обновляются напрямую. | [PR #331](https://github.com/arvidsever/Sudrf/pull/331) |
 | 0.58.35 | [#329](https://github.com/arvidsever/Sudrf/issues/329) | Кнопки, переключатели и меню — капсулы; навигация календаря одной стеклянной плашкой, кнопки шапок 28 pt. | [PR #330](https://github.com/arvidsever/Sudrf/pull/330) |

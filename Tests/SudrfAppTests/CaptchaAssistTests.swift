@@ -95,4 +95,60 @@ final class CaptchaAssistTests: XCTestCase {
     func testRejectsNonDataPayload() {
         XCTAssertNil(CaptchaImagePayload.data(fromDataURL: "https://example.test/captcha.png"))
     }
+
+    @MainActor
+    func testCookieCopyFiltersDomainsAndCompletesOnMainAfterWritesIncludingEmptyBatch() async throws {
+        let prefix = "codex-issue-342-\(UUID().uuidString.lowercased())"
+        let host = "court.\(UUID().uuidString.lowercased()).example.com"
+        let destination = HTTPCookieStorage.shared
+        let exactName = "\(prefix)-exact"
+        let parentName = "\(prefix)-parent"
+        let unrelatedName = "\(prefix)-unrelated"
+        defer {
+            for cookie in destination.cookies ?? [] where cookie.name.hasPrefix(prefix) {
+                destination.deleteCookie(cookie)
+            }
+        }
+        let expectedCookies = [
+            try makeCookie(name: exactName, domain: host),
+            try makeCookie(name: parentName, domain: ".example.com")
+        ]
+        let unrelatedCookie = try makeCookie(name: unrelatedName, domain: "elsewhere.test")
+
+        let copyCompleted = expectation(description: "matching cookies copied")
+        var copyCompletionCount = 0
+        var copyCompletedOnMain = false
+        CaptchaWebViewCoordinator.copyCookies(expectedCookies + [unrelatedCookie], host: host) {
+            copyCompletionCount += 1
+            copyCompletedOnMain = Thread.isMainThread
+            XCTAssertEqual(
+                Set((destination.cookies ?? []).filter { $0.name.hasPrefix(prefix) }.map(\.name)),
+                Set([exactName, parentName])
+            )
+            copyCompleted.fulfill()
+        }
+        await fulfillment(of: [copyCompleted], timeout: 2)
+        XCTAssertEqual(copyCompletionCount, 1)
+        XCTAssertTrue(copyCompletedOnMain)
+        let emptyCopyCompleted = expectation(description: "empty cookie batch completes")
+        var emptyCompletionCount = 0
+        var emptyCompletedOnMain = false
+        CaptchaWebViewCoordinator.copyCookies([], host: host) {
+            emptyCompletionCount += 1
+            emptyCompletedOnMain = Thread.isMainThread
+            emptyCopyCompleted.fulfill()
+        }
+        await fulfillment(of: [emptyCopyCompleted], timeout: 2)
+        XCTAssertEqual(emptyCompletionCount, 1)
+        XCTAssertTrue(emptyCompletedOnMain)
+    }
+
+    private func makeCookie(name: String, domain: String) throws -> HTTPCookie {
+        try XCTUnwrap(HTTPCookie(properties: [
+            .domain: domain,
+            .path: "/",
+            .name: name,
+            .value: "test-value"
+        ]))
+    }
 }

@@ -12,6 +12,9 @@ private let captchaAssistLog = Logger(subsystem: "ru.sudrf.app", category: "Capt
 
 final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     private static let unattributedNavigationAttempt = 0
+    private nonisolated static let cookieCopyQueue = DispatchQueue(
+        label: "ru.sudrf.app.captcha-cookie-copy",
+        qos: .default)
 
     enum WebState {
         case loadingForm
@@ -457,19 +460,35 @@ final class CaptchaWebViewCoordinator: NSObject, WKNavigationDelegate {
     }
 
     private static func copyCookies(from store: WKHTTPCookieStore, host: String,
-                                    then completion: @escaping () -> Void) {
-        let lowerHost = host.lowercased()
+                                    then completion: @escaping @MainActor @Sendable () -> Void) {
         store.getAllCookies { cookies in
-            for c in cookies {
-                // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
-                // родительским с точкой («.sudrf.ru») — берём оба вида.
-                let d = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-                if lowerHost == d || lowerHost.hasSuffix("." + d) {
-                    HTTPCookieStorage.shared.setCookie(c)
-                }
-            }
-            completion()
+            Self.copyCookies(cookies, host: host, then: completion)
         }
+    }
+
+    static func copyCookies(_ cookies: [HTTPCookie], host: String,
+                            then completion: @escaping @MainActor @Sendable () -> Void) {
+        let lowerHost = host.lowercased()
+        let matchingCookies = cookies.filter { cookie in
+            // Домен cookie бывает точным («ann…vrn.sudrf.ru») или
+            // родительским с точкой («.sudrf.ru») — берём оба вида.
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return lowerHost == domain || lowerHost.hasSuffix("." + domain)
+        }
+        Self.writeCookies(matchingCookies, then: completion)
+    }
+
+    private nonisolated static func writeCookies(
+        _ cookies: [HTTPCookie],
+        then completion: @escaping @MainActor @Sendable () -> Void
+    ) {
+        let writes = DispatchWorkItem(qos: .default, flags: [.enforceQoS]) {
+            for cookie in cookies {
+                HTTPCookieStorage.shared.setCookie(cookie)
+            }
+            DispatchQueue.main.async { completion() }
+        }
+        cookieCopyQueue.async(execute: writes)
     }
 
     private func resolvedCaptchaToken(from webView: WKWebView) -> CaptchaToken? {

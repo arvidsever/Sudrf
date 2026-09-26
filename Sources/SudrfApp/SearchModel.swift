@@ -270,6 +270,9 @@ final class SearchModel: ObservableObject {
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient: any MosGorSudProviding
+    private let movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)?
+    private let autoSolve: (URL, SudrfClient, CaptchaSolver,
+                            AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult
     /// Авто-солвер капчи. Опциональный — если `nil`, поведение прежнее
     /// (только ручной ввод через CaptchaAssistSheet). Создаётся в init
     /// или передаётся извне (для тестов и для общего инстанса с `RefreshCenter`).
@@ -300,7 +303,10 @@ final class SearchModel: ObservableObject {
          client: SudrfClient = SudrfClient(),
          resolver: DistrictCourtResolver? = nil,
          magistrateResolver: MagistrateCourtResolver? = nil,
-         mosGorSudClient: any MosGorSudProviding = MosGorSudClient()) {
+         mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
+         movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
+         autoSolve: ((URL, SudrfClient, CaptchaSolver,
+                      AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
         // сконфигурированный этой же настройкой. Так гарантируется,
         // что `preprocessingEnabled` и `preprocessorHosts` действуют
@@ -315,13 +321,22 @@ final class SearchModel: ObservableObject {
         self.magistrateResolver = magistrateResolver
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
+        self.movementServiceFactory = movementServiceFactory
+        self.autoSolve = autoSolve ?? { url, client, solver, settings in
+            await AutoCaptchaSolver.solve(formURL: url, client: client,
+                                          solver: solver, settings: settings)
+        }
         self.captchaSolver = captchaSolver ?? CaptchaSolverFactory.make(settings: settings)
     }
 
     /// Сервис движения дела. Подбор доменов вышестоящих судов — таблицы
     /// подсудности в MovementContext (единственный источник правды, общий
     /// с перезапросом из мониторинга).
-    private func makeMovementService(for court: CourtOption, base: CaseSearchResult? = nil) -> MovementService {
+    private func makeMovementService(for court: CourtOption,
+                                     base: CaseSearchResult) -> any MovementProviding {
+        if let movementServiceFactory {
+            return movementServiceFactory(court, base)
+        }
         let provider: any CaseProviding = court.level == .magistrate ? magistrateClient : client
         return MovementService(client: provider,
                                higherCourtDomains: MovementContext.expandedHigherDomains(
@@ -1096,24 +1111,36 @@ final class SearchModel: ObservableObject {
         let cacheKey = MovementContext.identityKey(displayDomain: option.domain,
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
+        let service = makeMovementService(for: option, base: base)
         if let hit = MovementMemoryCache.shared.get(cacheKey),
            cachedMovement(hit.movement, matches: base, court: court, cartoteka: cart) {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
-            movement = hit.movement
+            guard let resolved = await resolveMovementCaptchas(
+                in: hit.movement, service: service, base: base, court: court,
+                cartoteka: cart, generation: generation, resultID: base.stableID
+            ) else { return }
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
+            movement = resolved
             expandedComplaints = []
-            selectedActID = hit.movement.acts.first(where: { $0.instanceLevel == .first })?.id
-                         ?? hit.movement.acts.first?.id
+            selectedActID = resolved.acts.first(where: { $0.instanceLevel == .first })?.id
+                         ?? resolved.acts.first?.id
+            MovementMemoryCache.shared.put(cacheKey, resolved)
             return
         }
 
         movement = nil; expandedComplaints = []
         do {
-            let service = makeMovementService(for: option, base: base)
             let mv = try await service.movement(for: base, court: court, cartoteka: cart)
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
-            movement = mv
-            selectedActID = mv.acts.first(where: { $0.instanceLevel == .first })?.id ?? mv.acts.first?.id
-            MovementMemoryCache.shared.put(cacheKey, mv)
+            guard let resolved = await resolveMovementCaptchas(
+                in: mv, service: service, base: base, court: court,
+                cartoteka: cart, generation: generation, resultID: base.stableID
+            ) else { return }
+            guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
+            movement = resolved
+            selectedActID = resolved.acts.first(where: { $0.instanceLevel == .first })?.id
+                         ?? resolved.acts.first?.id
+            MovementMemoryCache.shared.put(cacheKey, resolved)
         } catch let e as SudrfError {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             status = e.description
@@ -1121,6 +1148,70 @@ final class SearchModel: ObservableObject {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             status = "Не удалось собрать движение дела: \(error)"
         }
+    }
+
+    /// Try each CAPTCHA court once per canonical module host. A successful
+    /// token reruns the same movement request; a failed host leaves its stub
+    /// visible while other hosts continue.
+    private func resolveMovementCaptchas(
+        in initial: CaseMovement,
+        service: any MovementProviding,
+        base: CaseSearchResult,
+        court: Court,
+        cartoteka: Cartoteka,
+        generation: Int,
+        resultID: String
+    ) async -> CaseMovement? {
+        guard initial.instances.contains(where: { $0.captchaFormURL != nil }),
+              let solver = captchaSolver, let settings = captchaSettings,
+              settings.isEffectivelyEnabled else { return initial }
+
+        var current = initial
+        var attemptedHosts: Set<String> = []
+        while settings.isEffectivelyEnabled,
+              let formURL = current.instances.compactMap(\.captchaFormURL).first(where: { url in
+                  guard let host = url.host else { return false }
+                  return !attemptedHosts.contains(SudrfHost.moduleHost(host.lowercased()))
+              }),
+              let rawHost = formURL.host {
+            let host = SudrfHost.moduleHost(rawHost.lowercased())
+            attemptedHosts.insert(host)
+            guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+
+            let solved = await autoSolve(formURL, client, solver, settings.autoSolverSettings)
+            guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+            if solved.cancelled || Task.isCancelled { return nil }
+            guard let token = solved.token else { continue }
+
+            await CaptchaTokenStore.shared.store(token, domain: host)
+            guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+            do {
+                let refreshed = try await service.movement(
+                    for: base, court: court, cartoteka: cartoteka)
+                guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+                current = MovementCachePolicy.merge(fresh: refreshed, cached: current)
+                current.incompleteHigherCourtDomains = refreshed.incompleteHigherCourtDomains
+                current.honestZeroDomains = refreshed.honestZeroDomains
+                if current.instances.contains(where: {
+                    $0.captchaFormURL != nil
+                        && SudrfHost.moduleHost($0.domain.lowercased()) == host
+                }) {
+                    await CaptchaTokenStore.shared.invalidate(domain: host, matching: token)
+                    guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+                }
+            } catch is CancellationError {
+                return nil
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                return nil
+            } catch {
+                guard isCurrentMovementLoad(generation, resultID: resultID) else { return nil }
+                // Keep the last partial movement and continue with its other
+                // CAPTCHA courts; MovementService reports per-court failures
+                // as stubs when it can still build a partial result.
+                status = "Не удалось повторно собрать движение дела: \(error)"
+            }
+        }
+        return current
     }
 
     private func beginMovementLoad() -> Int {

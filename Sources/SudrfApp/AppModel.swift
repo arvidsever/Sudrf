@@ -224,7 +224,9 @@ final class AppRouter: ObservableObject {
     }
 
     var openCaseCaptchaRequest: CaptchaPendingRequest? {
-        refreshCenter.captchaPendingRequest(forKey: openedKey)
+        guard let host = openMovementContext?.searchDomain else { return nil }
+        return refreshCenter.captchaPendingRequest(
+            forKey: openedKey, host: host)
     }
 
     var openEnforcementRecords: [EnforcementRecord] {
@@ -403,6 +405,7 @@ final class AppRouter: ObservableObject {
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
          captchaCorpus: CorpusStore = .shared,
+         refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
          trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil) throws {
@@ -443,11 +446,12 @@ final class AppRouter: ObservableObject {
             anchorCardResolver: { [cardRecovery] context in
                 try await cardRecovery.resolve(context: context)
             })
-        refreshCenter = RefreshCenter(store: store, client: client,
-                                       captchaSolver: configuredSolver,
-                                       captchaSettings: captchaSettings,
-                                       fsspClient: fsspClient,
-                                       walkDiagnostics: .live)
+        refreshCenter = refreshCenterFactory?(store, client)
+            ?? RefreshCenter(store: store, client: client,
+                             captchaSolver: configuredSolver,
+                             captchaSettings: captchaSettings,
+                             fsspClient: fsspClient,
+                             walkDiagnostics: .live)
         refreshCenter.repairBeforeRefresh = { [weak self] key, manually in
             guard let self else { return key }
             do {
@@ -866,6 +870,14 @@ final class AppRouter: ObservableObject {
             reportPersistenceFailure(error)
             return nil
         }
+    }
+
+    /// Confirmation in «Добавить дело» starts the ordinary saved-case refresh.
+    @discardableResult
+    func addDirectCaseLink(_ context: MovementContext) -> String? {
+        guard let key = track(context: context, movement: nil) else { return nil }
+        openTrackedCase(key: key)
+        return key
     }
 
     /// Открывает уже сохранённую запись в разделе «Мои дела».

@@ -114,4 +114,43 @@ final class PartyNamePresentationTests: XCTestCase {
             "Росреестр"
         )
     }
+
+    func testRosreestrByRepublicRegionRule() {
+        XCTAssertEqual(
+            PartyNamePresentation.level1("Управление Федеральной службы государственной регистрации, кадастра и картографии по Республике Коми"),
+            "Управление Росреестра по РК"
+        )
+    }
+
+    // MARK: - Двух-трёхсловные организации не путаем с ФИО (defect #5)
+
+    func testTitleCaseOrganisationsAreNotMisreadAsFIO() {
+        XCTAssertEqual(PartyNamePresentation.level1("Прокуратура Республики Коми"), "Прокуратура Республики Коми")
+        XCTAssertEqual(PartyNamePresentation.level1("Сбербанк России"), "Сбербанк России")
+        XCTAssertEqual(PartyNamePresentation.level1("Мэрия Москвы"), "Мэрия Москвы")
+    }
+
+    func testTwoWordPersonNamesAreNotAbbreviated() {
+        XCTAssertEqual(PartyNamePresentation.level1("Иванов Иван"), "Иванов Иван")
+    }
+
+    func testOrganisationWithoutPatronymicSplitsCorrectlyFromPerson() {
+        XCTAssertEqual(
+            PartyNamePresentation.level1("Прокуратура Республики Коми и Иванов Иван Иванович"),
+            "Прокуратура Республики Коми и Иванов И. И."
+        )
+    }
+
+    // MARK: - Пустой «хвост» формы не даёт пустой level2 (defect #10)
+
+    func testLoneOrgFormFallsBackToLevel1() {
+        XCTAssertEqual(PartyNamePresentation.level2("Акционерное общество"), "АО")
+    }
+
+    // MARK: - ФИО КАПСОМ (defect #10)
+
+    func testAllCapsFIOIsTitleCased() {
+        XCTAssertEqual(PartyNamePresentation.level1("ИВАНОВ ИВАН ИВАНОВИЧ"), "Иванов И. И.")
+        XCTAssertEqual(PartyNamePresentation.level2("ИВАНОВ ИВАН ИВАНОВИЧ"), "Иванов")
+    }
 }

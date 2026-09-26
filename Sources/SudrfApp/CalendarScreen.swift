@@ -328,15 +328,21 @@ struct CalendarScreen: View {
         var courtTier: [String: CourtTier?] = [:]
         for raw in Set(courtRaws) { courtTier[raw] = CourtNamePresentation.display(raw).tier }
 
-        let hearingInputs = hearings.map { ev in
+        func input(_ ev: CalEvent) -> CalendarMonthHearingInput {
             CalendarMonthHearingInput(id: ev.id, date: ev.date, time: ev.time,
                                        caseNumber: ev.caseNumber ?? ev.id,
                                        courtKey: courtKeys[ev.court] ?? ev.court,
                                        courtShort: courtShorts[ev.court] ?? ev.court)
         }
-        let overlapByID = CalendarMonthLayout.overlaps(hearingInputs)
-        let overlapDayList = CalendarMonthLayout.overlapDays(hearingInputs)
-        let seriesByID = CalendarMonthLayout.seriesPositions(hearingInputs)
+        // Накладка сравнивает суды — пустая строка суда не значит «другой суд»,
+        // это просто отсутствие данных, поэтому такие заседания не участвуют
+        // в поиске накладок ни с какой стороны (ревью). Серия («N из M») от
+        // суда не зависит — считается по всем заседаниям месяца.
+        let overlapEligible = hearings.filter { !$0.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let overlapInputs = overlapEligible.map(input)
+        let overlapByID = CalendarMonthLayout.overlaps(overlapInputs)
+        let overlapDayList = CalendarMonthLayout.overlapDays(overlapInputs)
+        let seriesByID = CalendarMonthLayout.seriesPositions(hearings.map(input))
 
         var itemsByDay: [Date: [CalEvent]] = [:]
         var inactiveCountByDay: [Date: Int] = [:]
@@ -361,14 +367,30 @@ struct CalendarScreen: View {
                            courtShort: courtShorts, courtTier: courtTier)
     }
 
+    /// Следующий день накладки СТРОГО ПОСЛЕ выбранного (если день выбран —
+    /// повторный клик должен продвигаться дальше, а не стоять на месте), иначе
+    /// ближайший ≥ сегодня; заворачивает на первый (ревью). Строгость «после»
+    /// получена сдвигом якоря на день вперёд перед вызовом уже протестированной
+    /// (инклюзивной) `CalendarMonthLayout.nextOverlapDay`, а не дублированием
+    /// её wrap-логики.
+    private func advanceOverlapDay(_ model: MonthModel) -> Date? {
+        let anchor: Date
+        if let selected = router.calSelectedDate {
+            anchor = DateUtil.addDays(DateUtil.startOfDay(selected), 1)
+        } else {
+            anchor = DateUtil.startOfDay(DateUtil.today)
+        }
+        return CalendarMonthLayout.nextOverlapDay(after: anchor, in: model.overlapDayList)
+    }
+
     private func overlapCounterButton(_ model: MonthModel) -> some View {
         let count = model.overlapDayList.count
         let label = "Накладки: \(count) \(DateUtil.plural(count, "день", "дня", "дней"))"
         return Button {
-            if let next = CalendarMonthLayout.nextOverlapDay(after: DateUtil.today, in: model.overlapDayList) {
-                router.calMonth = DateUtil.startOfMonth(next)
-                router.calSelectedDate = next
-            }
+            guard let next = advanceOverlapDay(model) else { return }
+            router.calMonth = DateUtil.startOfMonth(next)
+            router.calWeekStart = DateUtil.startOfWeek(next)
+            router.calSelectedDate = next
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
@@ -564,6 +586,19 @@ struct CalendarScreen: View {
     private static let dayHeaderHeight: CGFloat = 22
     private static let dayCellVerticalPadding: CGFloat = 13 // top 5 + bottom 8
 
+    /// Замер сетки — ОДИН `GeometryReader` вокруг ВСЕЙ области строк, а не
+    /// фон на каждой строке (ревью решения 1): `GeometryReader` сообщает
+    /// размер, который ему ПРЕДЛОЖИЛ родитель (здесь — оставшееся место в
+    /// `CardBox` после заголовка недели), а не размер, который заняло бы его
+    /// содержимое. Раньше строка сама была `.frame(maxWidth: .infinity,
+    /// maxHeight: .infinity)`, а фиксированные по ширине ячейки и
+    /// `minHeight`-карточки внутри нередко сами были больше предложенного —
+    /// `.frame(max…)` в SwiftUI отражает размер РЕБЁНКА, если тот больше
+    /// предложения, поэтому сетка не сужалась при открытии панели дня и
+    /// строки не укорачивались, `cellLayout` никогда не переключался на
+    /// однострочный режим. Здесь измеряется независимо от содержимого, а
+    /// сами ячейки получают `minWidth: 0`/`minHeight: 0` + `.clipped()»,
+    /// чтобы содержимое не могло раздвинуть строку обратно (без обратной связи).
     private func monthGrid(_ model: MonthModel) -> some View {
         CardBox {
             VStack(spacing: 0) {
@@ -577,24 +612,28 @@ struct CalendarScreen: View {
                     }
                 }
                 .padding(.vertical, 7)
-                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
-                    HStack(spacing: 0) {
-                        ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
-                            dayCell(day, isWeekend: idx >= 5, model: model)
+                GeometryReader { geo in
+                    VStack(spacing: 0) {
+                        ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                            HStack(spacing: 0) {
+                                ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
+                                    dayCell(day, isWeekend: idx >= 5, model: model)
+                                }
+                            }
+                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                                   alignment: .top)
+                            .clipped()
+                            .overlay(Divider(), alignment: .top)
                         }
                     }
-                    // maxWidth обязателен: колонки после первого замера фиксированы,
-                    // и без него строка мерила бы сумму прежних ширин, а не окно.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .background(GeometryReader { geo in
-                        Color.clear.preference(key: MonthRowSizeKey.self, value: geo.size)
-                    })
-                    .overlay(Divider(), alignment: .top)
+                    .preference(key: MonthRowSizeKey.self, value: geo.size)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onPreferenceChange(MonthRowSizeKey.self) { size in
-            monthRowHeight = size.height
+            let rowCount = max(weeks.count, 1)
+            monthRowHeight = size.height / CGFloat(rowCount)
             monthGridWidth = size.width
         }
     }
@@ -610,11 +649,15 @@ struct CalendarScreen: View {
             let hasOverlap = model.overlapDays.contains(key)
             let production = productionDay(day)
             let isPast = day < DateUtil.today && !isToday
+            // Ровно то, что реально отрисовано (ревью решения 2): заголовок +
+            // ОДИН зазор перед телом (второго зазора больше нет — вместо
+            // концевого `Spacer` тело прижато к верху через `.frame(...,
+            // alignment: .top)`) + вертикальные паддинги ячейки.
             let available = max(0, monthRowHeight - Self.dayHeaderHeight
-                                 - Self.dayCellVerticalPadding - CalendarMonthLayout.itemSpacing)
+                                 - CalendarMonthLayout.itemSpacing - Self.dayCellVerticalPadding)
             let layout = CalendarMonthLayout.cellLayout(itemCount: items.count, availableHeight: available)
             Button { router.calSelectedDate = day } label: {
-                VStack(alignment: .leading, spacing: CalendarMonthLayout.itemSpacing) {
+                VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 5) {
                         Text(production.symbol)
                             .font(.system(size: 10, weight: .bold))
@@ -633,17 +676,19 @@ struct CalendarScreen: View {
                     }
                     .frame(height: Self.dayHeaderHeight)
                     monthCellBody(items: items, layout: layout, model: model)
+                        .padding(.top, CalendarMonthLayout.itemSpacing)
                         .opacity(isPast ? 0.7 : 1)
-                    Spacer(minLength: 0)
                 }
+                .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, 6).padding(.top, 5).padding(.bottom, 8)
-                .frame(maxHeight: .infinity, alignment: .topLeading)
+                .frame(minWidth: 0, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
                 .modifier(ColumnWidth(isWeekend: isWeekend, weekendWidth: weekendColumnWidth,
                                       weekdayWidth: weekdayColumnWidth))
                 .background(isSel ? Color.accentColor.opacity(0.06)
                             : productionBackground(production))
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
                 .contentShape(Rectangle())
+                .clipped()
             }
             .buttonStyle(.plain)
             .accessibilityLabel(dayCellAccessibilityLabel(day, production: production, items: items,
@@ -802,26 +847,16 @@ struct CalendarScreen: View {
         return secondary
     }
 
-    @ViewBuilder
-    private func hearingTrailingNote(overlap: CalendarMonthOverlap?, seriesLabel: String?) -> some View {
-        if let overlap {
-            ViewThatFits(in: .horizontal) {
-                Text("↔ \(overlap.otherCourtShort) \(overlap.otherTime)")
-                Text("↔ \(overlap.otherTime)")
-                Color.clear.frame(width: 0, height: 0)
-            }
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(Palette.confirmed)
-            .lineLimit(1)
-        } else if let seriesLabel {
-            ViewThatFits(in: .horizontal) {
-                Text(seriesLabel)
-                Color.clear.frame(width: 0, height: 0)
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
+    private func overlapNoteFull(_ overlap: CalendarMonthOverlap) -> Text {
+        Text("↔ \(overlap.otherCourtShort) \(overlap.otherTime)")
+            .font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.confirmed)
+    }
+    private func overlapNoteShort(_ overlap: CalendarMonthOverlap) -> Text {
+        Text("↔ \(overlap.otherTime)")
+            .font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.confirmed)
+    }
+    private func seriesNote(_ label: String) -> Text {
+        Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
     }
 
     private func hearingHelpText(_ ev: CalEvent, overlap: CalendarMonthOverlap?) -> String {
@@ -846,52 +881,72 @@ struct CalendarScreen: View {
     private func numberText(_ s: String) -> Text {
         Text(s).font(.system(size: 10.5)).foregroundStyle(.secondary)
     }
+    /// Первый(-ые) рунги лестницы: у распознанного звена суд не обрезается,
+    /// пока помещается целиком (`.fixedSize()`); у нераспознанного (`short ==
+    /// full`, может быть сколь угодно длинным) — truncation сразу.
+    @ViewBuilder
+    private func courtFirstView(_ courtShort: String, color: Color, recognized: Bool) -> some View {
+        if recognized {
+            courtText(courtShort, color: color).fixedSize()
+        } else {
+            courtText(courtShort, color: color).lineLimit(1).truncationMode(.tail)
+        }
+    }
 
     /// Вторая строка двухстрочной карточки: суд + номер + пометка накладки/серии
     /// не помещаются в будничную колонку (~78pt при открытой панели дня на
-    /// 1180pt) — «Сыктывкарский № 2-3685/2026» ≈150pt. Лестница по ширине
-    /// (решение автора при ревью): суд+номер+пометка → суд+номер → номер →
-    /// суд. Номер и распознанное короткое имя суда — `.fixedSize()` (никогда
-    /// не обрезаются многоточием, это idle-требование issue); нераспознанный
-    /// суд (`tier == nil`) — исключение: `short == full`, может быть сколь
-    /// угодно длинным, поэтому он не участвует в лестнице через `.fixedSize()`,
-    /// а обрезается многоточием сам.
+    /// 1180pt) — «Сыктывкарский № 2-3685/2026» ≈150pt. ОДНА плоская лестница
+    /// по ширине (решение автора при ревью, п. 3): вложенный `ViewThatFits`
+    /// внутри рунга внешнего `ViewThatFits` не работает — SwiftUI меряет
+    /// вложенный `ViewThatFits` по размеру его ПЕРВОЙ (самой широкой)
+    /// альтернативы, так что «↔ ВС Коми 12:40» никогда не сжимался до
+    /// «↔ 12:40», просто пропадал целиком вместе со всем рунгом. Поэтому шаг
+    /// «полная пометка» / «короткая пометка» — это два ОТДЕЛЬНЫХ рунга общей
+    /// лестницы, а не под-лестница. Номер и распознанное короткое имя суда —
+    /// `.fixedSize()` до последнего рунга (issue: и то, и другое никогда не
+    /// обрезается многоточием, пока влезает целиком); последний рунг —
+    /// решение ревью п. 4: суд с `.lineLimit(1)+.truncationMode(.tail)`, а не
+    /// `.fixedSize()`, чтобы `.clipped()` карточки не резал текст посередине
+    /// символа. Нераспознанный суд (`tier == nil`, `short == full`) в эту же
+    /// лестницу — он и так везде truncation, поэтому вместо `.fixedSize()`
+    /// используется truncation на каждом рунге, где он есть (решение п. 2).
     @ViewBuilder
     private func hearingSecondLine(_ ev: CalEvent, model: MonthModel,
                                    overlap: CalendarMonthOverlap?, seriesLabel: String?) -> some View {
         let tier = model.courtTier[ev.court] ?? nil
+        let recognized = tier != nil
         let color = CourtTierPalette.color(tier)
         let courtShort = model.courtShort[ev.court] ?? ev.court
         let number = hearingNumberLabel(ev)
 
-        if tier == nil {
-            HStack(spacing: 6) {
-                courtText(courtShort, color: color)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                numberText(number).fixedSize()
-                Spacer(minLength: 0)
-                hearingTrailingNote(overlap: overlap, seriesLabel: seriesLabel)
-            }
-        } else {
-            ViewThatFits(in: .horizontal) {
+        let courtLast = courtText(courtShort, color: color).lineLimit(1).truncationMode(.tail)
+        let numberFixed = numberText(number).fixedSize()
+
+        ViewThatFits(in: .horizontal) {
+            if let overlap {
                 HStack(spacing: 6) {
-                    courtText(courtShort, color: color).fixedSize()
-                    numberText(number).fixedSize()
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
                     Spacer(minLength: 0)
-                    hearingTrailingNote(overlap: overlap, seriesLabel: seriesLabel)
+                    overlapNoteFull(overlap)
                 }
                 HStack(spacing: 6) {
-                    courtText(courtShort, color: color).fixedSize()
-                    numberText(number).fixedSize()
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
+                    Spacer(minLength: 0)
+                    overlapNoteShort(overlap)
                 }
+            } else if let seriesLabel {
                 HStack(spacing: 6) {
-                    numberText(number).fixedSize()
-                }
-                HStack(spacing: 6) {
-                    courtText(courtShort, color: color).fixedSize()
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
+                    Spacer(minLength: 0)
+                    seriesNote(seriesLabel)
                 }
             }
+            HStack(spacing: 6) { courtFirstView(courtShort, color: color, recognized: recognized); numberFixed }
+            HStack(spacing: 6) { numberFixed }
+            HStack(spacing: 6) { courtLast }
         }
     }
 

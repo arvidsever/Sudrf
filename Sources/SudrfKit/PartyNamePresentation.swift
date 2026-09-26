@@ -37,12 +37,13 @@ public enum PartyNamePresentation {
         if let g = firstMatch(#"^(.+?)\s+и\s+(\d+)\s+(?:других|другой)$"#, text) {
             return "\(entity(g[0])) +\(g[1])"
         }
-        // Разбиваем по первому « и » только если левая часть САМА ПО СЕБЕ —
-        // законченное распознанное лицо/организация (иначе это «и» внутри
-        // одной стороны: «Комитет имущественных и земельных отношений»,
-        // «пенсионного и социального страхования», «Рога и копыта» в
-        // кавычках — такие ни в коем случае не режем).
-        if let g = firstMatch(#"^(.+?)\s+и\s+(.+)$"#, text), isCompleteEntity(g[0]) {
+        // Разбиваем по первому « и » только если ХОТЯ БЫ ОДНА из частей САМА
+        // ПО СЕБЕ — законченное распознанное лицо/организация (иначе это «и»
+        // внутри одной стороны: «Комитет имущественных и земельных
+        // отношений», «пенсионного и социального страхования», «Рога и
+        // копыта» в кавычках — такие ни в коем случае не режем).
+        if let g = firstMatch(#"^(.+?)\s+и\s+(.+)$"#, text),
+           isCompleteEntity(g[0]) || isCompleteEntity(g[1]) {
             return "\(entity(g[0])) и \(entity(g[1]))"
         }
         return entity(text)
@@ -89,33 +90,75 @@ public enum PartyNamePresentation {
             return "ИП \(surname(g[0]) ?? g[0])"
         }
         if let (_, rest) = orgForm(text) {
-            return rest
+            // Голое название формы без ничего после неё («Акционерное
+            // общество» без наименования) — показывать пустоту нельзя,
+            // откатываемся на level1 (там это просто аббревиатура формы).
+            return rest.isEmpty ? entity1(text) : rest
         }
         return surname(text) ?? text
     }
 
     // MARK: - ФИО
 
-    /// «Фамилия Имя Отчество» → «Фамилия И. О.» (и «Фамилия Имя» → «Фамилия И.»).
-    /// Поддерживает двойные (дефисные) фамилии и «ё»/«е».
+    /// «Фамилия Имя Отчество» → «Фамилия И. О.» (плюс «…оглы»/«…кызы» как
+    /// четвёртое слово). Двухсловные формы НЕ абревиатурим вовсе: «Иванов
+    /// Иван» неотличимо по форме от «Сбербанк России» / «Мэрия Москвы» —
+    /// без отчества гадать нельзя (см. `nameWords`). Поддерживает двойные
+    /// (дефисные) фамилии, «ё»/«е» и ФИО КАПСОМ (частая портальная запись).
     private static func personInitials(_ text: String) -> String? {
-        let words = text.split(separator: " ").map(String.init)
-        guard words.count == 2 || words.count == 3, words.allSatisfy(isNameWord) else { return nil }
-        let initials = words.dropFirst().map { "\(String($0.first!))." }.joined(separator: " ")
-        return "\(words[0]) \(initials)"
+        guard let words = nameWords(text) else { return nil }
+        if words.count == 4 {
+            let initials = words[1...2].map { "\(String(titleCase($0).first!))." }.joined(separator: " ")
+            return "\(titleCase(words[0])) \(initials) \(words[3].lowercased())"
+        }
+        let initials = words.dropFirst().map { "\(String(titleCase($0).first!))." }.joined(separator: " ")
+        return "\(titleCase(words[0])) \(initials)"
     }
 
     /// Только фамилия — для level 2.
     private static func surname(_ text: String) -> String? {
-        let words = text.split(separator: " ").map(String.init)
-        guard words.count == 2 || words.count == 3, words.allSatisfy(isNameWord) else { return nil }
-        return words[0]
+        nameWords(text).map { titleCase($0[0]) }
     }
 
-    /// Слово похоже на элемент ФИО: с заглавной буквы, остальное — строчные,
-    /// кроме буквы сразу после дефиса (двойные фамилии типа «Петрова-Иванова»).
+    /// Слова ФИО, только если это действительно похоже на имя С отчеством:
+    /// 2 слова никогда не считаем ФИО (по форме не отличить от «Сбербанк
+    /// России»/«Прокуратура Республики Коми»/«Мэрия Москвы»); 3 слова —
+    /// третье должно быть отчеством (оканчивается на -вич/-вна/-чна/-ична);
+    /// 4 слова — четвёртое «оглы»/«кызы».
+    private static func nameWords(_ text: String) -> [String]? {
+        let words = text.split(separator: " ").map(String.init)
+        guard words.allSatisfy(isNameWord) else { return nil }
+        switch words.count {
+        case 3:
+            return looksLikePatronymic(words[2]) ? words : nil
+        case 4:
+            let last = yo2ye(words[3]).lowercased()
+            return (last == "оглы" || last == "кызы") ? words : nil
+        default:
+            return nil
+        }
+    }
+
+    // «ич» покрывает и «-ович»/«-евич», и редкое голое «Ильич»; «чна»
+    // покрывает и «-ична»/«-инична» (Ильинична).
+    private static let patronymicSuffixes = ["ич", "вна", "чна"]
+
+    private static func looksLikePatronymic(_ word: String) -> Bool {
+        let lower = yo2ye(word).lowercased()
+        return patronymicSuffixes.contains { lower.hasSuffix($0) }
+    }
+
+    private static func yo2ye(_ s: String) -> String {
+        s.replacingOccurrences(of: "ё", with: "е").replacingOccurrences(of: "Ё", with: "Е")
+    }
+
+    /// Слово похоже на элемент ФИО: с заглавной буквы, остальное — строчные
+    /// (кроме буквы сразу после дефиса — двойные фамилии типа
+    /// «Петрова-Иванова»), либо целиком заглавными буквами («ИВАНОВ» —
+    /// частая портальная запись, приводим к обычному виду в `titleCase`).
     private static func isNameWord(_ word: String) -> Bool {
         guard let first = word.first, first.isUppercase else { return false }
+        if word.allSatisfy({ $0.isUppercase || $0 == "-" }) { return true }
         var afterHyphen = false
         for ch in word.dropFirst() {
             if ch == "-" { afterHyphen = true; continue }
@@ -123,6 +166,18 @@ public enum PartyNamePresentation {
             if ch.isUppercase { return false }
         }
         return true
+    }
+
+    /// «ИВАНОВ» → «Иванов» (и «ИВАНОВ-ПЕТРОВ» → «Иванов-Петров»); обычные
+    /// слова не трогаем.
+    private static func titleCase(_ word: String) -> String {
+        guard word.allSatisfy({ $0.isUppercase || $0 == "-" }) else { return word }
+        return word.split(separator: "-", omittingEmptySubsequences: false)
+            .map { part -> String in
+                guard let f = part.first else { return String(part) }
+                return String(f) + part.dropFirst().lowercased()
+            }
+            .joined(separator: "-")
     }
 
     // MARK: - организационно-правовые формы (ГК РФ), закрытый список
@@ -169,7 +224,7 @@ public enum PartyNamePresentation {
             return ("ОСФР по \(regionTail(g[0]))", "ОСФР")
         }
         if let g = firstMatch(#"^Управление\s+Федеральной\s+службы\s+государственной\s+регистрации,?\s+кадастра\s+и\s+картографии\s+по\s+(.+)$"#, text) {
-            return ("Управление Росреестра по \(g[0])", "Росреестр")
+            return ("Управление Росреестра по \(regionTail(g[0]))", "Росреестр")
         }
         if let g = firstMatch(#"^Министерство\s+природных\s+ресурсов\s+и\s+охраны\s+окружающей\s+среды\s+(.+)$"#, text) {
             return ("Минприроды \(regionTail(g[0]))", "Минприроды")

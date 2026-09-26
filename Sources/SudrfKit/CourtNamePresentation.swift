@@ -27,42 +27,98 @@ public enum CourtNamePresentation {
 
     public static func display(_ raw: String) -> CourtNameDisplay {
         let full = collapse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
-        guard !full.isEmpty, let c = classify(full) else {
-            return CourtNameDisplay(full: full, short: full, tier: nil,
-                                     key: "?|" + full.lowercased(), locality: nil)
+        guard !full.isEmpty else {
+            return CourtNameDisplay(full: full, short: full, tier: nil, key: "?|", locality: nil)
         }
-        let key = makeKey(tier: c.tier, short: c.short, locality: c.locality, cityTail: c.cityTail)
+        if let c = classify(full) {
+            return displayResult(full: full, c: c)
+        }
+        // Не распознали как есть — часто мешает хвост в скобках, не входящий
+        // в устройство самого имени («Республика Саха (Якутия)» ловится ещё
+        // на первом проходе, потому что там «(Якутия)» — часть захватываемой
+        // группы; а вот «...суд (г. Санкт-Петербург)» ломает регэксп с «$»
+        // сразу после ключевого слова). Пробуем без хвоста в скобках.
+        if let g = firstMatch(#"^(.+?)\s*\((.*)\)$"#, full), let c = classify(g[0]) {
+            let locality = c.locality ?? (g[1].isEmpty ? nil : g[1])
+            return displayResult(full: full, c: (c.short, c.tier, locality, c.cityTail, c.districtKind))
+        }
+        return CourtNameDisplay(full: full, short: full, tier: nil,
+                                 key: "?|" + yo2ye(full).lowercased(), locality: nil)
+    }
+
+    private static func displayResult(full: String, c: Classified) -> CourtNameDisplay {
+        let key = makeKey(tier: c.tier, short: c.short, locality: c.locality,
+                           cityTail: c.cityTail, districtKind: c.districtKind)
         return CourtNameDisplay(full: full, short: c.short, tier: c.tier, key: key, locality: c.locality)
     }
 
     /// Единая идентичность суда для ЦЕЛОГО набора (в отличие от одиночного
-    /// `display(_:).key`): внутри группы с одинаковым «звено|short» бесхвостая
-    /// запись («Эжвинский районный суд») сливается с городским хвостом
-    /// («…г. Сыктывкара»), если в группе встретился РОВНО один город — это тот
-    /// же суд, портал просто не всегда пишет город. Если городов два и
-    /// больше (Тверь и Барнаул для «Центральный…»), угадывать нельзя:
-    /// бесхвостая запись остаётся при своём (отдельном) ключе.
+    /// `display(_:).key`) — два уровня слияния «недосказанных» записей:
+    ///
+    /// 1. Вид (р/с/г/с/м/с): внутри «звено|short» запись без вида в тексте
+    ///    («Благовещенский» само по себе) наследует ЕДИНСТВЕННЫЙ встретившийся
+    ///    в группе вид — угадывать между городским и районным при двух видах
+    ///    нельзя, тогда она остаётся при базовом ключе.
+    /// 2. Город: внутри «звено|short|вид» запись БЕЗ ЛЮБОГО хвоста
+    ///    («Эжвинский районный суд») сливается с городским хвостом
+    ///    («…г. Сыктывкара»), если в подгруппе встретился РОВНО один город.
+    ///    Запись с РЕГИОНАЛЬНЫМ хвостом («Тверской области») в это слияние
+    ///    не участвует — регион не «недосказанность», это просто другое
+    ///    уточнение подсудности того же (или другого) суда, и подменять его
+    ///    городом нельзя.
     public static func canonicalKeys(_ raws: [String]) -> [String: String] {
-        let entries = raws.map { (raw: $0, d: display($0)) }
-        var byBase: [String: [(raw: String, d: CourtNameDisplay)]] = [:]
-        for e in entries {
-            let base = "\(e.d.tier?.rawValue ?? "?")|\(e.d.short.lowercased())"
-            byBase[base, default: []].append(e)
+        struct Info { let raw: String; let short: String; let tier: CourtTier?
+            let locality: String?; let cityTail: Bool; let kind: String? }
+        let infos: [Info] = raws.map { raw in
+            let full = collapse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !full.isEmpty, let c = classify(full) else {
+                return Info(raw: raw, short: full, tier: nil, locality: nil, cityTail: false, kind: nil)
+            }
+            return Info(raw: raw, short: c.short, tier: c.tier, locality: c.locality,
+                        cityTail: c.cityTail, kind: c.districtKind)
         }
-        var result: [String: String] = [:]
+
+        var byBase: [String: [Info]] = [:]
+        for i in infos {
+            let base = "\(i.tier?.rawValue ?? "?")|\(yo2ye(i.short).lowercased())"
+            byBase[base, default: []].append(i)
+        }
+        var kindBucket: [String: String] = [:]
         for (base, group) in byBase {
-            let cityKeys = Set(group.filter { $0.d.key != base }.map(\.d.key))
-            let mergeInto = cityKeys.count == 1 ? cityKeys.first : nil
-            for e in group { result[e.raw] = mergeInto ?? e.d.key }
+            let kinds = Set(group.compactMap(\.kind))
+            let onlyKind = kinds.count == 1 ? kinds.first : nil
+            for i in group {
+                let k = i.kind ?? onlyKind
+                kindBucket[i.raw] = k.map { "\(base)|\($0)" } ?? base
+            }
+        }
+
+        var byBucket: [String: [Info]] = [:]
+        for i in infos { byBucket[kindBucket[i.raw]!, default: []].append(i) }
+        var result: [String: String] = [:]
+        for (bucket, group) in byBucket {
+            let cities = Set(group.compactMap { $0.cityTail ? $0.locality.map { yo2ye($0).lowercased() } : nil })
+            let onlyCity = cities.count == 1 ? cities.first : nil
+            for i in group {
+                if i.cityTail, let locality = i.locality {
+                    result[i.raw] = "\(bucket)|\(yo2ye(locality).lowercased())"
+                } else if i.locality == nil, let onlyCity {
+                    result[i.raw] = "\(bucket)|\(onlyCity)"
+                } else {
+                    result[i.raw] = bucket
+                }
+            }
         }
         return result
     }
 
     /// Короткие названия для набора судов календаря: если у разных судов
-    /// (разных `canonicalKeys`) совпал `short`, к ним добавляется уточнение.
-    /// Для районных/городских/межрайонных судов — «<short> <р/с|г/с|м/с>
-    /// <город>» (например «Центральный р/с г. Твери»); для прочих звеньев —
-    /// «<short> <хвост>».
+    /// (разных `canonicalKeys`) совпал `short`, к ним добавляется уточнение —
+    /// сперва вид (р/с/г/с/м/с), если он реально различает записи внутри
+    /// коллизии («Благовещенский г/с» / «Благовещенский р/с»); если вида
+    /// достаточно — на этом останавливаемся, иначе (тот же вид, разные
+    /// города/участки) добавляем ещё и хвост («Центральный р/с г. Твери»,
+    /// «Мировой, уч. 1 Эжвинского судебного района г. Сыктывкара»).
     public static func disambiguatedShortNames(_ raws: [String]) -> [String: String] {
         let entries = raws.map { (raw: $0, d: display($0)) }
         let canonical = canonicalKeys(raws)
@@ -77,12 +133,15 @@ public enum CourtNamePresentation {
                 continue
             }
             for e in group {
-                guard let locality = e.d.locality else { result[e.raw] = short; continue }
-                if e.d.tier == .district, let kind = districtKindAbbrev(e.raw) {
-                    result[e.raw] = "\(short) \(kind) \(locality)"
-                } else {
-                    result[e.raw] = "\(short) \(locality)"
+                let kind = districtKindAbbrev(e.raw)
+                var label = short
+                if let kind { label += " \(kind)" }
+                let peers = group.filter { districtKindAbbrev($0.raw) == kind }
+                let peerKeys = Set(peers.map { canonical[$0.raw] ?? $0.d.key })
+                if peerKeys.count > 1, let locality = e.d.locality {
+                    label += " \(locality)"
                 }
+                result[e.raw] = label
             }
         }
         return result
@@ -90,7 +149,7 @@ public enum CourtNamePresentation {
 
     // MARK: - классификация
 
-    private typealias Classified = (short: String, tier: CourtTier, locality: String?, cityTail: Bool)
+    private typealias Classified = (short: String, tier: CourtTier, locality: String?, cityTail: Bool, districtKind: String?)
 
     private static let ordinalWords = "Первый|Второй|Третий|Четвертый|Четвёртый|Пятый|Шестой|Седьмой|Восьмой|Девятый"
     private static let ordinalToNumber: [String: Int] = [
@@ -98,119 +157,136 @@ public enum CourtNamePresentation {
         "шестой": 6, "седьмой": 7, "восьмой": 8, "девятый": 9
     ]
 
-    private static func classify(_ input: String) -> Classified? {
+    private static func classify(_ rawInput: String) -> Classified? {
+        // Латинские двойники («Cуд» с латинской C) — реальные опечатки с
+        // порталов; фолдим их в кириллицу СРАЗУ, до любых регулярок, иначе
+        // «[Сс]уд» и другие ключевые слова просто не совпадут.
+        let input = foldLatinLookalikes(rawInput)
         let lower = yo2ye(input).lowercased()
 
         // Верховный Суд РФ.
         if lower == "верховный суд российской федерации" || lower == "верховный суд рф"
             || lower == "вс рф" {
-            return ("ВС РФ", .supreme, nil, false)
+            return ("ВС РФ", .supreme, nil, false, nil)
         }
 
         // Единственный распространённый алиас-исключение.
         if lower == "мосгорсуд" {
-            return ("Московский горсуд", .subject, nil, false)
+            return ("Московский горсуд", .subject, nil, false, nil)
         }
 
         // Городские суды трёх городов федерального значения — звено subject,
-        // а не district (в отличие от прочих «городских судов»).
-        if let g = firstMatch(#"^(Московский|Санкт-Петербургский|Севастопольский)\s+(?:городской\s+суд|горсуд)$"#, input) {
-            return ("\(g[0]) горсуд", .subject, nil, false)
+        // а не district (в отличие от прочих «городских судов»). Хвост в
+        // скобках допускаем прямо тут: иначе он проваливается в общий
+        // районный/городской разбор ниже и портит звено (defect #6).
+        if let g = firstMatch(#"^(Московский|Санкт-Петербургский|Севастопольский)\s+(?:городской\s+суд|горсуд)(?:\s*\((.*)\))?$"#, input) {
+            let locality = g[1].isEmpty ? nil : g[1]
+            return ("\(g[0]) горсуд", .subject, locality, false, nil)
         }
 
         // АСОЮ / КСОЮ — полное название.
         if let g = firstMatch(#"^(\#(ordinalWords))\s+(апелляционный|кассационный)\s+суд(?:\s+общей\s+юрисдикции)?$"#, input) {
             let n = ordinalToNumber[yo2ye(g[0]).lowercased()] ?? 0
             let kind = g[1].lowercased() == "апелляционный" ? "АСОЮ" : "КСОЮ"
-            return ("\(n) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false)
+            return ("\(n) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false, nil)
         }
         // АСОЮ / КСОЮ — «Третий КСОЮ».
         if let g = firstMatch(#"^(\#(ordinalWords))\s+(АСОЮ|КСОЮ)$"#, input) {
             let n = ordinalToNumber[yo2ye(g[0]).lowercased()] ?? 0
             let kind = g[1].uppercased()
-            return ("\(n) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false)
+            return ("\(n) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false, nil)
         }
         // АСОЮ / КСОЮ — короткая цифровая форма («3 КСОЮ»), идемпотентность.
         if let g = firstMatch(#"^(\d)\s*(АСОЮ|КСОЮ)$"#, input) {
             let kind = g[1].uppercased()
-            return ("\(g[0]) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false)
+            return ("\(g[0]) \(kind)", kind == "АСОЮ" ? .appeal : .cassation, nil, false, nil)
         }
 
         // Военные апелляция/кассация.
         if lower == "апелляционный военный суд" || lower == "авс" {
-            return ("АВС", .appeal, nil, false)
+            return ("АВС", .appeal, nil, false, nil)
         }
         if lower == "кассационный военный суд" || lower == "квс" {
-            return ("КВС", .cassation, nil, false)
+            return ("КВС", .cassation, nil, false, nil)
         }
 
         // Окружной (флотский) военный суд.
         if let g = firstMatch(#"^(.+?)\s+(?:окружной|флотский)\s+военный\s+суд$"#, input) {
-            return ("\(g[0]) ОВС", .subject, nil, false)
+            return ("\(g[0]) ОВС", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^(.+?)\s+ОВС$"#, input) {
-            return ("\(g[0]) ОВС", .subject, nil, false)
+            return ("\(g[0]) ОВС", .subject, nil, false, nil)
         }
 
         // Гарнизонный военный суд.
         if let g = firstMatch(#"^(.+?)\s+гарнизонный\s+военный\s+суд$"#, input) {
-            return ("\(g[0]) ГВС", .district, nil, false)
+            return ("\(g[0]) ГВС", .district, nil, false, nil)
         }
         if let g = firstMatch(#"^(.+?)\s+ГВС$"#, input) {
-            return ("\(g[0]) ГВС", .district, nil, false)
+            return ("\(g[0]) ГВС", .district, nil, false, nil)
         }
 
         // Верховный суд республики — «Республики X» либо «X Республики».
         if let g = firstMatch(#"^Верховный\s+[Сс]уд\s+Республики\s+(.+)$"#, input) {
-            return ("ВС \(g[0])", .subject, nil, false)
+            return ("ВС \(g[0])", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^Верховный\s+[Сс]уд\s+(.+\s+Республики)$"#, input) {
-            return ("ВС \(g[0])", .subject, nil, false)
+            return ("ВС \(g[0])", .subject, nil, false, nil)
+        }
+        // Верховный суд субъекта без слова «Республики» («Верховный суд Коми»).
+        if let g = firstMatch(#"^Верховный\s+[Сс]уд\s+(.+)$"#, input) {
+            return ("ВС \(g[0])", .subject, nil, false, nil)
         }
         // Идемпотентность: уже краткая форма «ВС X» (кроме «ВС РФ», отсеян выше).
         if let g = firstMatch(#"^ВС\s+(.+)$"#, input), yo2ye(g[0]).lowercased() != "рф" {
-            return ("ВС \(g[0])", .subject, nil, false)
+            return ("ВС \(g[0])", .subject, nil, false, nil)
         }
 
-        // Мировой судья / судебный участок.
+        // Мировой судья / судебный участок. Хвост после номера («…судебного
+        // района г. Сыктывкара») — часть идентичности участка: без него
+        // разные участки с одним номером в разных районах ложно совпадают.
         if lower.contains("мировой") || lower.contains("участ") || lower.contains("уч.") {
-            if let g = firstMatch(#"(?:уч\.?|участ[а-я]*)\s*№?\s*(\d+)"#, input) {
-                return ("Мировой, уч. \(g[0])", .magistrate, nil, false)
+            if let g = firstMatch(#"(?:уч\.?|участ[а-я]*)\s*№?\s*(\d+)\s*(.*)$"#, input) {
+                let tail = g[1].trimmingCharacters(in: .whitespaces)
+                let locality = tail.isEmpty ? nil : tail
+                return ("Мировой, уч. \(g[0])", .magistrate, locality, locality != nil, nil)
             }
         }
 
         // Суд автономного округа / автономной области.
         if let g = firstMatch(#"^Суд\s+(.+?)\s+(?:автономного\s+округа|автономной\s+области)\b.*$"#, input) {
-            return ("Суд \(g[0]) АО", .subject, nil, false)
+            return ("Суд \(g[0]) АО", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^Суд\s+(.+?)\s+АО$"#, input) {
-            return ("Суд \(g[0]) АО", .subject, nil, false)
+            return ("Суд \(g[0]) АО", .subject, nil, false, nil)
         }
 
         // Областной / краевой суд.
         if let g = firstMatch(#"^(.+?)\s+областной\s+суд$"#, input) {
-            return ("\(g[0]) облсуд", .subject, nil, false)
+            return ("\(g[0]) облсуд", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^(.+?)\s+облсуд$"#, input) {
-            return ("\(g[0]) облсуд", .subject, nil, false)
+            return ("\(g[0]) облсуд", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^(.+?)\s+краевой\s+суд$"#, input) {
-            return ("\(g[0]) крайсуд", .subject, nil, false)
+            return ("\(g[0]) крайсуд", .subject, nil, false, nil)
         }
         if let g = firstMatch(#"^(.+?)\s+крайсуд$"#, input) {
-            return ("\(g[0]) крайсуд", .subject, nil, false)
+            return ("\(g[0]) крайсуд", .subject, nil, false, nil)
         }
 
         // Районный / городской / межрайонный суд — общий случай (district).
+        // Вид (р/с/г/с/м/с) — часть идентичности: «Благовещенский городской»
+        // и «Благовещенский районный» — два РАЗНЫХ суда одного города.
         if let g = firstMatch(#"^(.+?)\s+(районный|городской|межрайонный)\s+суд(.*)$"#, input) {
             let (locality, cityTail) = districtTail(g[2])
-            return (g[0], .district, locality, cityTail)
+            return (g[0], .district, locality, cityTail, districtKindAbbrev(input))
         }
         // «горсуд» как идемпотентная/краткая форма (кроме трёх городов
         // федерального значения — те уже отсеяны выше).
         if let g = firstMatch(#"^(.+?)\s+горсуд(.*)$"#, input) {
             let (locality, cityTail) = districtTail(g[1])
-            return (g[0], .district, locality, cityTail)
+            return (g[0], .district, locality, cityTail, districtKindAbbrev(input))
         }
         // Голое прилагательное («Сыктывкарский») — это ровно та форма, которую
         // сама функция производит как short для районного/городского суда,
@@ -218,9 +294,10 @@ public enum CourtNamePresentation {
         // коротких именах (проверено на всех 101 судах VNKODCourts.json).
         // Риск ложных срабатываний невелик: единственное слово, целиком
         // состоящее из букв, с типичным для относительных прилагательных
-        // окончанием -ский/-цкий.
+        // окончанием -ский/-цкий. Вид тут неизвестен (nil) — `canonicalKeys`
+        // сам подберёт его, если в наборе он единственный.
         if lower != "мировой", let g = firstMatch(#"^([А-ЯЁ][а-яё-]*(?:ый|ий|ой))$"#, input) {
-            return (g[0], .district, nil, false)
+            return (g[0], .district, nil, false, nil)
         }
 
         return nil
@@ -228,19 +305,18 @@ public enum CourtNamePresentation {
 
     /// Разбирает хвост после слова «суд» у районного/городского суда:
     /// «города Твери» / «г. Барнаула» → город (входит в `key`, различает
-    /// одноимённые суды разных городов); «Республики Коми» / «(Республика
-    /// Коми)» → регион (в `key` не входит — это тот же суд).
+    /// одноимённые суды разных городов; берём все слова вплоть до
+    /// регионального слова или конца — «г. Нижнего Новгорода» целиком, а не
+    /// только «Нижнего»); «Республики Коми» / «(Республика Коми)» → регион
+    /// (в `key` не входит — это тот же суд).
     private static func districtTail(_ rawTail: String) -> (locality: String?, cityTail: Bool) {
         var tail = rawTail.trimmingCharacters(in: .whitespaces)
         if tail.hasPrefix("("), tail.hasSuffix(")") {
             tail = String(tail.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
         }
         guard !tail.isEmpty else { return (nil, false) }
-        if let g = firstMatch(#"^города\s+(\S+)"#, tail) {
-            return ("г. \(g[0])", true)
-        }
-        if let g = firstMatch(#"^г\.\s*(\S+)"#, tail) {
-            return ("г. \(g[0])", true)
+        if let g = firstMatch(#"^(?:города|г\.)\s*(.+?)(?=\s+(?:Республики|области|края|автономного)\b|\s*\(|$)"#, tail) {
+            return ("г. \(g[0].trimmingCharacters(in: .whitespaces))", true)
         }
         return (tail, false)
     }
@@ -253,10 +329,12 @@ public enum CourtNamePresentation {
         return nil
     }
 
-    private static func makeKey(tier: CourtTier?, short: String, locality: String?, cityTail: Bool) -> String {
-        guard let tier else { return "?|" + short.lowercased() }
-        var key = "\(tier.rawValue)|\(short.lowercased())"
-        if cityTail, let locality { key += "|\(locality.lowercased())" }
+    private static func makeKey(tier: CourtTier?, short: String, locality: String?,
+                                 cityTail: Bool, districtKind: String?) -> String {
+        guard let tier else { return "?|" + yo2ye(short).lowercased() }
+        var key = "\(tier.rawValue)|\(yo2ye(short).lowercased())"
+        if let districtKind { key += "|\(districtKind)" }
+        if cityTail, let locality { key += "|\(yo2ye(locality).lowercased())" }
         return key
     }
 
@@ -268,6 +346,20 @@ public enum CourtNamePresentation {
 
     private static func yo2ye(_ s: String) -> String {
         s.replacingOccurrences(of: "ё", with: "е").replacingOccurrences(of: "Ё", with: "Е")
+    }
+
+    /// Латинские двойники кириллических букв (реальные опечатки с сайтов
+    /// судов — «Cуд» с латинской C) → кириллица, только для СРАВНЕНИЯ
+    /// (см. `Cartoteka.normalizedNumber` — тот же приём для номеров дел).
+    private static let latinLookalikes: [Character: Character] = [
+        "c": "с", "a": "а", "o": "о", "e": "е", "p": "р", "x": "х",
+        "k": "к", "m": "м", "h": "н", "t": "т", "b": "в",
+        "C": "С", "A": "А", "O": "О", "E": "Е", "P": "Р", "X": "Х",
+        "K": "К", "M": "М", "H": "Н", "T": "Т", "B": "В"
+    ]
+
+    private static func foldLatinLookalikes(_ s: String) -> String {
+        String(s.map { latinLookalikes[$0] ?? $0 })
     }
 
     /// Компиляция `NSRegularExpression` не бесплатна, а классификация суда

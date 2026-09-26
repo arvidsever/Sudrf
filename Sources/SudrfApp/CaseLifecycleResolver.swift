@@ -393,10 +393,18 @@ enum CaseLifecycleResolver {
                let reviewDecision = reviewEventDate(in: latest),
                reviewDecision > firstDecision,
                reviewBelongsToRoot(latest, first: first, timeline: timeline),
-               case .terminal(let result)? = latestSignal(for: latest) {
-                return completed(current: latest, visited: visited,
-                                 reason: .terminalReview(nonempty(latest.result) ?? result),
-                                 production: production)
+               let reviewSignal = latestSignal(for: latest) {
+                switch reviewSignal {
+                case .terminal(let result):
+                    return completed(current: latest, visited: visited,
+                                     reason: .terminalReview(nonempty(latest.result) ?? result),
+                                     production: production)
+                case .legalForce:
+                    return completed(current: latest, visited: visited, reason: .legalForce,
+                                     production: production)
+                case .active, .remand:
+                    break
+                }
             }
             if let result = exactTerminalResultAfterAmbiguousAppeal(
                 first: first, timeline: timeline),

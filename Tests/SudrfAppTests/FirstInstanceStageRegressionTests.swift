@@ -8,16 +8,20 @@ final class FirstInstanceStageRegressionTests: XCTestCase {
 
     private func card(_ level: CaseInstance.Level, _ number: String, court: String,
                       result: String?, sessions: [CaseSession],
-                      evidence: CaseInstance.SourceEvidence? = nil) -> CaseInstance {
+                      evidence: CaseInstance.SourceEvidence? = nil,
+                      actID: String? = nil) -> CaseInstance {
         CaseInstance(level: level, court: court, caseNumber: number, judge: nil,
                      domain: "court.sudrf.ru", foundByUID: true, result: result,
-                     sessions: sessions, sourceEvidence: evidence)
+                     sessions: sessions, actID: actID, sourceEvidence: evidence)
     }
 
     private func resolve(_ number: String, _ instances: [CaseInstance],
-                         production: ProductionType = .civil) -> CaseLifecycleResolver.Resolution {
+                         production: ProductionType = .civil,
+                         acts: [CaseAct] = [],
+                         actBodies: [String: String] = [:]) -> CaseLifecycleResolver.Resolution {
         let movement = CaseMovement(uid: "11RS0001-01-2025-000100-11", caseNumber: number,
-                                    inForce: false, instances: instances, complaints: [:], acts: [])
+                                    inForce: false, instances: instances, complaints: [:],
+                                    acts: acts, actBodies: actBodies)
         return CaseLifecycleResolver.resolve(movement: movement, production: production,
                                              deadlines: [], today: today)
     }
@@ -273,5 +277,113 @@ final class FirstInstanceStageRegressionTests: XCTestCase {
         XCTAssertEqual(resolution.stage, .first)
         XCTAssertFalse(resolution.isCompleted)
         XCTAssertEqual(resolution.currentInstance?.caseNumber, "2-100/2025")
+    }
+
+    func testCase2a5428LaterOrdinaryAppealActCompletesAfterEarlierReviews() {
+        let main = card(.first, "2а-5428/2023", court: "Сыктывкарский городской суд",
+                        result: "Иск (заявление, жалоба) УДОВЛЕТВОРЕН ЧАСТИЧНО", sessions: [
+                            CaseSession(date: "14.02.2023", event: "Регистрация административного искового заявления"),
+                            CaseSession(date: "29.05.2023", event: "Судебное заседание",
+                                        result: "Вынесено решение по делу"),
+                            CaseSession(date: "13.06.2023", event: "Изготовлено мотивированное решение в окончательной форме"),
+                            CaseSession(date: "30.06.2023", event: "Дело сдано в отдел судебного делопроизводства"),
+                        ], evidence: .init(appealKinds: ["Частная жалоба", "Апелляционная жалоба"],
+                                           decisionDate: "29.05.2023"))
+        let earlyPrivateAppeal = card(.appeal, "33а-2564/2023", court: "Верховный суд Республики Коми",
+                                      result: "Определение отменено полностью с разрешением вопроса по существу",
+                                      sessions: [CaseSession(date: "23.03.2023", event: "Судебное заседание",
+                                                             result: "Определение отменено полностью с разрешением вопроса по существу")],
+                                      evidence: .init(lowerCourt: .init(caseNumber: "М-1522/2023")))
+        let otherEarlyAppeal = card(.appeal, "33а-4639/2023", court: "Верховный суд Республики Коми",
+                                    result: "Определение оставлено без изменения", sessions: [
+                                        CaseSession(date: "01.06.2023", event: "Судебное заседание",
+                                                    result: "Определение оставлено без изменения"),
+                                    ], evidence: .init(lowerCourt: .init(caseNumber: "2а-5428/2023 ~ М-1522/2023")))
+        let appealActID = "case-5428-appeal-act"
+        let laterAppeal = card(.appeal, "33а-7520/2023", court: "Верховный суд Республики Коми",
+                               result: "Решение оставлено без изменения", sessions: [
+                                   CaseSession(date: "25.09.2023", event: "Судебное заседание",
+                                               result: "Решение оставлено без изменения"),
+                               ], evidence: .init(lowerCourt: .init(
+                                    courtTitle: "Сыктывкарский городской суд",
+                                    caseNumber: "2а-5428/2023"), decisionDate: "25.09.2023"),
+                               actID: appealActID)
+
+        let resolution = resolve("2а-5428/2023", [main, earlyPrivateAppeal, otherEarlyAppeal, laterAppeal],
+                                 production: .kas,
+                                 acts: [CaseAct(id: appealActID, title: "Апелляционное определение",
+                                                date: "25.09.2023", courtShort: "Верховный суд Республики Коми",
+                                                instanceLevel: .appeal)],
+                                 actBodies: [appealActID: "ОПРЕДЕЛИЛ: решение Сыктывкарского городского суда Республики Коми от 29 мая 2023 года оставить без изменения.\n\nАпелляционное определение вступает в законную силу со дня его принятия."])
+
+        XCTAssertEqual(resolution.stage, .done)
+        XCTAssertTrue(resolution.isCompleted)
+        XCTAssertEqual(resolution.completionReason, .legalForce)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "33а-7520/2023")
+    }
+
+    func testCase2a354LaterOrdinaryAppealActCompletesAfterPriorRegistrationAppeal() {
+        let main = card(.first, "2а-354/2023", court: "Сыктывкарский городской суд",
+                        result: "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)", sessions: [
+                            CaseSession(date: "27.07.2022", event: "Регистрация административного искового заявления"),
+                            CaseSession(date: "07.08.2023", event: "Судебное заседание",
+                                        result: "Вынесено решение по делу"),
+                            CaseSession(date: "15.08.2023", event: "Изготовлено мотивированное решение в окончательной форме"),
+                        ], evidence: .init(appealKinds: ["Частная жалоба", "Апелляционная жалоба"],
+                                           decisionDate: "07.08.2023"))
+        let earlierPrivateAppeal = card(.appeal, "33а-7164/2022", court: "Верховный суд Республики Коми",
+                                         result: "Определение оставлено без изменения", sessions: [
+                                             CaseSession(date: "31.10.2022", event: "Судебное заседание",
+                                                         result: "Определение оставлено без изменения"),
+                                         ], evidence: .init(lowerCourt: .init(
+                                            courtTitle: "Сыктывкарский городской суд",
+                                            caseNumber: "2а-8584/2022")))
+        let appealActID = "case-2a354-appeal-act"
+        let laterAppeal = card(.appeal, "33а-8830/2023", court: "Верховный суд Республики Коми",
+                               result: "Решение оставлено без изменения", sessions: [
+                                   CaseSession(date: "23.11.2023", event: "Судебное заседание",
+                                               result: "Решение оставлено без изменения"),
+                               ], evidence: .init(lowerCourt: .init(
+                                    courtTitle: "Сыктывкарский городской суд",
+                                    caseNumber: "2а-354/2023"), decisionDate: "23.11.2023"),
+                               actID: appealActID)
+
+        let resolution = resolve("2а-354/2023", [main, earlierPrivateAppeal, laterAppeal],
+                                 production: .kas,
+                                 acts: [CaseAct(id: appealActID, title: "Апелляционное определение",
+                                                date: "23.11.2023", courtShort: "Верховный суд Республики Коми",
+                                                instanceLevel: .appeal)],
+                                 actBodies: [appealActID: "ОПРЕДЕЛИЛ: решение Сыктывкарского городского суда Республики Коми от 7 августа 2023 года оставить без изменения.\n\nАпелляционное определение вступает в законную силу со дня его принятия."])
+
+        XCTAssertEqual(resolution.stage, .done)
+        XCTAssertTrue(resolution.isCompleted)
+        XCTAssertEqual(resolution.completionReason, .legalForce)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "33а-8830/2023")
+    }
+
+    func testEarlierAmbiguousAppealDoesNotCloseUnresolvedNewFirstInstanceRound() {
+        let main = card(.first, "2а-354/2023", court: "Сыктывкарский городской суд",
+                        result: "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)", sessions: [
+                            CaseSession(date: "27.07.2022", event: "Регистрация административного искового заявления"),
+                            CaseSession(date: "07.08.2023", event: "Судебное заседание",
+                                        result: "Вынесено решение по делу"),
+                            CaseSession(date: "15.08.2023", event: "Изготовлено мотивированное решение в окончательной форме"),
+                            CaseSession(date: "12.02.2024", event: "Административное исковое заявление принято к производству"),
+                            CaseSession(date: "15.03.2024", event: "Судебное заседание"),
+                        ], evidence: .init(appealKinds: ["Частная жалоба", "Апелляционная жалоба"],
+                                           decisionDate: "07.08.2023"))
+        let earlierPrivateAppeal = card(.appeal, "33а-7164/2022", court: "Верховный суд Республики Коми",
+                                         result: "Определение оставлено без изменения", sessions: [
+                                             CaseSession(date: "31.10.2022", event: "Судебное заседание",
+                                                         result: "Определение оставлено без изменения"),
+                                         ], evidence: .init(lowerCourt: .init(
+                                            courtTitle: "Сыктывкарский городской суд",
+                                            caseNumber: "2а-8584/2022")))
+
+        let resolution = resolve("2а-354/2023", [main, earlierPrivateAppeal], production: .kas)
+
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertFalse(resolution.isCompleted)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, "2а-354/2023")
     }
 }

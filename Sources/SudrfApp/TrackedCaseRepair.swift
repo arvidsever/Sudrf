@@ -70,6 +70,10 @@ struct CaseRepairSummary: Equatable {
     var notFound: [String] = []
     var ambiguous: [String] = []
     var transient = 0
+    /// Moscow source failures keyed by the case key that began the repair.
+    var sourceFailures: [String: CaseRepairDiagnostic] = [:]
+    /// Original keys whose chain was actually reanchored or merged.
+    var resolvedCaseKeys: Set<String> = []
     var keyRemaps: [String: String] = [:]
     /// Ключи, чьи реквизиты/маршрут изменились без обязательной смены key.
     /// Потребители объединяют их со старыми и новыми ключами keyRemaps для
@@ -112,6 +116,7 @@ struct CaseRepairSummary: Equatable {
     /// произошедшей до первого результата.
     var hasAnyResult: Bool {
         hasReport || hasProjectionChanges || !events.isEmpty
+            || !sourceFailures.isEmpty || !resolvedCaseKeys.isEmpty
     }
 
     /// Слияние дублей и последующее переякоривание могут дать цепочку
@@ -135,6 +140,8 @@ struct CaseRepairSummary: Equatable {
             related.contains($0.key) || related.contains($0.value)
         }
         filtered.affectedCaseKeys = affectedCaseKeys.intersection(related)
+        filtered.sourceFailures = sourceFailures.filter { related.contains($0.key) }
+        filtered.resolvedCaseKeys = resolvedCaseKeys.intersection(related)
         filtered.captchaRequests = captchaRequests.filter { related.contains($0.key) }
         filtered.events = events.filter { event in
             related.contains(event.caseKey) || related.contains(event.oldKey)
@@ -170,6 +177,8 @@ struct CaseRepairSummary: Equatable {
         var keys = affectedCaseKeys
         keys.formUnion(keyRemaps.keys)
         keys.formUnion(keyRemaps.values)
+        keys.formUnion(sourceFailures.keys)
+        keys.formUnion(resolvedCaseKeys)
         keys.formUnion(captchaRequests.map(\.key))
         for event in events {
             keys.insert(event.caseKey)
@@ -189,12 +198,42 @@ struct CaseRepairSummary: Equatable {
         ambiguous = Self.unique(ambiguous + other.ambiguous)
         keyRemaps.merge(other.keyRemaps) { _, new in new }
         affectedCaseKeys.formUnion(other.affectedCaseKeys)
+        for event in other.events {
+            switch event.kind {
+            case .reanchored, .restoredMaterial, .merged:
+                markResolved(event.caseKey)
+            case .transient, .captcha, .firstInstanceNotFound,
+                 .firstInstanceAmbiguous, .unsupportedCourt, .cardParsing:
+                markFailed(event.caseKey)
+            case .rerouted:
+                break
+            }
+        }
+        for key in other.resolvedCaseKeys { markResolved(key) }
+        for (key, diagnostic) in other.sourceFailures {
+            recordSourceFailure(diagnostic, for: key)
+        }
         for request in other.captchaRequests where !captchaRequests.contains(request) {
             captchaRequests.append(request)
         }
         for event in other.events where !events.contains(event) {
             events.append(event)
         }
+    }
+
+    mutating func recordSourceFailure(_ diagnostic: CaseRepairDiagnostic, for key: String) {
+        resolvedCaseKeys.remove(key)
+        sourceFailures[key] = diagnostic
+    }
+
+    mutating func markResolved(_ key: String) {
+        sourceFailures.removeValue(forKey: key)
+        resolvedCaseKeys.insert(key)
+    }
+
+    mutating func markFailed(_ key: String) {
+        resolvedCaseKeys.remove(key)
+        sourceFailures.removeValue(forKey: key)
     }
 
     var text: String {
@@ -639,6 +678,33 @@ final class TrackedCaseRepairCoordinator {
         } catch let error as TrackedStoreCommitError {
             // Rollback leaves both the record and retry/defaults state untouched.
             throw error
+        } catch let failure as CaseOriginSourceFailure {
+            let error = failure.underlying as? SudrfError
+            let isTransient = failure.diagnostic.phase == .candidateCard
+                || (error.map(Self.isTransientSourceError) ?? true)
+            if isTransient {
+                summary.transient += 1
+                recordTransient(key: key)
+                appendEvent(.transient, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
+            } else if let error {
+                if Self.isPublishedKoAPReview(anchorContext), Self.isTerminalCardReadError(error) {
+                    clearRetry(key: key)
+                    recordCompleted(key: key)
+                    summary.recordSourceFailure(failure.diagnostic, for: eventKey)
+                    return
+                }
+                summary.notFound.append(anchorContext.caseNumber)
+                if case .parsing = error { recordUnsupported(key: key) }
+                if case .searchModuleUnavailable = error { recordUnsupported(key: key) }
+                let kind: CaseRepairEvent.Kind
+                if case .parsing = error { kind = .cardParsing }
+                else if case .searchModuleUnavailable = error { kind = .unsupportedCourt }
+                else { kind = .firstInstanceNotFound }
+                appendEvent(kind, caseKey: eventKey, oldKey: anchorKey,
+                            old: anchorContext, summary: &summary)
+            }
+            summary.recordSourceFailure(failure.diagnostic, for: eventKey)
         } catch let error as CaseOriginResolutionError {
             switch error {
             case .noReference:
@@ -851,6 +917,15 @@ final class TrackedCaseRepairCoordinator {
                              formURL: URL? = nil,
                              summary: inout CaseRepairSummary) {
         let new = new ?? old
+        switch kind {
+        case .reanchored, .restoredMaterial, .merged:
+            summary.markResolved(caseKey)
+        case .transient, .captcha, .firstInstanceNotFound,
+             .firstInstanceAmbiguous, .unsupportedCourt, .cardParsing:
+            summary.markFailed(caseKey)
+        case .rerouted:
+            break
+        }
         summary.events.append(CaseRepairEvent(
             kind: kind, caseKey: caseKey, oldKey: oldKey, newKey: newKey ?? oldKey,
             oldLocator: old.key, newLocator: new.key,

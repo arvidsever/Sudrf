@@ -957,6 +957,7 @@ private struct CaseCardHost: View {
                     lastUpdated: router.movementFetchedAt,
                     isRefreshing: router.isRefreshingOpenCase,
                     refreshNote: router.refreshNote,
+                    repairNote: router.repairNote,
                     onRefresh: { router.refreshOpenCase() },
                     hasPendingRefreshCaptcha: router.openCaseCaptchaRequest != nil,
                     onSolvePendingRefreshCaptcha: { router.beginOpenCaseCaptcha() },

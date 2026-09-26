@@ -64,24 +64,40 @@ private actor MoscowOriginStub: MoscowOriginProviding {
     var rows: [MosGorSudResult]
     var cards: [URL: MosGorSudCard]
     var requestedAliases: [String?] = []
+    var requestedCards: [URL] = []
     var unreadable: Set<URL> = []
+    var uidSearchError: SudrfError?
+    var numberSearchError: SudrfError?
+    var cardErrors: [URL: SudrfError] = [:]
+    var cancelUIDSearch = false
 
-    init(rows: [MosGorSudResult], cards: [URL: MosGorSudCard], unreadable: Set<URL> = []) {
+    init(rows: [MosGorSudResult], cards: [URL: MosGorSudCard], unreadable: Set<URL> = [],
+         uidSearchError: SudrfError? = nil, numberSearchError: SudrfError? = nil,
+         cardErrors: [URL: SudrfError] = [:], cancelUIDSearch: Bool = false) {
         self.rows = rows; self.cards = cards; self.unreadable = unreadable
+        self.uidSearchError = uidSearchError; self.numberSearchError = numberSearchError
+        self.cardErrors = cardErrors; self.cancelUIDSearch = cancelUIDSearch
     }
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
                 participant: String?, instance: Int,
                 processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
         requestedAliases.append(courtAlias)
+        if uid != nil, cancelUIDSearch { throw CancellationError() }
+        if uid != nil, let uidSearchError { throw uidSearchError }
+        if caseNumber != nil, let numberSearchError { throw numberSearchError }
         return rows
     }
 
     func fetchCard(url: URL) async throws -> MosGorSudCard {
+        requestedCards.append(url)
+        if let error = cardErrors[url] { throw error }
         if unreadable.contains(url) { throw SudrfError.http(status: 503) }
         guard let card = cards[url] else { throw SudrfError.http(status: 404) }
         return card
     }
+
+    func fetchedCards() -> [URL] { requestedCards }
 }
 
 final class CaseOriginResolverTests: XCTestCase {
@@ -258,8 +274,94 @@ final class CaseOriginResolverTests: XCTestCase {
         let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: unreadable)
         do { _ = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
             XCTFail("unreadable candidate must remain transient")
-        } catch let error as CaseOriginResolutionError {
-            XCTAssertEqual(error, .incompleteCandidates)
+        } catch let failure as CaseOriginSourceFailure {
+            XCTAssertEqual(failure.diagnostic.phase, .candidateCard)
+            XCTAssertEqual(failure.diagnostic.attempt.provenance.httpStatus, 503)
+        }
+    }
+
+    func testMoscowSearchFailuresCarrySafePhaseDiagnostics() async throws {
+        let uid = "77OS0000-01-2020-002855-77"
+        for (searchUID, expectedPhase) in [(true, CaseRepairDiagnostic.Phase.uidSearch),
+                                           (false, .numberSearch)] {
+            let (context, anchor) = moscowAnchor(
+                number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+                lowerCourt: "Московский городской суд",
+                lowerJudge: "Севастьянова Наталия Юрьевна",
+                anchorDate: "10.09.2020", uid: searchUID ? uid : nil)
+            let stub = MoscowOriginStub(
+                rows: [], cards: [:],
+                uidSearchError: searchUID ? .http(status: 502) : nil,
+                numberSearchError: searchUID ? nil : .http(status: 502))
+            do {
+                _ = try await CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+                    .resolve(anchorContext: context, anchorCard: anchor)
+                XCTFail("a failed Moscow search must retain its source diagnostic")
+            } catch let failure as CaseOriginSourceFailure {
+                let diagnostic = failure.diagnostic
+                XCTAssertEqual(diagnostic.phase, expectedPhase)
+                XCTAssertEqual(diagnostic.attempt.kind, .transportFailure)
+                XCTAssertEqual(diagnostic.attempt.provenance.operation, .discovery)
+                XCTAssertEqual(diagnostic.attempt.provenance.sourceFamily, "mosgorsud")
+                XCTAssertEqual(diagnostic.attempt.provenance.host, MosGorSudEndpoint.host)
+                XCTAssertEqual(diagnostic.attempt.provenance.httpStatus, 502)
+                XCTAssertTrue(diagnostic.message.contains(MosGorSudEndpoint.host))
+                XCTAssertTrue(diagnostic.message.contains("502"))
+                XCTAssertFalse(diagnostic.message.contains(uid))
+                XCTAssertFalse(diagnostic.message.contains("3а-3696/2020"))
+            }
+        }
+    }
+
+    func testMoscowCardFailureKeepsFirstDiagnosticAndScansAllCandidates() async throws {
+        let failedURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/11111111-1111-4111-8111-111111111111"))
+        let validURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/22222222-2222-4222-8222-222222222222"))
+        let uid = "77OS0000-01-2020-002855-77"
+        let card = MosGorSudCard(uid: uid, caseNumber: "3а-3696/2020",
+                                  judge: "Севастьянова Н.Ю.")
+        let rows = [
+            MosGorSudResult(caseNumber: "3а-3696/2020", uid: uid, section: "first-admin",
+                            cardURL: failedURL),
+            MosGorSudResult(caseNumber: "3а-3696/2020", uid: uid, section: "first-admin",
+                            cardURL: validURL),
+        ]
+        let stub = MoscowOriginStub(rows: rows, cards: [validURL: card],
+                                    cardErrors: [failedURL: .http(status: 502)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+        let (context, anchor) = moscowAnchor(
+            number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+            lowerCourt: "Московский городской суд",
+            lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: "10.09.2020", uid: uid)
+
+        do {
+            _ = try await resolver.resolve(anchorContext: context, anchorCard: anchor)
+            XCTFail("a matching readable card must not mask an unreadable candidate")
+        } catch let failure as CaseOriginSourceFailure {
+            XCTAssertEqual(failure.diagnostic.phase, .candidateCard)
+            XCTAssertEqual(failure.diagnostic.attempt.provenance.httpStatus, 502)
+        }
+        let fetchedCards = await stub.fetchedCards()
+        XCTAssertEqual(Set(fetchedCards), Set([failedURL, validURL]))
+    }
+
+    func testMoscowSearchCancellationIsNotWrapped() async throws {
+        let (context, anchor) = moscowAnchor(
+            number: "66а-4311/2020", lowerNumber: "3а-3696/2020",
+            lowerCourt: "Московский городской суд",
+            lowerJudge: "Севастьянова Наталия Юрьевна", anchorDate: "10.09.2020",
+            uid: "77OS0000-01-2020-002855-77")
+        let stub = MoscowOriginStub(rows: [], cards: [:], cancelUIDSearch: true)
+
+        do {
+            _ = try await CaseOriginResolver(client: SudrfClient(), moscowProvider: stub)
+                .resolve(anchorContext: context, anchorCard: anchor)
+            XCTFail("cancellation must propagate unchanged")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("unexpected wrapped cancellation: \(error)")
         }
     }
 

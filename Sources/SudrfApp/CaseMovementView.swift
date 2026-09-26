@@ -55,6 +55,7 @@ struct CaseMovementView: View {
     var lastUpdated: Date? = nil
     var isRefreshing: Bool = false
     var refreshNote: String? = nil
+    var repairNote: String? = nil
     var onRefresh: (() -> Void)? = nil
     var hasPendingRefreshCaptcha: Bool = false
     var onSolvePendingRefreshCaptcha: (() -> Void)? = nil
@@ -224,6 +225,10 @@ struct CaseMovementView: View {
                             .buttonStyle(.glassProminent).controlSize(.small)
                     }
                 }
+            }
+            if let repairNote {
+                Text(repairNote)
+                    .font(.caption2).foregroundStyle(.orange)
             }
             HStack(spacing: 8) {
                 Text("Дело № \(movement.caseNumber) · движение")

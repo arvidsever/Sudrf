@@ -461,6 +461,37 @@ final class MosGorSudTests: XCTestCase {
             XCTFail("должно бросить: клиент mos-gorsud не подключён")
         } catch {}
     }
+
+    func testClientPreservesHTTP502FromSearchAndCardTransport() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MosGorSudHTTPFailureStub.self]
+        let client = MosGorSudClient(session: URLSession(configuration: configuration),
+                                     minInterval: 0)
+
+        do {
+            _ = try await client.search(uid: "77OS0000-01-2020-002855-77",
+                                        instance: 1, processType: .cas)
+            XCTFail("search should surface the server status")
+        } catch let error as SudrfError {
+            guard case .http(let status) = error else {
+                return XCTFail("expected HTTP status, got \(error)")
+            }
+            XCTAssertEqual(status, 502)
+        }
+
+        let cardURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/first-admin/details/11111111-1111-4111-8111-111111111111"))
+        do {
+            _ = try await client.fetchCard(url: cardURL)
+            XCTFail("card fetch should surface the server status")
+        } catch let error as SudrfError {
+            guard case .http(let status) = error else {
+                return XCTFail("expected HTTP status, got \(error)")
+            }
+            XCTAssertEqual(status, 502)
+        }
+
+    }
 }
 
 // MARK: - Моки
@@ -487,6 +518,28 @@ private struct MockMosGorSud: MosGorSudProviding {
         guard let file = publishedActs[url] else { throw SudrfError.http(status: 404) }
         return file
     }
+}
+
+private final class MosGorSudHTTPFailureStub: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == MosGorSudEndpoint.host
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 502,
+                                             httpVersion: "HTTP/1.1", headerFields: nil) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private actor MockEmptyCase: CaseProviding {

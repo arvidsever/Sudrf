@@ -4,7 +4,14 @@ import CaptchaSolver
 @testable import SudrfApp
 
 private actor StubOriginResolver: CaseOriginResolving {
-    enum Mode: Sendable { case resolved(ResolvedCaseOrigin), ambiguous, noReference, notFound, transient }
+    enum Mode: Sendable {
+        case resolved(ResolvedCaseOrigin)
+        case ambiguous
+        case noReference
+        case notFound
+        case transient
+        case sourceFailure(CaseRepairDiagnostic, SudrfError)
+    }
     let mode: Mode
     private(set) var calls = 0
 
@@ -21,6 +28,8 @@ private actor StubOriginResolver: CaseOriginResolving {
         case .transient:
             throw SudrfError.transientNetworkError(
                 domain: anchorContext.searchDomain, code: .timedOut, attempt: 3)
+        case .sourceFailure(let diagnostic, let underlying):
+            throw CaseOriginSourceFailure(diagnostic: diagnostic, underlying: underlying)
         }
     }
 }
@@ -770,6 +779,7 @@ final class TrackedCaseRepairTests: XCTestCase {
         let summary = try await coordinator.runAll()
 
         XCTAssertEqual(summary.reanchored, 1)
+        XCTAssertEqual(summary.resolvedCaseKeys, Set([appeal.key]))
         let canonicalKey = "syktsud.komi.sudrf.ru/2-7212/2025"
         XCTAssertNil(summary.keyRemaps[appeal.key])
         let canonical = try XCTUnwrap(store.record(forKey: appeal.key))
@@ -1259,6 +1269,74 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(calls, 1)
         XCTAssertNotNil(store.record(forKey: appeal.key))
+    }
+
+    func testMoscowSourceFailureIsReportedAndRetried() async throws {
+        let store = TrackedStore(inMemory: true)
+        let appeal = context(level: .appeal, number: "33-10/2026",
+                             domain: "vs--komi.sudrf.ru", cartoteka: "g2",
+                             courtLevel: .subject)
+        _ = try store.upsert(context: appeal, snapshot: nil, collections: [])
+        let error = SudrfError.http(status: 502)
+        let diagnostic = CaseRepairDiagnostic(
+            phase: .uidSearch,
+            attempt: SourceOutcomeClassifier.attempt(
+                for: error, operation: .discovery, sourceFamily: "mosgorsud",
+                host: MosGorSudEndpoint.host))
+        let suite = defaults()
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(),
+            originResolver: StubOriginResolver(.sourceFailure(diagnostic, error)),
+            defaults: suite, now: { Date(timeIntervalSince1970: 1_000) },
+            anchorCardFetcher: { _ in CaseCard(rawText: "", actText: nil) })
+
+        let summary = try await coordinator.runAll()
+
+        XCTAssertEqual(summary.sourceFailures[appeal.key], diagnostic)
+        XCTAssertTrue(summary.resolvedCaseKeys.isEmpty)
+        XCTAssertEqual(summary.transient, 1)
+        XCTAssertEqual(summary.events.filter { $0.kind == .transient }.map(\.caseKey),
+                       [appeal.key])
+        XCTAssertTrue(summary.notFound.isEmpty)
+        XCTAssertEqual((suite.dictionary(forKey: "importChainRepair.v6.attempts")
+            as? [String: Int])?[appeal.key], 1)
+        XCTAssertFalse((suite.stringArray(forKey: "importChainRepair.v6.unsupported") ?? [])
+            .contains(appeal.key))
+    }
+
+    func testRepairSummaryFiltersAndMergesSourceDiagnosticsChronologically() {
+        let http502 = SudrfError.http(status: 502)
+        let uidFailure = CaseRepairDiagnostic(
+            phase: .uidSearch,
+            attempt: SourceOutcomeClassifier.attempt(
+                for: http502, operation: .discovery, sourceFamily: "mosgorsud",
+                host: MosGorSudEndpoint.host))
+        let numberFailure = CaseRepairDiagnostic(
+            phase: .numberSearch,
+            attempt: SourceOutcomeClassifier.attempt(
+                for: http502, operation: .discovery, sourceFamily: "mosgorsud",
+                host: MosGorSudEndpoint.host))
+        var summary = CaseRepairSummary()
+        summary.recordSourceFailure(uidFailure, for: "target")
+        summary.recordSourceFailure(numberFailure, for: "unrelated")
+
+        let filtered = summary.filtered(for: ["target"])
+        XCTAssertEqual(filtered.sourceFailures, ["target": uidFailure])
+        XCTAssertTrue(filtered.resolvedCaseKeys.isEmpty)
+        XCTAssertTrue(filtered.hasAnyResult)
+        XCTAssertFalse(filtered.relatedCaseKeys.contains("unrelated"))
+
+        var laterSuccess = CaseRepairSummary()
+        laterSuccess.markResolved("target")
+        summary.merge(laterSuccess)
+        XCTAssertEqual(summary.resolvedCaseKeys, ["target"])
+        XCTAssertNil(summary.sourceFailures["target"])
+
+        var laterFailure = CaseRepairSummary()
+        laterFailure.recordSourceFailure(numberFailure, for: "target")
+        summary.merge(laterFailure)
+        XCTAssertFalse(summary.resolvedCaseKeys.contains("target"))
+        XCTAssertEqual(summary.sourceFailures["target"], numberFailure)
     }
 
     func testTemporarySourceFailuresUseTransientBackoffAndEvents() async throws {

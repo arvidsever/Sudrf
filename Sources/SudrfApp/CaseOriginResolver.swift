@@ -41,6 +41,46 @@ enum CaseOriginResolutionError: Error, Equatable {
     case incompleteCandidates
 }
 
+struct CaseRepairDiagnostic: Equatable, Sendable {
+    enum Phase: String, Equatable, Sendable {
+        case uidSearch
+        case numberSearch
+        case candidateCard
+
+        fileprivate var label: String {
+            switch self {
+            case .uidSearch: "поиск по УИД"
+            case .numberSearch: "поиск по номеру"
+            case .candidateCard: "карточка кандидата"
+            }
+        }
+    }
+
+    let phase: Phase
+    let attempt: SourceAttempt
+
+    var message: String {
+        let result: String
+        if let status = attempt.provenance.httpStatus {
+            result = "HTTP \(status)"
+        } else {
+            switch attempt.kind {
+            case .maintenance: result = "технический перерыв"
+            case .transportFailure: result = "сетевая ошибка"
+            case .captcha: result = "требуется CAPTCHA"
+            case .parserFailure: result = "не удалось прочитать ответ"
+            case .partial, .honestZero, .usableSnapshot: result = "ошибка источника"
+            }
+        }
+        return "\(attempt.provenance.host) · \(phase.label) · \(result)"
+    }
+}
+
+struct CaseOriginSourceFailure: Error {
+    let diagnostic: CaseRepairDiagnostic
+    let underlying: Error
+}
+
 protocol CaseOriginResolving: Sendable {
     func resolve(anchorContext: MovementContext,
                  anchorCard: CaseCard) async throws -> ResolvedCaseOrigin
@@ -756,19 +796,16 @@ actor CaseOriginResolver {
         let route = MosGorSudRouting.map(cartoteka: cartoteka)
         var rows: [MosGorSudResult] = []
         if let uid = Self.nonEmpty(uid) {
-            rows = try await moscowProvider.search(courtAlias: alias, uid: uid,
-                                                   caseNumber: nil, participant: nil,
-                                                   instance: route.instance,
-                                                   processType: route.processType)
+            rows = try await searchMoscow(alias: alias, uid: uid, caseNumber: nil,
+                                          route: route, phase: .uidSearch)
         }
         if !rows.contains(where: { Self.sameMoscowNumber($0.caseNumber, number) }) {
-            rows = try await moscowProvider.search(courtAlias: alias, uid: nil,
-                                                   caseNumber: number, participant: nil,
-                                                   instance: route.instance,
-                                                   processType: route.processType)
+            rows = try await searchMoscow(alias: alias, uid: nil, caseNumber: number,
+                                          route: route, phase: .numberSearch)
         }
         var matches: [(MosGorSudResult, MosGorSudCard)] = []
         var unreadable = false
+        var firstSourceFailure: CaseOriginSourceFailure?
         var seenLocators = Set<String>()
         for row in rows where Self.sameMoscowNumber(row.caseNumber, number) {
             guard let url = row.cardURL,
@@ -781,12 +818,24 @@ actor CaseOriginResolver {
             let card: MosGorSudCard
             do { card = try await moscowProvider.fetchCard(url: url) }
             catch is CancellationError { throw CancellationError() }
+            catch let error as URLError where error.code == .cancelled { throw error }
             catch let error as SudrfError {
+                if Task.isCancelled { throw CancellationError() }
                 if case .captchaRequired = error { throw error }
                 unreadable = true
+                if firstSourceFailure == nil {
+                    firstSourceFailure = sourceFailure(error, phase: .candidateCard)
+                }
                 continue
             }
-            catch { unreadable = true; continue }
+            catch {
+                if Task.isCancelled { throw CancellationError() }
+                unreadable = true
+                if firstSourceFailure == nil {
+                    firstSourceFailure = sourceFailure(error, phase: .candidateCard)
+                }
+                continue
+            }
             guard let cardNumber = card.caseNumber,
                   Self.sameMoscowNumber(cardNumber, number),
                   row.uid.map({ Self.normalizedUID($0) == Self.normalizedUID(card.uid ?? "") }) ?? true
@@ -816,7 +865,10 @@ actor CaseOriginResolver {
                !Self.sameCourtTitle(cardCourt, expected, region: region) { continue }
             matches.append((row, card))
         }
-        if unreadable { throw CaseOriginResolutionError.incompleteCandidates }
+        if unreadable {
+            if let firstSourceFailure { throw firstSourceFailure }
+            throw CaseOriginResolutionError.incompleteCandidates
+        }
         guard matches.count == 1, let (row, source) = matches.first else {
             throw matches.isEmpty ? CaseOriginResolutionError.notFound : .ambiguous
         }
@@ -838,6 +890,39 @@ actor CaseOriginResolver {
         return ResolvedCaseOrigin(court: court.court, branch: court.branch, region: region,
                                   courtCode: court.code, cartoteka: cartoteka,
                                   result: result, card: card)
+    }
+
+    private func searchMoscow(alias: String, uid: String?, caseNumber: String?,
+                              route: (processType: MosGorSudProcessType, instance: Int),
+                              phase: CaseRepairDiagnostic.Phase) async throws
+        -> [MosGorSudResult] {
+        do {
+            return try await moscowProvider.search(
+                courtAlias: alias, uid: uid, caseNumber: caseNumber, participant: nil,
+                instance: route.instance, processType: route.processType)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
+        } catch let error as SudrfError {
+            if Task.isCancelled { throw CancellationError() }
+            if case .captchaRequired = error { throw error }
+            throw sourceFailure(error, phase: phase)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw sourceFailure(error, phase: phase)
+        }
+    }
+
+    private func sourceFailure(_ error: Error,
+                               phase: CaseRepairDiagnostic.Phase) -> CaseOriginSourceFailure {
+        CaseOriginSourceFailure(
+            diagnostic: CaseRepairDiagnostic(
+                phase: phase,
+                attempt: SourceOutcomeClassifier.attempt(
+                    for: error, operation: .discovery, sourceFamily: "mosgorsud",
+                    host: MosGorSudEndpoint.host)),
+            underlying: error)
     }
 
     /// Only the leading zeros in Moscow's own registration components vary.

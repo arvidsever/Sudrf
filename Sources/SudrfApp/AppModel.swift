@@ -161,6 +161,12 @@ final class AppRouter: ObservableObject {
     @Published var movementFetchedAt: Date? = nil
     /// Тихая ошибка фонового обновления (кэш при этом остаётся на экране).
     @Published var refreshNote: String? = nil
+    /// Диагностика восстановления источника живёт отдельно от результата
+    /// обновления движения: успешный partial/full refresh её не опровергает.
+    @Published private(set) var repairDiagnostics = [String: CaseRepairDiagnostic]()
+    var repairNote: String? {
+        openedKey.flatMap { repairDiagnostics[$0]?.message }
+    }
     /// Ключ записи открытой карточки — фоновые результаты применяются к UI
     /// только при совпадении ключа (карточку могли закрыть/сменить).
     private var openedKey: String? = nil
@@ -447,11 +453,13 @@ final class AppRouter: ObservableObject {
             do {
                 let outcome = try await self.repairCoordinator.repairIfNeeded(
                     key: key, forceAttempt: manually)
+                self.consumeRepairDiagnostics(outcome.summary)
                 if outcome.summary.hasProjectionChanges {
                     self.applyRepair(outcome.summary, presentReport: false)
                 }
                 return outcome.effectiveKey
             } catch let partial as CaseRepairPartialError {
+                self.consumeRepairDiagnostics(partial.summary)
                 if partial.summary.hasProjectionChanges {
                     self.applyRepair(partial.summary, presentReport: false)
                 }
@@ -1061,11 +1069,39 @@ final class AppRouter: ObservableObject {
         reload(spotlightScope: affectedKeys.isEmpty ? nil : .cases(affectedKeys))
     }
 
+    /// Stores only an actual source result. Empty/backoff and cancellation do
+    /// not reach here with a diagnostic, so an earlier actionable warning stays
+    /// visible until a later repair confirms the key is resolved.
+    func consumeRepairDiagnostics(_ summary: CaseRepairSummary) {
+        var updated = repairDiagnostics
+        if !updated.isEmpty, !summary.keyRemaps.isEmpty {
+            updated = updated.reduce(into: [String: CaseRepairDiagnostic]()) {
+                $0[summary.effectiveKey(for: $1.key)] = $1.value
+            }
+        }
+        for key in summary.resolvedCaseKeys {
+            updated.removeValue(forKey: summary.effectiveKey(for: key))
+        }
+        for (key, diagnostic) in summary.sourceFailures {
+            updated[summary.effectiveKey(for: key)] = diagnostic
+        }
+        if updated != repairDiagnostics { repairDiagnostics = updated }
+    }
+
+    private func remapRepairDiagnostics(_ keyRemaps: [String: String]) {
+        guard !repairDiagnostics.isEmpty, !keyRemaps.isEmpty else { return }
+        let remapped = repairDiagnostics.reduce(into: [String: CaseRepairDiagnostic]()) {
+            $0[Self.effectiveKey(for: $1.key, keyRemaps: keyRemaps)] = $1.value
+        }
+        if remapped != repairDiagnostics { repairDiagnostics = remapped }
+    }
+
     /// Persistent keys are part of feed IDs, App Intents and Spotlight IDs.
     /// Apply a merge mapping before rebuilding projections so an old event is
     /// not announced again merely because its record moved to the survivor.
     private func applyKeyRemaps(_ keyRemaps: [String: String]) {
         guard !keyRemaps.isEmpty else { return }
+        remapRepairDiagnostics(keyRemaps)
         func remap(_ ids: Set<String>) -> Set<String> {
             Set(ids.map { Self.remappedFeedID($0, keyRemaps: keyRemaps) })
         }

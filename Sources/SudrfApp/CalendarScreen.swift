@@ -41,6 +41,10 @@ private struct CalEvent: Identifiable {
     var court: String = ""
     var room: String = ""
     var judge: String = ""
+    /// Вид срока («Апелляционная жалоба» и т. п.) — только у дедлайнов, для
+    /// карточки месяца (issue #332): заголовок карточки без опоры на `title`,
+    /// который уже включает номер дела.
+    var what: String? = nil
 
     var accent: Color {
         switch kind {
@@ -201,7 +205,7 @@ struct CalendarScreen: View {
                 title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
                 caseNumber: d.caseNumber, displayCaseNumber: CaseNumberPresentation.primary(d.caseNumber),
                 secondaryLabel: nil,
-                deadlineId: d.id))
+                deadlineId: d.id, what: d.what))
         }
         return out
     }
@@ -252,34 +256,203 @@ struct CalendarScreen: View {
     // MARK: Режим МЕСЯЦ (4A / 4B)
 
     private var monthMode: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
-                navCapsule(title: "Сегодня",
-                           previous: "Предыдущий месяц",
-                           next: "Следующий месяц",
-                           onPrevious: { router.calStep(-1) },
-                           onTitle: {
-                               router.calMonth = DateUtil.startOfMonth(DateUtil.today)
-                               router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
-                               router.calSelectedDate = DateUtil.today
-                           },
-                           onNext: { router.calStep(1) })
-                Spacer()
-                legend
-                calendarModePicker
+        let model = buildMonthModel()
+        return VStack(alignment: .leading, spacing: 10) {
+            // Варианты всей строки, а не одной легенды: внутри общего HStack со
+            // Spacer легенда не получает честного предложения ширины и выталкивает
+            // шапку (а с ней всё окно) за края. Легенда уступает первой.
+            ViewThatFits(in: .horizontal) {
+                monthHeader(model) { monthLegendFull }
+                monthHeader(model) { monthLegendTiersOnly }
+                monthHeader(model) { EmptyView() }
             }
             .padding(.horizontal, 2)
             productionCalendarNotice
 
             HStack(alignment: .top, spacing: 12) {
-                monthGrid.frame(maxWidth: .infinity, maxHeight: .infinity)
+                monthGrid(model).frame(maxWidth: .infinity, maxHeight: .infinity)
                 if let day = router.calSelectedDate {
                     dayPanel(day).frame(width: 360)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .animation(.easeOut(duration: 0.2), value: router.calSelectedDate)
+        }
+    }
+
+    private func monthHeader<Legend: View>(_ model: MonthModel,
+                                           @ViewBuilder legend: () -> Legend) -> some View {
+        HStack(spacing: 10) {
+            Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
+                .lineLimit(1).fixedSize()
+            navCapsule(title: "Сегодня",
+                       previous: "Предыдущий месяц",
+                       next: "Следующий месяц",
+                       onPrevious: { router.calStep(-1) },
+                       onTitle: {
+                           router.calMonth = DateUtil.startOfMonth(DateUtil.today)
+                           router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
+                           router.calSelectedDate = DateUtil.today
+                       },
+                       onNext: { router.calStep(1) })
+            if !model.overlapDayList.isEmpty {
+                overlapCounterButton(model).fixedSize()
+            }
+            Spacer(minLength: 10)
+            legend().fixedSize()
+            calendarModePicker.fixedSize()
+        }
+    }
+
+    // MARK: Модель месяца (issue #332) — считается ОДИН РАЗ на вычисление тела
+    // `monthMode`, а не по разу на каждую из 35 ячеек: короткие имена судов и
+    // сокращение сторон используют регулярки (`CourtNamePresentation`,
+    // `PartyNamePresentation`), накладки и серии — сравнение всех заседаний
+    // месяца между собой. Раньше `events(on:)` заново фильтровал весь список
+    // событий в каждой ячейке — здесь события группируются по дню один раз.
+
+    private struct MonthModel {
+        var itemsByDay: [Date: [CalEvent]] = [:]        // карточки дня (без «истории»), уже отсортированы
+        var inactiveCountByDay: [Date: Int] = [:]        // сроки «в истории» — только счётчик
+        var overlapDays: Set<Date> = []
+        var overlapDayList: [Date] = []                  // отсортированы — для «Накладки: N дней»
+        var overlapByID: [String: CalendarMonthOverlap] = [:]
+        var seriesByID: [String: (index: Int, total: Int)] = [:]
+        var courtShort: [String: String] = [:]           // сырой court заседания → короткое имя (с учётом коллизий)
+        var courtTier: [String: CourtTier?] = [:]        // сырой court заседания → звено
+    }
+
+    private func buildMonthModel() -> MonthModel {
+        let monthDays = Set(DateUtil.datesOfMonth(router.calMonth).map { DateUtil.startOfDay($0) })
+        let monthEvents = events.filter { monthDays.contains(DateUtil.startOfDay($0.date)) }
+        let hearings = monthEvents.filter { $0.kind == .hearing }
+
+        let courtRaws = hearings.map(\.court)
+        let courtKeys = CourtNamePresentation.canonicalKeys(courtRaws)
+        let courtShorts = CourtNamePresentation.disambiguatedShortNames(courtRaws)
+        var courtTier: [String: CourtTier?] = [:]
+        for raw in Set(courtRaws) { courtTier[raw] = CourtNamePresentation.display(raw).tier }
+
+        func input(_ ev: CalEvent) -> CalendarMonthHearingInput {
+            CalendarMonthHearingInput(id: ev.id, date: ev.date, time: ev.time,
+                                       caseNumber: ev.caseNumber ?? ev.id,
+                                       courtKey: courtKeys[ev.court] ?? ev.court,
+                                       courtShort: courtShorts[ev.court] ?? ev.court)
+        }
+        // Накладка сравнивает суды — пустая строка суда не значит «другой суд»,
+        // это просто отсутствие данных, поэтому такие заседания не участвуют
+        // в поиске накладок ни с какой стороны (ревью). Серия («N из M») от
+        // суда не зависит — считается по всем заседаниям месяца.
+        let overlapEligible = hearings.filter { !$0.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let overlapInputs = overlapEligible.map(input)
+        let overlapByID = CalendarMonthLayout.overlaps(overlapInputs)
+        let overlapDayList = CalendarMonthLayout.overlapDays(overlapInputs)
+        let seriesByID = CalendarMonthLayout.seriesPositions(hearings.map(input))
+
+        var itemsByDay: [Date: [CalEvent]] = [:]
+        var inactiveCountByDay: [Date: Int] = [:]
+        for ev in monthEvents {
+            let day = DateUtil.startOfDay(ev.date)
+            if ev.kind == .deadlineInactive {
+                inactiveCountByDay[day, default: 0] += 1
+            } else {
+                itemsByDay[day, default: []].append(ev)
+            }
+        }
+        for day in itemsByDay.keys {
+            itemsByDay[day]?.sort {
+                CalendarMonthLayout.sortKey(isDeadline: $0.kind != .hearing, time: $0.time) <
+                CalendarMonthLayout.sortKey(isDeadline: $1.kind != .hearing, time: $1.time)
+            }
+        }
+
+        return MonthModel(itemsByDay: itemsByDay, inactiveCountByDay: inactiveCountByDay,
+                           overlapDays: Set(overlapDayList), overlapDayList: overlapDayList,
+                           overlapByID: overlapByID, seriesByID: seriesByID,
+                           courtShort: courtShorts, courtTier: courtTier)
+    }
+
+    /// Следующий день накладки СТРОГО ПОСЛЕ выбранного (если день выбран —
+    /// повторный клик должен продвигаться дальше, а не стоять на месте), иначе
+    /// ближайший ≥ сегодня; заворачивает на первый (ревью). Строгость «после»
+    /// получена сдвигом якоря на день вперёд перед вызовом уже протестированной
+    /// (инклюзивной) `CalendarMonthLayout.nextOverlapDay`, а не дублированием
+    /// её wrap-логики.
+    private func advanceOverlapDay(_ model: MonthModel) -> Date? {
+        let anchor: Date
+        if let selected = router.calSelectedDate {
+            anchor = DateUtil.addDays(DateUtil.startOfDay(selected), 1)
+        } else {
+            anchor = DateUtil.startOfDay(DateUtil.today)
+        }
+        return CalendarMonthLayout.nextOverlapDay(after: anchor, in: model.overlapDayList)
+    }
+
+    private func overlapCounterButton(_ model: MonthModel) -> some View {
+        let count = model.overlapDayList.count
+        let label = "Накладки: \(count) \(DateUtil.plural(count, "день", "дня", "дней"))"
+        return Button {
+            guard let next = advanceOverlapDay(model) else { return }
+            router.calMonth = DateUtil.startOfMonth(next)
+            router.calWeekStart = DateUtil.startOfWeek(next)
+            router.calSelectedDate = next
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
+                Text(label)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Palette.confirmed)
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Capsule().fill(Palette.confirmed.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(label). Перейти к ближайшему дню с накладкой.")
+    }
+
+    /// Легенда месяца: цвета звеньев суда + статусы сроков + метка накладки.
+    /// Легенда недели (`legend`) — отдельная и не меняется (#332 — только месяц).
+    /// По ширине сворачивается в `monthHeader`: полная → только звенья → ничего.
+    private var monthLegendFull: some View {
+        HStack(spacing: 12) {
+            monthLegendTiersOnly
+            Divider().frame(height: 12)
+            legendItem(Palette.confirmed, "срок · подтверждён", dashed: false)
+            legendItem(Palette.proposed, "срок · расчётный", dashed: true)
+            HStack(spacing: 4) {
+                Text("накладка")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5).padding(.vertical, 1.5)
+                    .background(Capsule().fill(Palette.confirmed))
+                Text("разные суды")
+            }
+        }
+        .font(.system(size: 11)).foregroundStyle(.secondary)
+    }
+    private var monthLegendTiersOnly: some View {
+        HStack(spacing: 12) {
+            Text("Звено").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            ForEach(CourtTier.allCases) { tier in
+                legendSwatch(CourtTierPalette.color(tier), tierLegendLabel(tier))
+            }
+        }
+        .font(.system(size: 11)).foregroundStyle(.secondary)
+    }
+    private func legendSwatch(_ c: Color, _ t: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 9, height: 9)
+            Text(t)
+        }
+    }
+    private func tierLegendLabel(_ tier: CourtTier) -> String {
+        switch tier {
+        case .district:   return "районный"
+        case .subject:    return "суд субъекта"
+        case .appeal:     return "АСОЮ"
+        case .cassation:  return "КСОЮ"
+        case .supreme:    return "ВС РФ"
+        case .magistrate: return "мировой"
         }
     }
 
@@ -379,44 +552,96 @@ struct CalendarScreen: View {
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5))
     }
 
-    private var monthGrid: some View {
+    // Выходные — узкие колонки (решение 8), фиксированная ширина — потолок,
+    // никогда не превышается; реальная ширина считается прямо в замыкании
+    // `GeometryReader` ниже, от РЕАЛЬНОЙ ширины сетки на каждый рендер — без
+    // хранимого состояния (ревью: `@State`-замер после первого рендера лочит
+    // ширину, потому что заголовок недели с уже посчитанными фикс-ширинами
+    // сам не сжимается, и `GeometryReader` под ним поэтому продолжает
+    // сообщать старую ширину — открытие панели дня оставляло сетку широкой
+    // до переключения вкладки).
+    private static let weekendColumnWidthCeiling: CGFloat = 92
+    // Заголовок ячейки (символ производственного календаря / бейджи / число
+    // дня) — фиксированная высота, чтобы `cellLayout` мог вычесть её из
+    // высоты строки и получить точную высоту под карточки.
+    private static let dayHeaderHeight: CGFloat = 22
+    private static let dayCellVerticalPadding: CGFloat = 13 // top 5 + bottom 8
+    // Строка «ПН…ВС» — тоже фиксированная высота, вычитается из общей высоты
+    // GeometryReader вместе с числом недель, чтобы получить высоту строки.
+    private static let weekHeaderRowHeight: CGFloat = 28
+
+    /// ОДИН `GeometryReader` вокруг всего содержимого сетки (заголовок недели
+    /// + строки недель) — размеры выходных/будних колонок и высоты строки
+    /// считаются прямо из `geo.size` при каждом рендере и раздаются вниз
+    /// параметрами, а не через `@State`/`PreferenceKey`. `GeometryReader`
+    /// сообщает размер, который ему ПРЕДЛОЖИЛ родитель, а не занятый
+    /// содержимым, — при этом внутри него ничто не имеет `maxWidth: .infinity`
+    /// или `.fixedSize()`, только явные `.frame(width:height:)`, так что
+    /// содержимое не может повлиять на размер самого GeometryReader и нет
+    /// риска задержки в один кадр, которую даёт `@State`.
+    private func monthGrid(_ model: MonthModel) -> some View {
         CardBox {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    ForEach(DateUtil.weekdayShort, id: \.self) { w in
-                        Text(w).font(.system(size: 10, weight: .bold)).kerning(0.4)
-                            .foregroundStyle(.tertiary).frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(.vertical, 7)
-                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+            GeometryReader { geo in
+                let weekendWidth = min(Self.weekendColumnWidthCeiling, geo.size.width / 7 * 0.6)
+                let weekdayWidth = max(0, (geo.size.width - 2 * weekendWidth) / 5)
+                let rowCount = max(weeks.count, 1)
+                let rowHeight = max(0, (geo.size.height - Self.weekHeaderRowHeight) / CGFloat(rowCount))
+
+                VStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        ForEach(Array(week.enumerated()), id: \.offset) { _, day in
-                            dayCell(day)
+                        ForEach(Array(DateUtil.weekdayShort.enumerated()), id: \.offset) { idx, w in
+                            Text(w).font(.system(size: 10, weight: .bold)).kerning(0.4)
+                                .foregroundStyle(.tertiary)
+                                .frame(width: idx >= 5 ? weekendWidth : weekdayWidth,
+                                       height: Self.weekHeaderRowHeight)
                         }
                     }
-                    .frame(maxHeight: .infinity)
-                    .overlay(Divider(), alignment: .top)
+                    .frame(height: Self.weekHeaderRowHeight)
+                    ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                        HStack(spacing: 0) {
+                            ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
+                                dayCell(day, isWeekend: idx >= 5, model: model,
+                                        columnWidth: idx >= 5 ? weekendWidth : weekdayWidth,
+                                        rowHeight: rowHeight)
+                            }
+                        }
+                        .frame(height: rowHeight)
+                        .overlay(Divider(), alignment: .top)
+                    }
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func dayCell(_ day: Date?) -> some View {
+    private func dayCell(_ day: Date?, isWeekend: Bool, model: MonthModel,
+                         columnWidth: CGFloat, rowHeight: CGFloat) -> some View {
         if let day {
             let isToday = DateUtil.isToday(day)
             let isSel = router.calSelectedDate.map { DateUtil.sameDay($0, day) } ?? false
-            let evs = events(on: day)
+            let key = DateUtil.startOfDay(day)
+            let items = model.itemsByDay[key] ?? []
+            let inactiveCount = model.inactiveCountByDay[key] ?? 0
+            let hasOverlap = model.overlapDays.contains(key)
             let production = productionDay(day)
+            let isPast = day < DateUtil.today && !isToday
+            // Ровно то, что реально отрисовано: заголовок + ОДИН зазор перед
+            // телом (второго зазора нет — вместо концевого `Spacer` тело
+            // прижато к верху через `.frame(..., alignment: .top)`) +
+            // вертикальные паддинги ячейки.
+            let available = max(0, rowHeight - Self.dayHeaderHeight
+                                 - CalendarMonthLayout.itemSpacing - Self.dayCellVerticalPadding)
+            let layout = CalendarMonthLayout.cellLayout(itemCount: items.count, availableHeight: available)
             Button { router.calSelectedDate = day } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 5) {
                         Text(production.symbol)
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(productionTint(production))
                             .accessibilityHidden(true)
-                        Spacer()
+                        if inactiveCount > 0 { historyBadge(inactiveCount) }
+                        if hasOverlap { overlapBadge }
+                        Spacer(minLength: 0)
                         Text("\(DateUtil.cal.component(.day, from: day))")
                             .font(.system(size: 11.5, weight: isToday || isSel ? .bold : .medium))
                             .foregroundStyle(isToday ? .white : (isSel ? Color.accentColor : .primary))
@@ -425,44 +650,408 @@ struct CalendarScreen: View {
                                 Circle().fill(isToday ? Color.accentColor
                                               : (isSel ? Color.accentColor.opacity(0.16) : .clear)))
                     }
-                    ForEach(evs) { ev in chip(ev) }
-                    Spacer(minLength: 0)
+                    .frame(height: Self.dayHeaderHeight)
+                    monthCellBody(items: items, layout: layout, model: model)
+                        .padding(.top, CalendarMonthLayout.itemSpacing)
+                        .opacity(isPast ? 0.7 : 1)
                 }
-                .padding(.horizontal, 6).padding(.top, 5)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.horizontal, 6).padding(.top, 5).padding(.bottom, 8)
+                .frame(width: columnWidth, height: rowHeight, alignment: .topLeading)
                 .background(isSel ? Color.accentColor.opacity(0.06)
                             : productionBackground(production))
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
                 .contentShape(Rectangle())
+                .clipped()
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(DateUtil.fmt(day)). \(production.accessibilityLabel). \(summary(evs.filter { $0.kind == .hearing }.count, evs.filter { $0.kind != .hearing }.count))")
+            .accessibilityLabel(dayCellAccessibilityLabel(day, production: production, items: items,
+                                                           layout: layout, model: model,
+                                                           hasOverlap: hasOverlap,
+                                                           inactiveCount: inactiveCount))
         } else {
             Color.primary.opacity(0.02)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: columnWidth, height: rowHeight)
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
         }
     }
 
-    private func chip(_ ev: CalEvent) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(ev.chip)
-                .font(.system(size: 10, weight: .semibold))
-                .lineLimit(1)
-            if let label = ev.secondaryLabel {
-                Text(label)
-                    .font(.system(size: 9, weight: .medium))
-                    .lineLimit(1)
+    /// Полный текст видимых карточек дня — иначе он «проглатывается» общей
+    /// кнопкой ячейки: `.accessibilityElement(children: .ignore)` на каждой
+    /// карточке (нужен, чтобы VoiceOver не читал их построчно как отдельные
+    /// элементы внутри кнопки) означает, что их `.accessibilityLabel` нигде
+    /// не звучит, если не добавить его сюда явно (ревью решения 7).
+    private func dayCellAccessibilityLabel(_ day: Date, production: ProductionCalendarDayPresentation,
+                                           items: [CalEvent], layout: CalendarMonthCellLayout,
+                                           model: MonthModel, hasOverlap: Bool, inactiveCount: Int) -> String {
+        let hearingsCount = items.filter { $0.kind == .hearing }.count
+        let deadlineCount = items.filter { $0.kind != .hearing }.count
+        var parts = [DateUtil.fmt(day), production.accessibilityLabel, summary(hearingsCount, deadlineCount)]
+        if hasOverlap { parts.append("есть накладка") }
+        if inactiveCount > 0 {
+            parts.append("\(inactiveCount) \(DateUtil.plural(inactiveCount, "срок", "срока", "сроков")) в истории")
+        }
+        let visible: [CalEvent]
+        switch layout.mode {
+        case .twoLine, .oneLine: visible = items
+        case .oneLineWithMore:   visible = Array(items.prefix(layout.visibleCount))
+        }
+        parts.append(contentsOf: visible.map { itemAccessibilityText($0, model: model) })
+        if layout.hiddenCount > 0 { parts.append("ещё \(layout.hiddenCount) скрыто") }
+        return parts.joined(separator: ". ")
+    }
+
+    private func itemAccessibilityText(_ ev: CalEvent, model: MonthModel) -> String {
+        if ev.kind == .hearing {
+            let overlap = model.overlapByID[ev.id]
+            let seriesLabel = model.seriesByID[ev.id].map { "\($0.index) из \($0.total)" }
+            return hearingAccessibilityLabel(ev, overlap: overlap, seriesLabel: seriesLabel)
+        }
+        let what = ev.what ?? ""
+        let number = ev.displayCaseNumber ?? ev.caseNumber ?? ""
+        return "Срок: \(what), № \(number), \(deadlineStatusText(ev))"
+    }
+
+    private func historyBadge(_ count: Int) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "clock").font(.system(size: 8.5))
+            Text("\(count)").font(.system(size: 9.5, weight: .semibold))
+        }
+        .foregroundStyle(.tertiary)
+        .help("\(count) \(DateUtil.plural(count, "срок", "срока", "сроков")) в истории")
+    }
+
+    /// В узкой (выходной) колонке символ дня + бейдж истории + бейдж накладки
+    /// + число дня легко превышают ~70pt — «накладка» текстом схлопывается до
+    /// компактного «!» (ревью решения 5); история — не трогаем, она и так
+    /// компактна.
+    private var overlapBadge: some View {
+        ViewThatFits(in: .horizontal) {
+            overlapBadgeFull
+            overlapBadgeCompact
+        }
+    }
+    private var overlapBadgeFull: some View {
+        Text("накладка")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5).padding(.vertical, 1.5)
+            .background(Capsule().fill(Palette.confirmed))
+            .help("Накладка: заседания в разных судах")
+    }
+    private var overlapBadgeCompact: some View {
+        Text("!")
+            .font(.system(size: 9, weight: .heavy))
+            .foregroundStyle(.white)
+            .frame(width: 13, height: 13)
+            .background(Circle().fill(Palette.confirmed))
+            .help("Накладка: заседания в разных судах")
+    }
+
+    // MARK: Плотность ячейки — двухстрочные / однострочные / «ещё N» (решение 6)
+
+    @ViewBuilder
+    private func monthCellBody(items: [CalEvent], layout: CalendarMonthCellLayout, model: MonthModel) -> some View {
+        VStack(alignment: .leading, spacing: CalendarMonthLayout.itemSpacing) {
+            switch layout.mode {
+            case .twoLine:
+                ForEach(items) { ev in cardView(ev, model: model, twoLine: true) }
+            case .oneLine:
+                ForEach(items) { ev in cardView(ev, model: model, twoLine: false) }
+            case .oneLineWithMore:
+                ForEach(items.prefix(layout.visibleCount)) { ev in cardView(ev, model: model, twoLine: false) }
+                if layout.hiddenCount > 0 { moreLabel(layout.hiddenCount) }
             }
         }
-            .foregroundStyle(ev.accent)
-            .padding(.horizontal, 6).padding(.vertical, 2.5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 5).fill(ev.accent.opacity(0.12)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 5).strokeBorder(
-                    ev.kind == .deadlineProposed ? ev.accent.opacity(0.6) : .clear,
-                    style: StrokeStyle(lineWidth: 1, dash: [2, 2])))
+    }
+
+    @ViewBuilder
+    private func cardView(_ ev: CalEvent, model: MonthModel, twoLine: Bool) -> some View {
+        if ev.kind == .hearing {
+            if twoLine { hearingCardTwoLine(ev, model: model) } else { hearingCardOneLine(ev, model: model) }
+        } else {
+            if twoLine { deadlineCardTwoLine(ev) } else { deadlineCardOneLine(ev) }
+        }
+    }
+
+    /// «ещё N» — не отдельная кнопка: клик по ней и так попадает в кнопку всей
+    /// ячейки дня (`dayCell`), которая уже выполняет то же действие
+    /// (`calSelectedDate = day`) — вложенные `Button` в SwiftUI ненадёжны.
+    private func moreLabel(_ hidden: Int) -> some View {
+        HStack(spacing: 2) {
+            Text("ещё \(hidden)")
+            Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(Color.accentColor)
+        .frame(height: CalendarMonthLayout.moreHeight, alignment: .leading)
+        .help("Открыть панель дня")
+    }
+
+    // MARK: Карточка заседания (решение 1–2)
+
+    private func partiesView(_ parties: String) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Text(PartyNamePresentation.level1(parties)).lineLimit(1)
+            Text(PartyNamePresentation.level2(parties)).lineLimit(1)
+            Text(PartyNamePresentation.level2(parties)).lineLimit(1).truncationMode(.tail)
+        }
+    }
+
+    /// Полный текст номера — для `.help`/VoiceOver, никогда не сокращается.
+    private func hearingNumberFullLabel(_ ev: CalEvent) -> String {
+        ev.secondaryLabel ?? "№ \(ev.displayCaseNumber ?? ev.caseNumber ?? "")"
+    }
+
+    /// Для карточки: у материала «Материал № 13-2471/2026» не влезает даже в
+    /// одну будничную колонку — показываем «мат. 13-2471/2026» (ревью решения
+    /// 7), полный текст остаётся в `.help`/VoiceOver через `hearingNumberFullLabel`.
+    private func hearingNumberLabel(_ ev: CalEvent) -> String {
+        guard let secondary = ev.secondaryLabel else {
+            return "№ \(ev.displayCaseNumber ?? ev.caseNumber ?? "")"
+        }
+        if let range = secondary.range(of: "Материал № ") {
+            return "мат. " + secondary[range.upperBound...]
+        }
+        if secondary.hasPrefix("Материал") {
+            return "мат." + secondary.dropFirst("Материал".count)
+        }
+        return secondary
+    }
+
+    private func overlapNoteFull(_ overlap: CalendarMonthOverlap) -> Text {
+        Text("↔ \(overlap.otherCourtShort) \(overlap.otherTime)")
+            .font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.confirmed)
+    }
+    private func overlapNoteShort(_ overlap: CalendarMonthOverlap) -> Text {
+        Text("↔ \(overlap.otherTime)")
+            .font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.confirmed)
+    }
+    private func seriesNote(_ label: String) -> Text {
+        Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+
+    private func hearingHelpText(_ ev: CalEvent, overlap: CalendarMonthOverlap?) -> String {
+        var s = "\(ev.time) · \(ev.parties)\n\(hearingNumberFullLabel(ev)) · \(ev.court)"
+        if let overlap { s += "\nНакладка: \(overlap.otherCourtShort) \(overlap.otherTime)" }
+        return s
+    }
+
+    private func hearingAccessibilityLabel(_ ev: CalEvent, overlap: CalendarMonthOverlap?, seriesLabel: String?) -> String {
+        var s = "Заседание \(ev.time), \(ev.parties), \(hearingNumberFullLabel(ev)), \(ev.court)"
+        if let overlap {
+            s += ". Накладка с заседанием в \(overlap.otherCourtShort) в \(overlap.otherTime)"
+        } else if let seriesLabel {
+            s += ". \(seriesLabel) заседаний по этому делу"
+        }
+        return s
+    }
+
+    private func courtText(_ s: String, color: Color) -> Text {
+        Text(s).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(color)
+    }
+    private func numberText(_ s: String) -> Text {
+        Text(s).font(.system(size: 10.5)).foregroundStyle(.secondary)
+    }
+    /// Первый(-ые) рунги лестницы: у распознанного звена суд не обрезается,
+    /// пока помещается целиком (`.fixedSize()`); у нераспознанного (`short ==
+    /// full`, может быть сколь угодно длинным) — truncation сразу.
+    @ViewBuilder
+    private func courtFirstView(_ courtShort: String, color: Color, recognized: Bool) -> some View {
+        if recognized {
+            courtText(courtShort, color: color).fixedSize()
+        } else {
+            courtText(courtShort, color: color).lineLimit(1).truncationMode(.tail)
+        }
+    }
+
+    /// Вторая строка двухстрочной карточки: суд + номер + пометка накладки/серии
+    /// не помещаются в будничную колонку (~78pt при открытой панели дня на
+    /// 1180pt) — «Сыктывкарский № 2-3685/2026» ≈150pt. ОДНА плоская лестница
+    /// по ширине (решение автора при ревью, п. 3): вложенный `ViewThatFits`
+    /// внутри рунга внешнего `ViewThatFits` не работает — SwiftUI меряет
+    /// вложенный `ViewThatFits` по размеру его ПЕРВОЙ (самой широкой)
+    /// альтернативы, так что «↔ ВС Коми 12:40» никогда не сжимался до
+    /// «↔ 12:40», просто пропадал целиком вместе со всем рунгом. Поэтому шаг
+    /// «полная пометка» / «короткая пометка» — это два ОТДЕЛЬНЫХ рунга общей
+    /// лестницы, а не под-лестница. Номер и распознанное короткое имя суда —
+    /// `.fixedSize()` до последнего рунга (issue: и то, и другое никогда не
+    /// обрезается многоточием, пока влезает целиком); последний рунг —
+    /// решение ревью п. 4: суд с `.lineLimit(1)+.truncationMode(.tail)`, а не
+    /// `.fixedSize()`, чтобы `.clipped()` карточки не резал текст посередине
+    /// символа. Нераспознанный суд (`tier == nil`, `short == full`) в эту же
+    /// лестницу — он и так везде truncation, поэтому вместо `.fixedSize()`
+    /// используется truncation на каждом рунге, где он есть (решение п. 2).
+    @ViewBuilder
+    private func hearingSecondLine(_ ev: CalEvent, model: MonthModel,
+                                   overlap: CalendarMonthOverlap?, seriesLabel: String?) -> some View {
+        let tier = model.courtTier[ev.court] ?? nil
+        let recognized = tier != nil
+        let color = CourtTierPalette.color(tier)
+        let courtShort = model.courtShort[ev.court] ?? ev.court
+        let number = hearingNumberLabel(ev)
+
+        let courtLast = courtText(courtShort, color: color).lineLimit(1).truncationMode(.tail)
+        let numberFixed = numberText(number).fixedSize()
+
+        ViewThatFits(in: .horizontal) {
+            if let overlap {
+                HStack(spacing: 6) {
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
+                    Spacer(minLength: 0)
+                    overlapNoteFull(overlap)
+                }
+                HStack(spacing: 6) {
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
+                    Spacer(minLength: 0)
+                    overlapNoteShort(overlap)
+                }
+            } else if let seriesLabel {
+                HStack(spacing: 6) {
+                    courtFirstView(courtShort, color: color, recognized: recognized)
+                    numberFixed
+                    Spacer(minLength: 0)
+                    seriesNote(seriesLabel)
+                }
+            }
+            HStack(spacing: 6) { courtFirstView(courtShort, color: color, recognized: recognized); numberFixed }
+            HStack(spacing: 6) { numberFixed }
+            HStack(spacing: 6) { courtLast }
+        }
+    }
+
+    private func hearingCardTwoLine(_ ev: CalEvent, model: MonthModel) -> some View {
+        let tier = model.courtTier[ev.court] ?? nil
+        let color = CourtTierPalette.color(tier)
+        let tint = CourtTierPalette.tint(tier)
+        let overlap = model.overlapByID[ev.id]
+        let series = model.seriesByID[ev.id]
+        let seriesLabel = series.map { "\($0.index) из \($0.total)" }
+        let timeColor = overlap != nil ? Palette.confirmed : color
+
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(ev.time)
+                    .font(.system(size: 12, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(timeColor)
+                partiesView(ev.parties)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+            }
+            hearingSecondLine(ev, model: model, overlap: overlap, seriesLabel: seriesLabel)
+        }
+        .padding(EdgeInsets(top: 3, leading: 6, bottom: 4, trailing: 6))
+        .frame(maxWidth: .infinity, minHeight: CalendarMonthLayout.twoLineHeight,
+               maxHeight: CalendarMonthLayout.twoLineHeight, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(tint))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(overlap != nil ? Palette.confirmed.opacity(0.55) : .clear, lineWidth: 1.5))
+        .clipped()
+        .help(hearingHelpText(ev, overlap: overlap))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(hearingAccessibilityLabel(ev, overlap: overlap, seriesLabel: seriesLabel))
+    }
+
+    private func hearingCardOneLine(_ ev: CalEvent, model: MonthModel) -> some View {
+        let tier = model.courtTier[ev.court] ?? nil
+        let color = CourtTierPalette.color(tier)
+        let tint = CourtTierPalette.tint(tier)
+        let overlap = model.overlapByID[ev.id]
+        let timeColor = overlap != nil ? Palette.confirmed : color
+
+        return HStack(spacing: 6) {
+            Text(ev.time)
+                .font(.system(size: 11.5, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(timeColor)
+            partiesView(ev.parties)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: CalendarMonthLayout.oneLineHeight,
+               maxHeight: CalendarMonthLayout.oneLineHeight, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 5).fill(tint))
+        .overlay(RoundedRectangle(cornerRadius: 5)
+            .strokeBorder(overlap != nil ? Palette.confirmed.opacity(0.55) : .clear, lineWidth: 1.5))
+        .clipped()
+        .help(hearingHelpText(ev, overlap: overlap))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(hearingAccessibilityLabel(ev, overlap: overlap, seriesLabel: nil))
+    }
+
+    // MARK: Карточка срока (решение 6 — только действующие; «история» — бейдж в шапке дня)
+
+    private func deadlineStatusText(_ ev: CalEvent) -> String {
+        if DateUtil.isToday(ev.date) { return "сегодня последний день" }
+        switch ev.kind {
+        case .deadlineConfirmed:   return "подтверждён"
+        case .deadlineOverridden:  return "изменён вручную"
+        case .deadlineProposed:    return "расчётный"
+        default:                   return ""
+        }
+    }
+
+    private static let shortDeadlineKinds: [String: String] = [
+        "Апелляционная жалоба": "Апел. жалоба",
+        "Кассационная жалоба": "Касс. жалоба"
+    ]
+    private func shortDeadlineKind(_ what: String) -> String {
+        Self.shortDeadlineKinds[what] ?? what
+    }
+
+    private func deadlineCardTwoLine(_ ev: CalEvent) -> some View {
+        let confirmedStyle = ev.kind.isConfirmedStyle
+        let what = ev.what ?? ""
+        let number = ev.displayCaseNumber ?? ev.caseNumber ?? ""
+        let status = deadlineStatusText(ev)
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 5) {
+                Image(systemName: "flag.fill").font(.system(size: 8.5))
+                Text(what).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            }
+            Text("№ \(number) · \(status)").font(.system(size: 10.5)).lineLimit(1)
+        }
+        .foregroundStyle(ev.accent)
+        .padding(EdgeInsets(top: 3, leading: 6, bottom: 4, trailing: 6))
+        .frame(maxWidth: .infinity, minHeight: CalendarMonthLayout.twoLineHeight,
+               maxHeight: CalendarMonthLayout.twoLineHeight, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(confirmedStyle ? ev.accent.opacity(0.12) : Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(ev.accent.opacity(confirmedStyle ? 0.35 : 0.75),
+                          style: StrokeStyle(lineWidth: 1, dash: confirmedStyle ? [] : [3, 2])))
+        .clipped()
+        .help("\(what) · № \(number) · \(status)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Срок: \(what), № \(number), \(status)")
+    }
+
+    private func deadlineCardOneLine(_ ev: CalEvent) -> some View {
+        let confirmedStyle = ev.kind.isConfirmedStyle
+        let what = ev.what ?? ""
+        let number = ev.displayCaseNumber ?? ev.caseNumber ?? ""
+        let status = deadlineStatusText(ev)
+        return HStack(spacing: 5) {
+            Image(systemName: "flag.fill").font(.system(size: 8))
+            Text("\(shortDeadlineKind(what)) · \(number)").font(.system(size: 11, weight: .semibold)).lineLimit(1)
+        }
+        .foregroundStyle(ev.accent)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, minHeight: CalendarMonthLayout.oneLineHeight,
+               maxHeight: CalendarMonthLayout.oneLineHeight, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(confirmedStyle ? ev.accent.opacity(0.12) : Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 5)
+            .strokeBorder(ev.accent.opacity(confirmedStyle ? 0.35 : 0.75),
+                          style: StrokeStyle(lineWidth: 1, dash: confirmedStyle ? [] : [3, 2])))
+        .clipped()
+        .help("\(what) · № \(number) · \(status)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Срок: \(what), № \(number), \(status)")
     }
 
     // MARK: Панель дня (4B)
@@ -1239,4 +1828,42 @@ struct CalendarScreen: View {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Шесть цветов звена суда для карточки месяца (issue #332, решение 4) — из
+/// артефакта автора («TIER» в `mockup-month.dc.html`), плюс нейтральный серый
+/// для нераспознанного суда. Светлая/тёмная тема — тот же приём, что у
+/// `NSColor.sudrfContent` в ContentView.swift: `NSColor(name:dynamicProvider:)`.
+private enum CourtTierPalette {
+    static func color(_ tier: CourtTier?) -> Color { Color(nsColor: nsColor(tier)) }
+    static func tint(_ tier: CourtTier?) -> Color { Color(nsColor: tint(tier)) }
+
+    private static func nsColor(_ tier: CourtTier?) -> NSColor {
+        switch tier {
+        case .district:   return dynamic(light: (0x28, 0x56, 0xc4), dark: (0x7c, 0xa6, 0xf5))
+        case .subject:    return dynamic(light: (0x6d, 0x3a, 0xb5), dark: (0xbd, 0x97, 0xf2))
+        case .appeal:     return dynamic(light: (0x9c, 0x4f, 0x0b), dark: (0xe3, 0xa7, 0x66))
+        case .cassation:  return dynamic(light: (0xa3, 0x21, 0x5a), dark: (0xec, 0x84, 0xb4))
+        case .supreme:    return dynamic(light: (0x1f, 0x6b, 0x4a), dark: (0x73, 0xcf, 0xa4))
+        case .magistrate: return dynamic(light: (0x5b, 0x64, 0x72), dark: (0xb2, 0xba, 0xc5))
+        case nil:         return dynamic(light: (0x6b, 0x6b, 0x73), dark: (0x9a, 0x9a, 0xa2))
+        }
+    }
+    private static func tint(_ tier: CourtTier?) -> NSColor {
+        switch tier {
+        case .district:   return dynamic(light: (0xea, 0xf0, 0xfc), dark: (0x1c, 0x28, 0x40))
+        case .subject:    return dynamic(light: (0xf2, 0xec, 0xfb), dark: (0x2a, 0x21, 0x3a))
+        case .appeal:     return dynamic(light: (0xfb, 0xf0, 0xe2), dark: (0x33, 0x28, 0x18))
+        case .cassation:  return dynamic(light: (0xfb, 0xe9, 0xf0), dark: (0x35, 0x1f, 0x2a))
+        case .supreme:    return dynamic(light: (0xe5, 0xf3, 0xec), dark: (0x18, 0x2c, 0x24))
+        case .magistrate: return dynamic(light: (0xee, 0xf0, 0xf3), dark: (0x2a, 0x2c, 0x30))
+        case nil:         return dynamic(light: (0xf0, 0xf0, 0xf2), dark: (0x2c, 0x2d, 0x31))
+        }
+    }
+    private static func dynamic(light: (Int, Int, Int), dark: (Int, Int, Int)) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let c = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: CGFloat(c.0) / 255, green: CGFloat(c.1) / 255, blue: CGFloat(c.2) / 255, alpha: 1)
+        }
+    }
 }

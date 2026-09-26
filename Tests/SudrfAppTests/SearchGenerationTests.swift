@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import SudrfKit
 @testable import SudrfApp
+@testable import CaptchaSolver
 
 @MainActor
 final class SearchGenerationTests: XCTestCase {
@@ -106,6 +107,92 @@ final class SearchGenerationTests: XCTestCase {
         XCTAssertNil(model.selectedResultID)
     }
 
+    func testMovementAutoSolvesEachCanonicalCaptchaHostAndRetries() async throws {
+        let settings = CaptchaSettings.shared
+        let previousEnabled = settings.autoSolveEnabled
+        let previousForceDisabled = settings.forceDisabled
+        defer {
+            settings.autoSolveEnabled = previousEnabled
+            settings.forceDisabled = previousForceDisabled
+        }
+        settings.autoSolveEnabled = true
+        settings.forceDisabled = false
+
+        let firstHost = "appeal.region.sudrf.ru"
+        let secondHost = "cassation--region.sudrf.ru"
+        await CaptchaTokenStore.shared.invalidate(domain: firstHost)
+        await CaptchaTokenStore.shared.invalidate(domain: secondHost)
+        defer {
+            Task {
+                await CaptchaTokenStore.shared.invalidate(domain: firstHost)
+                await CaptchaTokenStore.shared.invalidate(domain: secondHost)
+            }
+        }
+        let service = SearchMovementCaptchaMovementProvider(
+            firstHost: firstHost, secondHost: secondHost)
+        let solves = SearchMovementCaptchaSolveCounter()
+        let (model, result, cacheKey) = makeMovementModel(
+            caseNumber: "2-339/2026", service: service, settings: settings,
+            autoSolve: { url, _, _, _ in await solves.solve(url) })
+        defer { MovementMemoryCache.shared.remove(cacheKey) }
+
+        await model.openMovement(result)
+
+        let solveCalls = await solves.callsByCanonicalHost()
+        XCTAssertEqual(solveCalls, [
+            SudrfHost.moduleHost(firstHost): 1,
+            secondHost: 1
+        ])
+        let movementCalls = await service.callCount
+        XCTAssertEqual(movementCalls, 3, "initial movement plus one retry per solved court")
+        XCTAssertTrue(model.movement?.instances.contains { $0.captchaFormURL != nil } == false)
+        XCTAssertTrue(model.movement?.instances.contains { $0.domain == firstHost } == true)
+        XCTAssertTrue(model.movement?.instances.contains { $0.domain == secondHost } == true)
+    }
+
+    func testClosingMovementDuringCaptchaSolvePreventsStalePublish() async throws {
+        let settings = CaptchaSettings.shared
+        let previousEnabled = settings.autoSolveEnabled
+        let previousForceDisabled = settings.forceDisabled
+        defer {
+            settings.autoSolveEnabled = previousEnabled
+            settings.forceDisabled = previousForceDisabled
+        }
+        settings.autoSolveEnabled = true
+        settings.forceDisabled = false
+
+        let formURL = URL(string: "https://appeal.region.sudrf.ru/modules.php?name=sud_delo")!
+        await CaptchaTokenStore.shared.invalidate(domain: formURL.host!)
+        defer { Task { await CaptchaTokenStore.shared.invalidate(domain: formURL.host!) } }
+        let gate = SearchMovementCaptchaSolveGate()
+        let service = SearchMovementCaptchaMovementProvider(
+            firstHost: formURL.host!, secondHost: "cassation--region.sudrf.ru")
+        let (model, result, cacheKey) = makeMovementModel(
+            caseNumber: "2-340/2026", service: service, settings: settings,
+            autoSolve: { _, _, _, _ in
+                await gate.waitForRelease()
+                return AutoCaptchaSolver.SolveResult(
+                    token: CaptchaToken(value: "12345", id: "stale"), png: Data([1]))
+            })
+        let cached = movementWithCaptcha(caseNumber: result.caseNumber, formURL: formURL)
+        MovementMemoryCache.shared.put(cacheKey, cached)
+        defer { MovementMemoryCache.shared.remove(cacheKey) }
+
+        let load = Task { await model.openMovement(result) }
+        await gate.waitUntilStarted()
+        XCTAssertTrue(model.loadingMovement)
+
+        model.exitMovement()
+        await gate.release()
+        await load.value
+
+        XCTAssertFalse(model.loadingMovement)
+        XCTAssertNil(model.movement)
+        XCTAssertEqual(MovementMemoryCache.shared.get(cacheKey)?.movement, cached)
+        let staleToken = await CaptchaTokenStore.shared.token(forDomain: formURL.host!)
+        XCTAssertNil(staleToken)
+    }
+
     private func assertDelayedSearchIsIgnored(
         deferred: Bool = false,
         after change: @escaping @MainActor (SearchModel, SearchModel.CourtOption) -> Void
@@ -145,6 +232,121 @@ final class SearchGenerationTests: XCTestCase {
 
         XCTAssertTrue(model.results.isEmpty)
         XCTAssertFalse(model.hasSearched)
+    }
+
+    private func makeMovementModel(
+        caseNumber: String,
+        service: SearchMovementCaptchaMovementProvider,
+        settings: CaptchaSettings,
+        autoSolve: @escaping (URL, SudrfClient, CaptchaSolver,
+                               AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult
+    ) -> (SearchModel, CaseSearchResult, String) {
+        let court = SearchModel.CourtOption(
+            domain: "lower.region.sudrf.ru", title: "Районный суд",
+            level: .district, code: "11RS0001")
+        let result = CaseSearchResult(caseNumber: caseNumber)
+        let model = SearchModel(
+            captchaSettings: settings,
+            movementServiceFactory: { _, _ in service },
+            autoSolve: autoSolve)
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.cartotekaId = "g1"
+        model.results = [result]
+        model.selectedResultIndex = 0
+        let key = MovementContext.identityKey(
+            displayDomain: court.domain, courtCode: court.code, caseNumber: caseNumber)
+        MovementMemoryCache.shared.remove(key)
+        return (model, result, key)
+    }
+
+    private func movementWithCaptcha(caseNumber: String, formURL: URL) -> CaseMovement {
+        CaseMovement(uid: "uid-\(caseNumber)", caseNumber: caseNumber, inForce: false,
+                     instances: [CaseInstance(
+                        level: .first, court: "Районный суд", caseNumber: caseNumber,
+                        judge: nil, domain: "lower.region.sudrf.ru", foundByUID: false,
+                        result: nil, sessions: []),
+                        SearchMovementCaptchaMovementProvider.captchaStub(
+                            domain: formURL.host!, level: .appeal)],
+                     complaints: [:], acts: [])
+    }
+}
+
+private actor SearchMovementCaptchaSolveCounter {
+    private var calls: [String: Int] = [:]
+
+    func solve(_ url: URL) -> AutoCaptchaSolver.SolveResult {
+        let canonical = SudrfHost.moduleHost((url.host ?? "").lowercased())
+        calls[canonical, default: 0] += 1
+        return AutoCaptchaSolver.SolveResult(
+            token: CaptchaToken(value: "12345", id: canonical), png: Data([1]))
+    }
+
+    func callsByCanonicalHost() -> [String: Int] { calls }
+}
+
+private actor SearchMovementCaptchaSolveGate {
+    private var started = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func waitForRelease() async {
+        started = true
+        startWaiter?.resume()
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func release() { releaseWaiter?.resume() }
+}
+
+private actor SearchMovementCaptchaMovementProvider: MovementProviding {
+    private let firstHost: String
+    private let secondHost: String
+    private(set) var callCount = 0
+
+    init(firstHost: String, secondHost: String) {
+        self.firstHost = firstHost
+        self.secondHost = secondHost
+    }
+
+    func movement(for base: CaseSearchResult, court: Court,
+                  cartoteka: Cartoteka) async throws -> CaseMovement {
+        callCount += 1
+        let firstSolved = await CaptchaTokenStore.shared.token(forDomain: firstHost) != nil
+        let secondSolved = await CaptchaTokenStore.shared.token(forDomain: secondHost) != nil
+        var instances = [CaseInstance(
+            level: .first, court: "Районный суд", caseNumber: base.caseNumber,
+            judge: nil, domain: court.domain, foundByUID: false, result: nil, sessions: [])]
+        if firstSolved {
+            // The retry confirms all dot/dash variants for this host.
+            instances.append(Self.confirmedCard(domain: firstHost, level: .appeal))
+        } else {
+            for domain in [firstHost, SudrfHost.moduleHost(firstHost)] {
+                instances.append(Self.captchaStub(domain: domain, level: .appeal))
+            }
+        }
+        if secondSolved { instances.append(Self.confirmedCard(domain: secondHost, level: .cassation)) }
+        else { instances.append(Self.captchaStub(domain: secondHost, level: .cassation)) }
+        return CaseMovement(uid: "uid-\(base.caseNumber)", caseNumber: base.caseNumber,
+                            inForce: false, instances: instances, complaints: [:], acts: [])
+    }
+
+    static func captchaStub(domain: String, level: CaseInstance.Level) -> CaseInstance {
+        let formURL = URL(string: "https://\(domain)/modules.php?name=sud_delo")!
+        return CaseInstance(level: level, court: domain, caseNumber: "—", judge: nil,
+                            domain: domain, foundByUID: false, result: nil, sessions: [],
+                            captchaFormURL: formURL)
+    }
+
+    private static func confirmedCard(domain: String,
+                                      level: CaseInstance.Level) -> CaseInstance {
+        CaseInstance(level: level, court: domain, caseNumber: "8-1/2026", judge: nil,
+                     domain: domain, foundByUID: true, result: "Найдено", sessions: [])
     }
 }
 

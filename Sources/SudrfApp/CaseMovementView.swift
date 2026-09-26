@@ -80,6 +80,7 @@ struct CaseMovementView: View {
                     // не являются.
                     ForEach(Self.activeInstances(in: movement)) { inst in
                         InstanceBlock(instance: inst, classification: MaterialProductionContext.resolve(instance: inst, movement: movement, baseContext: sourceContext), onSolveCaptcha: onSolveCaptcha,
+                                      isRefreshing: isRefreshing,
                                       onRefresh: onRefresh)
                     }
                     let materials = Self.materialInstances(in: movement)
@@ -92,6 +93,7 @@ struct CaseMovementView: View {
                             .padding(.top, 6)
                         ForEach(materials) { inst in
                             InstanceBlock(instance: inst, classification: MaterialProductionContext.resolve(instance: inst, movement: movement, baseContext: sourceContext), onSolveCaptcha: onSolveCaptcha,
+                                          isRefreshing: isRefreshing,
                                           onRefresh: onRefresh)
                                 .id(inst.id)
                         }
@@ -694,6 +696,7 @@ private struct InstanceBlock: View {
     let instance: CaseInstance
     var classification: MaterialProductionContext.Classification? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
+    var isRefreshing = false
     /// Опциональный callback «повторить» для transient-stub (A16). В поиске
     /// не передаётся → кнопка скрыта. В мониторинге прокидывается из
     /// CaseMovementView.onRefresh → RootView (router.refreshOpenCase()).
@@ -745,17 +748,23 @@ private struct InstanceBlock: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // Заглушка: форма суда под капчей — автопоиск невозможен, нужен ручной ввод кода.
     private var captchaPrompt: some View {
         HStack(spacing: 10) {
             Image(systemName: "lock.shield").foregroundStyle(instance.level.tint)
-            Text("Форма суда защищена кодом с картинки — автопоиск невозможен.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Button { onSolveCaptcha(instance) } label: {
-                Text("Ввести код").font(.system(size: 11, weight: .semibold))
+            if isRefreshing {
+                Text("Проверяем суд и код с картинки…")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Text("Для проверки этого суда нужен код с картинки.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            .buttonStyle(.glassProminent).controlSize(.small)
+            Spacer(minLength: 8)
+            if !isRefreshing {
+                Button { onSolveCaptcha(instance) } label: {
+                    Text("Ввести код").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.glassProminent).controlSize(.small)
+            }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
         .overlay(Divider(), alignment: .top)

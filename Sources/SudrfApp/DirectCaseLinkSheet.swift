@@ -213,8 +213,7 @@ struct DirectCaseLinkSheet: View {
 
     private func add(_ preview: DirectCaseLinkPreview) {
         task?.cancel()
-        guard let key = router.track(context: preview.context, movement: nil) else { return }
-        router.openTrackedCase(key: key)
+        guard router.addDirectCaseLink(preview.context) != nil else { return }
         dismiss()
     }
 }

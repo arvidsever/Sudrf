@@ -52,6 +52,19 @@ final class RefreshCenterTests: XCTestCase {
         }
     }
 
+    private actor SequencedCaptchaMovement: MovementProviding {
+        let values: [CaseMovement]
+        private(set) var calls = 0
+
+        init(_ values: [CaseMovement]) { self.values = values }
+
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            defer { calls += 1 }
+            return values[min(calls, values.count - 1)]
+        }
+    }
+
     /// Covers both CAPTCHA entry points with two cards reaching equivalent
     /// dot/dash module hosts at the same time.
     private actor MixedCaptchaMovement: MovementProviding {
@@ -1417,6 +1430,95 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNotNil(saved.movementFetchedAt)
     }
 
+    func testTwoLinkedCourtCaptchasContinueUntilFoundAndConfirmedEmpty() async throws {
+        let key = store.all()[0].key
+        let subjectURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?name=sud_delo")!
+        let cassationURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        let subjectStub = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми", caseNumber: "—",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], captchaFormURL: subjectURL)
+        let cassationStub = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд", caseNumber: "—",
+            judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], captchaFormURL: cassationURL)
+        let subjectCard = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми",
+            caseNumber: "33-42/2026", judge: nil, domain: "vs--komi.sudrf.ru",
+            foundByUID: true, result: "Решение", sessions: [])
+        var first = successMV!
+        first.instances += [subjectStub, cassationStub]
+        first.incompleteHigherCourtDomains = ["vs--komi.sudrf.ru", "3kas.sudrf.ru"]
+        var second = successMV!
+        second.instances += [subjectCard, cassationStub]
+        second.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        var final = successMV!
+        final.instances.append(subjectCard)
+        final.honestZeroDomains = ["3kas.sudrf.ru"]
+        let movement = SequencedCaptchaMovement([first, second, final])
+        let center = makeCenter(service: movement) { url, _, _, _ in
+            AutoCaptchaSolver.SolveResult(
+                token: CaptchaToken(value: "12345", id: url.host ?? ""), png: nil)
+        }
+        var published: [CaseMovement] = []
+        center.onRefreshed = { _, value, _ in published.append(value) }
+
+        let result = await center.refresh(key: key)?.value
+
+        guard case .partial = result?.outcome else {
+            return XCTFail("подтверждённая пустота сохраняет консервативную partial-классификацию")
+        }
+        let calls = await movement.calls
+        XCTAssertEqual(calls, 3)
+        XCTAssertEqual(published.count, 1)
+        XCTAssertEqual(published.first?.instances.first { $0.domain == "vs--komi.sudrf.ru" }?.caseNumber,
+                       "33-42/2026")
+        XCTAssertFalse(published.first?.instances.contains { $0.domain == "3kas.sudrf.ru" } ?? true)
+        XCTAssertTrue(center.captchaPendingGroups.isEmpty)
+        XCTAssertNil(store.record(forKey: key)?.movementFetchedAt)
+    }
+
+    func testUnsolvedLinkedCourtDoesNotBlockAnotherAndKeepsManualRequest() async throws {
+        let key = store.all()[0].key
+        let firstURL = URL(string: "https://vs--komi.sudrf.ru/modules.php?name=sud_delo")!
+        let secondURL = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        let firstStub = CaseInstance(
+            level: .appeal, court: "Верховный суд Республики Коми", caseNumber: "—",
+            judge: nil, domain: "vs--komi.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], captchaFormURL: firstURL)
+        let secondStub = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд", caseNumber: "—",
+            judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], captchaFormURL: secondURL)
+        var first = successMV!
+        first.instances += [firstStub, secondStub]
+        first.incompleteHigherCourtDomains = ["vs--komi.sudrf.ru", "3kas.sudrf.ru"]
+        var second = successMV!
+        second.instances.append(firstStub)
+        second.honestZeroDomains = ["3kas.sudrf.ru"]
+        second.incompleteHigherCourtDomains = ["vs--komi.sudrf.ru"]
+        let movement = SequencedCaptchaMovement([first, second])
+        let center = makeCenter(service: movement) { url, _, _, _ in
+            AutoCaptchaSolver.SolveResult(
+                token: url.host == "3kas.sudrf.ru"
+                    ? CaptchaToken(value: "12345", id: "second") : nil, png: nil)
+        }
+
+        let result = await center.refresh(key: key)?.value
+
+        guard case .partial = result?.outcome else {
+            return XCTFail("нерешённый первый суд должен оставить partial")
+        }
+        let calls = await movement.calls
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(center.captchaPendingGroups.map(\.host), ["vs--komi.sudrf.ru"])
+        XCTAssertEqual(center.captchaPendingRequest(forKey: key, host: "vs.komi.sudrf.ru")?.formURL,
+                       firstURL)
+        XCTAssertFalse(store.record(forKey: key)?.movement?.instances.contains {
+            $0.domain == "3kas.sudrf.ru"
+        } ?? true)
+    }
+
     func testEquivalentEmbeddedAndTopLevelCaptchasShareOneSolve() async throws {
         var secondContext = makeContext()
         secondContext.caseNumber = "2-101/2026"
@@ -1597,6 +1699,31 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertFalse(saved.movement?.instances.contains { $0.captchaFormURL != nil } ?? true,
                        "URL CAPTCHA не должен попадать в persistence")
         XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
+    }
+
+    func testDisabledAutoSolveQueuesLinkedCourtWithoutCallingSolver() async throws {
+        CaptchaSettings.shared.forceDisabled = true
+        let key = store.all()[0].key
+        let url = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
+        var partial = successMV!
+        partial.instances.append(CaseInstance(
+            level: .cassation, court: "Третий кассационный суд", caseNumber: "—",
+            judge: nil, domain: "3kas.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], captchaFormURL: url))
+        partial.incompleteHigherCourtDomains = ["3kas.sudrf.ru"]
+        let service = FixedMovement(partial)
+        let center = makeCenter(service: service) { _, _, _, _ in
+            XCTFail("отключённый solver не должен вызываться")
+            return AutoCaptchaSolver.SolveResult(token: nil, png: nil)
+        }
+
+        let result = await center.refresh(key: key)?.value
+
+        guard case .partial = result?.outcome else { return XCTFail("ожидался partial") }
+        let calls = await service.calls
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(center.captchaPendingRequest(forKey: key, host: "3kas.sudrf.ru")?.formURL,
+                       url)
     }
 
     func testBaseCaptchaPartialQueuesExactManualRequestAfterSavingHigherCourtUpdate() async throws {

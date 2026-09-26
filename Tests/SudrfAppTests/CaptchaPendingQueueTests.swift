@@ -37,12 +37,21 @@ final class CaptchaPendingQueueTests: XCTestCase {
         XCTAssertNil(queue.group(forHost: "a--b.sudrf.ru"))
     }
 
-    func testMovingKeyBetweenHostsRemovesOldEntry() {
+    func testOneCaseCanWaitForTwoCourtsAndRetryOneWithoutLosingTheOther() {
         var queue = CaptchaPendingQueue()
         queue.add(key: "case", caseNumber: "2-1/2026", formURL: form("old.sudrf.ru"))
         queue.add(key: "case", caseNumber: "2-1/2026", formURL: form("new.sudrf.ru"))
 
-        XCTAssertNil(queue.group(forHost: "old.sudrf.ru"))
+        XCTAssertEqual(queue.group(forHost: "old.sudrf.ru")?.keys, ["case"])
         XCTAssertEqual(queue.group(forHost: "new.sudrf.ru")?.keys, ["case"])
+        XCTAssertEqual(queue.request(forKey: "case", host: "old.sudrf.ru")?.formURL,
+                       form("old.sudrf.ru"))
+        XCTAssertNotEqual(queue.group(forHost: "old.sudrf.ru")?.requests.first?.id,
+                          queue.group(forHost: "new.sudrf.ru")?.requests.first?.id)
+
+        _ = queue.drain(host: "old.sudrf.ru")
+        XCTAssertEqual(queue.group(forHost: "new.sudrf.ru")?.keys, ["case"])
+        queue.remove(key: "case")
+        XCTAssertTrue(queue.groups.isEmpty)
     }
 }

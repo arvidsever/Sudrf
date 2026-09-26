@@ -48,7 +48,7 @@ struct CaptchaPendingRequest: Equatable, Identifiable {
     var caseNumber: String
     var formURL: URL
 
-    var id: String { key }
+    var id: String { "\(key)|\(CaptchaPendingQueue.normalizedHost(formURL.host ?? ""))" }
 }
 
 struct CaptchaPendingQueue: Equatable {
@@ -67,26 +67,26 @@ struct CaptchaPendingQueue: Equatable {
         return groupsByHost[Self.normalizedHost(host)]
     }
 
-    func request(forKey key: String) -> CaptchaPendingRequest? {
-        groupsByHost.values.lazy.flatMap(\.requests).first { $0.key == key }
+    func request(forKey key: String, host: String? = nil) -> CaptchaPendingRequest? {
+        if let host { return group(forHost: host)?.requests.first { $0.key == key } }
+        return groups.lazy.flatMap(\.requests).first { $0.key == key }
     }
 
     mutating func add(key: String, caseNumber: String, formURL: URL) {
-        remove(key: key)
         let host = Self.normalizedHost(formURL.host ?? "")
         var group = groupsByHost[host] ?? CaptchaPendingGroup(host: host, requests: [])
+        group.requests.removeAll { $0.key == key }
         group.requests.append(CaptchaPendingRequest(
             key: key, caseNumber: caseNumber, formURL: formURL))
         groupsByHost[host] = group
     }
 
     mutating func remove(key: String) {
-        for host in groupsByHost.keys {
+        for host in Array(groupsByHost.keys) {
             guard var group = groupsByHost[host],
                   let index = group.requests.firstIndex(where: { $0.key == key }) else { continue }
             group.requests.remove(at: index)
             groupsByHost[host] = group.requests.isEmpty ? nil : group
-            return
         }
     }
 
@@ -358,16 +358,16 @@ final class RefreshCenter: ObservableObject {
         Array((captchaPending.group(forHost: host)?.caseNumbers ?? []).prefix(limit))
     }
 
-    func captchaPendingRequest(forKey key: String?) -> CaptchaPendingRequest? {
+    func captchaPendingRequest(forKey key: String?, host: String? = nil) -> CaptchaPendingRequest? {
         guard let key else { return nil }
-        return captchaPending.request(forKey: key)
+        return captchaPending.request(forKey: key, host: host)
     }
 
     func retryPendingCaptcha(host: String) {
         guard let group = captchaPending.drain(host: host) else { return }
         for key in group.keys {
             lastErrors[key] = nil
-            refresh(key: key)
+            refresh(key: key, manually: true)
         }
     }
 
@@ -938,7 +938,7 @@ final class RefreshCenter: ObservableObject {
                 return recovered
             }
             return try await handle(outcome, service: service, key: effectiveKey,
-                                    ctx: ctx, cart: cart, mayAutoSolve: true)
+                                    ctx: ctx, cart: cart, attemptedCaptchaHosts: [])
         } catch is CancellationError {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
@@ -994,7 +994,8 @@ final class RefreshCenter: ObservableObject {
                     do {
                         let resolution = try await recoverCard(context)
                         return try await retryWithResolvedCard(resolution, key: key,
-                                                               expectedContext: context)
+                                                               expectedContext: context,
+                                                               attemptedCaptchaHosts: [SudrfHost.moduleHost(formURL.host ?? "")])
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
@@ -1011,7 +1012,8 @@ final class RefreshCenter: ObservableObject {
                                                     context: context,
                                                     movement: store.record(forKey: key)?.movement),
                                                 key: key,
-                                                ctx: context, cart: cartoteka, mayAutoSolve: false)
+                                                ctx: context, cart: cartoteka,
+                                                attemptedCaptchaHosts: [SudrfHost.moduleHost(formURL.host ?? "")])
                     } catch {
                         let latestAttempt = (error as? CaseCardRecoveryError)?
                             .sourceAttempt(host: context.searchDomain)
@@ -1030,7 +1032,8 @@ final class RefreshCenter: ObservableObject {
                                         context: context,
                                         movement: store.record(forKey: key)?.movement),
                                     key: key,
-                                    ctx: context, cart: cartoteka, mayAutoSolve: false)
+                                    ctx: context, cart: cartoteka,
+                                    attemptedCaptchaHosts: [SudrfHost.moduleHost(formURL.host ?? "")])
         } catch {
             // An ambiguous recovery must not be shown as a successful empty
             // refresh. Leave URL/cache untouched and persist its latest typed
@@ -1047,7 +1050,8 @@ final class RefreshCenter: ObservableObject {
 
     private func retryWithResolvedCard(_ resolution: CaseCardRecoveryResolution,
                                        key: String,
-                                       expectedContext: MovementContext) async throws -> RefreshExecution {
+                                       expectedContext: MovementContext,
+                                       attemptedCaptchaHosts: Set<String> = []) async throws -> RefreshExecution {
         try Task.checkCancellation()
         guard let current = store.record(forKey: key) else {
             return RefreshExecution(effectiveKey: key, outcome: .notFound)
@@ -1103,7 +1107,8 @@ final class RefreshCenter: ObservableObject {
             return RefreshExecution(effectiveKey: persisted.key, outcome: .cancelled)
         }
         return try await handle(retry, service: retryService, key: persisted.key,
-                                ctx: verifiedContext, cart: cartoteka, mayAutoSolve: true)
+                                ctx: verifiedContext, cart: cartoteka,
+                                attemptedCaptchaHosts: attemptedCaptchaHosts)
     }
 
     private func makeService(context: MovementContext,
@@ -1148,31 +1153,39 @@ final class RefreshCenter: ObservableObject {
         }
     }
 
-    /// CAPTCHA вышестоящего суда находится внутри пригодного или частичного
-    /// движения. До публикации промежуточного стаба запускаем тот же автосолв
-    /// и полный retry, что для top-level `.captcha`. nil сохраняет прежний
-    /// ручной fallback, если автосолв выключен или не уверен в ответе.
+    /// Try each court once per refresh. A failed solve for one host must not
+    /// prevent an independent court from being checked.
     private func retryEmbeddedCaptchaIfNeeded(
         movement: CaseMovement,
         service: any MovementProviding,
         key: String,
         ctx: MovementContext,
         cart: Cartoteka,
-        mayAutoSolve: Bool
+        attemptedCaptchaHosts: Set<String>
     ) async throws -> RefreshExecution? {
-        guard mayAutoSolve,
-              let formURL = movement.instances.first(where: { $0.captchaFormURL != nil })?.captchaFormURL,
-              let solver = captchaSolver,
+        guard let solver = captchaSolver,
               let settings = captchaSettings,
               settings.isEffectivelyEnabled else { return nil }
+        var attempted = attemptedCaptchaHosts
+        for formURL in movement.instances.compactMap(\.captchaFormURL) {
+            guard let host = formURL.host.map(SudrfHost.moduleHost),
+                  !attempted.contains(host) else { continue }
+            attempted.insert(host)
+            let result = await solveCaptcha(formURL: formURL, solver: solver, settings: settings)
+            if result.cancelled || Task.isCancelled { throw CancellationError() }
+            guard result.token != nil else { continue }
 
-        let result = await solveCaptcha(formURL: formURL, solver: solver, settings: settings)
-        if result.cancelled || Task.isCancelled { throw CancellationError() }
-        guard result.token != nil else { return nil }
-
-        let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
-        return try await handle(retry, service: service, key: key, ctx: ctx,
-                                cart: cart, mayAutoSolve: false)
+            let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
+            // A later request can fail after this snapshot already supplied
+            // useful cards. Keep the partial snapshot instead of discarding it.
+            switch retry {
+            case .maintenance, .transportFailure, .parserFailure: return nil
+            default:
+                return try await handle(retry, service: service, key: key, ctx: ctx,
+                                        cart: cart, attemptedCaptchaHosts: attempted)
+            }
+        }
+        return nil
     }
 
     /// CAPTCHA может дать одну inline-попытку с новым токеном. Повтор снова
@@ -1181,13 +1194,13 @@ final class RefreshCenter: ObservableObject {
     private func handle(_ outcome: SourceOutcome<CaseMovement>,
                         service: any MovementProviding, key: String,
                         ctx: MovementContext, cart: Cartoteka,
-                        mayAutoSolve: Bool) async throws -> RefreshExecution {
+                        attemptedCaptchaHosts: Set<String>) async throws -> RefreshExecution {
         guard !Task.isCancelled else { throw CancellationError() }
         switch outcome {
         case .usableSnapshot(let movement, let attempt):
             if let retry = try await retryEmbeddedCaptchaIfNeeded(
                 movement: movement, service: service, key: key, ctx: ctx, cart: cart,
-                mayAutoSolve: mayAutoSolve) {
+                attemptedCaptchaHosts: attemptedCaptchaHosts) {
                 return retry
             }
             return try applyMovement(key: key, ctx: ctx, mv: movement,
@@ -1217,13 +1230,9 @@ final class RefreshCenter: ObservableObject {
                 return try applyMovement(key: key, ctx: ctx, mv: movement,
                                          attempt: completeAttempt, isComplete: true)
             }
-            let baseCaptchaURL = movement.instances.compactMap(\.captchaFormURL).first {
-                SudrfHost.moduleHost($0.host?.lowercased() ?? "")
-                    == SudrfHost.moduleHost(ctx.searchDomain)
-            }
             if let retry = try await retryEmbeddedCaptchaIfNeeded(
                 movement: movement, service: service, key: key, ctx: ctx, cart: cart,
-                mayAutoSolve: mayAutoSolve) {
+                attemptedCaptchaHosts: attemptedCaptchaHosts) {
                 return retry
             }
             let failedSources = movement.incompleteHigherCourtDomains ?? []
@@ -1240,25 +1249,16 @@ final class RefreshCenter: ObservableObject {
                         + "сохранены последние успешные данные."
                     : "Часть источников не дала полного снимка (\(failedCount)); сохранены последние успешные данные."
             }
-            let execution = try applyMovement(key: key, ctx: ctx, mv: movement,
-                                              attempt: attempt, isComplete: false,
-                                              partialMessage: message,
-                                              reportsPartialFailure: failedCount > 0)
-            // A base-card CAPTCHA is embedded in an otherwise useful partial
-            // movement: higher courts may already have refreshed successfully.
-            // `applyMovement` strips transient stubs and clears an old pending
-            // request, so restore only the base host's exact form URL after the
-            // atomic merge. Higher-court embedded CAPTCHAs keep their existing
-            // published-stub behavior.
-            if let baseCaptchaURL {
-                queueCaptcha(key: execution.effectiveKey, formURL: baseCaptchaURL)
-            }
-            return execution
+            return try applyMovement(key: key, ctx: ctx, mv: movement,
+                                     attempt: attempt, isComplete: false,
+                                     partialMessage: message,
+                                     reportsPartialFailure: failedCount > 0)
         case .honestZero(let attempt):
             try persistAttempt(key, attempt)
             return failure(key, "Источник подтвердил пустую выдачу; сохранённое дело не удалено.")
         case .captcha(let url, let attempt):
-            guard mayAutoSolve,
+            let host = SudrfHost.moduleHost(url.host ?? "")
+            guard !host.isEmpty, !attemptedCaptchaHosts.contains(host),
                   let solver = captchaSolver,
                   let settings = captchaSettings,
                   settings.isEffectivelyEnabled else {
@@ -1277,7 +1277,8 @@ final class RefreshCenter: ObservableObject {
             }
             let retry = try await fetchOutcome(service: service, ctx: ctx, cart: cart)
             return try await handle(retry, service: service, key: key, ctx: ctx,
-                                    cart: cart, mayAutoSolve: false)
+                                    cart: cart,
+                                    attemptedCaptchaHosts: attemptedCaptchaHosts.union([host]))
         case .maintenance(let message, let attempt),
              .transportFailure(let message, let attempt),
              .parserFailure(let message, let attempt):
@@ -1752,6 +1753,9 @@ final class RefreshCenter: ObservableObject {
             "legacyChanged=\(changed) semanticCount=\(derivation.events.count) kinds=\(kinds, privacy: .public) reasons=\(reasons, privacy: .public)")
         captchaPending.remove(key: key)
         if persisted.key != key { captchaPending.remove(key: persisted.key) }
+        for formURL in mv.instances.compactMap(\.captchaFormURL) {
+            queueCaptcha(key: persisted.key, formURL: formURL)
+        }
         onRefreshed?(persisted.key, publishedMovement, keyRemaps)
         if let partialMessage {
             if reportsPartialFailure {

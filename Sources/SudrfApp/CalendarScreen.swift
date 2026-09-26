@@ -134,14 +134,6 @@ struct CalendarScreen: View {
     /// Встроенный архив неизменен до перезапуска приложения; его декодирование
     /// не должно повторяться для каждой ячейки и каждого досье.
     private static let legalCalendar: LegalCalendar? = try? LegalCalendar.load()
-    /// Фактический размер строки сетки месяца (все строки равны) — читается из
-    /// `MonthRowSizeKey`: высота нужна `cellLayout`, чтобы понять, сколько
-    /// карточек влезает без прокрутки (решение 6); ширина — чтобы посчитать
-    /// узкую колонку выходных от РЕАЛЬНОЙ ширины окна, а не угадывать константу
-    /// (ревью решения 8: 92pt оказалось шире будничной колонки при открытой
-    /// панели дня на 1180pt).
-    @State private var monthRowHeight: CGFloat = 0
-    @State private var monthGridWidth: CGFloat = 0
 
     var body: some View {
         Group {
@@ -412,9 +404,11 @@ struct CalendarScreen: View {
     /// схлопывается по ширине первой (решение автора при ревью): полная →
     /// только звенья → ничего.
     private var monthLegend: some View {
+        // fixedSize: без него подписи переносятся по слогам, и полная легенда
+        // «помещается» в две строки вместо того, чтобы уступить короткой.
         ViewThatFits(in: .horizontal) {
-            monthLegendFull
-            monthLegendTiersOnly
+            monthLegendFull.fixedSize()
+            monthLegendTiersOnly.fixedSize()
             EmptyView()
         }
     }
@@ -557,89 +551,70 @@ struct CalendarScreen: View {
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.55), lineWidth: 0.5))
     }
 
-    // Выходные — узкие колонки (решение 8), фиксированная ширина — потолок:
-    // при открытой панели дня на 1180pt эта константа шире будничной колонки
-    // (ревью), поэтому реальная ширина считается от ИЗМЕРЕННОЙ ширины сетки
-    // (`monthGridWidth`, та же техника, что и высота строки) и никогда не
-    // превышает потолок. До первого измерения (ширина ещё 0) используется
-    // потолок как безопасное значение по умолчанию.
+    // Выходные — узкие колонки (решение 8), фиксированная ширина — потолок,
+    // никогда не превышается; реальная ширина считается прямо в замыкании
+    // `GeometryReader` ниже, от РЕАЛЬНОЙ ширины сетки на каждый рендер — без
+    // хранимого состояния (ревью: `@State`-замер после первого рендера лочит
+    // ширину, потому что заголовок недели с уже посчитанными фикс-ширинами
+    // сам не сжимается, и `GeometryReader` под ним поэтому продолжает
+    // сообщать старую ширину — открытие панели дня оставляло сетку широкой
+    // до переключения вкладки).
     private static let weekendColumnWidthCeiling: CGFloat = 92
-    /// Будничная ширина, взятая для оценки «0.6× будничной» колонки — здесь
-    /// используется РАВНОМЕРНОЕ деление (gridWidth / 7) как приближение
-    /// будничной ширины: точная неподвижная точка (ширина выходных зависит от
-    /// будничной, а та — от ширины выходных) не стоит усложнения ради
-    /// «примерно 0.6×» из решения ревью.
-    private var weekendColumnWidth: CGFloat {
-        guard monthGridWidth > 0 else { return Self.weekendColumnWidthCeiling }
-        let approxWeekdayWidth = monthGridWidth / 7
-        return min(Self.weekendColumnWidthCeiling, approxWeekdayWidth * 0.6)
-    }
-    /// nil, пока ширина сетки не измерена — тогда колонка использует прежнее
-    /// поведение (`.frame(maxWidth: .infinity)`), чтобы не схлопнуться в 0.
-    private var weekdayColumnWidth: CGFloat? {
-        guard monthGridWidth > 0 else { return nil }
-        return max(0, (monthGridWidth - 2 * weekendColumnWidth) / 5)
-    }
     // Заголовок ячейки (символ производственного календаря / бейджи / число
     // дня) — фиксированная высота, чтобы `cellLayout` мог вычесть её из
     // высоты строки и получить точную высоту под карточки.
     private static let dayHeaderHeight: CGFloat = 22
     private static let dayCellVerticalPadding: CGFloat = 13 // top 5 + bottom 8
+    // Строка «ПН…ВС» — тоже фиксированная высота, вычитается из общей высоты
+    // GeometryReader вместе с числом недель, чтобы получить высоту строки.
+    private static let weekHeaderRowHeight: CGFloat = 28
 
-    /// Замер сетки — ОДИН `GeometryReader` вокруг ВСЕЙ области строк, а не
-    /// фон на каждой строке (ревью решения 1): `GeometryReader` сообщает
-    /// размер, который ему ПРЕДЛОЖИЛ родитель (здесь — оставшееся место в
-    /// `CardBox` после заголовка недели), а не размер, который заняло бы его
-    /// содержимое. Раньше строка сама была `.frame(maxWidth: .infinity,
-    /// maxHeight: .infinity)`, а фиксированные по ширине ячейки и
-    /// `minHeight`-карточки внутри нередко сами были больше предложенного —
-    /// `.frame(max…)` в SwiftUI отражает размер РЕБЁНКА, если тот больше
-    /// предложения, поэтому сетка не сужалась при открытии панели дня и
-    /// строки не укорачивались, `cellLayout` никогда не переключался на
-    /// однострочный режим. Здесь измеряется независимо от содержимого, а
-    /// сами ячейки получают `minWidth: 0`/`minHeight: 0` + `.clipped()»,
-    /// чтобы содержимое не могло раздвинуть строку обратно (без обратной связи).
+    /// ОДИН `GeometryReader` вокруг всего содержимого сетки (заголовок недели
+    /// + строки недель) — размеры выходных/будних колонок и высоты строки
+    /// считаются прямо из `geo.size` при каждом рендере и раздаются вниз
+    /// параметрами, а не через `@State`/`PreferenceKey`. `GeometryReader`
+    /// сообщает размер, который ему ПРЕДЛОЖИЛ родитель, а не занятый
+    /// содержимым, — при этом внутри него ничто не имеет `maxWidth: .infinity`
+    /// или `.fixedSize()`, только явные `.frame(width:height:)`, так что
+    /// содержимое не может повлиять на размер самого GeometryReader и нет
+    /// риска задержки в один кадр, которую даёт `@State`.
     private func monthGrid(_ model: MonthModel) -> some View {
         CardBox {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    ForEach(Array(DateUtil.weekdayShort.enumerated()), id: \.offset) { idx, w in
-                        Text(w).font(.system(size: 10, weight: .bold)).kerning(0.4)
-                            .foregroundStyle(.tertiary)
-                            .modifier(ColumnWidth(isWeekend: idx >= 5,
-                                                  weekendWidth: weekendColumnWidth,
-                                                  weekdayWidth: weekdayColumnWidth))
-                    }
-                }
-                .padding(.vertical, 7)
-                GeometryReader { geo in
-                    VStack(spacing: 0) {
-                        ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
-                            HStack(spacing: 0) {
-                                ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
-                                    dayCell(day, isWeekend: idx >= 5, model: model)
-                                }
-                            }
-                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
-                                   alignment: .top)
-                            .clipped()
-                            .overlay(Divider(), alignment: .top)
+            GeometryReader { geo in
+                let weekendWidth = min(Self.weekendColumnWidthCeiling, geo.size.width / 7 * 0.6)
+                let weekdayWidth = max(0, (geo.size.width - 2 * weekendWidth) / 5)
+                let rowCount = max(weeks.count, 1)
+                let rowHeight = max(0, (geo.size.height - Self.weekHeaderRowHeight) / CGFloat(rowCount))
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(DateUtil.weekdayShort.enumerated()), id: \.offset) { idx, w in
+                            Text(w).font(.system(size: 10, weight: .bold)).kerning(0.4)
+                                .foregroundStyle(.tertiary)
+                                .frame(width: idx >= 5 ? weekendWidth : weekdayWidth,
+                                       height: Self.weekHeaderRowHeight)
                         }
                     }
-                    .preference(key: MonthRowSizeKey.self, value: geo.size)
+                    .frame(height: Self.weekHeaderRowHeight)
+                    ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                        HStack(spacing: 0) {
+                            ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
+                                dayCell(day, isWeekend: idx >= 5, model: model,
+                                        columnWidth: idx >= 5 ? weekendWidth : weekdayWidth,
+                                        rowHeight: rowHeight)
+                            }
+                        }
+                        .frame(height: rowHeight)
+                        .overlay(Divider(), alignment: .top)
+                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-        .onPreferenceChange(MonthRowSizeKey.self) { size in
-            let rowCount = max(weeks.count, 1)
-            monthRowHeight = size.height / CGFloat(rowCount)
-            monthGridWidth = size.width
         }
     }
 
     @ViewBuilder
-    private func dayCell(_ day: Date?, isWeekend: Bool, model: MonthModel) -> some View {
+    private func dayCell(_ day: Date?, isWeekend: Bool, model: MonthModel,
+                         columnWidth: CGFloat, rowHeight: CGFloat) -> some View {
         if let day {
             let isToday = DateUtil.isToday(day)
             let isSel = router.calSelectedDate.map { DateUtil.sameDay($0, day) } ?? false
@@ -649,11 +624,11 @@ struct CalendarScreen: View {
             let hasOverlap = model.overlapDays.contains(key)
             let production = productionDay(day)
             let isPast = day < DateUtil.today && !isToday
-            // Ровно то, что реально отрисовано (ревью решения 2): заголовок +
-            // ОДИН зазор перед телом (второго зазора больше нет — вместо
-            // концевого `Spacer` тело прижато к верху через `.frame(...,
-            // alignment: .top)`) + вертикальные паддинги ячейки.
-            let available = max(0, monthRowHeight - Self.dayHeaderHeight
+            // Ровно то, что реально отрисовано: заголовок + ОДИН зазор перед
+            // телом (второго зазора нет — вместо концевого `Spacer` тело
+            // прижато к верху через `.frame(..., alignment: .top)`) +
+            // вертикальные паддинги ячейки.
+            let available = max(0, rowHeight - Self.dayHeaderHeight
                                  - CalendarMonthLayout.itemSpacing - Self.dayCellVerticalPadding)
             let layout = CalendarMonthLayout.cellLayout(itemCount: items.count, availableHeight: available)
             Button { router.calSelectedDate = day } label: {
@@ -681,9 +656,7 @@ struct CalendarScreen: View {
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.horizontal, 6).padding(.top, 5).padding(.bottom, 8)
-                .frame(minWidth: 0, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
-                .modifier(ColumnWidth(isWeekend: isWeekend, weekendWidth: weekendColumnWidth,
-                                      weekdayWidth: weekdayColumnWidth))
+                .frame(width: columnWidth, height: rowHeight, alignment: .topLeading)
                 .background(isSel ? Color.accentColor.opacity(0.06)
                             : productionBackground(production))
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
@@ -697,9 +670,7 @@ struct CalendarScreen: View {
                                                            inactiveCount: inactiveCount))
         } else {
             Color.primary.opacity(0.02)
-                .frame(maxHeight: .infinity)
-                .modifier(ColumnWidth(isWeekend: isWeekend, weekendWidth: weekendColumnWidth,
-                                      weekdayWidth: weekdayColumnWidth))
+                .frame(width: columnWidth, height: rowHeight)
                 .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
         }
     }
@@ -1856,37 +1827,6 @@ struct CalendarScreen: View {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
-}
-
-/// Размер строки сетки месяца (issue #332, решение 6 и 8) — все строки равны,
-/// так что `reduce` просто берёт последнее значение (гонки между строками
-/// нет). Высота нужна `cellLayout` (сколько карточек влезает), ширина — чтобы
-/// посчитать реальную ширину узкой колонки выходных вместо константы,
-/// которая на 1180pt с открытой панелью дня оказывается ШИРЕ будничной
-/// колонки (найдено при ревью решения 8).
-private struct MonthRowSizeKey: PreferenceKey {
-    static let defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
-}
-
-/// Ширина колонки месяца: выходные — фиксированная (посчитанная выше)
-/// ширина, будние — либо тоже фиксированная (после первого измерения сетки),
-/// либо `.frame(maxWidth: .infinity)` до этого момента, чтобы колонки не
-/// схлопывались в 0 на первый рендер.
-private struct ColumnWidth: ViewModifier {
-    let isWeekend: Bool
-    let weekendWidth: CGFloat
-    let weekdayWidth: CGFloat?
-
-    func body(content: Content) -> some View {
-        if isWeekend {
-            content.frame(width: weekendWidth)
-        } else if let weekdayWidth {
-            content.frame(width: weekdayWidth)
-        } else {
-            content.frame(maxWidth: .infinity)
-        }
-    }
 }
 
 /// Шесть цветов звена суда для карточки месяца (issue #332, решение 4) — из

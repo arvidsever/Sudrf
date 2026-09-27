@@ -559,9 +559,20 @@ final class TrackedCaseRepairCoordinator {
         do {
             let anchorCard: CaseCard
             if let anchorCardResolver {
-                let resolution = try await anchorCardResolver(anchorContext)
-                anchorCard = resolution.card
-                if resolution.wasRecovered {
+                let resolved: (card: CaseCard, resolution: CaseCardRecoveryResolution?)
+                do {
+                    let resolution = try await anchorCardResolver(anchorContext)
+                    resolved = (resolution.card, resolution)
+                } catch {
+                    guard Self.canUseCachedAnchor(after: error),
+                          let cached = Self.cachedAnchorCard(record: rec,
+                                                             context: anchorContext) else {
+                        throw error
+                    }
+                    resolved = (cached, nil)
+                }
+                anchorCard = resolved.card
+                if let resolution = resolved.resolution, resolution.wasRecovered {
                     let attempt = SourceAttempt(
                         kind: .usableSnapshot,
                         provenance: SourceProvenance(operation: .discovery,
@@ -576,7 +587,16 @@ final class TrackedCaseRepairCoordinator {
                     summary.affectedCaseKeys.insert(persisted.key)
                 }
             } else {
-                anchorCard = try await fetchAnchorCard(anchorContext)
+                do {
+                    anchorCard = try await fetchAnchorCard(anchorContext)
+                } catch {
+                    guard Self.canUseCachedAnchor(after: error),
+                          let cached = Self.cachedAnchorCard(record: rec,
+                                                             context: anchorContext) else {
+                        throw error
+                    }
+                    anchorCard = cached
+                }
             }
             guard let current = try store.recordForMutation(forKey: anchorKey),
                   current.context == anchorContext else { return }
@@ -1009,6 +1029,77 @@ final class TrackedCaseRepairCoordinator {
 
     private func fetchAnchorCard(_ ctx: MovementContext) async throws -> CaseCard {
         try await anchorCardFetcher(ctx)
+    }
+
+    private static func canUseCachedAnchor(after error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let error = error as? URLError { return error.code != .cancelled }
+        guard let error = error as? SudrfError else { return false }
+        if case .captchaRequired = error { return true }
+        if case .http(let status) = error { return (500...599).contains(status) }
+        return isTransientSourceError(error)
+    }
+
+    /// The saved evidence came from this exact source card. It can replace a
+    /// temporarily unreadable anchor, but the lower card is still fetched and
+    /// checked by CaseOriginResolver before any identity merge.
+    private static func cachedAnchorCard(record: TrackedCaseRecord,
+                                         context: MovementContext) -> CaseCard? {
+        guard let rawURL = context.cardURLString, let url = URL(string: rawURL),
+              let expected = try? SudrfCaseCardLink(url: url),
+              expected.moduleHost == SudrfHost.moduleHost(context.searchDomain),
+              CartotekaRegistry.resolve(level: context.courtLevel,
+                                        deloID: expected.deloID, new: expected.new,
+                                        caseNumber: context.caseNumber)?.id == context.cartotekaId,
+              context.caseID == nil || context.caseID == expected.caseID,
+              context.caseUID == nil || context.caseUID == expected.caseUID,
+              let instances = record.movement?.instances else { return nil }
+        let candidates = instances.filter { instance in
+            guard instance.level == context.baseInstanceLevel,
+                  instance.captchaFormURL == nil, instance.transientError != true,
+                  SudrfHost.moduleHost(instance.domain) == expected.moduleHost,
+                  CaseOriginResolver.sameCaseNumber(instance.caseNumber, context.caseNumber),
+                  let sourceURL = instance.sourceURL,
+                  let actual = try? SudrfCaseCardLink(url: sourceURL),
+                  actual.moduleHost == expected.moduleHost,
+                  actual.deloID == expected.deloID,
+                  actual.resolvedNew == expected.resolvedNew,
+                  (actual.srvNum ?? "1") == (expected.srvNum ?? "1"),
+                  actual.caseID == expected.caseID,
+                  actual.caseUID == expected.caseUID,
+                  let evidence = instance.sourceEvidence,
+                  evidence.cartotekaID == nil || evidence.cartotekaID == context.cartotekaId,
+                  evidence.sourceCourtLevel == nil
+                    || evidence.sourceCourtLevel == context.courtLevel,
+                  evidence.sourceBranch == nil || evidence.sourceBranch == context.branch,
+                  let lower = evidence.lowerCourt,
+                  lower.courtTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                  lower.caseNumber?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            else { return false }
+            return true
+        }
+        guard let instance = candidates.first,
+              candidates.dropFirst().allSatisfy({ $0.sourceEvidence == instance.sourceEvidence }),
+              let evidence = instance.sourceEvidence else { return nil }
+        let publishedUID = evidence.judicialUID.flatMap {
+            JudicialUIDObservation.validity(of: $0) == .valid ? $0 : nil
+        }
+        let contextUID = context.judicialUID.flatMap {
+            JudicialUIDObservation.validity(of: $0) == .valid ? $0 : nil
+        }
+        if let publishedUID, let contextUID,
+           JudicialUIDObservation.normalize(publishedUID)
+                != JudicialUIDObservation.normalize(contextUID) { return nil }
+        return CaseCard(rawText: "", actText: nil,
+                        judge: instance.judge, result: instance.result,
+                        uid: publishedUID, caseNumber: instance.caseNumber,
+                        category: evidence.category,
+                        receiptDate: evidence.receiptDate,
+                        decisionDate: evidence.decisionDate,
+                        lowerCourt: evidence.lowerCourt,
+                        reviewProcedure: evidence.reviewProcedure,
+                        processKind: evidence.ownProcessKind,
+                        processKindConflict: evidence.ownProcessKindConflict)
     }
 
     private func makeContext(origin: ResolvedCaseOrigin, anchor: MovementContext,

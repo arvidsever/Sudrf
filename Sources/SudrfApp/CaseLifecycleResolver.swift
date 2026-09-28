@@ -272,8 +272,7 @@ enum CaseLifecycleResolver {
                       let reviewDate = reviewEventDate(in: review.instance), reviewDate >= start else { continue }
                 let lower = review.instance.sourceEvidence?.lowerCourt
                 let differentNumber = lower?.caseNumber.map {
-                    normalized($0).trimmingCharacters(in: .whitespacesAndNewlines)
-                        != normalized(first.instance.caseNumber).trimmingCharacters(in: .whitespacesAndNewlines)
+                    normalizedCaseNumber($0) != normalizedCaseNumber(first.instance.caseNumber)
                 } ?? false
                 let differentCourt = lower?.courtTitle.map {
                     normalized($0).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -311,12 +310,14 @@ enum CaseLifecycleResolver {
         }
         let currentDated: IndexedInstance?
         if let currentRoundStart, let startDate = currentRoundDate {
-            currentDated = lifecycleDated.last(where: {
+            currentDated = lifecycleDated.filter {
                 guard let date = earliestDatedSessionDate(in: $0.instance) else { return false }
                 return date >= startDate
-            }) ?? currentRoundStart
+            }.max(by: { lifecyclePrecedes($0.instance, $1.instance) }) ?? currentRoundStart
         } else {
-            currentDated = lifecycleDated.last
+            currentDated = lifecycleDated.max(by: {
+                lifecyclePrecedes($0.instance, $1.instance)
+            })
         }
         return Timeline(sourceOrdered: sourceOrdered, lifecycleOrdered: lifecycleOrdered,
                         hasAmbiguousAppealEffect: ambiguousAppeal, chronological: chronological, dated: dated,
@@ -333,7 +334,7 @@ enum CaseLifecycleResolver {
         // Пустая карточка вышестоящего суда, найденная по УИД, полезна как
         // доказательство подачи жалобы (в частности, подавляет расчётный срок),
         // но не должна перекрывать последний датированный круг производства.
-        let datedInstances = instances.filter(hasDatedSession)
+        let latestDated = timeline.currentDated?.instance
         // Исключение — карточка с содержательным `result`: некоторые порталы
         // публикуют итог без таблицы сессий. Такой результат надёжнее пустоты и
         // не должен теряться только из-за отсутствующей даты.
@@ -360,11 +361,11 @@ enum CaseLifecycleResolver {
                 if leftRank != rightRank { return leftRank < rightRank }
                 return instanceOrder($0, in: timeline) < instanceOrder($1, in: timeline)
             }
-            if let undated, let dated = datedInstances.last,
+            if let undated, let dated = latestDated,
                stageRank(dated, production: production) >= stageRank(undated, production: production) {
                 latest = dated
             } else {
-                latest = undated ?? datedInstances.last ?? instances.last
+                latest = undated ?? latestDated ?? instances.last
             }
         }
         let visited = Set(instances.compactMap { stage(for: $0, production: production) })
@@ -782,6 +783,22 @@ enum CaseLifecycleResolver {
                   signal(in: session.event + " " + (session.result ?? "")) != nil else { return nil }
             return DateUtil.parse(session.date)
         }.max() ?? instance.sourceEvidence?.receiptDate.flatMap(DateUtil.parse)
+    }
+
+    /// A review registered earlier can be decided after another review.
+    /// Administrative rows after a first-instance decision do not reopen it.
+    private static func lifecyclePrecedes(_ lhs: CaseInstance, _ rhs: CaseInstance) -> Bool {
+        func date(_ instance: CaseInstance) -> Date {
+            if isReview(instance.level) {
+                return reviewEventDate(in: instance)
+                    ?? earliestDatedSessionDate(in: instance) ?? .distantPast
+            }
+            return [terminalEvidenceDate(in: instance), continuationDate(in: instance),
+                    earliestDatedSessionDate(in: instance)]
+                .compactMap { $0 }.max() ?? .distantPast
+        }
+        let left = date(lhs), right = date(rhs)
+        return left == right ? MovementService.precedesInChronology(lhs, rhs) : left < right
     }
 
     private static func continuationDate(in instance: CaseInstance, acceptanceOnly: Bool = false) -> Date? {

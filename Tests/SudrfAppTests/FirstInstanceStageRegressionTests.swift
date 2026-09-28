@@ -386,4 +386,86 @@ final class FirstInstanceStageRegressionTests: XCTestCase {
         XCTAssertFalse(resolution.isCompleted)
         XCTAssertEqual(resolution.currentInstance?.caseNumber, "2а-354/2023")
     }
+
+    func testCase3a178UsesMainAppealWhenSameUIDAlsoFindsAnotherLowerCase() {
+        let uid = "78OS0000-01-2020-000134-67"
+        let root = card(.first, "3а-178/2020 ~ М-127/2020", court: "Санкт-Петербургский городской суд",
+                        result: "Производство по делу прекращено", sessions: [
+                            CaseSession(date: "29.05.2020", event: "Вынесено решение по делу",
+                                        result: "Производство по делу прекращено"),
+                        ], evidence: .init(decisionDate: "29.05.2020", judicialUID: uid))
+        let julyReview = card(.appeal, "66а-604/2020", court: "Второй апелляционный суд",
+                              result: "Определение оставлено без изменения", sessions: [
+                                  CaseSession(date: "15.07.2020", event: "Судебное заседание",
+                                              result: "Определение оставлено без изменения"),
+                              ], evidence: .init(lowerCourt: .init(caseNumber: "3а-218/2020"),
+                                                 receiptDate: "13.07.2020", decisionDate: "15.07.2020",
+                                                 judicialUID: uid))
+        let newFirst = card(.first, "3а-218/2020", court: "Санкт-Петербургский городской суд",
+                            result: "Иск (заявление, жалоба) УДОВЛЕТВОРЕН", sessions: [
+                                CaseSession(date: "03.08.2020", event: "Судебное заседание",
+                                            result: "Вынесено решение по делу"),
+                            ], evidence: .init(decisionDate: "03.08.2020", judicialUID: uid))
+        let privateAppeal = card(.appeal, "66а-1096/2020", court: "Второй апелляционный суд",
+                                 result: "Определение оставлено без изменения", sessions: [
+                                     CaseSession(date: "13.10.2020", event: "Передача дела судье"),
+                                     CaseSession(date: "19.10.2020", event: "Судебное заседание",
+                                                 result: "Определение оставлено без изменения"),
+                                 ], evidence: .init(lowerCourt: .init(caseNumber: "3а-218/2020"),
+                                                    receiptDate: "13.10.2020", decisionDate: "19.10.2020",
+                                                    judicialUID: uid))
+        let unrelatedAppeal = card(.appeal, "66а-1111/2020", court: "Второй апелляционный суд",
+                                   result: "Определение оставлено без изменения", sessions: [
+                                       CaseSession(date: "16.10.2020", event: "Передача дела судье"),
+                                       CaseSession(date: "19.10.2020", event: "Судебное заседание",
+                                                   result: "Определение оставлено без изменения"),
+                                   ], evidence: .init(lowerCourt: .init(caseNumber: "3а-128/2020"),
+                                                      receiptDate: "16.10.2020", decisionDate: "19.10.2020",
+                                                      judicialUID: uid))
+        let mainAppeal = card(.appeal, "66а-1110/2020", court: "Второй апелляционный суд",
+                              result: "Решение (осн. требов.) отменено полностью с вынесением нового решения",
+                              sessions: [
+                                  CaseSession(date: "16.10.2020", event: "Передача дела судье"),
+                                  CaseSession(date: "21.10.2020", event: "Судебное заседание",
+                                              result: "Вынесено решение"),
+                              ], evidence: .init(lowerCourt: .init(caseNumber: "3а-218/2020"),
+                                                 receiptDate: "16.10.2020", decisionDate: "21.10.2020",
+                                                 judicialUID: uid))
+
+        let arrangements = [
+            [root, julyReview, newFirst, privateAppeal, unrelatedAppeal, mainAppeal],
+            [mainAppeal, unrelatedAppeal, privateAppeal, newFirst, julyReview, root],
+            [root, newFirst, mainAppeal, julyReview, unrelatedAppeal, privateAppeal],
+        ]
+        for instances in arrangements {
+            let movement = CaseMovement(uid: uid, caseNumber: root.caseNumber, inForce: false,
+                                        instances: instances, complaints: [:], acts: [])
+            let resolution = CaseLifecycleResolver.resolve(movement: movement, production: .kas,
+                                                           deadlines: [], today: today)
+            XCTAssertEqual(resolution.stage, .done)
+            XCTAssertEqual(resolution.currentInstance?.caseNumber, mainAppeal.caseNumber)
+        }
+    }
+
+    func testCompoundFirstNumberMatchesItsPrimaryLowerCourtReference() {
+        let uid = "78OS0000-01-2020-000134-67"
+        let first = card(.first, "3а-178/2020 ~ М-127/2020", court: "Санкт-Петербургский городской суд",
+                         result: "Производство по делу прекращено", sessions: [
+                             CaseSession(date: "29.05.2020", event: "Вынесено решение по делу",
+                                         result: "Производство по делу прекращено"),
+                         ], evidence: .init(decisionDate: "29.05.2020", judicialUID: uid))
+        let appeal = card(.appeal, "66а-604/2020", court: "Второй апелляционный суд",
+                          result: "Определение оставлено без изменения", sessions: [
+                              CaseSession(date: "15.07.2020", event: "Судебное заседание",
+                                          result: "Определение оставлено без изменения"),
+                          ], evidence: .init(lowerCourt: .init(caseNumber: "3а-178/2020"),
+                                             receiptDate: "13.07.2020", decisionDate: "15.07.2020",
+                                             judicialUID: uid))
+        let movement = CaseMovement(uid: uid, caseNumber: first.caseNumber, inForce: false,
+                                    instances: [first, appeal], complaints: [:], acts: [])
+
+        let timeline = CaseLifecycleResolver.timeline(in: movement, production: .kas)
+
+        XCTAssertFalse(timeline.hasAmbiguousAppealEffect)
+    }
 }

@@ -170,6 +170,42 @@ final class AppealChronologyLifecycleTests: XCTestCase {
         XCTAssertFalse(CaseLifecycleResolver.resolve(movement: mv, production: .kas, deadlines: [], today: today).isCompleted)
     }
 
+    func testSameLowerCourtNumberWithDifferentTitleCannotConcludeActiveFirst() {
+        let home = first()
+        var review = appeal()
+        review.foundByUID = false
+        review.sourceEvidence?.lowerCourt = .init(
+            courtTitle: "Сыктывкарский городской суд", caseNumber: home.caseNumber)
+        XCTAssertNil(review.sourceEvidence?.judicialUID)
+        let mv = movement([home, review])
+
+        XCTAssertTrue(CaseLifecycleResolver.timeline(
+            in: mv, production: .kas).hasAmbiguousAppealEffect)
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: mv, production: .kas, deadlines: [], today: today)
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertNil(resolution.completionReason)
+    }
+
+    func testSameLowerCourtNumberWithDifferentTitleCannotConcludeTerminalFirst() {
+        var home = first()
+        home.result = "Иск удовлетворён"
+        home.sourceEvidence?.decisionDate = "05.09.2026"
+        var review = appeal()
+        review.foundByUID = false
+        review.sourceEvidence?.lowerCourt = .init(
+            courtTitle: "Сыктывкарский городской суд", caseNumber: home.caseNumber)
+        XCTAssertNil(review.sourceEvidence?.judicialUID)
+        let mv = movement([home, review])
+
+        XCTAssertTrue(CaseLifecycleResolver.timeline(
+            in: mv, production: .kas).hasAmbiguousAppealEffect)
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: mv, production: .kas, deadlines: [], today: today)
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertNil(resolution.completionReason)
+    }
+
     func testSoleJudgeRequiresLaterPublishedContinuation() {
         let mv = movement([first(continued: "09.09.2026"), appeal(procedure: "Единоличное рассмотрение")])
         XCTAssertFalse(CaseLifecycleResolver.timeline(in: mv, production: .kas).hasAppealInCurrentRound)

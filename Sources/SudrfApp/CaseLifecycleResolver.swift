@@ -274,11 +274,11 @@ enum CaseLifecycleResolver {
                 let differentNumber = lower?.caseNumber.map {
                     normalizedCaseNumber($0) != normalizedCaseNumber(first.instance.caseNumber)
                 } ?? false
-                let differentCourt = lower?.courtTitle.map {
-                    normalized($0).trimmingCharacters(in: .whitespacesAndNewlines)
-                        != normalized(first.instance.court).trimmingCharacters(in: .whitespacesAndNewlines)
-                } ?? false
-                if differentNumber || (differentCourt && lower?.caseNumber == nil) {
+                let lowerCourtTitle = CaseOriginResolver.normalizedTitle(lower?.courtTitle ?? "")
+                let firstCourtTitle = CaseOriginResolver.normalizedTitle(first.instance.court)
+                let differentCourt = !lowerCourtTitle.isEmpty && !firstCourtTitle.isEmpty
+                    && lowerCourtTitle != firstCourtTitle
+                if differentNumber || differentCourt {
                     // A published reference to another registration cannot
                     // conclude the current first instance just because dates overlap.
                     ambiguousAppeal = true
@@ -947,7 +947,13 @@ enum CaseLifecycleResolver {
         guard let lower = review.sourceEvidence?.lowerCourt?.caseNumber else { return true }
         let lowerNumber = normalizedCaseNumber(lower)
         let rootNumber = normalizedCaseNumber(first.caseNumber)
-        if lowerNumber == rootNumber { return true }
+        if lowerNumber == rootNumber {
+            let lowerCourtTitle = CaseOriginResolver.normalizedTitle(
+                review.sourceEvidence?.lowerCourt?.courtTitle ?? "")
+            let rootCourtTitle = CaseOriginResolver.normalizedTitle(first.court)
+            return lowerCourtTitle.isEmpty || rootCourtTitle.isEmpty
+                || lowerCourtTitle == rootCourtTitle
+        }
         guard review.level != .appeal else { return false }
         return timeline.lifecycleOrdered.contains { candidate in
             guard candidate.instance.level == .appeal,

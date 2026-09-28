@@ -458,6 +458,35 @@ final class CaseOriginResolverTests: XCTestCase {
                 + "&delo_id=\(cart.deloID)&new=\(cart.new)"))
     }
 
+    private func lowerAliasAnchor(uid: String? = nil) -> (MovementContext, CaseCard) {
+        let (context, original) = anchor(uid: uid)
+        var card = original
+        card.lowerCourt?.caseNumber = "М-1512/2020"
+        return (context, card)
+    }
+
+    private func compositeLowerRow(id: String, number: String,
+                                   url: URL? = nil) throws -> CaseSearchResult {
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let sourceURL = try url ?? XCTUnwrap(URL(string:
+            "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=\(id)&case_uid=\(id)-guid"
+                + "&delo_id=\(cart.deloID)&new=\(cart.new)"))
+        return CaseSearchResult(caseNumber: number, caseID: id, caseUID: "\(id)-guid",
+                                cardURL: sourceURL)
+    }
+
+    private func resolveLowerAlias(rows: [CaseSearchResult], cards: [String: CaseCard],
+                                   uid: String? = nil,
+                                   court: OriginCourtResolution? = nil) async throws
+        -> ResolvedCaseOrigin {
+        let resolver = CaseOriginResolver(
+            client: SudrfClient(), regularProvider: OriginProviderStub(numberRows: rows, cards: cards),
+            courtOverride: court ?? courtOverride)
+        let (context, card) = lowerAliasAnchor(uid: uid)
+        return try await resolver.resolve(anchorContext: context, anchorCard: card)
+    }
+
     func testMissingUIDResolvesBySingleExactLowerNumber() async throws {
         let exact = CaseSearchResult(caseNumber: "2-7212/2025 ~ М-5922/2025",
                                      caseID: "exact", caseUID: "guid")
@@ -479,6 +508,82 @@ final class CaseOriginResolverTests: XCTestCase {
         XCTAssertEqual(result.cartoteka.id, "g1")
         XCTAssertEqual(result.region, "Республика Коми")
         XCTAssertEqual(fields, [.caseNumber])
+    }
+
+    func testMissingUIDResolvesPublishedAliasInCompositeLowerCaseNumber() async throws {
+        let number = "9-727/2020 ~ М-1512/2020"
+        let row = try compositeLowerRow(id: "alias", number: number)
+        let provider = OriginProviderStub(
+            numberRows: [row],
+            cards: ["alias": CaseCard(rawText: "", actText: nil,
+                                       caseNumber: number)])
+        let resolver = CaseOriginResolver(client: SudrfClient(), regularProvider: provider,
+                                          courtOverride: courtOverride)
+        let (context, card) = lowerAliasAnchor()
+
+        let result = try await resolver.resolve(anchorContext: context, anchorCard: card)
+        let fields = await provider.fields
+
+        XCTAssertEqual(result.result.caseID, "alias")
+        XCTAssertEqual(result.result.caseNumber, number)
+        XCTAssertNil(result.card.uid)
+        XCTAssertEqual(result.card.caseNumber, number)
+        XCTAssertEqual(fields, [.caseNumber])
+    }
+
+    func testMissingUIDRejectsWrongCourtNumberMalformedLinkAndAmbiguousAliases() async throws {
+        let number = "9-727/2020 ~ М-1512/2020"
+        let card = CaseCard(rawText: "", actText: nil, caseNumber: number)
+        let row = try compositeLowerRow(id: "one", number: number)
+        let malformedURL = try XCTUnwrap(URL(string: "https://example.com/not-a-card"))
+        let cases: [(String, [CaseSearchResult], [String: CaseCard], OriginCourtResolution?,
+                      CaseOriginResolutionError)] = [
+            ("wrong court", [row], ["one": card],
+             OriginCourtResolution(
+                court: Court(domain: "other--komi.sudrf.ru", title: "Другой суд", level: .district),
+                branch: .general, code: "11RS0002"), .notFound),
+            ("wrong number",
+             [try compositeLowerRow(id: "wrong-number", number: "9-727/2020 ~ М-1513/2020")],
+             ["wrong-number": CaseCard(rawText: "", actText: nil,
+                                        caseNumber: "9-727/2020 ~ М-1513/2020")],
+             nil, .notFound),
+            ("partial number",
+             [try compositeLowerRow(id: "partial", number: "М-1512/2020extra")],
+             ["partial": CaseCard(rawText: "", actText: nil,
+                                    caseNumber: "М-1512/2020extra")],
+             nil, .notFound),
+            ("malformed source link",
+             [try compositeLowerRow(id: "malformed", number: number, url: malformedURL)],
+             ["malformed": card], nil, .notFound),
+            ("ambiguous aliases",
+             [try compositeLowerRow(id: "first", number: number),
+              try compositeLowerRow(id: "second", number: number)],
+             ["first": card, "second": card], nil, .ambiguous)
+        ]
+
+        for (label, rows, cards, court, expected) in cases {
+            do {
+                _ = try await resolveLowerAlias(rows: rows, cards: cards, court: court)
+                XCTFail("\(label) must not resolve as one verified lower card")
+            } catch let error as CaseOriginResolutionError {
+                XCTAssertEqual(error, expected, label)
+            }
+        }
+    }
+
+    func testMissingUIDAliasResolutionRejectsConflictingPublishedUID() async throws {
+        let number = "9-727/2020 ~ М-1512/2020"
+        let row = try compositeLowerRow(id: "conflicting-uid", number: number)
+        let card = CaseCard(rawText: "", actText: nil,
+                            uid: "77RS0001-01-2020-000010-00", caseNumber: number)
+
+        do {
+            _ = try await resolveLowerAlias(rows: [row], cards: ["conflicting-uid": card],
+                                            uid: uid)
+            XCTFail("a different published judicial UID must reject the lower card")
+        } catch let error as CaseOriginResolutionError {
+            XCTAssertEqual(error, .notFound)
+        }
     }
 
     func testIssue290SubjectAppealWithoutUIDResolvesExactDistrictMaterial() async throws {

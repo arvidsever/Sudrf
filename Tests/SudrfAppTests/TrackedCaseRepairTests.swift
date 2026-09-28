@@ -14,12 +14,14 @@ private actor StubOriginResolver: CaseOriginResolving {
     }
     let mode: Mode
     private(set) var calls = 0
+    private(set) var anchorCards: [CaseCard] = []
 
     init(_ mode: Mode) { self.mode = mode }
 
     func resolve(anchorContext: MovementContext,
                  anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
         calls += 1
+        anchorCards.append(anchorCard)
         switch mode {
         case .resolved(let origin): return origin
         case .ambiguous: throw CaseOriginResolutionError.ambiguous
@@ -32,6 +34,8 @@ private actor StubOriginResolver: CaseOriginResolving {
             throw CaseOriginSourceFailure(diagnostic: diagnostic, underlying: underlying)
         }
     }
+
+    func capturedAnchorCards() -> [CaseCard] { anchorCards }
 }
 
 private actor PromotionOriginResolver: CaseOriginResolving {
@@ -127,6 +131,70 @@ final class TrackedCaseRepairTests: XCTestCase {
         return CaseMovement(uid: uid, caseNumber: number, inForce: true,
                             instances: [instance], complaints: [:], acts: [act],
                             actBodies: [actID: "Текст \(actID)"])
+    }
+
+    private func sudrfCardURL(domain: String, id: String, guid: String,
+                              deloID: String, new: String) throws -> URL {
+        try XCTUnwrap(URL(string:
+            "https://\(domain)/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=\(id)&case_uid=\(guid)"
+                + "&delo_id=\(deloID)&new=\(new)"))
+    }
+
+    private func cachedCassationRecord(
+        in store: TrackedStore, number: String, id: String,
+        movementSourceID: String? = nil, judicialUID: String? = nil,
+        cachedUID: String? = nil
+    ) throws -> TrackedCaseRecord {
+        let domain = "2kas.sudrf.ru"
+        let sourceGUID = "source-\(id)"
+        var ctx = context(level: .cassation, number: number, domain: domain,
+                          cartoteka: "g3", courtLevel: .cassation)
+        ctx.judicialUID = judicialUID
+        ctx.caseID = id
+        ctx.caseUID = sourceGUID
+        ctx.cardURLString = try sudrfCardURL(
+            domain: domain, id: id, guid: sourceGUID, deloID: "5", new: "2800001").absoluteString
+        var cached = movement(level: .cassation, number: number,
+                              domain: domain, actID: "cached-\(id)")
+        cached.uid = judicialUID ?? ""
+        cached.instances[0].foundByUID = false
+        let movementID = movementSourceID ?? id
+        cached.instances[0].sourceURL = try sudrfCardURL(
+            domain: domain, id: movementID, guid: "source-\(movementID)",
+            deloID: "5", new: "2800001")
+        cached.instances[0].sourceEvidence = CaseInstance.SourceEvidence(
+            lowerCourt: LowerCourtReference(courtTitle: "Сыктывкарский городской суд",
+                                            caseNumber: "М-1512/2020"),
+            judicialUID: cachedUID, cartotekaID: "g3",
+            sourceCourtLevel: .cassation, sourceBranch: .general)
+        return try store.upsert(context: ctx, snapshot: nil, movement: cached,
+                                collections: ["Кассация"])
+    }
+
+    private func uidlessLowerContext() throws -> (MovementContext, URL) {
+        let number = "9-727/2020 ~ М-1512/2020"
+        let url = try sudrfCardURL(domain: "syktsud--komi.sudrf.ru", id: "lower-card",
+                                   guid: "lower-source-guid", deloID: "1540005", new: "0")
+        var lower = context(level: .first, number: number,
+                            domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                            courtLevel: .district)
+        lower.judicialUID = nil
+        lower.caseID = "lower-card"
+        lower.caseUID = "lower-source-guid"
+        lower.cardURLString = url.absoluteString
+        return (lower, url)
+    }
+
+    private func uidlessLowerOrigin(context: MovementContext,
+                                    url: URL) throws -> ResolvedCaseOrigin {
+        ResolvedCaseOrigin(
+            court: context.searchCourt, branch: context.branch, region: context.region,
+            courtCode: context.courtCode,
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: context.caseNumber, caseID: "lower-card",
+                                     caseUID: "lower-source-guid", cardURL: url),
+            card: CaseCard(rawText: "", actText: nil, caseNumber: context.caseNumber))
     }
 
     private func fileProvenance(_ name: String) -> PublishedActProvenance {
@@ -995,6 +1063,153 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(summary.reanchored, 1)
     }
 
+    func testTransientAnchorFetchUsesVerifiedCachedLowerReferenceAndMerges() async throws {
+        let store = TrackedStore(inMemory: true)
+        let higher = try cachedCassationRecord(in: store, number: "88-18789/2020",
+                                               id: "cached-cassation")
+        let (lower, lowerURL) = try uidlessLowerContext()
+        _ = try store.upsert(context: lower, snapshot: nil,
+                             collections: ["Первая инстанция"])
+        let resolver = StubOriginResolver(.resolved(
+            try uidlessLowerOrigin(context: lower, url: lowerURL)))
+        var fetches = 0
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetches += 1
+                throw SudrfError.transientNetworkError(
+                    domain: context.searchDomain, code: .timedOut, attempt: 3)
+            })
+
+        let summary = try await coordinator.run(keys: [higher.key])
+        let cards = await resolver.capturedAnchorCards()
+
+        XCTAssertEqual(fetches, 1)
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertNil(cards.first?.uid)
+        XCTAssertEqual(cards.first?.lowerCourt?.caseNumber, "М-1512/2020")
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertEqual(store.all().first?.context?.caseNumber, lower.caseNumber)
+        XCTAssertEqual(Set(store.all().first?.collectionNames ?? []),
+                       ["Кассация", "Первая инстанция"])
+    }
+
+    func testLinkedOldMaterialKeepsExistingMainCasePresentation() async throws {
+        let store = TrackedStore(inMemory: true)
+        var main = context(level: .first, number: "2-1725/2021",
+                           domain: "syktsud--komi.sudrf.ru", cartoteka: "g1",
+                           courtLevel: .district)
+        main.judicialUID = uid
+        main.caseID = "main-card"
+        main.caseUID = "main-guid"
+        main.cardURLString = try sudrfCardURL(
+            domain: main.searchDomain, id: "main-card", guid: "main-guid",
+            deloID: "1540005", new: "0").absoluteString
+        let (lower, lowerURL) = try uidlessLowerContext()
+        var mainMovement = movement(level: .first, number: main.caseNumber,
+                                    domain: main.searchDomain, actID: "main-act")
+        mainMovement.instances[0].sourceURL = URL(string: main.cardURLString!)
+        mainMovement.instances[0].previousRegistration = PreviousRegistrationReference(
+            caseNumber: lower.caseNumber, url: lowerURL)
+        mainMovement.instances.append(CaseInstance(
+            level: .material, court: main.courtTitle, caseNumber: lower.caseNumber,
+            judge: nil, domain: main.searchDomain, foundByUID: false,
+            result: nil, sessions: [], sourceURL: lowerURL))
+        let higher = try cachedCassationRecord(
+            in: store, number: "88-18789/2020", id: "cached-cassation",
+            judicialUID: uid, cachedUID: uid)
+        let mainRecord = try insertLegacy(
+            into: store, context: main, snapshot: nil, movement: mainMovement,
+            collections: ["Основное"])
+        XCTAssertEqual(store.all().count, 2)
+        let origin = try uidlessLowerOrigin(context: lower, url: lowerURL)
+        let resolver = StubOriginResolver(.resolved(ResolvedCaseOrigin(
+            court: origin.court, branch: origin.branch, region: origin.region,
+            courtCode: origin.courtCode, cartoteka: origin.cartoteka,
+            result: origin.result,
+            card: CaseCard(rawText: "", actText: nil, uid: uid,
+                           caseNumber: lower.caseNumber))))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { _ in
+                throw SudrfError.transientNetworkError(
+                    domain: "2kas.sudrf.ru", code: .timedOut, attempt: 3)
+            })
+
+        let summary = try await coordinator.run(keys: [higher.key])
+
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(store.all().count, 1)
+        let saved = try XCTUnwrap(store.record(forKey: mainRecord.key))
+        XCTAssertEqual(saved.caseNumber, main.caseNumber)
+        XCTAssertEqual(saved.context?.caseNumber, main.caseNumber)
+        XCTAssertEqual(Set(saved.collectionNames), ["Основное", "Кассация"])
+        XCTAssertEqual(Set(saved.movement?.acts.map(\.id) ?? []),
+                       ["main-act", "cached-cached-cassation"])
+
+        _ = try await coordinator.run(keys: [higher.key])
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertEqual(Set(store.all().first?.movement?.acts.map(\.id) ?? []),
+                       ["main-act", "cached-cached-cassation"])
+    }
+
+    func testMergeMovementsCollapsesAlternateNumbersForOneSourceCard() throws {
+        let source = try sudrfCardURL(domain: "3kas.sudrf.ru", id: "4637588",
+                                      guid: "source-guid", deloID: "2800001", new: "0")
+        var listed = movement(level: .cassation,
+                              number: "8Г-19286/2020 [88-18789/2020]",
+                              domain: "3kas.sudrf.ru", actID: "listed-act")
+        listed.instances[0].sourceURL = source
+        var direct = movement(level: .cassation, number: "88-18789/2020",
+                              domain: "3kas.sudrf.ru", actID: "direct-act")
+        direct.instances[0].sourceURL = source
+
+        let merged = try XCTUnwrap(TrackedCaseRepairCoordinator.mergeMovements([listed, direct]))
+
+        XCTAssertEqual(merged.instances.count, 1)
+        XCTAssertEqual(Set(merged.instances[0].linkedActIDs), ["listed-act", "direct-act"])
+        XCTAssertEqual(Set(merged.acts.map(\.id)), ["listed-act", "direct-act"])
+
+        var migrated = direct
+        migrated.instances[0].caseNumber = listed.instances[0].caseNumber
+        migrated.instances[0].sourceURL = try sudrfCardURL(
+            domain: "3kas.sudrf.ru", id: "new-row-id", guid: "source-guid",
+            deloID: "2800001", new: "0")
+        XCTAssertEqual(TrackedCaseRepairCoordinator.mergeMovements(
+            [listed, migrated])?.instances.count, 1)
+    }
+
+    func testCachedLowerReferenceRejectsMismatchedSourceURLAndConflictingUID() async throws {
+        let store = TrackedStore(inMemory: true)
+        let wrongSource = try cachedCassationRecord(
+            in: store, number: "88-18789/2020", id: "wrong-source",
+            movementSourceID: "other-source")
+        let wrongUID = try cachedCassationRecord(
+            in: store, number: "88-18790/2020", id: "wrong-uid", judicialUID: uid,
+            cachedUID: "11RS0001-01-2026-009999-11")
+        let (lower, lowerURL) = try uidlessLowerContext()
+        _ = try store.upsert(context: lower, snapshot: nil, collections: [])
+        let resolver = StubOriginResolver(.resolved(
+            try uidlessLowerOrigin(context: lower, url: lowerURL)))
+        var fetches = 0
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { context in
+                fetches += 1
+                throw SudrfError.transientNetworkError(
+                    domain: context.searchDomain, code: .timedOut, attempt: 3)
+            })
+
+        let summary = try await coordinator.run(keys: [wrongSource.key, wrongUID.key])
+        let cards = await resolver.capturedAnchorCards()
+
+        XCTAssertEqual(fetches, 2)
+        XCTAssertTrue(cards.isEmpty, "invalid cached evidence must not reach origin resolution")
+        XCTAssertEqual(summary.reanchored, 0)
+        XCTAssertEqual(store.all().count, 3)
+    }
+
     func testRSAdmjRemainsFirstJudicialAnchor() async throws {
         let store = TrackedStore(inMemory: true)
         let anchor = context(level: .first, number: "12-10/2026",
@@ -1827,6 +2042,62 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(reopened.all().first?.caseNumber, "3а-3696/2020")
         XCTAssertEqual(reopened.all().first?.context?.knownCards?.count, 2)
         XCTAssertEqual(reopened.all().first?.context?.knownCards?.compactMap(\.sourceURL).count, 2)
+    }
+
+    func testSeparateUIDlessCassationRecordsMergeThroughCompositeLowerCard() async throws {
+        let store = TrackedStore(inMemory: true)
+        func cassation(_ number: String, id: String) -> MovementContext {
+            var value = context(level: .cassation, number: number,
+                                domain: "2kas.sudrf.ru", cartoteka: "g3",
+                                courtLevel: .cassation)
+            value.judicialUID = nil
+            value.caseID = id
+            value.caseUID = "source-\(id)"
+            value.cardURLString = "https://2kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=\(id)&case_uid=source-\(id)"
+                + "&delo_id=5&new=2800001"
+            return value
+        }
+        let first = cassation("88-18789/2020", id: "cassation-one")
+        let second = cassation("88-18790/2020", id: "cassation-two")
+        let firstRecord = try store.upsert(context: first, snapshot: nil, collections: ["Первое"])
+        let secondRecord = try store.upsert(context: second, snapshot: nil, collections: ["Второе"])
+        XCTAssertEqual(store.all().count, 2)
+
+        let lowerNumber = "9-727/2020 ~ М-1512/2020"
+        let lowerURL = try XCTUnwrap(URL(string:
+            "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1"
+                + "&name_op=case&case_id=lower-card&case_uid=lower-source-guid"
+                + "&delo_id=1540005&new=0"))
+        let origin = ResolvedCaseOrigin(
+            court: Court(domain: "syktsud--komi.sudrf.ru",
+                         title: "Сыктывкарский городской суд", level: .district),
+            branch: .general, region: "Республика Коми", courtCode: "11RS0001",
+            cartoteka: try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")),
+            result: CaseSearchResult(caseNumber: lowerNumber, caseID: "lower-card",
+                                     caseUID: "lower-source-guid", cardURL: lowerURL),
+            card: CaseCard(rawText: "", actText: nil, caseNumber: lowerNumber))
+        let resolver = StubOriginResolver(.resolved(origin))
+        let coordinator = TrackedCaseRepairCoordinator(
+            store: store, client: SudrfClient(), originResolver: resolver,
+            defaults: defaults(), anchorCardFetcher: { context in
+                CaseCard(rawText: "", actText: nil, caseNumber: context.caseNumber,
+                         lowerCourt: LowerCourtReference(
+                            courtTitle: "Сыктывкарский городской суд",
+                            caseNumber: "М-1512/2020"))
+            })
+
+        let summary = try await coordinator.run(keys: [firstRecord.key, secondRecord.key])
+
+        XCTAssertEqual(summary.merged, 1)
+        XCTAssertEqual(store.all().count, 1)
+        let saved = try XCTUnwrap(store.record(forLocator:
+            "syktsud.komi.sudrf.ru/9-727/2020 ~ М-1512/2020"))
+        XCTAssertEqual(saved.context?.caseNumber, lowerNumber)
+        XCTAssertNil(saved.context?.judicialUID)
+        XCTAssertEqual(Set(saved.collectionNames), ["Первое", "Второе"])
+        XCTAssertEqual(Set(saved.context?.knownCards?.map(\.caseNumber) ?? []),
+                       [first.caseNumber, second.caseNumber])
     }
 
     func testIssue322OnlyOldMoscowCrossPortalMarkersGetOneRetry() async throws {

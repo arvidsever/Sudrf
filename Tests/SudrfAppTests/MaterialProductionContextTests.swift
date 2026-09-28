@@ -97,6 +97,21 @@ final class MaterialProductionContextTests: XCTestCase {
                         movement: movement([material])).production, .koap)
     }
 
+    func testLaterCategoryLabelDoesNotOverrideOwnCartoteka() {
+        var main = instance("2-3767/2014", id: "1", cart: "g1")
+        main.sourceEvidence?.category = "О защите избирательных прав (гл. 24 КАС РФ)"
+        let dossier = movement([main])
+        let classified = MaterialProductionContext.resolve(instance: main, movement: dossier)
+        XCTAssertEqual(classified.production, .civil)
+        XCTAssertEqual(classified.basis, .ownSource)
+
+        main.sourceEvidence?.ownProcessKind = .administrative
+        let conflicting = MaterialProductionContext.resolve(instance: main,
+                                                            movement: movement([main]))
+        XCTAssertNil(conflicting.production)
+        XCTAssertEqual(conflicting.basis, .conflict)
+    }
+
     // Public card references from the archived issue-269 snapshot of 8 September 2026.
     // Participants and judges are intentionally omitted.
     func testArchivedKoAPMaterial15InheritsFromVerifiedMainCard() {

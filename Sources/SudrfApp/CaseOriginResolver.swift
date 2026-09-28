@@ -162,7 +162,13 @@ actor CaseOriginResolver {
             throw CaseOriginResolutionError.noReference
         }
 
-        let judicialUID = Self.nonEmpty(anchorCard.uid) ?? Self.nonEmpty(anchorContext.judicialUID)
+        let knownUIDs = [anchorCard.uid, anchorContext.judicialUID]
+            .compactMap(Self.nonEmpty)
+            .filter { JudicialUIDObservation.validity(of: $0) == .valid }
+        guard Set(knownUIDs.map(JudicialUIDObservation.normalize)).count <= 1 else {
+            throw CaseOriginResolutionError.noReference
+        }
+        let judicialUID = knownUIDs.first
         if anchorContext.courtLevel == .subject,
            anchorContext.cartotekaId == "adm33",
            KoAPProceduralRole.uidCourtKind(judicialUID) == .district,
@@ -1207,9 +1213,16 @@ actor CaseOriginResolver {
     }
 
     static func sameCaseNumber(_ lhs: String, _ rhs: String) -> Bool {
-        let a = CartotekaRegistry.normalizedNumber(lhs)
-        let b = CartotekaRegistry.normalizedNumber(rhs)
-        return a == b || a.hasPrefix(b + "(") || b.hasPrefix(a + "(")
+        func publishedNumbers(_ value: String) -> [String] {
+            value.split(whereSeparator: { "~∼();".contains($0) }).compactMap {
+                guard let number = normalizedPublishedCaseNumber(String($0)),
+                      isCompletePublishedNumber(number) else { return nil }
+                return number
+            }
+        }
+        return publishedNumbers(lhs).contains { a in
+            publishedNumbers(rhs).contains(a)
+        }
     }
 
     static func normalizedTitle(_ title: String) -> String {

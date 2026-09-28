@@ -64,12 +64,11 @@ enum MaterialProductionContext {
                     ?? candidateContext?.courtLevel
                     ?? CourtDirectory.court(forDomain: candidate.domain)?.level
                 guard let candidateLevel else { continue }
-                let own = CaseIndexClassifier.classifyMaterialContext(
-                    caseNumber: candidate.caseNumber, courtLevel: candidateLevel,
+                let own = classifySource(
+                    number: candidate.caseNumber, level: candidateLevel,
                     branch: candidate.sourceEvidence?.sourceBranch ?? candidateContext?.branch ?? branch,
-                    cartotekaID: candidate.sourceEvidence?.cartotekaID ?? candidateContext?.cartotekaId,
-                    sourceProcessKind: candidate.sourceEvidence?.ownProcessKind ?? categoryKind(candidate.sourceEvidence?.category),
-                    sourceProcessKindConflict: candidate.sourceEvidence?.ownProcessKindConflict == true)
+                    cartoteka: candidate.sourceEvidence?.cartotekaID ?? candidateContext?.cartotekaId,
+                    evidence: candidate.sourceEvidence)
                 guard own.cardRole == .firstInstanceCase, let kind = own.processKind else { continue }
                 let uid = instance.sourceEvidence?.judicialUID
                     ?? matchingContext(instance, context: baseContext)?.judicialUID
@@ -96,13 +95,31 @@ enum MaterialProductionContext {
                 if sameUID || historicalUID || direct { related.append(kind) }
             }
         }
-        let result = CaseIndexClassifier.classifyMaterialContext(
-            caseNumber: number, courtLevel: level, branch: branch,
-            cardRole: material ? .otherMaterial : nil, cartotekaID: cartoteka, sourceProcessKind: instance?.sourceEvidence?.ownProcessKind ?? categoryKind(instance?.sourceEvidence?.category),
-            sourceProcessKindConflict: instance?.sourceEvidence?.ownProcessKindConflict == true,
-            verifiedRelatedKinds: related)
+        let result = classifySource(
+            number: number, level: level, branch: branch,
+            cardRole: material ? .otherMaterial : nil, cartoteka: cartoteka,
+            evidence: instance?.sourceEvidence, related: related)
         return Classification(production: result.processKind.flatMap(ProductionType.init(processKind:)),
                               isMaterial: material, basis: result.basis)
+    }
+
+    private static func classifySource(number: String, level: CourtLevel?, branch: CourtBranch,
+                                       cardRole: CaseIndexCardRole? = nil, cartoteka: String?,
+                                       evidence: CaseInstance.SourceEvidence?,
+                                       related: [ProcessKind] = []) -> CaseIndexClassifier.MaterialContext {
+        func classify(_ kind: ProcessKind?) -> CaseIndexClassifier.MaterialContext {
+            CaseIndexClassifier.classifyMaterialContext(
+                caseNumber: number, courtLevel: level, branch: branch,
+                cardRole: cardRole, cartotekaID: cartoteka, sourceProcessKind: kind,
+                sourceProcessKindConflict: evidence?.ownProcessKindConflict == true,
+                verifiedRelatedKinds: related)
+        }
+        let own = classify(evidence?.ownProcessKind)
+        // A category label can be revised later; it cannot contradict a
+        // published process kind or an unambiguous cartoteka on the same card.
+        guard own.basis != .ownSource, own.basis != .conflict,
+              let category = categoryKind(evidence?.category) else { return own }
+        return classify(category)
     }
 
     private static func matchingContext(_ instance: CaseInstance,

@@ -944,24 +944,22 @@ enum CaseLifecycleResolver {
     private static func reviewBelongsToRoot(
         _ review: CaseInstance, first: CaseInstance, timeline: Timeline
     ) -> Bool {
-        guard let lower = review.sourceEvidence?.lowerCourt?.caseNumber else { return true }
-        let lowerNumber = normalizedCaseNumber(lower)
+        guard let lower = review.sourceEvidence?.lowerCourt else { return true }
+        let lowerCourtTitle = CaseOriginResolver.normalizedTitle(lower.courtTitle ?? "")
+        let rootCourtTitle = CaseOriginResolver.normalizedTitle(first.court)
+        let sameOrUnknownCourt = lowerCourtTitle.isEmpty || rootCourtTitle.isEmpty
+            || lowerCourtTitle == rootCourtTitle
+        guard let lowerCaseNumber = lower.caseNumber else { return sameOrUnknownCourt }
+        let lowerNumber = normalizedCaseNumber(lowerCaseNumber)
         let rootNumber = normalizedCaseNumber(first.caseNumber)
         if lowerNumber == rootNumber {
-            let lowerCourtTitle = CaseOriginResolver.normalizedTitle(
-                review.sourceEvidence?.lowerCourt?.courtTitle ?? "")
-            let rootCourtTitle = CaseOriginResolver.normalizedTitle(first.court)
-            return lowerCourtTitle.isEmpty || rootCourtTitle.isEmpty
-                || lowerCourtTitle == rootCourtTitle
+            return sameOrUnknownCourt
         }
         guard review.level != .appeal else { return false }
         return timeline.lifecycleOrdered.contains { candidate in
             guard candidate.instance.level == .appeal,
                   normalizedCaseNumber(candidate.instance.caseNumber) == lowerNumber else { return false }
-            guard let referenced = candidate.instance.sourceEvidence?.lowerCourt?.caseNumber else {
-                return true
-            }
-            return normalizedCaseNumber(referenced) == rootNumber
+            return reviewBelongsToRoot(candidate.instance, first: first, timeline: timeline)
         }
     }
 

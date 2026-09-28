@@ -206,6 +206,46 @@ final class AppealChronologyLifecycleTests: XCTestCase {
         XCTAssertNil(resolution.completionReason)
     }
 
+    func testDifferentLowerCourtWithoutNumberCannotConcludeTerminalFirst() {
+        var home = first()
+        home.result = "Иск удовлетворён"
+        home.sourceEvidence?.decisionDate = "05.09.2026"
+        var review = appeal()
+        review.foundByUID = false
+        review.sourceEvidence?.lowerCourt = .init(courtTitle: "Сыктывкарский городской суд")
+        let mv = movement([home, review])
+
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: mv, production: .kas, deadlines: [], today: today)
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertNil(resolution.completionReason)
+    }
+
+    func testCassationCannotInheritAppealFromAnotherLowerCourt() {
+        var home = first()
+        home.result = "Иск удовлетворён"
+        home.sourceEvidence?.decisionDate = "05.09.2026"
+        var review = appeal()
+        review.foundByUID = false
+        review.sourceEvidence?.lowerCourt = .init(
+            courtTitle: "Сыктывкарский городской суд", caseNumber: home.caseNumber)
+        let cassation = CaseInstance(
+            level: .cassation, court: "Третий кассационный суд общей юрисдикции",
+            caseNumber: "88а-100/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: false, result: "Определение оставлено без изменения",
+            sessions: [CaseSession(date: "10.09.2026", event: "Судебное заседание",
+                                   result: "Определение оставлено без изменения")],
+            sourceEvidence: .init(lowerCourt: .init(
+                courtTitle: "Второй апелляционный суд", caseNumber: review.caseNumber),
+                decisionDate: "10.09.2026"))
+        let mv = movement([home, review, cassation])
+
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: mv, production: .kas, deadlines: [], today: today)
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertNil(resolution.completionReason)
+    }
+
     func testSoleJudgeRequiresLaterPublishedContinuation() {
         let mv = movement([first(continued: "09.09.2026"), appeal(procedure: "Единоличное рассмотрение")])
         XCTAssertFalse(CaseLifecycleResolver.timeline(in: mv, production: .kas).hasAppealInCurrentRound)

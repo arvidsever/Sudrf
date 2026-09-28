@@ -1156,7 +1156,8 @@ final class TrackedStore {
                     officialRelations: state.officialRelations,
                     provenance: state.provenance)
             let duplicates = mergedGroup.filter { $0 !== survivor }
-            if adoptLinkedPresentation {
+            if adoptLinkedPresentation
+                && persistentSurvivorRank(ctx) <= persistentSurvivorRank(survivor) {
                 _ = try TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: ctx, canonicalCard: canonicalCard,

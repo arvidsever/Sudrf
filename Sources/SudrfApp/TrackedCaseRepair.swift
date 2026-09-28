@@ -1411,9 +1411,12 @@ final class TrackedCaseRepairCoordinator {
         for movement in movements.dropFirst() {
             for inst in movement.instances {
                 if let index = out.instances.firstIndex(where: {
-                    SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(inst.domain)
-                        && CaseOriginResolver.sameCaseNumber($0.caseNumber, inst.caseNumber)
-                        && samePublishedSource($0, inst)
+                    let sameNumber = CaseOriginResolver.sameCaseNumber(
+                        $0.caseNumber, inst.caseNumber) || $0.caseNumber == inst.caseNumber
+                    let verifiedSource = $0.sourceURL.flatMap(sourceEvidence) != nil
+                        && inst.sourceURL.flatMap(sourceEvidence) != nil
+                    return SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(inst.domain)
+                        && samePublishedSource($0, inst) && (sameNumber || verifiedSource)
                 }) {
                     // Свежая canonicalCard может быть частичной. Обогащаем её
                     // последним успешным кэшем, не теряя заседания и акт.
@@ -1595,7 +1598,13 @@ final class TrackedCaseRepairCoordinator {
         guard let lhsURL = lhs.sourceURL, let rhsURL = rhs.sourceURL else { return true }
         guard let lhsEvidence = sourceEvidence(lhsURL), let rhsEvidence = sourceEvidence(rhsURL)
         else { return lhsURL == rhsURL }
-        return lhsEvidence == rhsEvidence
+        if lhsEvidence == rhsEvidence { return true }
+        guard let left = try? SudrfCaseCardLink(url: lhsURL),
+              let right = try? SudrfCaseCardLink(url: rhsURL),
+              let guid = left.caseUID, !guid.isEmpty else { return false }
+        return guid == right.caseUID && left.moduleHost == right.moduleHost
+            && left.deloID == right.deloID && left.resolvedNew == right.resolvedNew
+            && (left.srvNum ?? "1") == (right.srvNum ?? "1")
     }
 
     private static func matchesSourceInstance(_ instance: CaseInstance, context: MovementContext,

@@ -651,8 +651,9 @@ final class AppRouter: ObservableObject {
             // Сохранённое движение показываем без сетевого запроса при открытии.
             liveMovement = cached
             movementFetchedAt = rec.movementFetchedAt
-            selectedActID = cached.acts.first(where: { $0.instanceLevel == .first })?.id
-                         ?? cached.acts.first?.id
+            let presented = CourtActPresentation.rows(in: cached)
+            selectedActID = presented.first(where: { $0.instanceLevel == .first })?.id
+                         ?? presented.first?.id
             loadingMovement = false
         } else {
             liveMovement = nil
@@ -673,7 +674,7 @@ final class AppRouter: ObservableObject {
                 for: entry, movement: movement, context: context)?.id
         }
         if preferAct, let actID = entry.actID {
-            selectedActID = actID
+            selectAct(actID)
         }
     }
 
@@ -748,7 +749,7 @@ final class AppRouter: ObservableObject {
         }
         section = .cases
         openCase(key: record.key)
-        selectedActID = sourceActID
+        selectAct(sourceActID)
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
@@ -1437,9 +1438,11 @@ final class AppRouter: ObservableObject {
         movementFetchedAt = store.record(forKey: key)?.movementFetchedAt
         loadingMovement = false
         refreshNote = nil
-        selectedActID = keepAct.flatMap { id in mv.acts.contains { $0.id == id } ? id : nil }
-            ?? mv.acts.first(where: { $0.instanceLevel == .first })?.id
-            ?? mv.acts.first?.id
+        let presented = CourtActPresentation.rows(in: mv)
+        selectedActID = keepAct.flatMap { id in
+            presented.first(where: { $0.contains(id) })?.id
+        } ?? presented.first(where: { $0.instanceLevel == .first })?.id
+            ?? presented.first?.id
         invalidateCachedActIfNeeded()
         loadSelectedActDocument()
     }
@@ -1459,7 +1462,10 @@ final class AppRouter: ObservableObject {
                changedCaseKeys: [key])
     }
 
-    func selectAct(_ id: String) { selectedActID = id }
+    func selectAct(_ id: String) {
+        selectedActID = liveMovement.flatMap { CourtActPresentation.row(for: id, in: $0)?.id }
+            ?? id
+    }
     func highlightSelectedActParagraph(_ id: String) {
         guard selectedSummaryCitationState.allowsNavigation,
               selectedActParagraphs?.contains(where: { $0.id == id }) == true else { return }

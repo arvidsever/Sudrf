@@ -1001,7 +1001,9 @@ private struct LiveActsPane: View {
     @Environment(\.openWindow) private var openWindow
     @State private var showingSummary = false
 
-    private var acts: [CaseAct] { router.liveMovement?.acts ?? [] }
+    private var acts: [CourtActDisplay] {
+        router.liveMovement.map(CourtActPresentation.rows(in:)) ?? []
+    }
     private var body0: String? { router.selectedActText }
     private var selectedParagraphs: [ActParagraph]? { router.selectedActParagraphs }
 
@@ -1035,9 +1037,14 @@ private struct LiveActsPane: View {
                     }
                 }
                 ForEach(acts) { a in
-                    CourtActListRow(act: a, selected: a.id == router.selectedActID) {
+                    CourtActListRow(display: a, selected: router.selectedActID.map(a.contains) ?? false) {
                         router.selectAct(a.id)
                     }
+                }
+                if let selected = acts.first(where: { router.selectedActID.map($0.contains) ?? false }),
+                   let url = selected.originalURL {
+                    Link("Открыть оригинал на сайте суда", destination: url)
+                        .font(.caption)
                 }
             }
             .padding(EdgeInsets(top: 14, leading: 14, bottom: 10, trailing: 14))

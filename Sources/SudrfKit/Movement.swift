@@ -1049,6 +1049,8 @@ public actor MovementService: MovementProviding {
                     // новое рассмотрение. Перебираем все и каждый круг кладём отдельной
                     // инстанцией (а не только первый, как было раньше).
                     var rounds: [(inst: CaseInstance, act: CaseAct?, body: String?, sortKey: Int)] = []
+                    var transientCardFailure = false
+                    var captchaCardFormURL: URL?
                     for r in usable {
                         var resolvedLevel = instLevel
                         if isSubjectFirstAppealRoute,
@@ -1066,6 +1068,16 @@ public actor MovementService: MovementProviding {
                             throw CancellationError()
                         } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
                             throw error
+                        } catch SudrfError.captchaRequired(let formURL) {
+                            targetIncomplete = true
+                            markHigherCourtIncomplete(domain)
+                            captchaCardFormURL = formURL
+                            continue
+                        } catch SudrfError.transientNetworkError {
+                            targetIncomplete = true
+                            markHigherCourtIncomplete(domain)
+                            transientCardFailure = true
+                            continue
                         } catch {
                             if Task.isCancelled { throw CancellationError() }
                             targetIncomplete = true
@@ -1131,6 +1143,18 @@ public actor MovementService: MovementProviding {
                             sourceEvidence: .init(card: higherCard, cartotekaID: higherCart.id, courtLevel: higherCourt.level, branch: branch))
                         rounds.append((inst, act, body,
                                        Self.dateSortKey(r.decisionDate ?? r.receiptDate)))
+                    }
+
+                    if rounds.isEmpty {
+                        if let captchaCardFormURL {
+                            Self.appendHigherCourtStub(to: &instances, level: instLevel,
+                                                       courtTitle: higherCourt.title, domain: domain,
+                                                       captchaFormURL: captchaCardFormURL)
+                        } else if transientCardFailure {
+                            Self.appendHigherCourtStub(to: &instances, level: instLevel,
+                                                       courtTitle: higherCourt.title, domain: domain,
+                                                       transientError: true)
+                        }
                     }
 
                     // Круги — по хронологии (старый → новый). Сортировка инстанций

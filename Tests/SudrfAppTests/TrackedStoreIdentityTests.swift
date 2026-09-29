@@ -255,6 +255,45 @@ final class TrackedStoreIdentityTests: XCTestCase {
                        ["Основные", "Надзор", "Повторный импорт"])
     }
 
+    func testRetrackingPartialReviewKeepsProposedDeadlineInMergedDossier() throws {
+        let store = TrackedStore(inMemory: true)
+        let base = context(number: "2-231/2026", cardID: "partial-base",
+                           cartoteka: "g", baseInstanceLevel: .first)
+        let review = context(
+            number: "88-231/2026", cardID: "partial-review",
+            domain: "3kas.sudrf.ru", courtCode: "", cartoteka: "g3",
+            courtLevel: .cassation, baseInstanceLevel: .cassation)
+        let completeMovement = movementWithAutomaticCivilDeadline(for: base)
+        let activeSnapshot = MovementDerivation.snapshot(
+            from: completeMovement, context: base, today: calendarTestToday)
+        var staleMovement = completeMovement
+        staleMovement.instances[0].sessions = [CaseSession(
+            date: "04.09.2026", event: "Регистрация дела")]
+        staleMovement.instances.append(reviewInstance(for: review))
+
+        _ = try store.reconcileAndUpsert(
+            context: review, snapshot: nil,
+            movement: CaseMovement(
+                uid: "", caseNumber: review.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+            collections: [])
+        let survivor = try store.reconcileAndUpsert(
+            context: base, snapshot: activeSnapshot, movement: staleMovement, collections: [],
+            preserveActiveProposedDeadlinesOnPartial: true)
+
+        let retracked = try store.reconcileAndUpsert(
+            context: review, snapshot: activeSnapshot,
+            movement: CaseMovement(
+                uid: "", caseNumber: review.caseNumber, inForce: false,
+                instances: [reviewInstance(for: review)], complaints: [:], acts: []),
+            collections: [], preserveActiveProposedDeadlinesOnPartial: true)
+
+        XCTAssertTrue(retracked === survivor)
+        XCTAssertTrue(retracked.snapshot?.deadlines.contains(where: {
+            $0.kind == "appeal" && $0.isActive && $0.status == .proposed
+        }) == true)
+    }
+
     func testSameSourceCardRenumberingKeepsPersistentKeyActsCollectionsAndDeepLinks() async throws {
         let store = TrackedStore(inMemory: true)
         let original = context(number: "8Г-123/2026", cardID: "native-card", judicialUID: oldUID)
@@ -761,6 +800,61 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertFalse(store.container.mainContext.hasChanges)
     }
 
+    func testPreparationRepairsVerifiedOrphanedProposedDeadline() throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-229/2026", cardID: "orphaned-proposed", cartoteka: "g")
+        let cachedMovement = movementWithAutomaticCivilDeadline(for: value)
+        var snapshot = MovementDerivation.snapshot(from: cachedMovement, context: value,
+                                                   today: calendarTestToday)
+        snapshot.deadlines[try automaticAppealIndex(in: snapshot)].lifecycleRaw =
+            DeadlineLifecycle.superseded.rawValue
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: snapshot, movement: cachedMovement, collections: [],
+            movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_005))
+        try store.container.mainContext.save()
+
+        XCTAssertTrue(try TrackedStorePreparation.prepare(
+            context: store.container.mainContext, today: calendarTestToday))
+        let repaired = try XCTUnwrap(record.snapshot?.deadlines.first(where: {
+            $0.kind == "appeal"
+        }))
+        XCTAssertTrue(repaired.isActive)
+        XCTAssertEqual(repaired.status, .proposed)
+        XCTAssertEqual(record.snapshot?.deadlines.count, 1)
+        _ = try TrackedStorePreparation.prepare(context: store.container.mainContext,
+                                                today: calendarTestToday)
+        XCTAssertEqual(record.snapshot?.deadlines.filter(\.isActive).count, 1)
+        XCTAssertEqual(record.snapshot?.deadlines.count, 1)
+    }
+
+    func testPreparationKeepsActiveProposedDeadlineAfterPartialSource() throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-230/2026", cardID: "partial-proposed", cartoteka: "g")
+        let completeMovement = movementWithAutomaticCivilDeadline(for: value)
+        let snapshot = MovementDerivation.snapshot(from: completeMovement, context: value,
+                                                   today: calendarTestToday)
+        var partialMovement = completeMovement
+        partialMovement.instances[0].sessions = [CaseSession(
+            date: "04.09.2026", event: "Регистрация дела")]
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: snapshot, movement: partialMovement, collections: [],
+            movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_006))
+        record.sourceRefreshAttempt = SourceAttempt(
+            kind: .partial,
+            provenance: SourceProvenance(operation: .movement, sourceFamily: "sudrf",
+                                         host: value.searchDomain,
+                                         affectedSources: ["vs--komi.sudrf.ru"]))
+        try store.container.mainContext.save()
+
+        XCTAssertTrue(try TrackedStorePreparation.prepare(
+            context: store.container.mainContext, today: calendarTestToday))
+        let preserved = try XCTUnwrap(record.snapshot?.deadlines.first(where: {
+            $0.kind == "appeal"
+        }))
+        XCTAssertTrue(preserved.isActive)
+        XCTAssertEqual(preserved.status, .proposed)
+    }
+
     func testPreparationFailsClosedForUncoveredAutomaticDeadlineAndPreservesOtherHistory() throws {
         let store = TrackedStore(inMemory: true)
         let value = context(number: "2-226/2012", cardID: "uncovered-calendar-deadline",
@@ -933,6 +1027,32 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(Set(one.eventJournal?.events.map(\.id) ?? []),
                        Set([firstEvent.id, secondEvent.id]))
         XCTAssertEqual(one.eventJournal?.events.count, 2)
+    }
+
+    func testAtomicPartialMergeKeepsProposedDeadlineFromSeparatelySavedCards() throws {
+        let store = TrackedStore(inMemory: true)
+        let first = context(number: "2-232/2026", cardID: "partial-merge-first", cartoteka: "g")
+        let appeal = context(number: "33-232/2026", cardID: "partial-merge-appeal",
+                             domain: "vs--komi.sudrf.ru", courtCode: "11VS0001", cartoteka: "g2")
+        let completeMovement = movementWithAutomaticCivilDeadline(for: first)
+        let activeSnapshot = MovementDerivation.snapshot(
+            from: completeMovement, context: first, today: calendarTestToday)
+        var partialMovement = completeMovement
+        partialMovement.instances[0].sessions = [CaseSession(
+            date: "04.09.2026", event: "Регистрация дела")]
+        let one = try store.reconcileAndUpsert(
+            context: first, snapshot: activeSnapshot, movement: partialMovement, collections: [])
+        let two = try store.reconcileAndUpsert(
+            context: appeal, snapshot: activeSnapshot, movement: partialMovement, collections: [])
+
+        _ = try TrackedCaseRepairCoordinator.atomicMerge(
+            store: store, survivor: one, duplicates: [two], canonicalContext: first,
+            canonicalCard: nil, preserveActiveProposedDeadlinesOnPartial: true)
+
+        XCTAssertEqual(store.all().count, 1)
+        XCTAssertTrue(one.snapshot?.deadlines.contains(where: {
+            $0.kind == "appeal" && $0.isActive && $0.status == .proposed
+        }) == true)
     }
 
     func testAtomicMergeJournalConflictRollsBackBeforeSaveAndLeavesLaterSaveIndependent() throws {

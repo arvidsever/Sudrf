@@ -285,6 +285,22 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertNil(AppRouter.pinnedDeadline([stale], today: today))
     }
 
+    func testOverviewShowsRecentOverdueDeadlinesOfEveryStatusForFourteenDays() {
+        let proposed = deadline("30", plus: -14)
+        let confirmed = deadline("31", plus: -3, status: .confirmed)
+        let overridden = deadline("32", plus: -1, status: .overridden)
+        let staleOverride = deadline("33", plus: -15, status: .overridden)
+        var superseded = deadline("37", plus: -1, status: .confirmed)
+        superseded.lifecycle = .superseded
+
+        XCTAssertEqual(AppRouter.overdueDeadlines(
+            [proposed, confirmed, overridden, staleOverride, superseded], today: today
+        ).map(\.id), [proposed.id, confirmed.id, overridden.id])
+        XCTAssertEqual(AppRouter.pendingDeadlines(
+            [proposed, confirmed, overridden, staleOverride, superseded], today: today
+        ).map(\.id), [proposed.id])
+    }
+
     /// Подтверждённый срок — обязательство пользователя, а не наша догадка:
     /// по возрасту он не архивируется никогда.
     func testConfirmedDeadlineNeverExpiresByAge() {
@@ -293,22 +309,35 @@ final class OverviewModelTests: XCTestCase {
         XCTAssertTrue(AppRouter.isActionableDeadline(ancient, today: today))
     }
 
-    /// «Ближайший» не должен подставлять древний расчётный срок, когда
-    /// актуальных нет.
-    func testPinnedFallbackSkipsStaleProposals() {
+    /// Просроченные сроки идут отдельным списком, не дублируясь в строке ближайшего.
+    func testPinnedDeadlineUsesOnlyUpcomingDeadlines() {
         let stale = deadline("26", plus: -200)
         let recent = deadline("27", plus: -1)
 
-        XCTAssertEqual(AppRouter.pinnedDeadline([stale, recent], today: today)?.id, recent.id)
+        XCTAssertNil(AppRouter.pinnedDeadline([stale, recent], today: today))
+        XCTAssertEqual(AppRouter.overdueDeadlines([stale, recent], today: today).map(\.id),
+                       [recent.id])
     }
 
-    func testPinnedDeadlinePrefersUpcomingProposal() {
+    func testPinnedDeadlinePrefersNearestUpcomingDeadline() {
         let old = deadline("10", plus: -3)
         let next = deadline("11", plus: 4)
         let confirmed = deadline("12", plus: 1, status: .confirmed)
 
-        XCTAssertEqual(AppRouter.pinnedDeadline([old, next, confirmed], today: today)?.id, next.id)
+        XCTAssertEqual(AppRouter.pinnedDeadline([old, next, confirmed], today: today)?.id, confirmed.id)
         XCTAssertEqual(AppRouter.overdueDeadlines([old, next, confirmed], today: today).map(\.id), [old.id])
+    }
+
+    func testPinnedAndRemainingDeadlinesIncludeConfirmedAndOverridden() {
+        let confirmed = deadline("34", plus: 1, status: .confirmed)
+        let overridden = deadline("35", plus: 2, status: .overridden)
+        let proposed = deadline("36", plus: 3)
+        let deadlines = [proposed, overridden, confirmed]
+
+        let pinned = AppRouter.pinnedDeadline(deadlines, today: today)
+        XCTAssertEqual(pinned?.id, confirmed.id)
+        XCTAssertEqual(AppRouter.remainingDeadlines(deadlines, pinned: pinned, today: today)
+            .map(\.id), [overridden.id, proposed.id])
     }
 
     func testFeedFilteringByKindUnreadAndQuery() {

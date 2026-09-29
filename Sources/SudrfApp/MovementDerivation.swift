@@ -627,7 +627,8 @@ enum MovementDerivation {
     /// occurrences остаются историей и не могут возродиться при refresh.
     static func preservingConfirmedDeadlines(_ snap: CaseSnapshot,
                                              old: CaseSnapshot?,
-                                             today: Date = DateUtil.today) -> CaseSnapshot {
+                                             today: Date = DateUtil.today,
+                                             preserveActiveProposedWhenMissing: Bool = false) -> CaseSnapshot {
         guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
         var out = snap
         var fresh = out.deadlines
@@ -678,6 +679,13 @@ enum MovementDerivation {
             if previous.isUserControlled,
                !fresh.contains(where: { $0.kind == previous.kind }) {
                 historical.append(previous)
+            } else if preserveActiveProposedWhenMissing,
+                      previous.isActive,
+                      previous.status == .proposed,
+                      !fresh.contains(where: { $0.kind == previous.kind }) {
+                // A partial source cannot disprove an otherwise active
+                // calculated deadline. A complete refresh still supersedes it.
+                historical.append(previous)
             } else {
                 var superseded = previous
                 if superseded.isActive {
@@ -690,6 +698,43 @@ enum MovementDerivation {
             .filter { !suppressedFresh.contains($0.offset) }
             .map(\.element) + historical
         return applyingDeadlineRetention(to: out, today: today)
+    }
+
+    /// Startup normally never revives inactive occurrences. The sole repair is
+    /// an orphaned proposed deadline that a previous partial refresh wrongly
+    /// superseded, while the cached movement still proves the exact same rule
+    /// and trigger. Any uncertainty leaves the historical record untouched.
+    static func repairingOrphanedSupersededProposedDeadlines(
+        old: CaseSnapshot,
+        fresh: CaseSnapshot,
+        today: Date = DateUtil.today
+    ) -> CaseSnapshot {
+        var repaired = old
+        for index in repaired.deadlines.indices {
+            let stored = repaired.deadlines[index]
+            guard stored.lifecycle == .superseded,
+                  stored.status == .proposed,
+                  let key = stored.occurrenceKey,
+                  let provenance = stored.provenance,
+                  old.deadlineAssessments?.contains(where: {
+                      $0.ruleID == provenance.ruleID && $0.status == .applicable
+                  }) == true,
+                  repaired.deadlines.filter({ $0.kind == stored.kind }).count == 1,
+                  fresh.deadlines.filter({ $0.kind == stored.kind }).count == 1,
+                  let candidate = fresh.deadlines.first(where: {
+                      $0.isActive
+                          && $0.kind == stored.kind
+                          && $0.occurrenceKey == key
+                          && $0.provenance == provenance
+                          && DateUtil.daysBetween($0.date, today) <= AppRouter.deadlineGraceDays
+                  }),
+                  fresh.deadlineAssessments?.contains(where: {
+                      $0.ruleID == candidate.provenance?.ruleID && $0.status == .applicable
+                  }) == true
+            else { continue }
+            repaired.deadlines[index].lifecycleRaw = DeadlineLifecycle.active.rawValue
+        }
+        return repaired
     }
 
     private static func applyingDeadlineRetention(to snapshot: CaseSnapshot,

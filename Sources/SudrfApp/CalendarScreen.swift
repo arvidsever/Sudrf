@@ -1725,18 +1725,19 @@ struct CalendarScreen: View {
                     Text("ЖДУТ ПОДТВЕРЖДЕНИЯ").font(.system(size: 11, weight: .bold)).kerning(0.3)
                         .foregroundStyle(.tertiary)
                     Spacer()
-                    StatusChip(text: "\(waiting.count)", kind: waiting.isEmpty ? .green : .proposed)
+                    StatusChip(text: "\(waiting.count)", kind: waiting.isEmpty ? .gray : .proposed)
                 }
                 .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
                 Text("Сроки рассчитаны по правилам, но дата-основание взята с сайта суда. Проверьте по своим документам и подтвердите.")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.bottom, 6)
                 if waiting.isEmpty {
-                    Text("✓ Все сроки подтверждены").font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(Palette.green)
+                    Text("Сейчас нет сроков, ожидающих подтверждения")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 14).padding(.vertical, 12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Palette.green.opacity(0.1)))
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
                         .padding(.horizontal, 14).padding(.bottom, 12)
                 } else {
                     ScrollView {

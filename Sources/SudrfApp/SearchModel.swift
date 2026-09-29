@@ -333,17 +333,22 @@ final class SearchModel: ObservableObject {
     /// подсудности в MovementContext (единственный источник правды, общий
     /// с перезапросом из мониторинга).
     private func makeMovementService(for court: CourtOption,
-                                     base: CaseSearchResult) -> any MovementProviding {
+                                     base: CaseSearchResult,
+                                     cartoteka: Cartoteka) -> any MovementProviding {
         if let movementServiceFactory {
             return movementServiceFactory(court, base)
         }
         let provider: any CaseProviding = court.level == .magistrate ? magistrateClient : client
+        let baseLevel = MovementContext.instanceLevel(
+            cartotekaID: cartoteka.id, courtLevel: court.level)
         return MovementService(client: provider,
                                higherCourtDomains: MovementContext.expandedHigherDomains(
                                 branch: branch, courtLevel: court.level,
+                                baseInstanceLevel: baseLevel,
                                 courtTitle: court.title, courtCode: court.code,
-                                region: routingRegionName(), displayDomain: court.domain),
+                                region: routingRegionName(for: base.caseNumber), displayDomain: court.domain),
                                higherCourtTargets: movementTargets(for: court, base: base),
+                               baseInstanceLevel: baseLevel,
                                vsrf: vsrfClient,
                                mosgorsud: mosGorSudClient, branch: branch)
     }
@@ -401,10 +406,11 @@ final class SearchModel: ObservableObject {
         }
     }
 
-    private func routingRegionName() -> String {
+    private func routingRegionName(for caseNumber: String) -> String {
         guard !regionRepresentsCourtSeat else {
             guard let classification = KoAPProceduralRole.classificationCode(
-                from: movement?.uid ?? queryUID) else { return "" }
+                from: (movement?.caseNumber == caseNumber ? movement?.uid : nil) ?? queryUID)
+            else { return "" }
             let code = CourtDirectory.normalizedSubjectCode(classification)
             return CourtDirectory.subjectName(forSubjectCode: code) ?? ""
         }
@@ -1006,20 +1012,21 @@ final class SearchModel: ObservableObject {
                                 matches row: CaseSearchResult,
                                 court: Court,
                                 cartoteka: Cartoteka) -> Bool {
+        let baseLevel = MovementContext.instanceLevel(
+            cartotekaID: cartoteka.id, courtLevel: court.level, judicialUID: movement.uid)
+        let matchingInstances = movement.instances.filter {
+            $0.level == baseLevel
+                && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
+                && CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber)
+        }
+        guard !matchingInstances.isEmpty else { return false }
         guard let exactURL = verifiedDirectCardURLForCache(for: row, court: court) else {
             // При наличии пары идентификаторов непроверенная ссылка не участвует
             // в загрузке: карточка строится для выбранного суда и картотеки.
             // Такой URL также не может подтвердить источник старого кэша.
             return row.cardURL == nil || row.caseID == nil || row.caseUID == nil
         }
-        let baseLevel = MovementContext.instanceLevel(
-            cartotekaID: cartoteka.id, courtLevel: court.level, judicialUID: movement.uid)
-        return movement.instances.contains {
-            $0.level == baseLevel
-                && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
-                && CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber)
-                && $0.sourceURL == exactURL
-        }
+        return matchingInstances.contains { $0.sourceURL == exactURL }
     }
 
     func closeInspector() {
@@ -1111,7 +1118,7 @@ final class SearchModel: ObservableObject {
         let cacheKey = MovementContext.identityKey(displayDomain: option.domain,
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
-        let service = makeMovementService(for: option, base: base)
+        let service = makeMovementService(for: option, base: base, cartoteka: cart)
         if let hit = MovementMemoryCache.shared.get(cacheKey),
            cachedMovement(hit.movement, matches: base, court: court, cartoteka: cart) {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
@@ -1382,7 +1389,8 @@ final class SearchModel: ObservableObject {
             branch: branch, courtLevel: option.level,
             baseCartoteka: cart, caseNumber: base?.caseNumber ?? queryCaseNumber,
             judicialUID: nil, courtTitle: option.title, courtCode: option.code,
-            region: routingRegionName(), displayDomain: option.domain,
+            region: routingRegionName(for: base?.caseNumber ?? queryCaseNumber),
+            displayDomain: option.domain,
             districtCourts: option.level == .magistrate
                 ? magistrateDistrictCourts.map { ($0.domain, $0.title) } : [])
     }
@@ -1397,7 +1405,7 @@ final class SearchModel: ObservableObject {
               let level = tier.level, let base = selectedResult else { return nil }
         var ctx = MovementContext(
             branchRaw: branch.rawValue,
-            region: routingRegionName(),
+            region: routingRegionName(for: base.caseNumber),
             searchDomain: option.searchCourt.domain,
             displayDomain: option.domain,
             courtTitle: option.title,

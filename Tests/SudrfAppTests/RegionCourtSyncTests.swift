@@ -86,6 +86,29 @@ final class RegionCourtSyncTests: XCTestCase {
         XCTAssertEqual(model.currentContext()?.region, "")
     }
 
+    func testSwitchingAppealsDoesNotRouteThroughPreviousCaseUID() async throws {
+        let model = SearchModel()
+        model.tier = .appeal
+        await model.resolveCourts()
+        let first = try XCTUnwrap(model.courts.first { $0.domain == "1ap.sudrf.ru" })
+        let second = try XCTUnwrap(model.courts.first { $0.domain == "2ap.sudrf.ru" })
+        model.selectedCourtID = first.id
+        model.selectedCourtID = second.id
+        model.cartotekaId = "p2"
+        let komi = CaseSearchResult(caseNumber: "66а-757/2026")
+        let chelyabinsk = CaseSearchResult(caseNumber: "66а-758/2026")
+        model.results = [komi, chelyabinsk]
+        model.movement = CaseMovement(uid: "11RS0001-01-2026-000001-10",
+                                      caseNumber: komi.caseNumber, inForce: false,
+                                      instances: [], complaints: [:], acts: [])
+
+        model.selectedResultID = komi.stableID
+        XCTAssertEqual(model.currentContext()?.region, "Республика Коми")
+
+        model.selectedResultID = chelyabinsk.stableID
+        XCTAssertEqual(model.currentContext()?.region, "")
+    }
+
     func testTierChangeTurnsExistingRegionBackIntoJurisdiction() async throws {
         let model = SearchModel()
         model.tier = .cassation

@@ -521,7 +521,12 @@ final class SearchResultSelectionTests: XCTestCase {
         MovementMemoryCache.shared.put(
             cacheKey,
             CaseMovement(uid: "", caseNumber: second.caseNumber, inForce: false,
-                         instances: [], complaints: [:], acts: [])
+                         instances: [CaseInstance(
+                            level: .first, court: court.title,
+                            caseNumber: second.caseNumber, judge: nil,
+                            domain: court.domain, foundByUID: false,
+                            result: nil, sessions: [])],
+                         complaints: [:], acts: [])
         )
         defer { MovementMemoryCache.shared.remove(cacheKey) }
 

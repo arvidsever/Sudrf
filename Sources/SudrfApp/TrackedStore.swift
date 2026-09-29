@@ -212,19 +212,23 @@ enum TrackedStorePreparation {
                   let movement = record.movement,
                   !movement.instances.isEmpty,
                   let movementContext = record.context,
-                  old.deadlines.contains(where: \.isActive)
+                  !old.deadlines.isEmpty
             else { continue }
 
             var refreshed = MovementDerivation.snapshot(from: movement,
                                                         context: movementContext,
                                                         today: today)
+            let repairBaseline = MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+                old: old, fresh: refreshed, today: today)
+            guard old.deadlines.contains(where: \.isActive) || repairBaseline != old else { continue }
             let newlyDerived = refreshed.deadlines
             refreshed.deadlines = refreshed.deadlines.filter { fresh in
-                hasStoredActiveOccurrence(fresh, in: old.deadlines,
+                hasStoredActiveOccurrence(fresh, in: repairBaseline.deadlines,
                                           allFresh: newlyDerived)
             }
             refreshed = MovementDerivation.preservingConfirmedDeadlines(
-                refreshed, old: old, today: today)
+                refreshed, old: repairBaseline, today: today,
+                preserveActiveProposedWhenMissing: record.sourceRefreshAttempt?.kind == .partial)
 
             // Не обновляем весь snapshot на старте: участники, события,
             // semantic observation и прочие проекции принадлежат refresh.
@@ -1107,6 +1111,7 @@ final class TrackedStore {
                             canonicalCard: CaseCard? = nil,
                             movementFetchedAt: Date? = nil,
                             updatesMovementFetchedAt: Bool = true,
+                            preserveActiveProposedDeadlinesOnPartial: Bool = false,
                             saveChanges: Bool = true) throws -> TrackedCaseRecord {
         let observation = identityObservation
             ?? TrackedCaseIdentity.observation(context: ctx, movement: mv)
@@ -1161,7 +1166,9 @@ final class TrackedStore {
                 _ = try TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: ctx, canonicalCard: canonicalCard,
-                    identityState: persistedState, saveChanges: saveChanges)
+                    identityState: persistedState,
+                    preserveActiveProposedDeadlinesOnPartial: preserveActiveProposedDeadlinesOnPartial,
+                    saveChanges: saveChanges)
                 return survivor
             }
             let mergeScope = Set(mergedGroup.map(\.key))
@@ -1172,7 +1179,9 @@ final class TrackedStore {
                 _ = try TrackedCaseRepairCoordinator.atomicMerge(
                     store: self, survivor: survivor, duplicates: duplicates,
                     canonicalContext: canonical, canonicalCard: nil,
-                    identityState: persistedState, saveChanges: false)
+                    identityState: persistedState,
+                    preserveActiveProposedDeadlinesOnPartial: preserveActiveProposedDeadlinesOnPartial,
+                    saveChanges: false)
                 if preservesReviewRelationRefreshTime {
                     survivor.movementFetchedAt = previousMovementFetchedAt
                 }
@@ -1202,11 +1211,13 @@ final class TrackedStore {
                         from: projectedMovement, context: canonicalContext)
                     if let snap {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
-                            derived, old: snap)
+                            derived, old: snap,
+                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
                     }
                     if let cachedSnapshot {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
-                            derived, old: cachedSnapshot)
+                            derived, old: cachedSnapshot,
+                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
                     }
                     projectedSnapshot = derived
                 } else {

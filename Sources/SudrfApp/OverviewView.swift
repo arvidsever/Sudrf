@@ -206,7 +206,7 @@ struct OverviewView: View {
     private var deadlinesColumn: some View {
         let pinned = AppRouter.pinnedDeadline(router.deadlines, today: today)
         let overdue = AppRouter.overdueDeadlines(router.deadlines, today: today)
-        let remaining = AppRouter.remainingPendingDeadlines(router.deadlines, pinned: pinned, today: today)
+        let remaining = AppRouter.remainingDeadlines(router.deadlines, pinned: pinned, today: today)
         return columnCard {
             columnHeader("СРОКИ ОБЖАЛОВАНИЯ",
                          pill: router.overdueDeadlineCount > 0
@@ -215,17 +215,10 @@ struct OverviewView: View {
                          tone: router.overdueDeadlineCount > 0 ? .red : .neutral)
             if let pinned {
                 pinnedDeadlineRow(pinned)
-            } else {
-                // Пустое состояние обязано различать два случая: расчётных
-                // сроков нет вовсе — и они есть, но истекли и больше не
-                // являются задачами (#98). Говорить «все подтверждены» про
-                // неподтверждённые сроки нельзя.
-                let hasProposals = router.deadlines.contains { $0.status == .proposed }
-                Text(hasProposals
-                     ? "Актуальных расчётных сроков нет"
-                     : "Все расчётные сроки подтверждены")
+            } else if overdue.isEmpty {
+                Text("Актуальных сроков нет")
                     .font(.system(size: 12))
-                    .foregroundStyle(hasProposals ? Color.secondary : Palette.green)
+                    .foregroundStyle(Color.secondary)
                     .padding(.horizontal, 15)
                     .padding(.vertical, 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,6 +237,7 @@ struct OverviewView: View {
             footer(left: footerMore(max(0, overdue.count + remaining.count - 5)),
                    right: "Все сроки") {
                 router.openCalendar(date: pinned?.date)
+                router.setCalMode(.agenda)
             }
         }
     }

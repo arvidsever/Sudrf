@@ -1218,6 +1218,7 @@ final class TrackedCaseRepairCoordinator {
                             canonicalContext: MovementContext,
                             canonicalCard: CaseCard?,
                             identityState: LogicalCaseState? = nil,
+                            preserveActiveProposedDeadlinesOnPartial: Bool = false,
                             saveChanges: Bool = true) throws -> [String: String] {
         do {
         let all = [survivor] + duplicates
@@ -1302,7 +1303,9 @@ final class TrackedCaseRepairCoordinator {
             // registration change. Fresh automatic calculations are derived
             // above from the accepted current card.
             for old in all.compactMap(\.snapshot).reversed() {
-                snapshot = MovementDerivation.preservingConfirmedDeadlines(snapshot, old: old)
+                snapshot = MovementDerivation.preservingConfirmedDeadlines(
+                    snapshot, old: old,
+                    preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
             }
             survivor.snapshot = snapshot
         }

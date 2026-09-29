@@ -1623,7 +1623,8 @@ final class RefreshCenter: ObservableObject {
         let oldMovement = rec.movement
         let oldSnapshot = rec.snapshot
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
-            MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot)
+            MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot,
+            preserveActiveProposedWhenMissing: !isComplete)
         let correctedBaseline = verifiedContext.flatMap { _ in
             Self.correctedMirrorBaseline(
                 oldSnapshot: oldSnapshot, oldMovement: oldMovement,
@@ -1692,6 +1693,7 @@ final class RefreshCenter: ObservableObject {
                     movementFetchedAt: isComplete ? attempt.provenance.observedAt
                                                   : rec.movementFetchedAt,
                     updatesMovementFetchedAt: isComplete,
+                    preserveActiveProposedDeadlinesOnPartial: !isComplete,
                     saveChanges: false)
                 let removed = before.subtracting(Set(try store.allForMutation().map(\.key)))
                 let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, reconciled.key) })

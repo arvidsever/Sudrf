@@ -2827,27 +2827,34 @@ final class AppRouter: ObservableObject {
         return DateUtil.daysBetween(deadline.date, today) <= deadlineGraceDays
     }
 
+    /// Сроки для «Обзора»: все активные статусы, но только первые 14 дней просрочки.
+    nonisolated static func isVisibleDeadline(_ deadline: TrackedDeadline,
+                                              today: Date) -> Bool {
+        deadline.lifecycle == .active
+            && DateUtil.daysBetween(deadline.date, today) <= deadlineGraceDays
+    }
+
     nonisolated static func pinnedDeadline(_ deadlines: [TrackedDeadline],
                                            today: Date) -> TrackedDeadline? {
         let pending = deadlines
-            .filter { $0.status == .proposed && isActionableDeadline($0, today: today) }
+            .filter { isVisibleDeadline($0, today: today) && $0.date >= today }
             .sorted { $0.date < $1.date }
-        return pending.first { $0.date >= today } ?? pending.first
+        return pending.first
     }
 
     nonisolated static func overdueDeadlines(_ deadlines: [TrackedDeadline],
                                              today: Date) -> [TrackedDeadline] {
         deadlines.filter {
-            $0.status == .proposed && $0.date < today && isActionableDeadline($0, today: today)
+            $0.date < today && isVisibleDeadline($0, today: today)
         }
         .sorted { $0.date < $1.date }
     }
 
-    nonisolated static func remainingPendingDeadlines(_ deadlines: [TrackedDeadline],
-                                                      pinned: TrackedDeadline?,
-                                                      today: Date) -> [TrackedDeadline] {
+    nonisolated static func remainingDeadlines(_ deadlines: [TrackedDeadline],
+                                               pinned: TrackedDeadline?,
+                                               today: Date) -> [TrackedDeadline] {
         deadlines.filter {
-            $0.status == .proposed && $0.id != pinned?.id && $0.date >= today
+            $0.id != pinned?.id && $0.date >= today && isVisibleDeadline($0, today: today)
         }
         .sorted { $0.date < $1.date }
     }

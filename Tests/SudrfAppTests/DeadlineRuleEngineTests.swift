@@ -499,6 +499,73 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(noResurrection.deadlines[0].lifecycle, .superseded)
     }
 
+    func testPartialRefreshKeepsActiveProposedDeadlineButCompleteRefreshSupersedesIt() {
+        let original = snapshot(qualifiedCivilMovement())
+        let noDeadline = snapshot(movement(sessions: [
+            CaseSession(date: "14.04.2026", event: "Регистрация дела"),
+        ]))
+
+        let partial = MovementDerivation.preservingConfirmedDeadlines(
+            noDeadline, old: original, today: today, preserveActiveProposedWhenMissing: true)
+        XCTAssertEqual(partial.deadlines.count, 1)
+        XCTAssertTrue(partial.deadlines[0].isActive)
+        XCTAssertEqual(partial.deadlines[0].status, .proposed)
+
+        let complete = MovementDerivation.preservingConfirmedDeadlines(
+            noDeadline, old: original, today: today)
+        XCTAssertEqual(complete.deadlines.count, 1)
+        XCTAssertEqual(complete.deadlines[0].lifecycle, .superseded)
+    }
+
+    func testStartupRepairsOnlyVerifiedOrphanedSupersededProposedDeadline() {
+        let fresh = snapshot(qualifiedCivilMovement())
+        var orphaned = fresh
+        orphaned.deadlines[0].lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+
+        let repaired = MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: orphaned, fresh: fresh, today: today)
+        XCTAssertEqual(repaired.deadlines.count, 1)
+        XCTAssertTrue(repaired.deadlines[0].isActive)
+
+        var expired = orphaned
+        expired.deadlines[0].lifecycleRaw = DeadlineLifecycle.expiredUnconfirmed.rawValue
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: expired, fresh: fresh, today: today).deadlines[0].lifecycle,
+            .expiredUnconfirmed)
+
+        var unsupported = fresh
+        unsupported.deadlineAssessments?[0].statusRaw = DeadlineAssessmentStatus.insufficientEvidence.rawValue
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: orphaned, fresh: unsupported, today: today).deadlines[0].lifecycle,
+            .superseded)
+
+        var oldNotApplicable = orphaned
+        oldNotApplicable.deadlineAssessments?[0].statusRaw =
+            DeadlineAssessmentStatus.notApplicable.rawValue
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: oldNotApplicable, fresh: fresh, today: today).deadlines[0].lifecycle,
+            .superseded)
+
+        let stale = snapshot(qualifiedCivilMovement(date: "01.01.2026"))
+        var staleOrphan = stale
+        staleOrphan.deadlines[0].lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: staleOrphan, fresh: stale, today: today).deadlines[0].lifecycle,
+            .superseded)
+
+        var replaced = orphaned
+        replaced.deadlines.append(snapshot(qualifiedCivilMovement(date: "14.04.2026")).deadlines[0])
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: replaced, fresh: fresh, today: today).deadlines[0].lifecycle,
+            .superseded)
+
+        var userControlled = orphaned
+        userControlled.deadlines[0].statusRaw = DeadlineStatus.overridden.rawValue
+        XCTAssertEqual(MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
+            old: userControlled, fresh: fresh, today: today).deadlines[0].lifecycle,
+            .superseded)
+    }
+
     func testRetentionAndLegacySnapshotDecodeKeepUserDate() throws {
         var fresh = snapshot(qualifiedCivilMovement())
         fresh.deadlines[0].dateRef = DateUtil.addDays(today, -15).timeIntervalSinceReferenceDate

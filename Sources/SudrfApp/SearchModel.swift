@@ -1129,8 +1129,9 @@ final class SearchModel: ObservableObject {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             movement = resolved
             expandedComplaints = []
-            selectedActID = resolved.acts.first(where: { $0.instanceLevel == .first })?.id
-                         ?? resolved.acts.first?.id
+            let presented = CourtActPresentation.rows(in: resolved)
+            selectedActID = presented.first(where: { $0.instanceLevel == .first })?.id
+                         ?? presented.first?.id
             MovementMemoryCache.shared.put(cacheKey, resolved)
             return
         }
@@ -1145,8 +1146,9 @@ final class SearchModel: ObservableObject {
             ) else { return }
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             movement = resolved
-            selectedActID = resolved.acts.first(where: { $0.instanceLevel == .first })?.id
-                         ?? resolved.acts.first?.id
+            let presented = CourtActPresentation.rows(in: resolved)
+            selectedActID = presented.first(where: { $0.instanceLevel == .first })?.id
+                         ?? presented.first?.id
             MovementMemoryCache.shared.put(cacheKey, resolved)
         } catch let e as SudrfError {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
@@ -1241,7 +1243,10 @@ final class SearchModel: ObservableObject {
         movementLoadGeneration == generation && selectedResultID == resultID
     }
 
-    func selectAct(_ id: String) { selectedActID = id }
+    func selectAct(_ id: String) {
+        selectedActID = movement.flatMap { CourtActPresentation.row(for: id, in: $0)?.id }
+            ?? id
+    }
 
     func toggleComplaint(_ id: String) {
         if expandedComplaints.contains(id) { expandedComplaints.remove(id) }

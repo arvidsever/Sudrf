@@ -656,7 +656,9 @@ private struct ActSwitcherPane: View {
     @ObservedObject var model: SearchModel
     let openWindow: OpenWindowAction
 
-    private var acts: [CaseAct] { model.movement?.acts ?? [] }
+    private var acts: [CourtActDisplay] {
+        model.movement.map(CourtActPresentation.rows(in:)) ?? []
+    }
     private var body0: String? { model.selectedActText }
 
     var body: some View {
@@ -689,13 +691,12 @@ private struct ActSwitcherPane: View {
                     }
                 }
                 ForEach(acts) { a in
-                    CourtActListRow(act: a, selected: a.id == model.selectedActID) {
+                    CourtActListRow(display: a, selected: model.selectedActID.map(a.contains) ?? false) {
                         model.selectAct(a.id)
                     }
                 }
-                if let selected = acts.first(where: { $0.id == model.selectedActID }),
-                   let rawURL = selected.fileProvenance?.sourceURL,
-                   let url = PublishedActURLPolicy.safeMosGorSudURL(rawURL) {
+                if let selected = acts.first(where: { model.selectedActID.map($0.contains) ?? false }),
+                   let url = selected.originalURL {
                     Link("Открыть оригинал на сайте суда", destination: url)
                         .font(.caption)
                 }

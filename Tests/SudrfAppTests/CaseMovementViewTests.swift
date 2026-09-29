@@ -1,8 +1,52 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import SudrfApp
 import SudrfKit
 
 final class CaseMovementViewTests: XCTestCase {
+    @MainActor
+    func testTwoCassationRoundsRenderInIsolatedView() throws {
+        let court = "Третий кассационный суд общей юрисдикции"
+        let base = CaseInstance(level: .first, court: "Городской суд",
+            caseNumber: "2-402/2025", judge: nil, domain: "district.sudrf.ru",
+            foundByUID: false, result: nil,
+            sessions: [CaseSession(date: "06.06.2025", event: "Вынесено решение")])
+        let older = CaseInstance(level: .cassation, court: court,
+            caseNumber: "88-20682/2025", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "01.12.2025", event: "Судебное заседание")])
+        let newer = CaseInstance(level: .cassation, court: court,
+            caseNumber: "88-14300/2026", judge: nil, domain: "3kas.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "30.09.2026", event: "Судебное заседание")])
+        let movement = CaseMovement(uid: "11RS0001-01-2024-014706-13",
+            caseNumber: base.caseNumber, inForce: true,
+            instances: [base, older, newer], complaints: [:], acts: [])
+        XCTAssertEqual(CaseMovementView.activeInstances(in: movement)
+            .filter { $0.level == .cassation }.count, 2)
+
+        let view = VStack(spacing: 10) {
+            ForEach(CaseMovementView.activeInstances(in: movement)) { instance in
+                InstanceBlock(instance: instance)
+            }
+        }
+            .padding(16)
+            .frame(width: 1000)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.nsImage)
+        let png = try XCTUnwrap(image.tiffRepresentation
+            .flatMap(NSBitmapImageRep.init(data:))?
+            .representation(using: .png, properties: [:]))
+        XCTAssertFalse(png.isEmpty)
+        if let output = ProcessInfo.processInfo.environment["SUDRF_MOVEMENT_VISUAL_OUTPUT"] {
+            try png.write(to: URL(fileURLWithPath: output))
+        }
+    }
+
     @MainActor
     func testUndatedPublishedFactHasExplicitDateLabel() {
         XCTAssertEqual(CaseMovementView.sessionDateLabel(""), "Дата не опубликована")

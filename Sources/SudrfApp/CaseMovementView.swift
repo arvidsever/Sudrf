@@ -692,7 +692,7 @@ private struct PartiesCard: View {
 
 // MARK: - Блок инстанции
 
-private struct InstanceBlock: View {
+struct InstanceBlock: View {
     let instance: CaseInstance
     var classification: MaterialProductionContext.Classification? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }

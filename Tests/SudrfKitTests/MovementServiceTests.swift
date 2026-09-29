@@ -364,6 +364,53 @@ final class MovementServiceTests: XCTestCase {
         })
     }
 
+    func testUIDSearchKeepsBothCassationRoundsAndCachedRoundOnCardFailure() async throws {
+        let court = Court(domain: "3kas.sudrf.ru", title: "Третий кассационный суд",
+                          level: .cassation)
+        let rows = try ResultsParser.parseComplete(
+            html: fixture("ksoyu_two_cassation_rounds"), court: court)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy {
+            $0.cardURL?.absoluteString.contains("delo_id=2800001") == true
+        })
+
+        let first = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                             caseNumber: base().caseNumber)
+        let older = CaseCard(rawText: "", actText: "ОПРЕДЕЛЕНИЕ\nПервый круг.",
+                             uid: Self.uid, caseNumber: "88-20682/2025")
+        let newer = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                             caseNumber: "88-14300/2026")
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let fullClient = MockClient(firstCardID: "30636693", firstCard: first,
+                                    higherResults: rows,
+                                    higherCards: ["1001": older, "2002": newer])
+        let fullService = MovementService(client: fullClient,
+                                          higherCourtDomains: [court.domain])
+        let full = try await fullService.movement(
+            for: base(), court: districtCourt(), cartoteka: cart)
+        let rounds = full.instances.filter { $0.level == .cassation }
+        XCTAssertEqual(rounds.map(\.caseNumber), ["88-20682/2025", "88-14300/2026"])
+        XCTAssertTrue(rounds.allSatisfy {
+            $0.sourceURL?.absoluteString.contains("delo_id=2800001") == true
+        })
+        let repeated = try await fullService.movement(
+            for: base(), court: districtCourt(), cartoteka: cart)
+        XCTAssertEqual(MovementCachePolicy.merge(fresh: repeated, cached: full)
+            .instances.filter { $0.level == .cassation }.count, 2)
+
+        let partialClient = MockClient(firstCardID: "30636693", firstCard: first,
+                                       higherResults: rows, higherCards: ["1001": older])
+        let partial = try await MovementService(client: partialClient,
+                                                higherCourtDomains: [court.domain])
+            .movement(for: base(), court: districtCourt(), cartoteka: cart)
+        XCTAssertEqual(partial.instances.filter { $0.level == .cassation }
+            .map(\.caseNumber), ["88-20682/2025"])
+        XCTAssertEqual(partial.incompleteHigherCourtDomains, [court.domain])
+        let merged = MovementCachePolicy.merge(fresh: partial, cached: full)
+        XCTAssertEqual(Set(merged.instances.filter { $0.level == .cassation }
+            .map(\.caseNumber)), ["88-20682/2025", "88-14300/2026"])
+    }
+
     /// Два круга апелляции (исходный + новый после возврата из кассации) — оба видны,
     /// в хронологическом порядке, с РАЗНЫМИ actID (акты не схлопываются в один).
     func testBothAppealRoundsShown() async throws {

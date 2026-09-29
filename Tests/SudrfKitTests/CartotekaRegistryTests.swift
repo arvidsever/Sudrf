@@ -71,7 +71,7 @@ final class CartotekaRegistryTests: XCTestCase {
         let u3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "u3"))
         XCTAssertEqual([u3.deloID, u3.new, u3.deloTable], ["4", "2450001", "u33_case"])
         let g3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
-        XCTAssertEqual([g3.deloID, g3.new, g3.deloTable], ["5", "2800001", "g33_case"])
+        XCTAssertEqual([g3.deloID, g3.new, g3.deloTable], ["2800001", "2800001", "g33_case"])
         let p3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "p3"))
         XCTAssertEqual([p3.deloID, p3.deloTable], ["43", "p33_case"])
         let adm3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "adm3"))

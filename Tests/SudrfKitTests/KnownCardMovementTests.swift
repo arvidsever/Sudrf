@@ -257,7 +257,7 @@ final class KnownCardMovementTests: XCTestCase {
     func testSearchAndExactKnownCardWithSameLocatorAreNotDuplicated() async throws {
         let url = try XCTUnwrap(URL(string:
             "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
-            + "&case_id=24352048&case_uid=guid-kas&delo_id=5&new=2800001"))
+            + "&case_id=24352048&case_uid=guid-kas&delo_id=2800001&new=2800001"))
         let row = CaseSearchResult(caseNumber: "8Г-10837/2026", caseID: "24352048",
                                    caseUID: "guid-kas")
         let mock = ScriptedClient(

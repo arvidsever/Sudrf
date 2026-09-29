@@ -1058,8 +1058,20 @@ public actor MovementService: MovementProviding {
                             markHigherCourtIncomplete(domain)
                             continue
                         }
-                        let higherCard = try await fetchCard(row: r, court: higherCourt,
+                        let higherCard: CaseCard
+                        do {
+                            higherCard = try await fetchCard(row: r, court: higherCourt,
                                                              cartoteka: higherCart)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                            throw error
+                        } catch {
+                            if Task.isCancelled { throw CancellationError() }
+                            targetIncomplete = true
+                            markHigherCourtIncomplete(domain)
+                            continue
+                        }
                         if isSubjectFirstAppealRoute {
                             guard let publishedNumber = higherCard.caseNumber,
                                   Self.normalizedJudicialUID(higherCard.uid)

@@ -22,8 +22,6 @@
 | [#128](https://github.com/arvidsever/Sudrf/issues/128) | Не создавать срок апелляции без доказанного итогового акта; активное дело не скрывать. |
 | [#125](https://github.com/arvidsever/Sudrf/issues/125) | Различать решение и определение и применять правильную политику счёта частной жалобы. |
 | [#129](https://github.com/arvidsever/Sudrf/issues/129) | Проверить календарные месяцы и годы во всех сроках; исключить подмену 30/90 днями. |
-| [#262](https://github.com/arvidsever/Sudrf/issues/262) | Сохранить semantic baseline при partial refresh до подтверждённого diff; затем разблокировать #179. |
-| [#264](https://github.com/arvidsever/Sudrf/issues/264) | Проверить upgrade реальных V1/V2 баз до любой новой миграции схемы; gate для #333. |
 | [#372](https://github.com/arvidsever/Sudrf/issues/372) | Пересчитывать и показывать предупреждение о сроке по актуальному процессуальному кругу, сохраняя действующий срок из #371. |
 | [#339](https://github.com/arvidsever/Sudrf/issues/339) | Завершить живую приёмку последовательных CAPTCHA при добавлении дела; код уже в 0.59.1. |
 | [#343](https://github.com/arvidsever/Sudrf/issues/343) | По проверенным карточкам восстановить два круга апелляции и кассации `2-4739/2024`. |
@@ -37,6 +35,7 @@
 
 | Issue | Следующий результат |
 | --- | --- |
+| [#262](https://github.com/arvidsever/Sudrf/issues/262) | Сохранить semantic baseline при partial refresh до подтверждённого diff; затем разблокировать #179. |
 | [#76](https://github.com/arvidsever/Sudrf/issues/76) | Доделать кассационный маршрут дел суда субъекта; апелляционная часть уже выпущена. |
 | [#156](https://github.com/arvidsever/Sudrf/issues/156) | Использовать `r_juid` как проверяемое доказательство передачи дела, без auto-merge по одному ответу реестра. |
 | [#104](https://github.com/arvidsever/Sudrf/issues/104) | Обнаруживать и точно связывать новые производства ВС РФ; отделять их от регрессий уже найденных #340/#345. |
@@ -75,6 +74,7 @@
 | [#361](https://github.com/arvidsever/Sudrf/issues/361) | Заполнять Title экспортируемого PDF реквизитами акта. |
 | [#366](https://github.com/arvidsever/Sudrf/issues/366) | Исправить обрезание «Экспериментальных» и верхний отступ настроек. |
 | [#324](https://github.com/arvidsever/Sudrf/issues/324) | Мультивыбор фильтров «Моих дел», включая «всё, кроме завершённых». |
+| [#264](https://github.com/arvidsever/Sudrf/issues/264) | Проверить upgrade реальных V1/V2 баз до любой новой миграции схемы; gate для #333. |
 | [#333](https://github.com/arvidsever/Sudrf/issues/333) | После gate #264 добавить необязательное короткое название дела для календаря. |
 | [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. |
 | [#186](https://github.com/arvidsever/Sudrf/issues/186) | Проверить Spotlight identity Debug/Developer ID при общем bundle ID. |

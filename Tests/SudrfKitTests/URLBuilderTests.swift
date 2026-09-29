@@ -98,6 +98,8 @@ final class URLBuilderTests: XCTestCase {
         let s = try SudrfURLBuilder(court: ksoyu, srvNum: 2)
             .searchURL(cartoteka: g3, field: .caseNumber, value: "88-100/2026").absoluteString
         XCTAssertTrue(s.contains("&srv_num=2"))
+        XCTAssertTrue(s.contains("&delo_id=2800001"))
+        XCTAssertTrue(s.contains("&new=2800001"))
         XCTAssertTrue(s.contains("&delo_table=g33_case"))
     }
 

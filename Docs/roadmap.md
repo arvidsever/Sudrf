@@ -4,8 +4,8 @@
 > полевые наблюдения — в [истории roadmap](roadmap-history.md); актуальные критерии
 > приёмки каждой задачи — в GitHub issue.
 
-Текущий выпуск: **0.59.5 (215)**, [#371](https://github.com/arvidsever/Sudrf/issues/371)
-завершена через [PR #380](https://github.com/arvidsever/Sudrf/pull/380).
+Текущий выпуск: **0.59.6 (216)**, восстановлены оба круга гражданской кассации
+КСОЮ через [PR #381](https://github.com/arvidsever/Sudrf/pull/381).
 Незавершённая живая приёмка [#339](https://github.com/arvidsever/Sudrf/issues/339)
 остаётся в очереди. Результаты и ограничения прошлых выпусков сохранены в
 [истории](roadmap-history.md) и [changelog](../changelog/).

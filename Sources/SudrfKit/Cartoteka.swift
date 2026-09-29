@@ -443,9 +443,9 @@ public enum CartotekaRegistry {
 
     // MARK: - Кассационные суды общей юрисдикции (КСОЮ, с 01.10.2019)
 
-    /// «Первая» (сплошная/выборочная) кассация. Пары `delo_id`/`new` — из
-    /// универсального переключателя видов производства (фикстура КСОЮ):
-    /// уголовные 4&new=2450001, гражданские 5&new=2800001, КАС 43.
+    /// «Первая» (сплошная/выборочная) кассация. Для гражданских дел нужен
+    /// `delo_id=2800001`: короткий `5` находит строки, но даёт нерабочие ссылки
+    /// на карточки. Уголовные — `4&new=2450001`, КАС — `43`.
     /// Индексы КСОЮ: «7У-/8Г-/8а-» — изучение жалобы судьёй,
     /// «77-/88-/88а-» — кассационное производство в заседании.
     public static let cassationSOYu: [Cartoteka] = [
@@ -457,7 +457,7 @@ public enum CartotekaRegistry {
                   nameField: "U33_DEFENDANT__NAMESS"),
         Cartoteka(id: "g3", title: "Гражданское, кассация (КСОЮ)",
                   prefixes: ["88", "8г"],
-                  deloID: "5", new: "2800001", deloTable: "g33_case",
+                  deloID: "2800001", new: "2800001", deloTable: "g33_case",
                   caseNumberField: "g33_case__CASE_NUMBERSS",
                   uidField: "g33_case__JUDICIAL_UIDSS",
                   nameField: "G33_PARTS__NAMESS"),

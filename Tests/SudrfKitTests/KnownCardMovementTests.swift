@@ -257,7 +257,7 @@ final class KnownCardMovementTests: XCTestCase {
     func testSearchAndExactKnownCardWithSameLocatorAreNotDuplicated() async throws {
         let url = try XCTUnwrap(URL(string:
             "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
-            + "&case_id=24352048&case_uid=guid-kas&delo_id=5&new=2800001"))
+            + "&case_id=24352048&case_uid=guid-kas&delo_id=2800001&new=2800001"))
         let row = CaseSearchResult(caseNumber: "8Г-10837/2026", caseID: "24352048",
                                    caseUID: "guid-kas")
         let mock = ScriptedClient(
@@ -274,6 +274,29 @@ final class KnownCardMovementTests: XCTestCase {
 
         XCTAssertEqual(movement.instances.filter { $0.level == .cassation }.count, 1)
         XCTAssertTrue(directFetchCalls.isEmpty)
+    }
+
+    func testTransientFailureOfOnlyUIDSearchCardKeepsRetryStub() async throws {
+        let url = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=card&case_uid=guid&delo_id=2800001&new=2800001"))
+        let row = CaseSearchResult(caseNumber: "88-14300/2026", caseID: "card",
+                                   caseUID: "guid", cardURL: url)
+        let mock = ScriptedClient(
+            cards: ["30636693": firstCard()],
+            searchResults: ["3kas.sudrf.ru/g3": [row]],
+            directErrors: [url.absoluteString: .transientNetworkError(
+                domain: "3kas.sudrf.ru", code: .timedOut, attempt: 3)])
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await MovementService(
+            client: mock, higherCourtDomains: ["3kas.sudrf.ru"])
+            .movement(for: base(), court: districtCourt(), cartoteka: cart)
+
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["3kas.sudrf.ru"])
+        XCTAssertTrue(movement.instances.contains {
+            $0.level == .cassation && $0.transientError == true
+        })
     }
 
     func testDifferentRoundsWithDifferentNativeLocatorsAreBothKept() async throws {
@@ -581,7 +604,8 @@ private actor ScriptedClient: CaseProviding {
     }
 
     func fetchCard(url: URL) async throws -> CaseCard {
-        throw SudrfError.http(status: 404)   // в этих сценариях путь по ссылке не используется
+        if let error = directErrors[url.absoluteString] { throw error }
+        throw SudrfError.http(status: 404)
     }
 
     func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {

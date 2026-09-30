@@ -49,10 +49,20 @@ public struct PublishedActProvenance: Sendable, Codable, Equatable {
 public struct PublishedActFile: Sendable, Equatable {
     public let text: String
     public let provenance: PublishedActProvenance
+    /// Original verified bytes. This is empty for compatibility values created
+    /// by older callers that only supplied extracted text and provenance.
+    public let data: Data
 
     public init(text: String, provenance: PublishedActProvenance) {
         self.text = text
         self.provenance = provenance
+        self.data = Data()
+    }
+
+    public init(text: String, provenance: PublishedActProvenance, data: Data) {
+        self.text = text
+        self.provenance = provenance
+        self.data = data
     }
 }
 
@@ -70,6 +80,7 @@ public enum PublishedActFileError: Error, LocalizedError, Sendable, Equatable {
     case tooManyPDFPages(limit: Int)
     case extractedTextTooLarge(limit: Int)
     case noExtractableText
+    case productionNumberMismatch
     case extractionFailed
 
     public var errorDescription: String? {
@@ -94,6 +105,8 @@ public enum PublishedActFileError: Error, LocalizedError, Sendable, Equatable {
             "Извлечённый текст судебного акта слишком большой."
         case .noExtractableText:
             "В опубликованном файле нет пригодного для поиска текста."
+        case .productionNumberMismatch:
+            "Опубликованный PDF относится к другому производству Верховного Суда РФ."
         case .extractionFailed:
             "Не удалось извлечь текст из опубликованного файла."
         }
@@ -131,7 +144,8 @@ actor ActFileLoader {
     }
 
     func extract(data: Data, sourceURL: URL, finalURL: URL,
-                 contentType: String?) throws -> PublishedActFile {
+                 contentType: String?, allowEmptyPDFText: Bool = false,
+                 expectedProductionNumber: String? = nil) throws -> PublishedActFile {
         try Task.checkCancellation()
         guard data.count <= limits.maxDownloadBytes else {
             throw PublishedActFileError.downloadTooLarge(limit: limits.maxDownloadBytes)
@@ -158,7 +172,12 @@ actor ActFileLoader {
 
         let text = ActParagraphizer.normalizedText(Self.removingUnsafeControlCharacters(extracted))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw PublishedActFileError.noExtractableText }
+        if let expectedProductionNumber {
+            try Self.validateProductionNumber(expectedProductionNumber, in: text)
+        }
+        guard !text.isEmpty || (format == .pdf && allowEmptyPDFText) else {
+            throw PublishedActFileError.noExtractableText
+        }
         guard text.lengthOfBytes(using: .utf8) <= limits.maxExtractedTextBytes else {
             throw PublishedActFileError.extractedTextTooLarge(limit: limits.maxExtractedTextBytes)
         }
@@ -168,7 +187,7 @@ actor ActFileLoader {
             sourceURL: Self.sanitizedURL(sourceURL), finalURL: Self.sanitizedURL(finalURL),
             format: format, contentType: normalizedType, contentHash: hash,
             byteCount: data.count, fetchedAt: now(), extractorVersion: Self.extractorVersion)
-        return PublishedActFile(text: text, provenance: provenance)
+        return PublishedActFile(text: text, provenance: provenance, data: data)
     }
 
     private func classify(_ data: Data) throws -> PublishedActFormat {
@@ -316,6 +335,30 @@ actor ActFileLoader {
             throw PublishedActFileError.incompatibleContentType
         }
     }
+
+    private static func validateProductionNumber(_ expected: String, in text: String) throws {
+        let header = String(text.prefix(1_024))
+        // Supreme Court production identifiers have a court-type segment
+        // (for example 3-КГ23-1-К3). UID formats such as 11RS... are not
+        // candidates, even when they appear earlier in the document header.
+        let pattern = #"(?iu)\b\d{1,3}[-‑–—][A-ZА-ЯЁ]{1,6}\d{2,4}[-‑–—]\d+[-‑–—][A-ZА-ЯЁ0-9]{1,4}\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        let range = NSRange(header.startIndex..<header.endIndex, in: header)
+        let first = regex.matches(in: header, range: range).compactMap { match -> String? in
+            guard let swiftRange = Range(match.range, in: header) else { return nil }
+            return Self.normalizedProductionNumber(String(header[swiftRange]))
+        }.first
+        guard let first else { return }
+        let normalizedExpected = Self.normalizedProductionNumber(expected)
+        guard !normalizedExpected.isEmpty else { return }
+        guard first == normalizedExpected else {
+            throw PublishedActFileError.productionNumberMismatch
+        }
+    }
+
+    private static func normalizedProductionNumber(_ value: String) -> String {
+        value.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
 }
 
 /// Narrow policy shared by the file transport and provenance loader. MGS links
@@ -323,6 +366,7 @@ actor ActFileLoader {
 /// hidden new source.
 public enum PublishedActURLPolicy {
     public static let allowedMosGorSudHosts: Set<String> = ["mos-gorsud.ru", "www.mos-gorsud.ru"]
+    public static let allowedVSRFHosts: Set<String> = ["vsrf.ru", "www.vsrf.ru"]
 
     public static func isAllowedMosGorSud(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
@@ -334,7 +378,36 @@ public enum PublishedActURLPolicy {
 
     public static func safeMosGorSudURL(_ url: URL) -> URL? {
         guard isAllowedMosGorSud(url) else { return nil }
+        return safePublishedURL(url)
+    }
+
+    /// Validates and strips credentials, query, and fragment from published
+    /// court file URLs from either supported portal.
+    public static func safePublishedURL(_ url: URL) -> URL? {
+        if isAllowedMosGorSud(url) { return ActFileLoader.sanitizedURL(url) }
+        guard isAllowedVSRFPublishedAct(url) else { return nil }
         return ActFileLoader.sanitizedURL(url)
+    }
+
+    public static func isAllowedVSRFHostURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
+              url.user == nil, url.password == nil, url.port == nil || url.port == 443 else {
+            return false
+        }
+        return allowedVSRFHosts.contains(host)
+    }
+
+    public static func isAllowedVSRFPublishedAct(_ url: URL) -> Bool {
+        guard isAllowedVSRFHostURL(url) else { return false }
+        let path = url.path.lowercased()
+        let prefix = "/lk/practice/stor_pdf/"
+        if path.hasPrefix(prefix) {
+            let components = path.dropFirst(prefix.count).split(separator: "/")
+            guard components.count == 1 else { return false }
+            let id = components[0].hasSuffix(".pdf") ? components[0].dropLast(4) : components[0][...]
+            return !id.isEmpty && id.utf8.allSatisfy { (48...57).contains($0) }
+        }
+        return path.hasSuffix(".pdf")
     }
 }
 

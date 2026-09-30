@@ -174,6 +174,16 @@ final class VSRFMovementTests: XCTestCase {
                        "Вынесено решение по существу. Определение. Жалоба (представление) оставлена без удовлетворения")
         XCTAssertEqual(instance.sessions[2].result,
                        "Дата размещения информации о времени и месте заседания 16.09.2025 16:24")
+        let act = try XCTUnwrap(outcome.acts.first)
+        XCTAssertEqual(outcome.acts.count, 1)
+        XCTAssertEqual(act.id, "act_vsrf_12-36321243_/lk/practice/stor_pdf/34000001")
+        XCTAssertEqual(act.title, "Кассационное определение")
+        XCTAssertEqual(act.date, "15.10.2025")
+        XCTAssertEqual(act.productionNumber, "3-ИКАД25-3-А2")
+        XCTAssertEqual(act.sourceFileURL?.absoluteString,
+                       "https://www.vsrf.ru/lk/practice/stor_pdf/34000001")
+        XCTAssertEqual(instance.linkedActIDs, [act.id])
+        XCTAssertEqual(instance.linkedActURLs, [act.sourceFileURL!])
 
         let requests = VSRFMovementURLProtocol.requests()
         XCTAssertEqual(requests.count, 3, "UID search, ordinary search, and one verified card fetch")
@@ -189,6 +199,46 @@ final class VSRFMovementTests: XCTestCase {
                 $0.name == "oldCaseNumber1" && $0.value == "3а-85/2025"
             } == true
         })
+    }
+
+    func testPublishedComplaintPDFRemainsLinkedWhenComplaintTimelineIsAttachedToCase() async throws {
+        let first = VSRFFirstInstance(court: "Модельный городской суд",
+                                      caseNumber: "3а-85/2025")
+        let caseRow = VSRFProduction(cardID: "12-201", cardSection: .claims,
+                                     kind: .caseFile, number: "3-ИКАД25-3-А2",
+                                     incomingDate: "12.01.2025",
+                                     uid: "11OS0000-01-2025-000169-68",
+                                     firstInstance: first,
+                                     events: [VSRFEvent(date: "12.01.2025", text: "Передано судье")])
+        let complaintRow = VSRFProduction(cardID: "21-202", cardSection: .claims,
+                                          kind: .complaint, number: "3-КФ25-7-К3",
+                                          incomingDate: "01.01.2025", firstInstance: first,
+                                          events: [VSRFEvent(date: "10.01.2025", text: "Истребовано дело")])
+        let publishedURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/909090")!
+        let caseDetail = caseRow
+        var complaintDetail = complaintRow
+        complaintDetail.publishedActs = [VSRFPublishedAct(url: publishedURL,
+                                                          date: "15.01.2025",
+                                                          title: "Определение")]
+        let mock = MockVSRF(
+            uidResults: VSRFSearchResults(total: 1, results: [caseRow]),
+            numberResults: VSRFSearchResults(total: 2, results: [caseRow, complaintRow]),
+            cardsByID: ["12-201": VSRFCard(productions: [caseDetail]),
+                        "21-202": VSRFCard(productions: [complaintDetail])])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: caseRow.uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+
+        XCTAssertEqual(outcome.instances.count, 1, "истребованная жалоба остаётся в общей инстанции")
+        let instance = try XCTUnwrap(outcome.instances.first)
+        let act = try XCTUnwrap(outcome.acts.first)
+        XCTAssertEqual(outcome.acts.count, 1)
+        XCTAssertEqual(instance.linkedActIDs, [act.id])
+        XCTAssertEqual(instance.linkedActURLs, [publishedURL])
+        XCTAssertEqual(act.productionNumber, "3-КФ25-7-К3",
+                       "реквизиты акта принадлежат жалобе, не производству дела")
+        XCTAssertEqual(act.sourceFileURL, publishedURL)
     }
 
     func testFailedComplaintCardDoesNotAttachUnverifiedIntakeToVerifiedCase() async throws {

@@ -195,13 +195,22 @@ public struct CaseAct: Sendable, Equatable, Identifiable, Codable {
     public var instanceLevel: CaseInstance.Level
     /// Проверенная provenance файлового акта. nil у inline-текстов и старых кэшей.
     public var fileProvenance: PublishedActProvenance?
+    /// Ссылка на файл, известная из проверенной карточки, до его загрузки.
+    /// Опциональное поле сохраняет совместимость с существующим JSON-кэшем.
+    public var sourceFileURL: URL?
+    /// Номер производства, к которому относится файл (для проверки PDF-заголовка).
+    public var productionNumber: String?
 
     public init(id: String, title: String, date: String, courtShort: String,
                 instanceLevel: CaseInstance.Level,
-                fileProvenance: PublishedActProvenance? = nil) {
+                fileProvenance: PublishedActProvenance? = nil,
+                sourceFileURL: URL? = nil,
+                productionNumber: String? = nil) {
         self.id = id; self.title = title; self.date = date
         self.courtShort = courtShort; self.instanceLevel = instanceLevel
         self.fileProvenance = fileProvenance
+        self.sourceFileURL = sourceFileURL
+        self.productionNumber = productionNumber
     }
 }
 
@@ -1344,6 +1353,7 @@ public actor MovementService: MovementProviding {
                                                              firstInstanceCaseNumber: base.caseNumber,
                                                              partySurnames: surnames)
                 instances.append(contentsOf: vs.instances)
+                acts.append(contentsOf: vs.acts)
                 if vs.incomplete { markHigherCourtIncomplete("vsrf.ru") }
                 if vs.instances.isEmpty, !vs.incomplete { markHonestZero("vsrf.ru") }
             }
@@ -2188,7 +2198,7 @@ extension MovementService {
                                      firstInstanceCourt: String,
                                      firstInstanceCaseNumber: String,
                                      partySurnames: Set<String>) async
-        throws -> (instances: [CaseInstance], incomplete: Bool) {
+        throws -> (instances: [CaseInstance], acts: [CaseAct], incomplete: Bool) {
         var prods: [VSRFProduction] = []
         var incomplete = false
 
@@ -2272,7 +2282,9 @@ extension MovementService {
             }
         }
         func mapped(_ production: VSRFProduction, extraEvents: [VSRFEvent] = []) -> CaseInstance {
-            var instance = mapProduction(production, extraEvents: extraEvents)
+            var verified = production
+            if unavailable.contains(production.id) { verified.publishedActs = [] }
+            var instance = mapProduction(verified, extraEvents: extraEvents)
             if unavailable.contains(production.id) {
                 instance.note = "Движение временно недоступно"
                 if !extraEvents.isEmpty {
@@ -2295,6 +2307,7 @@ extension MovementService {
             // следующему производству дела. Раньше все такие события приклеивались
             // ко всем раундам ВС РФ и смешивали их хронологию.
             var intakeByCase = Array(repeating: [VSRFEvent](), count: cases.count)
+            var complaintActsByCase = Array(repeating: [CaseAct](), count: cases.count)
             var attachedComplaints = Set<Int>()
             var incompleteIntake = Set<Int>()
             for (complaintIndex, complaint) in complaints.enumerated() where complaint.caseRequested {
@@ -2315,11 +2328,28 @@ extension MovementService {
                     incompleteIntake.insert(caseIndex)
                 } else {
                     intakeByCase[caseIndex].append(contentsOf: complaint.events)
+                    complaintActsByCase[caseIndex].append(contentsOf: mapPublishedActs(complaint))
                 }
                 attachedComplaints.insert(complaintIndex)
             }
             for (index, d) in cases.enumerated() {
                 var instance = mapped(d, extraEvents: intakeByCase[index])
+                let complaintActs = complaintActsByCase[index]
+                if !complaintActs.isEmpty {
+                    var linkedIDs = instance.linkedActIDs
+                    for act in complaintActs where !linkedIDs.contains(act.id) {
+                        linkedIDs.append(act.id)
+                    }
+                    instance.actIDs = linkedIDs.isEmpty ? nil : linkedIDs
+                    if instance.actID == nil { instance.actID = complaintActs.first?.id }
+                    var linkedURLs = instance.linkedActURLs
+                    for act in complaintActs {
+                        guard let url = act.sourceFileURL, !linkedURLs.contains(url) else { continue }
+                        linkedURLs.append(url)
+                    }
+                    instance.actURLs = linkedURLs.isEmpty ? nil : linkedURLs
+                    if instance.actURL == nil { instance.actURL = complaintActs.first?.sourceFileURL }
+                }
                 if incompleteIntake.contains(index), !unavailable.contains(d.id) {
                     instance.note = "Движение жалобы временно недоступно"
                 }
@@ -2333,7 +2363,8 @@ extension MovementService {
         } else {
             for c in complaints { out.append(mapped(c)) }
         }
-        return (out, incomplete)
+        let acts = hydrated.filter { !unavailable.contains($0.id) }.flatMap(Self.mapPublishedActs)
+        return (out, acts, incomplete)
     }
 
     static func sameVSRFCard(_ lhs: URL?, _ rhs: URL?) -> Bool {
@@ -2374,6 +2405,9 @@ extension MovementService {
         else if p.kind == .complaint && p.uid == nil && !p.caseRequested { note = "жалоба отклонена" }
         else { note = nil }
 
+        let publishedActs = mapPublishedActs(p)
+        let publishedURLs = p.publishedActs.map(\.url)
+
         return CaseInstance(
             level: .vsCassation,
             court: "Верховный Суд РФ",
@@ -2383,9 +2417,29 @@ extension MovementService {
             foundByUID: p.uid != nil,
             result: disposition,
             sessions: sessions,
-            actID: nil,
+            actID: publishedActs.first?.id,
+            actIDs: publishedActs.isEmpty ? nil : publishedActs.map(\.id),
             note: note,
+            actURL: publishedURLs.first,
+            actURLs: publishedURLs.isEmpty ? nil : publishedURLs,
             sourceURL: p.cardURL)
+    }
+
+    private static func mapPublishedActs(_ production: VSRFProduction) -> [CaseAct] {
+        guard let cardID = production.cardID, let number = production.number else { return [] }
+        return production.publishedActs.map { published in
+            let stableID = "act_vsrf_\(cardID)_\(published.url.path)"
+            let sourceTitle = published.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title: String
+            switch sourceTitle.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " .:;")) {
+            case "определение": title = "Кассационное определение"
+            case "постановление": title = "Кассационное постановление"
+            default: title = sourceTitle
+            }
+            return CaseAct(id: stableID, title: title, date: published.date,
+                           courtShort: "ВС РФ", instanceLevel: .vsCassation,
+                           sourceFileURL: published.url, productionNumber: number)
+        }
     }
 
     /// Минимальное движение без сетевых запросов — когда у записи нет ID карточки.

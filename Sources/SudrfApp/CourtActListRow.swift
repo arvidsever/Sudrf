@@ -37,7 +37,7 @@ struct CourtActListRow: View {
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(date.isEmpty ? stage : "\(date) · \(stage)")
+                    Text(date.isEmpty ? stage : "\(DateUtil.parse(date).map(DateUtil.fullDate) ?? date) · \(stage)")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

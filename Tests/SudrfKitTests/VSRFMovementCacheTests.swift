@@ -108,6 +108,96 @@ final class VSRFMovementCacheTests: XCTestCase {
         })
     }
 
+    func testPartialRefreshPreservesPublishedActsBeforeAndAfterFileLoad() throws {
+        let cardURL = currentURL
+        let firstFile = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/2496438")!
+        let secondFile = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/2496439")!
+        let loadedID = "act_vsrf_12-36321243_/lk/practice/stor_pdf/2496438"
+        let knownID = "act_vsrf_12-36321243_/lk/practice/stor_pdf/2496439"
+        let provenance = PublishedActProvenance(
+            sourceURL: firstFile, finalURL: firstFile, format: .pdf,
+            contentType: "application/pdf", contentHash: "sha256",
+            byteCount: 42, fetchedAt: Date(timeIntervalSince1970: 10), extractorVersion: 1)
+        let cachedInstance = CaseInstance(
+            level: .vsCassation, court: "Верховный Суд РФ", caseNumber: "3-ИКАД25-3-А2",
+            judge: nil, domain: "vsrf.ru", foundByUID: true, result: "Результат",
+            sessions: [CaseSession(date: "15.10.2025", event: "Заседание")],
+            actID: loadedID, actIDs: [loadedID, knownID], actURL: firstFile,
+            actURLs: [firstFile, secondFile], sourceURL: cardURL)
+        let cachedActs = [
+            CaseAct(id: loadedID, title: "Кассационное определение", date: "15.10.2025",
+                    courtShort: "ВС РФ", instanceLevel: .vsCassation,
+                    fileProvenance: provenance, sourceFileURL: firstFile,
+                    productionNumber: "3-ИКАД25-3-А2"),
+            CaseAct(id: knownID, title: "Кассационное определение", date: "15.10.2025",
+                    courtShort: "ВС РФ", instanceLevel: .vsCassation,
+                    sourceFileURL: secondFile, productionNumber: "3-ИКАД25-3-А2")
+        ]
+        let cached = CaseMovement(uid: "uid", caseNumber: "3а-85/2025", inForce: false,
+                                  instances: [cachedInstance], complaints: [:], acts: cachedActs,
+                                  actBodies: [loadedID: "Сохранённый полный текст"])
+        let freshInstance = CaseInstance(
+            level: .vsCassation, court: "Верховный Суд РФ", caseNumber: "3-ИКАД25-3-А2",
+            judge: nil, domain: "www.vsrf.ru", foundByUID: true, result: nil,
+            sessions: [], actID: loadedID, actIDs: [loadedID],
+            note: "Движение временно недоступно",
+            sourceURL: URL(string: "https://vsrf.ru/lk/practice/claims/12-36321243"))
+        let freshLoadedMetadata = CaseAct(
+            id: loadedID, title: "Кассационное определение", date: "15.10.2025",
+            courtShort: "ВС РФ", instanceLevel: .vsCassation,
+            sourceFileURL: firstFile, productionNumber: "3-ИКАД25-3-А2")
+        let fresh = CaseMovement(uid: "uid", caseNumber: "3а-85/2025", inForce: false,
+                                 instances: [freshInstance], complaints: [:],
+                                 acts: [freshLoadedMetadata],
+                                 incompleteHigherCourtDomains: ["www.vsrf.ru"])
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+        XCTAssertEqual(merged.acts.count, 2)
+        XCTAssertEqual(merged.actBodies[loadedID], "Сохранённый полный текст")
+        XCTAssertEqual(merged.acts.first { $0.id == loadedID }?.fileProvenance, provenance)
+        XCTAssertEqual(merged.acts.first { $0.id == knownID }?.sourceFileURL, secondFile)
+        XCTAssertEqual(merged.instances.first?.linkedActIDs, [loadedID, knownID])
+
+        let restarted = try JSONDecoder().decode(CaseMovement.self,
+                                                  from: JSONEncoder().encode(merged))
+        let repeated = MovementCachePolicy.merge(fresh: fresh, cached: restarted)
+        XCTAssertEqual(repeated.acts.count, 2)
+        XCTAssertEqual(repeated.actBodies[loadedID], "Сохранённый полный текст")
+    }
+
+    func testCompleteRefreshRetainsPresentPublishedFileWithoutRestoringAbsentRound() throws {
+        let url = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000001")!
+        let provenance = PublishedActProvenance(sourceURL: url, finalURL: url, format: .pdf,
+            contentType: "application/pdf", contentHash: String(repeating: "a", count: 64),
+            byteCount: 100, fetchedAt: .now, extractorVersion: 1)
+        let known = CaseAct(id: "pdf", title: "Кассационное определение", date: "15.10.2025",
+            courtShort: "ВС РФ", instanceLevel: .vsCassation, sourceFileURL: url,
+            productionNumber: "3-ИКАД25-3-А2")
+        var loaded = known
+        loaded.fileProvenance = provenance
+        var oldInstance = instance(url: currentURL, result: "Результат", sessions: [])
+        oldInstance.actID = known.id
+        var cached = movement([oldInstance])
+        cached.acts = [loaded, CaseAct(id: "absent", title: "Старый акт", date: "01.01.2024",
+            courtShort: "ВС РФ", instanceLevel: .vsCassation)]
+        cached.actBodies = [known.id: "Сохранённый полный текст", "absent": "Другой круг"]
+        var fresh = movement([oldInstance])
+        fresh.acts = [known]
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        XCTAssertEqual(merged.acts.count, 1)
+        XCTAssertEqual(merged.acts.first?.fileProvenance, provenance)
+        XCTAssertEqual(merged.actBodies[known.id], cached.actBodies[known.id])
+        XCTAssertNil(merged.actBodies["absent"])
+        let reopened = try JSONDecoder().decode(CaseMovement.self, from: JSONEncoder().encode(merged))
+        XCTAssertEqual(MovementCachePolicy.merge(fresh: fresh, cached: reopened), merged)
+
+        fresh.acts[0].sourceFileURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000002")
+        let changedFile = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        XCTAssertNil(changedFile.acts.first?.fileProvenance)
+        XCTAssertNil(changedFile.actBodies[known.id])
+    }
+
     func testVSRFCardIdentityUsesSectionAndIDAcrossWwwAlias() {
         XCTAssertTrue(MovementService.sameVSRFCard(currentURL, oldAliasURL))
         XCTAssertFalse(MovementService.sameVSRFCard(

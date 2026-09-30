@@ -5,6 +5,7 @@ import SwiftUI
 import AppKit
 import SudrfKit
 import UniformTypeIdentifiers
+import PDFKit
 
 enum SafeFilename {
     static func component(_ raw: String, fallback: String = "Судебный акт",
@@ -33,34 +34,148 @@ struct ActWindowPayload: Codable, Hashable {
     var caseNumber: String
     var actText: String
     var paragraphs: [ActParagraph]? = nil
+    var pdfFileURL: URL? = nil
+    var pdfProvenance: PublishedActProvenance? = nil
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(caseNumber)
+        hasher.combine(actText)
+        hasher.combine(paragraphs)
+        hasher.combine(pdfFileURL)
+        hasher.combine(pdfProvenance?.contentHash)
+    }
 }
 
 // MARK: - Содержимое отдельного окна
 
 struct ActWindowView: View {
     let payload: ActWindowPayload
+    @State private var pdfData: Data?
+    @State private var fileError: String?
+    @State private var isLoading = false
 
     var body: some View {
-        ScrollView {
-            ActTextView(text: payload.actText, paragraphs: payload.paragraphs)
-                .padding(EdgeInsets(top: 22, leading: 26, bottom: 26, trailing: 26))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        CourtActContent(text: payload.actText, pdfData: pdfData,
+                        isPublishedFile: payload.pdfFileURL != nil,
+                        isLoading: isLoading, error: fileError,
+                        paragraphs: payload.paragraphs, retry: loadFile)
         .background(Color(nsColor: .textBackgroundColor))
-        .navigationTitle("Дело № \(payload.caseNumber) — текст судебного акта")
+        .navigationTitle("Дело № \(payload.caseNumber) — судебный акт")
         .frame(minWidth: 480, idealWidth: 560, minHeight: 420, idealHeight: 600)
+        .task { loadFile() }
         .toolbar {
             ToolbarItem {
                 Button {
                     ActPDFExporter.save(caseNumber: payload.caseNumber, text: payload.actText,
-                                        paragraphs: payload.paragraphs)
+                                        paragraphs: payload.paragraphs, originalPDF: pdfData)
                 } label: {
                     Label("Сохранить в PDF", systemImage: "square.and.arrow.down")
                 }
+                .disabled(payload.pdfFileURL != nil && pdfData == nil)
                 .help("Сохранить в PDF")
             }
         }
     }
+
+    private func loadFile() {
+        guard let url = payload.pdfFileURL, let provenance = payload.pdfProvenance else { return }
+        isLoading = true
+        fileError = nil
+        Task {
+            let cache = ActFileCache(directory: url.deletingLastPathComponent())
+            if await cache.fileURL(provenance: provenance) == url,
+               let data = await cache.load(provenance: provenance) {
+                pdfData = data
+            } else {
+                fileError = "Сохранённый PDF недоступен. Повторно откройте акт в карточке дела."
+            }
+            isLoading = false
+        }
+    }
+}
+
+/// The same text/PDF content is used in search, tracked cases and separate windows.
+struct CourtActContent: View {
+    let text: String?
+    let pdfData: Data?
+    var isPublishedFile = false
+    var isLoading = false
+    var error: String? = nil
+    var paragraphs: [ActParagraph]? = nil
+    var highlightedParagraphID: String? = nil
+    var retry: () -> Void = {}
+    @State private var showingOriginal = false
+
+    private var hasText: Bool {
+        !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if pdfData != nil && hasText {
+                Picker("Вид судебного акта", selection: $showingOriginal) {
+                    Text("Текст").tag(false)
+                    Text("Оригинал PDF").tag(true)
+                }
+                .pickerStyle(.segmented).padding(10)
+            }
+            if let error {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Button("Повторить", action: retry)
+                }.padding(10)
+            }
+            if let pdfData, showingOriginal || !hasText {
+                PublishedPDFView(data: pdfData)
+                    .accessibilityLabel("Оригинал судебного акта PDF")
+            } else if hasText {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        ActTextView(text: text ?? "", highlightedParagraphID: highlightedParagraphID,
+                                    paragraphs: paragraphs)
+                            .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .onChange(of: highlightedParagraphID) { _, paragraphID in
+                        guard let paragraphID else { return }
+                        withAnimation { proxy.scrollTo(paragraphID, anchor: .center) }
+                    }
+                }
+            } else if isLoading {
+                CenterNote(spinner: true, title: "Загрузка опубликованного PDF…")
+            } else if isPublishedFile {
+                CenterNote(title: error == nil ? "Опубликованный PDF готов к загрузке" : "Не удалось загрузить PDF",
+                           caption: "Оригинал доступен по ссылке на сайте суда.")
+            } else {
+                CenterNote(title: "Судебные акты по делу не опубликованы",
+                           caption: "В полученных карточках нет текста или ссылки на опубликованный файл.")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct PublishedPDFView: NSViewRepresentable {
+    let data: Data
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.backgroundColor = .textBackgroundColor
+        view.document = PDFDocument(data: data)
+        context.coordinator.data = data
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        guard context.coordinator.data != data else { return }
+        view.document = PDFDocument(data: data)
+        context.coordinator.data = data
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator { var data: Data? }
 }
 
 // MARK: - Постраничный экспорт в PDF (A4)
@@ -81,12 +196,13 @@ enum ActPDFExporter {
 
     @MainActor
     static func save(caseNumber: String, text: String,
-                     paragraphs: [ActParagraph]? = nil) {
+                     paragraphs: [ActParagraph]? = nil, originalPDF: Data? = nil) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = filename(caseNumber: caseNumber)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        write(to: url, text: text, paragraphs: paragraphs)
+        do { try write(to: url, text: text, paragraphs: paragraphs, originalPDF: originalPDF) }
+        catch { NSAlert(error: error).runModal() }
     }
 
     static func filename(caseNumber: String) -> String {
@@ -101,13 +217,17 @@ enum ActPDFExporter {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Sudrf-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: url) }
-        write(to: url, text: text, paragraphs: paragraphs)
+        try? write(to: url, text: text, paragraphs: paragraphs)
         return try? Data(contentsOf: url)
     }
 
     @MainActor
-    private static func write(to url: URL, text: String,
-                              paragraphs: [ActParagraph]? = nil) {
+    static func write(to url: URL, text: String, paragraphs: [ActParagraph]? = nil,
+                      originalPDF: Data? = nil) throws {
+        if let originalPDF {
+            try originalPDF.write(to: url, options: .atomic)
+            return
+        }
         let printInfo = NSPrintInfo()
         printInfo.paperSize = paper
         printInfo.topMargin = marginTop

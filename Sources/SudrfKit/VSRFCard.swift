@@ -89,6 +89,22 @@ public struct VSRFEvent: Sendable, Equatable, Identifiable {
     }
 }
 
+/// Ссылка на опубликованный судебный акт внутри карточки конкретного
+/// производства ВС РФ. URL уже приведён к каноническому HTTPS-хосту; клиент
+/// повторно проверяет его перед загрузкой.
+public struct VSRFPublishedAct: Sendable, Equatable, Identifiable {
+    public var url: URL
+    public var date: String
+    public var title: String
+    public var id: String { url.absoluteString }
+
+    public init(url: URL, date: String, title: String) {
+        self.url = url
+        self.date = date
+        self.title = title
+    }
+}
+
 /// Одно производство ВС РФ — общая модель для блока карточки и строки выдачи.
 public struct VSRFProduction: Sendable, Equatable, Identifiable {
     /// id карточки (`data-subscribe-claim-id` / id из ссылки). Есть и у дела
@@ -113,6 +129,8 @@ public struct VSRFProduction: Sendable, Equatable, Identifiable {
     public var respondents: [String]       // «Ответчики / административные ответчики»
     public var rapporteur: String?         // «Докладчик»
     public var events: [VSRFEvent]         // движение / события
+    /// Опубликованные PDF именно этого производства. В строке поиска не заполняется.
+    public var publishedActs: [VSRFPublishedAct]
     var publishedResult: String?
 
     public init(cardID: String? = nil, cardSection: VSRFCardSection? = nil,
@@ -122,14 +140,14 @@ public struct VSRFProduction: Sendable, Equatable, Identifiable {
                 appealedAct: String? = nil, subject: String? = nil,
                 firstInstance: VSRFFirstInstance = VSRFFirstInstance(), applicant: String? = nil,
                 claimants: [String] = [], respondents: [String] = [], rapporteur: String? = nil,
-                events: [VSRFEvent] = []) {
+                events: [VSRFEvent] = [], publishedActs: [VSRFPublishedAct] = []) {
         self.cardID = cardID; self.cardSection = cardSection; self.kind = kind
         self.number = number; self.incomingDate = incomingDate
         self.procedureType = procedureType; self.instanceType = instanceType; self.uid = uid
         self.collegium = collegium; self.cassationCourt = cassationCourt; self.appealedAct = appealedAct
         self.subject = subject; self.firstInstance = firstInstance; self.applicant = applicant
         self.claimants = claimants; self.respondents = respondents; self.rapporteur = rapporteur
-        self.events = events; self.publishedResult = nil
+        self.events = events; self.publishedActs = publishedActs; self.publishedResult = nil
     }
 
     public var id: String { cardID ?? ((number ?? "—") + "|" + (incomingDate ?? "")) }
@@ -291,7 +309,7 @@ public enum VSRFCardParser {
         if currentCard {
             prods = try VSRFDOM.extractCurrentCardProductions(doc)
         } else {
-            prods = VSRFDOM.extractProductions(doc)
+            prods = try VSRFDOM.extractProductions(doc)
         }
         guard !prods.isEmpty else { throw SudrfError.parsing("Неизвестный формат карточки ВС РФ") }
         if !currentCard { try VSRFDOM.validateLegacyCard(prods) }
@@ -311,7 +329,7 @@ public enum VSRFSearchParser {
         guard VSRFDOM.isSearchResultsPage(doc) else {
             throw SudrfError.parsing("Неизвестный формат выдачи ВС РФ")
         }
-        let results = VSRFDOM.extractSearchProductions(doc)
+        let results = try VSRFDOM.extractSearchProductions(doc)
         guard results.allSatisfy(Self.isLinkable) else {
             throw SudrfError.parsing("Строка выдачи ВС РФ не содержит ссылку, номер или ключ привязки")
         }
@@ -393,10 +411,10 @@ enum VSRFDOM {
             && (firstEl(doc, "#vs-search-items") != nil || firstEl(doc, ".count-label") != nil)
     }
 
-    static func extractSearchProductions(_ doc: Document) -> [VSRFProduction] {
+    static func extractSearchProductions(_ doc: Document) throws -> [VSRFProduction] {
         let currentItems = (try? doc.select("[class*=CaseStyle_case_item__]").array()) ?? []
         if !currentItems.isEmpty { return currentItems.map(buildCurrentSearchItem) }
-        return extractProductions(doc)
+        return try extractProductions(doc, includePublishedActs: false)
     }
 
     private static func buildCurrentSearchItem(_ item: Element) -> VSRFProduction {
@@ -478,6 +496,7 @@ enum VSRFDOM {
         let kind: VSRFProductionKind = cardID.hasPrefix("12-") ? .caseFile : .complaint
         var events = try currentCardEvents(in: item)
         let finalAct = try currentPublishedResult(in: item)
+        let publishedActs = try currentPublishedActs(in: item)
         if let finalAct, let result = finalAct.text.nonEmpty {
             let matchingResults = events.indices.filter {
                 events[$0].text.caseInsensitiveCompare("Результат рассмотрения") == .orderedSame
@@ -511,7 +530,8 @@ enum VSRFDOM {
             claimants: current.claimants,
             respondents: current.respondents,
             rapporteur: finalAct?.rapporteur,
-            events: events)
+            events: events,
+            publishedActs: publishedActs)
         production.publishedResult = finalAct?.text
         return production
     }
@@ -599,6 +619,112 @@ enum VSRFDOM {
         return (date, text, rapporteur)
     }
 
+    private static func currentPublishedActs(in item: Element) throws -> [VSRFPublishedAct] {
+        var acts: [VSRFPublishedAct] = []
+        var indexByURL: [URL: Int] = [:]
+        for row in (try? item.select("[class*=FinalActRow_container__]").array()) ?? [] {
+            let links = (try? row.select("a[href]").array()) ?? []
+            for link in links {
+                guard let raw = try? link.attr("href"),
+                      let url = publishedActURL(raw) else { continue }
+                guard let date = firstEl(row, "[class*=FinalActRow_date__]")
+                    .flatMap({ (try? $0.text()).map(clean) })
+                    .flatMap({ firstDate(in: $0) }) else {
+                    throw SudrfError.parsing("У опубликованного акта ВС РФ не указана дата")
+                }
+                let anchorTitle = clean((try? link.text()) ?? "")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " .:;"))
+                let title = anchorTitle.nonEmpty ?? currentPublishedActTitle(in: row)
+                guard let title, !title.isEmpty else {
+                    throw SudrfError.parsing("У опубликованного акта ВС РФ не указан вид")
+                }
+                if let index = indexByURL[url] {
+                    // Иконка и подпись обычно ведут на один PDF. Сохраняем подпись,
+                    // если предыдущая ссылка была только иконкой.
+                    if acts[index].title.isEmpty { acts[index].title = title }
+                } else {
+                    indexByURL[url] = acts.count
+                    acts.append(VSRFPublishedAct(url: url, date: date, title: title))
+                }
+            }
+        }
+        return acts
+    }
+
+    private static func currentPublishedActTitle(in row: Element) -> String? {
+        guard let column = firstEl(row, "[class*=FinalActRow_col__]") else { return nil }
+        let text = clean((try? column.text()) ?? "")
+        let normalized = text.lowercased()
+        guard let match = normalized.firstMatch(of: /^(определение|постановление|решение|приговор|заочное решение)/) else {
+            return nil
+        }
+        return String(text.prefix(match.1.count))
+    }
+
+    /// Принимает только опубликованный PDF ВС РФ. Нормализует относительный
+    /// href в канонический URL; загрузчик выполняет независимую проверку.
+    private static func publishedActURL(_ href: String) -> URL? {
+        guard let baseURL = URL(string: "https://www.vsrf.ru"),
+              let candidate = URL(string: href, relativeTo: baseURL)?.absoluteURL,
+              PublishedActURLPolicy.isAllowedVSRFPublishedAct(candidate),
+              let safeURL = PublishedActURLPolicy.safePublishedURL(candidate),
+              var canonical = URLComponents(url: safeURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        // Keep one stable host spelling for card IDs and cache keys. The shared
+        // policy has already checked HTTPS, exact host, port, path and credentials.
+        canonical.host = "www.vsrf.ru"
+        return canonical.url
+    }
+
+    /// Legacy card rows contain their own publication link and may also carry
+    /// the date and act title. Never borrow either value from a neighboring row
+    /// or another production: that can attach a different round's PDF.
+    private static func legacyPublishedActs(in details: [Element]) throws -> [VSRFPublishedAct] {
+        var acts: [VSRFPublishedAct] = []
+        var indexByURL: [URL: Int] = [:]
+
+        for row in details {
+            let links = (try? row.select("a[href]").array()) ?? []
+            for link in links {
+                guard let raw = try? link.attr("href"), let url = publishedActURL(raw) else { continue }
+                let rowText = clean((try? row.text()) ?? "")
+                guard let date = firstDate(in: rowText) else {
+                    throw SudrfError.parsing("У опубликованного акта ВС РФ не указана дата")
+                }
+
+                let candidates = [
+                    clean((try? link.text()) ?? ""),
+                    firstEl(row, ".col-md-3").flatMap { try? $0.text() }.map(clean) ?? "",
+                    firstEl(row, ".col-md-7").flatMap { try? $0.text() }.map(clean) ?? "",
+                    rowText
+                ]
+                guard let title = candidates.compactMap(legacyPublishedActTitle(from:)).first else {
+                    throw SudrfError.parsing("У опубликованного акта ВС РФ не указан вид")
+                }
+
+                if let index = indexByURL[url] {
+                    guard acts[index].date == date, acts[index].title == title else {
+                        throw SudrfError.parsing("Противоречивые реквизиты одного опубликованного акта ВС РФ")
+                    }
+                } else {
+                    indexByURL[url] = acts.count
+                    acts.append(VSRFPublishedAct(url: url, date: date, title: title))
+                }
+            }
+        }
+        return acts
+    }
+
+    private static func legacyPublishedActTitle(from text: String) -> String? {
+        let normalized = clean(text).trimmingCharacters(in: CharacterSet(charactersIn: " .:;"))
+        let lowercased = normalized.lowercased()
+        guard let match = lowercased.firstMatch(
+            of: /^(заочное\s+решение|апелляционное\s+определение|кассационное\s+определение|определение|постановление|решение|приговор)\b/
+        ) else { return nil }
+        return String(normalized.prefix(match.1.count))
+    }
+
     private static func searchCardLink(of item: Element) -> (id: String, section: VSRFCardSection?, number: String?)? {
         guard let title = firstEl(item, "[class*=CaseStyle_case_link__]"),
               let href = try? title.attr("href"),
@@ -609,27 +735,27 @@ enum VSRFDOM {
 
     /// Сегментирует документ по заголовкам `vs-items-separate` в порядке документа;
     /// следующие `vs-item-detail` принадлежат текущему производству.
-    static func extractProductions(_ doc: Document) -> [VSRFProduction] {
+    static func extractProductions(_ doc: Document, includePublishedActs: Bool = true) throws -> [VSRFProduction] {
         let nodes = (try? doc.select("div.vs-items-separate, div.row.vs-item-detail").array()) ?? []
         var out: [VSRFProduction] = []
         var header: Element?
         var details: [Element] = []
-        func flush() {
-            if let h = header { out.append(build(header: h, details: details)) }
+        func flush() throws {
+            if let h = header { out.append(try build(header: h, details: details, includePublishedActs: includePublishedActs)) }
             header = nil; details = []
         }
         for n in nodes {
             if n.hasClass("vs-items-separate") {
-                flush(); header = n; details = []
+                try flush(); header = n; details = []
             } else if header != nil {
                 details.append(n)
             }
         }
-        flush()
+        try flush()
         return out
     }
 
-    private static func build(header: Element, details: [Element]) -> VSRFProduction {
+    private static func build(header: Element, details: [Element], includePublishedActs: Bool) throws -> VSRFProduction {
         let link = cardLink(of: header)     // (id, section?) из /cases|appeals/ или предка
 
         // Пары «метка → значение» и составная ячейка «Суд 1-ой инстанции».
@@ -699,7 +825,8 @@ enum VSRFDOM {
             claimants: claimants,
             respondents: respondents,
             rapporteur: rapporteur,
-            events: events
+            events: events,
+            publishedActs: includePublishedActs ? try legacyPublishedActs(in: details) : []
         )
     }
 

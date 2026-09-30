@@ -58,6 +58,172 @@ final class ActFileLoaderTests: XCTestCase {
         XCTAssertTrue(result.text.contains("Тестовый судебный акт"))
     }
 
+    func testVSRFFetchReturnsPDFBytesAndRejectsUnsafeLinks() async throws {
+        let client = VSRFClient(session: session, minInterval: 0)
+        let data = try fixtureData("valid.pdf")
+        let url = Self.vsrfTestURL
+        ActFileURLProtocol.set(Response(data: data, contentType: "application/pdf"))
+
+        let result = try await client.fetchPublishedAct(url: url)
+        XCTAssertEqual(result.data, data)
+        XCTAssertEqual(result.provenance.format, .pdf)
+        XCTAssertEqual(result.provenance.sourceURL, url)
+        XCTAssertEqual(result.provenance.contentHash, sha256(data))
+
+        let beforeUnsafeRequests = ActFileURLProtocol.requestCount()
+        for unsafe in [
+            URL(string: "http://www.vsrf.ru/lk/practice/stor_pdf/123")!,
+            URL(string: "https://evil.vsrf.ru/lk/practice/stor_pdf/123")!,
+            URL(string: "https://www.vsrf.ru/lk/practice/cases/123")!,
+            URL(string: "https://user:secret@www.vsrf.ru/lk/practice/stor_pdf/123")!
+        ] {
+            await assertError(.unsafeSourceURL) {
+                try await client.fetchPublishedAct(url: unsafe)
+            }
+        }
+        XCTAssertEqual(ActFileURLProtocol.requestCount(), beforeUnsafeRequests)
+    }
+
+    func testVSRFFetchRejectsHTMLAndUnsafeFinalHost() async throws {
+        let client = VSRFClient(session: session, minInterval: 0)
+        ActFileURLProtocol.set(Response(data: Data("<html>challenge</html>".utf8),
+                                         contentType: "text/html"))
+        await assertError(.htmlResponse) {
+            try await client.fetchPublishedAct(url: Self.vsrfTestURL)
+        }
+
+        ActFileURLProtocol.set(Response(
+            data: try fixtureData("valid.pdf"),
+            finalURL: URL(string: "https://example.test/final.pdf")!,
+            contentType: "application/pdf"))
+        await assertError(.unsafeFinalURL) {
+            try await client.fetchPublishedAct(url: Self.vsrfTestURL)
+        }
+
+        ActFileURLProtocol.set(Response(data: try fixtureData("valid.pdf"),
+                                         contentType: "text/plain"))
+        await assertError(.incompatibleContentType) {
+            try await client.fetchPublishedAct(url: Self.vsrfTestURL)
+        }
+
+        ActFileURLProtocol.set(Response(
+            data: try fixtureData("valid.docx"),
+            contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+        await assertError(.unsupportedFormat) {
+            try await client.fetchPublishedAct(url: Self.vsrfTestURL)
+        }
+    }
+
+    func testOnlyVSRFFlowAcceptsPDFWithoutExtractedText() async throws {
+        let data = makePDF(text: nil)
+        let loader = ActFileLoader()
+        let result = try await loader.extract(
+            data: data, sourceURL: Self.vsrfTestURL, finalURL: Self.vsrfTestURL,
+            contentType: "application/pdf", allowEmptyPDFText: true)
+        XCTAssertTrue(result.text.isEmpty)
+        XCTAssertEqual(result.data, data)
+
+        await assertError(.noExtractableText) {
+            try await loader.extract(
+                data: data, sourceURL: Self.testURL, finalURL: Self.testURL,
+                contentType: "application/pdf")
+        }
+    }
+
+    func testReadableConflictingProductionNumberIsRejected() async throws {
+        let loader = ActFileLoader()
+        let pdf = makePDF(text: "3-KG24-1-K3")
+        await assertError(.productionNumberMismatch) {
+            try await loader.extract(
+                data: pdf, sourceURL: Self.vsrfTestURL, finalURL: Self.vsrfTestURL,
+                contentType: "application/pdf", allowEmptyPDFText: true,
+                expectedProductionNumber: "3-KG23-1-K3")
+        }
+        await assertError(.productionNumberMismatch) {
+            try await loader.extract(
+                data: makePDF(text: "3-KG24-1-K3; cited 3-KG23-1-K3"),
+                sourceURL: Self.vsrfTestURL, finalURL: Self.vsrfTestURL,
+                contentType: "application/pdf", allowEmptyPDFText: true,
+                expectedProductionNumber: "3-KG23-1-K3")
+        }
+
+        let matching = try await loader.extract(
+            data: makePDF(text: "11RS0001-01-2024-000123-45 3-KG23-1-K3"), sourceURL: Self.vsrfTestURL,
+            finalURL: Self.vsrfTestURL, contentType: "application/pdf",
+            allowEmptyPDFText: true, expectedProductionNumber: "3-kg23-1-k3")
+        XCTAssertTrue(matching.text.contains("3-KG23-1-K3"))
+    }
+
+    func testActFileCacheWritesAndRevalidatesPDFBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sudrf-act-cache-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = ActFileCache(directory: directory)
+        let data = try fixtureData("valid.pdf")
+        let file = try await ActFileLoader().extract(
+            data: data, sourceURL: Self.vsrfTestURL, finalURL: Self.vsrfTestURL,
+            contentType: "application/pdf", allowEmptyPDFText: true)
+
+        let wrongHash = PublishedActProvenance(
+            sourceURL: file.provenance.sourceURL, finalURL: file.provenance.finalURL,
+            format: .pdf, contentType: file.provenance.contentType,
+            contentHash: String(repeating: "0", count: 64), byteCount: data.count,
+            fetchedAt: file.provenance.fetchedAt,
+            extractorVersion: file.provenance.extractorVersion)
+        let wrongHashFile = PublishedActFile(text: file.text, provenance: wrongHash, data: data)
+        await assertError(.extractionFailed) {
+            try await cache.save(file: wrongHashFile)
+        }
+        let wrongLength = PublishedActProvenance(
+            sourceURL: file.provenance.sourceURL, finalURL: file.provenance.finalURL,
+            format: .pdf, contentType: file.provenance.contentType,
+            contentHash: file.provenance.contentHash, byteCount: data.count + 1,
+            fetchedAt: file.provenance.fetchedAt,
+            extractorVersion: file.provenance.extractorVersion)
+        await assertError(.extractionFailed) {
+            try await cache.save(file: PublishedActFile(
+                text: file.text, provenance: wrongLength, data: data))
+        }
+
+        let savedURL = try await cache.save(file: file)
+        XCTAssertEqual(try Data(contentsOf: savedURL), data)
+        let loaded = await cache.load(provenance: file.provenance)
+        XCTAssertEqual(loaded, data)
+        let cachedURL = await cache.fileURL(provenance: file.provenance)
+        XCTAssertEqual(cachedURL, savedURL)
+
+        try Data("changed".utf8).write(to: savedURL)
+        let corruptedData = await cache.load(provenance: file.provenance)
+        XCTAssertNil(corruptedData)
+        let corruptedURL = await cache.fileURL(provenance: file.provenance)
+        XCTAssertNil(corruptedURL)
+    }
+
+    func testVSRFRedirectDelegateStopsInsecureAndOffPortalRedirects() throws {
+        let delegate = VSRFTLSDelegate(trustVSRFCertificate: false)
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let task = session.dataTask(with: Self.vsrfTestURL)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: Self.vsrfTestURL, statusCode: 302, httpVersion: "HTTP/1.1",
+            headerFields: ["Location": "/next"]))
+
+        func redirected(_ value: String) -> URLRequest? {
+            var result: URLRequest?
+            delegate.urlSession(
+                session, task: task, willPerformHTTPRedirection: response,
+                newRequest: URLRequest(url: URL(string: value)!),
+                completionHandler: { result = $0 })
+            return result
+        }
+
+        XCTAssertNotNil(redirected("https://vsrf.ru/next"))
+        XCTAssertNotNil(redirected("https://www.vsrf.ru/next"))
+        XCTAssertNil(redirected("https://evil.vsrf.ru/next"))
+        XCTAssertNil(redirected("http://www.vsrf.ru/next"))
+        XCTAssertNil(redirected("https://user:secret@www.vsrf.ru/next"))
+    }
+
     func testRejectsHTMLAndExplicitlyIncompatibleMIME() async throws {
         let loader = ActFileLoader()
         let html = try fixtureData("html-response.html")
@@ -288,6 +454,7 @@ final class ActFileLoaderTests: XCTestCase {
     }
 
     private static let testURL = URL(string: "https://mos-gorsud.ru/mgs/cases/docs/content/test-file")!
+    private static let vsrfTestURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/12345")!
 
     private func fixtureData(_ name: String) throws -> Data {
         let components = name.split(separator: ".", maxSplits: 1).map(String.init)
@@ -299,6 +466,29 @@ final class ActFileLoaderTests: XCTestCase {
 
     private func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func makePDF(text: String?) -> Data {
+        var data = Data("%PDF-1.4\n".utf8)
+        var offsets = [0]
+        func appendObject(_ number: Int, _ body: String) {
+            offsets.append(data.count)
+            data.append(Data("\(number) 0 obj\n\(body)\nendobj\n".utf8))
+        }
+        appendObject(1, "<< /Type /Catalog /Pages 2 0 R >>")
+        appendObject(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+        appendObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+                     "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>")
+        let stream = text.map { "BT /F1 12 Tf 72 720 Td (\($0)) Tj ET" } ?? ""
+        appendObject(4, "<< /Length \(stream.utf8.count) >>\nstream\n\(stream)\nendstream")
+        appendObject(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        let xref = data.count
+        data.append(Data("xref\n0 6\n0000000000 65535 f \n".utf8))
+        for offset in offsets.dropFirst() {
+            data.append(Data(String(format: "%010d 00000 n \n", offset).utf8))
+        }
+        data.append(Data("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n\(xref)\n%%EOF\n".utf8))
+        return data
     }
 
     private func assertUnsafeDOCX(_ data: Data) async {

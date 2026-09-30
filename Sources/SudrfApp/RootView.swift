@@ -996,7 +996,7 @@ private struct CaseCardHost: View {
 
 // MARK: - Панель судебных актов живой карточки
 
-private struct LiveActsPane: View {
+struct LiveActsPane: View {
     @EnvironmentObject var router: AppRouter
     @Environment(\.openWindow) private var openWindow
     @State private var showingSummary = false
@@ -1005,6 +1005,17 @@ private struct LiveActsPane: View {
         router.liveMovement.map(CourtActPresentation.rows(in:)) ?? []
     }
     private var body0: String? { router.selectedActText }
+    private var selected: CourtActDisplay? {
+        acts.first { router.selectedActID.map($0.contains) ?? false }
+    }
+    private var isPDF: Bool {
+        guard let host = selected?.sourceFileURL?.host?.lowercased() else { return false }
+        return host == "vsrf.ru" || host == "www.vsrf.ru"
+    }
+    private var actNumber: String {
+        selected?.productionNumber ?? router.liveMovement?.caseNumber ?? ""
+    }
+
     private var selectedParagraphs: [ActParagraph]? { router.selectedActParagraphs }
 
     var body: some View {
@@ -1018,15 +1029,18 @@ private struct LiveActsPane: View {
                     HStack(spacing: 5) {
                         Button {
                             openWindow(value: ActWindowPayload(
-                                caseNumber: router.liveMovement?.caseNumber ?? "", actText: body0 ?? "",
-                                paragraphs: selectedParagraphs))
+                                caseNumber: actNumber, actText: body0 ?? "",
+                                paragraphs: selectedParagraphs,
+                                pdfFileURL: router.selectedPublishedAct.fileURL,
+                                pdfProvenance: router.selectedPublishedAct.provenance))
                         } label: { Image(systemName: "arrow.up.forward.app") }
-                        .help("Открыть в отдельном окне").disabled(body0 == nil)
+                        .help("Открыть в отдельном окне").disabled(isPDF ? router.selectedPublishedAct.fileURL == nil : body0 == nil)
                         Button {
-                            ActPDFExporter.save(caseNumber: router.liveMovement?.caseNumber ?? "",
-                                                text: body0 ?? "", paragraphs: selectedParagraphs)
+                            ActPDFExporter.save(caseNumber: actNumber, text: body0 ?? "",
+                                                paragraphs: selectedParagraphs,
+                                                originalPDF: router.selectedPublishedAct.data)
                         } label: { Image(systemName: "square.and.arrow.down") }
-                        .help("Сохранить в PDF").disabled(body0 == nil)
+                        .help("Сохранить в PDF").disabled(isPDF ? router.selectedPublishedAct.data == nil : body0 == nil)
                         Button {
                             router.loadSelectedActSummary()
                             showingSummary = true
@@ -1049,26 +1063,15 @@ private struct LiveActsPane: View {
             }
             .padding(EdgeInsets(top: 14, leading: 14, bottom: 10, trailing: 14))
 
-            Group {
-                if let txt = body0 {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            ActTextView(text: txt,
-                                        highlightedParagraphID: router.highlightedParagraphID,
-                                        paragraphs: selectedParagraphs)
-                                .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .onChange(of: router.highlightedParagraphID) { _, paragraphID in
-                            guard let paragraphID else { return }
-                            withAnimation { proxy.scrollTo(paragraphID, anchor: .center) }
-                        }
-                    }
-                } else {
-                    CenterNote(title: "Тексты актов не опубликованы",
-                               caption: "Карточки инстанций получены, но тексты отсутствуют в публикации (262-ФЗ).")
-                }
-            }
+            CourtActContent(text: body0, pdfData: router.selectedPublishedAct.data,
+                            isPublishedFile: isPDF,
+                            isLoading: router.selectedPublishedAct.isLoading,
+                            error: router.selectedPublishedAct.error,
+                            paragraphs: selectedParagraphs,
+                            highlightedParagraphID: router.highlightedParagraphID,
+                            retry: { router.selectedPublishedAct.retry() })
+            .id(router.selectedActID)
+
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .textBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.05)))

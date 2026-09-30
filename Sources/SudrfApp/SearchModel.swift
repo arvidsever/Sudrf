@@ -211,7 +211,12 @@ final class SearchModel: ObservableObject {
     // Движение дела («провал»)
     @Published var movement: CaseMovement?
     @Published var loadingMovement = false
-    @Published var selectedActID: String?
+    @Published var selectedActID: String? {
+        didSet {
+            if oldValue != selectedActID { loadSelectedPublishedAct() }
+        }
+    }
+    @Published var selectedPublishedAct: PublishedActSelection
     @Published var expandedComplaints: Set<String> = []
 
     // Капча вышестоящего суда (форма под кодом с картинки)
@@ -291,6 +296,7 @@ final class SearchModel: ObservableObject {
     private var searchGeneration = 0
     private var cardLoadGeneration = 0
     private var movementLoadGeneration = 0
+    private var openedMovementCacheKey: String?
     private var synchronizingRegionAndCourt = false
     /// Регион в picker-е может означать место нахождения вручную выбранного
     /// суда, а не регион происхождения дела. В таком состоянии маршрут строим
@@ -305,6 +311,7 @@ final class SearchModel: ObservableObject {
          magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
          movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
+         selectedPublishedAct: PublishedActSelection? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil) {
         // По умолчанию — общий `CaptchaSettings.shared`, и солвер,
@@ -322,6 +329,7 @@ final class SearchModel: ObservableObject {
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
         self.movementServiceFactory = movementServiceFactory
+        self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.autoSolve = autoSolve ?? { url, client, solver, settings in
             await AutoCaptchaSolver.solve(formURL: url, client: client,
                                           solver: solver, settings: settings)
@@ -1057,6 +1065,7 @@ final class SearchModel: ObservableObject {
     }
 
     private func clearActPreview() {
+        selectedPublishedAct.clear()
         actText = ""
         actLinks = []
         cardActs = []
@@ -1118,6 +1127,7 @@ final class SearchModel: ObservableObject {
         let cacheKey = MovementContext.identityKey(displayDomain: option.domain,
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
+        openedMovementCacheKey = cacheKey
         let service = makeMovementService(for: option, base: base, cartoteka: cart)
         if let hit = MovementMemoryCache.shared.get(cacheKey),
            cachedMovement(hit.movement, matches: base, court: court, cartoteka: cart) {
@@ -1133,6 +1143,7 @@ final class SearchModel: ObservableObject {
             selectedActID = presented.first(where: { $0.instanceLevel == .first })?.id
                          ?? presented.first?.id
             MovementMemoryCache.shared.put(cacheKey, resolved)
+            loadSelectedPublishedAct()
             return
         }
 
@@ -1150,6 +1161,7 @@ final class SearchModel: ObservableObject {
             selectedActID = presented.first(where: { $0.instanceLevel == .first })?.id
                          ?? presented.first?.id
             MovementMemoryCache.shared.put(cacheKey, resolved)
+            loadSelectedPublishedAct()
         } catch let e as SudrfError {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             status = e.description
@@ -1248,6 +1260,51 @@ final class SearchModel: ObservableObject {
             ?? id
     }
 
+    private func loadSelectedPublishedAct() {
+        guard let caseKey = openedMovementCacheKey, let selectedActID,
+              let movement,
+              let sourceAct = selectedPublishedActSource(in: movement, selectedID: selectedActID)
+        else {
+            selectedPublishedAct.clear()
+            return
+        }
+        selectedPublishedAct.select(
+            caseKey: caseKey, selectedActID: selectedActID, sourceAct: sourceAct,
+            existingText: movement.actBodies[sourceAct.id]) { [weak self] key, selectedID, sourceID, file in
+                self?.applySelectedPublishedAct(file, caseKey: key,
+                                                selectedActID: selectedID, sourceActID: sourceID)
+            }
+    }
+
+    private func selectedPublishedActSource(in movement: CaseMovement,
+                                            selectedID: String) -> CaseAct? {
+        let candidates: [CaseAct]
+        if let row = CourtActPresentation.row(for: selectedID, in: movement) {
+            candidates = row.sourceIDs.compactMap { id in movement.acts.first { $0.id == id } }
+        } else {
+            candidates = movement.acts.filter { $0.id == selectedID }
+        }
+        return candidates.first { act in
+            guard let url = act.sourceFileURL ?? act.fileProvenance?.sourceURL else { return false }
+            return PublishedActURLPolicy.isAllowedVSRFPublishedAct(url)
+        }
+    }
+
+    private func applySelectedPublishedAct(_ file: PublishedActFile, caseKey: String,
+                                           selectedActID: String, sourceActID: String) {
+        guard openedMovementCacheKey == caseKey, self.selectedActID == selectedActID,
+              var updated = movement,
+              let index = updated.acts.firstIndex(where: { $0.id == sourceActID }) else { return }
+
+        if !file.text.isEmpty { updated.actBodies[sourceActID] = file.text }
+        updated.acts[index].fileProvenance = file.provenance
+        if updated.acts[index].sourceFileURL == nil {
+            updated.acts[index].sourceFileURL = file.provenance.sourceURL
+        }
+        movement = updated
+        MovementMemoryCache.shared.put(caseKey, updated)
+    }
+
     func toggleComplaint(_ id: String) {
         if expandedComplaints.contains(id) { expandedComplaints.remove(id) }
         else { expandedComplaints.insert(id) }
@@ -1255,7 +1312,9 @@ final class SearchModel: ObservableObject {
 
     func exitMovement() {
         invalidateMovementLoad()
+        openedMovementCacheKey = nil
         movement = nil
+        selectedPublishedAct.clear()
         selectedActID = nil; expandedComplaints = []
         captcha = nil
     }

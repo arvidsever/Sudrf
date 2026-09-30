@@ -234,6 +234,23 @@ final class MosGorSudTests: XCTestCase {
             cards: ["first1": firstCard, "app1": appealCard])
     }
 
+    func testMoscowMovementIncludesPublishedSupremeCourtActMetadata() async throws {
+        let pdfURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34500001")!
+        let production = VSRFProduction(cardID: "12-34500001", cardSection: .claims,
+            kind: .caseFile, number: "3-КГ25-1-К3", incomingDate: "01.10.2025", uid: uid,
+            firstInstance: VSRFFirstInstance(court: "Тверской районный суд", caseNumber: "02-1234/2024"),
+            events: [VSRFEvent(date: "15.10.2025", text: "Результат рассмотрения")],
+            publishedActs: [VSRFPublishedAct(url: pdfURL, date: "15.10.2025", title: "Определение")])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+            vsrf: MoscowPublishedVSRF(production: production), mosgorsud: mock())
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let movement = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+        let act = try XCTUnwrap(movement.acts.first { $0.sourceFileURL == pdfURL })
+        XCTAssertEqual(act.productionNumber, production.number)
+        XCTAssertEqual(act.instanceLevel, .vsCassation)
+        XCTAssertTrue(movement.instances.contains { $0.linkedActIDs.contains(act.id) })
+    }
+
     func testMoscowMovementStitchesPortalInstances() async throws {
         let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
                                       mosgorsud: mock())
@@ -578,4 +595,14 @@ private actor MockKas: CaseProviding {
     func fetchCard(court: Court, caseID: String, caseUID: String,
                    deloID: String, new: String) async throws -> CaseCard { card }
     func fetchCard(url: URL) async throws -> CaseCard { card }
+}
+
+private struct MoscowPublishedVSRF: VSRFProviding {
+    let production: VSRFProduction
+    func search(uniqueNumber: String?, oldCaseNumber: String?, keywords: String?) async throws -> VSRFSearchResults {
+        VSRFSearchResults(total: 1, results: [production])
+    }
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        VSRFCard(productions: [production])
+    }
 }

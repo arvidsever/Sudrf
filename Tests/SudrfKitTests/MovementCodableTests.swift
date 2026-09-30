@@ -105,7 +105,9 @@ final class MovementCodableTests: XCTestCase {
             byteCount: 42, fetchedAt: Date(timeIntervalSince1970: 100), extractorVersion: 1)
         let act = CaseAct(id: "act-file", title: "Решение", date: "01.08.2026",
                           courtShort: "МГС", instanceLevel: .first,
-                          fileProvenance: provenance)
+                          fileProvenance: provenance,
+                          sourceFileURL: source,
+                          productionNumber: "2-7212/2025")
         let instance = CaseInstance(
             level: .first, court: "МГС", caseNumber: "3а-1/2026", judge: nil,
             domain: MosGorSudEndpoint.host, foundByUID: false, result: nil,
@@ -118,6 +120,22 @@ final class MovementCodableTests: XCTestCase {
             CaseMovement.self, from: JSONEncoder().encode(movement))
         XCTAssertEqual(decoded, movement)
         XCTAssertEqual(decoded.acts.first?.fileProvenance, provenance)
+        XCTAssertEqual(decoded.acts.first?.sourceFileURL, source)
+        XCTAssertEqual(decoded.acts.first?.productionNumber, "2-7212/2025")
+    }
+
+    func testOldCaseActCacheWithoutPublishedSourceFieldsStillDecodes() throws {
+        let act = CaseAct(id: "act-old", title: "Решение", date: "01.08.2026",
+                          courtShort: "МГС", instanceLevel: .first)
+        let encoded = try JSONEncoder().encode(act)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "sourceFileURL")
+        object.removeValue(forKey: "productionNumber")
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(CaseAct.self, from: oldData)
+        XCTAssertNil(decoded.sourceFileURL)
+        XCTAssertNil(decoded.productionNumber)
     }
 
     func testCourtExecutionDocumentStableIDPrefersPaperNumber() throws {

@@ -234,6 +234,7 @@ extension MovementService {
                 firstInstanceCaseNumber: base.caseNumber,
                 partySurnames: [])
             instances.append(contentsOf: result.instances)
+            acts.append(contentsOf: result.acts)
             if result.incomplete { markIncomplete("vsrf.ru") }
             if result.instances.isEmpty, !result.incomplete { markHonestZero("vsrf.ru") }
         }

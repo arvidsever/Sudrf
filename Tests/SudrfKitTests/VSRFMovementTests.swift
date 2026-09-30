@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SudrfKit
 
@@ -129,7 +130,10 @@ final class VSRFMovementTests: XCTestCase {
                                      incomingDate: "15.03.2025", uid: uid, firstInstance: first,
                                      events: [VSRFEvent(date: "16.03.2025", text: "Принято к производству")])
         let results = VSRFSearchResults(total: 4, results: [caseOne, caseTwo, complaintOne, complaintUnmatched])
-        let mock = MockVSRF(uidResults: results, numberResults: results, card: VSRFCard(productions: []))
+        let cards = Dictionary(uniqueKeysWithValues: [caseOne, caseTwo, complaintOne, complaintUnmatched].map {
+            ($0.id, VSRFCard(productions: [$0]))
+        })
+        let mock = MockVSRF(uidResults: results, numberResults: results, cardsByID: cards)
 
         let instances = await MovementService.vsrfInstances(
             vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
@@ -140,6 +144,158 @@ final class VSRFMovementTests: XCTestCase {
         XCTAssertFalse(roundTwo?.sessions.contains { $0.event.contains("Истребовано дело") } == true)
         XCTAssertNotNil(instances.first { $0.caseNumber == "3-КФ-2" },
                         "жалоба без датированного последующего дела остаётся отдельной")
+    }
+
+    func testCurrentSearchAndCardFixturesFlowThroughVSRFClientAndMovementService() async throws {
+        VSRFMovementURLProtocol.install(
+            search: try Data(fixture("vsrf_current_search_340").utf8),
+            card: try Data(fixture("vsrf_current_card_340").utf8))
+        defer { VSRFMovementURLProtocol.reset() }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [VSRFMovementURLProtocol.self]
+        let client = VSRFClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: client, uid: "11OS0000-01-2025-000169-68",
+            firstInstanceCourt: "Модельный городской суд",
+            firstInstanceCaseNumber: "3а-85/2025", partySurnames: [])
+
+        XCTAssertFalse(outcome.incomplete)
+        let instance = try XCTUnwrap(outcome.instances.first)
+        XCTAssertEqual(outcome.instances.count, 1)
+        XCTAssertEqual(instance.caseNumber, "3-ИКАД25-3-А2")
+        XCTAssertEqual(instance.sourceURL?.absoluteString,
+                       "https://www.vsrf.ru/lk/practice/claims/12-36321243")
+        XCTAssertEqual(instance.result,
+                       "Определение. Жалоба (представление) оставлена без удовлетворения")
+        XCTAssertEqual(instance.sessions.map(\.date), ["16.09.2025", "15.10.2025", "15.10.2025"])
+        XCTAssertEqual(instance.sessions[0].event, "Передано судье")
+        XCTAssertEqual(instance.sessions[1].result,
+                       "Вынесено решение по существу. Определение. Жалоба (представление) оставлена без удовлетворения")
+        XCTAssertEqual(instance.sessions[2].result,
+                       "Дата размещения информации о времени и месте заседания 16.09.2025 16:24")
+
+        let requests = VSRFMovementURLProtocol.requests()
+        XCTAssertEqual(requests.count, 3, "UID search, ordinary search, and one verified card fetch")
+        XCTAssertEqual(requests.filter { $0.path == "/lk/practice/claims" }.count, 2)
+        XCTAssertEqual(requests.filter { $0.path == "/lk/practice/claims/12-36321243" }.count, 1)
+        XCTAssertTrue(requests.contains {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.contains {
+                $0.name == "uniqueNumber" && $0.value == "11OS0000-01-2025-000169-68"
+            } == true
+        })
+        XCTAssertTrue(requests.contains {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.contains {
+                $0.name == "oldCaseNumber1" && $0.value == "3а-85/2025"
+            } == true
+        })
+    }
+
+    func testFailedComplaintCardDoesNotAttachUnverifiedIntakeToVerifiedCase() async throws {
+        let first = VSRFFirstInstance(court: "Модельный городской суд", caseNumber: "3а-85/2025")
+        let caseRow = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .caseFile,
+                                     number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025",
+                                     uid: "11OS0000-01-2025-000169-68", firstInstance: first,
+                                     events: [VSRFEvent(date: "20.01.2025", text: "Передано судье")])
+        let complaintRow = VSRFProduction(cardID: "c1", cardSection: .claims, kind: .complaint,
+                                          number: "3-КФ25-1-К3", incomingDate: "01.01.2025",
+                                          firstInstance: first,
+                                          events: [VSRFEvent(date: "15.01.2025", text: "Истребовано дело")])
+        let verifiedCase = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .caseFile,
+                                          number: caseRow.number, incomingDate: caseRow.incomingDate,
+                                          uid: caseRow.uid, firstInstance: first,
+                                          events: [VSRFEvent(date: "20.01.2025", text: "Передано судье"),
+                                                   VSRFEvent(date: "15.10.2025", text: "Результат рассмотрения",
+                                                             details: "Опубликованный результат")])
+        let search = VSRFSearchResults(total: 2, results: [caseRow, complaintRow])
+        let mock = MockVSRF(uidResults: .init(total: 1, results: [caseRow]),
+                            numberResults: search,
+                            cardsByID: ["d1": VSRFCard(productions: [verifiedCase])],
+                            failingCardIDs: ["c1"])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: caseRow.uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+        let instance = try XCTUnwrap(outcome.instances.first)
+
+        XCTAssertTrue(outcome.incomplete)
+        XCTAssertEqual(instance.caseNumber, caseRow.number)
+        XCTAssertEqual(instance.note, "Движение жалобы временно недоступно")
+        XCTAssertTrue(instance.sessions.contains { $0.event == "Передано судье" })
+        XCTAssertTrue(instance.sessions.contains { $0.event == "Результат рассмотрения" })
+        XCTAssertFalse(instance.sessions.contains { $0.event == "Истребовано дело" },
+                       "search-row intake is not authoritative until the complaint card verifies")
+    }
+
+    func testFailedOwnCardKeepsSummaryAndOnlyVerifiedComplaintIntake() async throws {
+        let first = VSRFFirstInstance(court: "Модельный городской суд", caseNumber: "3а-85/2025")
+        let caseRow = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .caseFile,
+                                     number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025",
+                                     uid: "11OS0000-01-2025-000169-68", firstInstance: first,
+                                     events: [VSRFEvent(date: "15.10.2025", text: "Поиск: опубликованный итог")])
+        let complaintRow = VSRFProduction(cardID: "c1", cardSection: .claims, kind: .complaint,
+                                          number: "3-КФ25-1-К3", incomingDate: "01.01.2025",
+                                          firstInstance: first,
+                                          events: [VSRFEvent(date: "15.01.2025", text: "Истребовано дело")])
+        let verifiedComplaint = VSRFProduction(cardID: "c1", cardSection: .claims,
+                                              kind: .complaint, number: complaintRow.number,
+                                              incomingDate: complaintRow.incomingDate,
+                                              firstInstance: first,
+                                              events: [VSRFEvent(date: "15.01.2025", text: "Истребовано дело",
+                                                                details: "Подтверждённая карточкой жалобы")])
+        let mock = MockVSRF(uidResults: .init(total: 1, results: [caseRow]),
+                            numberResults: .init(total: 2, results: [caseRow, complaintRow]),
+                            cardsByID: ["c1": VSRFCard(productions: [verifiedComplaint])],
+                            failingCardIDs: ["d1"])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: caseRow.uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+        let instance = try XCTUnwrap(outcome.instances.first)
+
+        XCTAssertTrue(outcome.incomplete)
+        XCTAssertEqual(instance.caseNumber, caseRow.number)
+        XCTAssertEqual(instance.result, "Поиск: опубликованный итог",
+                       "the verified card failure keeps the search disposition as its header")
+        XCTAssertEqual(instance.note, "Движение временно недоступно · жалоба проверена")
+        XCTAssertEqual(instance.sessions.count, 1)
+        XCTAssertEqual(instance.sessions.first?.event, "Истребовано дело")
+        XCTAssertEqual(instance.sessions.first?.result, "Подтверждённая карточкой жалобы")
+        XCTAssertFalse(instance.sessions.contains { $0.event.contains("Поиск:") })
+    }
+
+    func testDetailWithMatchingIDButWrongKindOrUIDFallsBackToSearchSummary() async throws {
+        let uid = "11OS0000-01-2025-000169-68"
+        let first = VSRFFirstInstance(court: "Модельный городской суд", caseNumber: "3а-85/2025")
+        let row = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .caseFile,
+                                 number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025",
+                                 uid: uid, firstInstance: first,
+                                 events: [VSRFEvent(date: "15.10.2025", text: "Search summary")])
+        let wrongKind = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .complaint,
+                                       number: row.number, incomingDate: row.incomingDate,
+                                       uid: uid, firstInstance: first,
+                                       events: [VSRFEvent(date: "15.10.2025", text: "Wrong kind detail")])
+        let wrongUID = VSRFProduction(cardID: "d1", cardSection: .claims, kind: .caseFile,
+                                      number: row.number, incomingDate: row.incomingDate,
+                                      uid: "11OS0000-01-2025-000170-68", firstInstance: first,
+                                      events: [VSRFEvent(date: "15.10.2025", text: "Wrong UID detail")])
+
+        for (mismatch, detail) in [("kind", wrongKind), ("UID", wrongUID)] {
+            let mock = MockVSRF(uidResults: .init(total: 1, results: [row]),
+                                numberResults: .init(total: 1, results: [row]),
+                                cardsByID: ["d1": VSRFCard(productions: [detail])])
+            let outcome = try await MovementService.vsrfInstancesOutcome(
+                vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+                firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+            let instance = try XCTUnwrap(outcome.instances.first, "\(mismatch) mismatch")
+
+            XCTAssertTrue(outcome.incomplete, "\(mismatch) mismatch must mark the source incomplete")
+            XCTAssertEqual(instance.note, "Движение временно недоступно", "\(mismatch) mismatch")
+            XCTAssertEqual(instance.result, "Search summary", "\(mismatch) mismatch")
+            XCTAssertTrue(instance.sessions.contains { $0.event == "Search summary" }, "\(mismatch) mismatch")
+            XCTAssertFalse(instance.sessions.contains { $0.event == "Wrong kind detail" || $0.event == "Wrong UID detail" },
+                           "unverified detail rows must not replace search fallback")
+        }
     }
 }
 
@@ -161,11 +317,34 @@ private actor MockCase: CaseProviding {
                    deloID: String, new: String) async throws -> CaseCard { firstCard }
 }
 
-private struct MockVSRF: VSRFProviding {
+private actor MockVSRF: VSRFProviding {
     let uidResults: VSRFSearchResults
     let numberResults: VSRFSearchResults
-    let card: VSRFCard
-    var failUID = false
+    private let defaultCard: VSRFCard?
+    private let cardsByID: [String: VSRFCard]
+    private let failingCardIDs: Set<String>
+    let failUID: Bool
+
+    init(uidResults: VSRFSearchResults, numberResults: VSRFSearchResults,
+         card: VSRFCard, failUID: Bool = false, failingCardIDs: Set<String> = []) {
+        self.uidResults = uidResults
+        self.numberResults = numberResults
+        self.defaultCard = card
+        self.cardsByID = [:]
+        self.failingCardIDs = failingCardIDs
+        self.failUID = failUID
+    }
+
+    init(uidResults: VSRFSearchResults, numberResults: VSRFSearchResults,
+         cardsByID: [String: VSRFCard], failingCardIDs: Set<String> = []) {
+        self.uidResults = uidResults
+        self.numberResults = numberResults
+        self.defaultCard = nil
+        self.cardsByID = cardsByID
+        self.failingCardIDs = failingCardIDs
+        self.failUID = false
+    }
+
     func search(uniqueNumber: String?, oldCaseNumber: String?,
                 keywords: String?) async throws -> VSRFSearchResults {
         if uniqueNumber != nil {
@@ -175,5 +354,55 @@ private struct MockVSRF: VSRFProviding {
         if oldCaseNumber != nil { return numberResults }
         return VSRFSearchResults(total: 0, results: [])
     }
-    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard { card }
+
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        if failingCardIDs.contains(productionID) { throw SudrfError.http(status: 503) }
+        return cardsByID[productionID] ?? defaultCard ?? VSRFCard(productions: [])
+    }
+}
+
+private final class VSRFMovementURLProtocol: URLProtocol {
+    nonisolated(unsafe) private static var searchBody = Data()
+    nonisolated(unsafe) private static var cardBody = Data()
+    nonisolated(unsafe) private static var seen: [URL] = []
+    private static let lock = NSLock()
+
+    static func install(search: Data, card: Data) {
+        lock.lock(); defer { lock.unlock() }
+        searchBody = search
+        cardBody = card
+        seen = []
+    }
+
+    static func requests() -> [URL] {
+        lock.lock(); defer { lock.unlock() }
+        return seen
+    }
+
+    static func reset() {
+        lock.lock(); defer { lock.unlock() }
+        searchBody = Data()
+        cardBody = Data()
+        seen = []
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        Self.lock.lock()
+        Self.seen.append(url)
+        let body = url.path == "/lk/practice/claims/12-36321243"
+            ? Self.cardBody : Self.searchBody
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/html; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

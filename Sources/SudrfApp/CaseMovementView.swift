@@ -726,7 +726,7 @@ struct InstanceBlock: View {
             if let error = instance.actFileError {
                 actFilePrompt(error)
             }
-            ForEach(instance.sessions) { s in
+            ForEach(Self.displaySessions(in: instance)) { s in
                 SessionRow(session: s)
             }
         }
@@ -737,6 +737,36 @@ struct InstanceBlock: View {
         )
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.06)))
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// ВС РФ publishes appointment and disposition separately. Present a
+    /// unique same-day pair like other courts, retaining the source timeline.
+    static func displaySessions(in instance: CaseInstance) -> [CaseSession] {
+        guard ["vsrf.ru", "www.vsrf.ru"].contains(instance.domain.lowercased()) else {
+            return instance.sessions
+        }
+        let sessions = instance.sessions
+        var pairedResults = Set<Int>()
+        var hearings: [Int: CaseSession] = [:]
+        for (index, appointment) in sessions.enumerated()
+            where appointment.event == "Назначение даты судебного заседания" {
+            guard DateUtil.parse(appointment.date) != nil,
+                  sessions.filter({ $0.date == appointment.date
+                    && $0.event == appointment.event }).count == 1 else { continue }
+            let results = sessions.indices.filter {
+                sessions[$0].date == appointment.date
+                    && sessions[$0].event == "Результат рассмотрения"
+            }
+            guard results.count == 1, let resultIndex = results.first,
+                  let result = sessions[resultIndex].result, !result.isEmpty else { continue }
+            hearings[index] = CaseSession(date: appointment.date, time: appointment.time,
+                room: appointment.room, event: "Судебное заседание",
+                result: [result, appointment.result].compactMap { $0 }.joined(separator: " · "))
+            pairedResults.insert(resultIndex)
+        }
+        return sessions.enumerated().compactMap { index, session in
+            pairedResults.contains(index) ? nil : (hearings[index] ?? session)
+        }
     }
 
     private var complaintResultAmbiguity: some View {
@@ -873,10 +903,12 @@ private struct SessionRow: View {
                 .font(.system(size: 11)).foregroundStyle(.tertiary)
                 .frame(width: 62, alignment: .leading)
             Text(session.event).font(.system(size: 12)).lineLimit(1)
+                .help(session.event)
             Spacer(minLength: 8)
             if let result = session.result {
                 Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(1).frame(maxWidth: 200, alignment: .trailing)
+                    .help(result)
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 5)

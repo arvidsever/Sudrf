@@ -6,6 +6,10 @@
 import Foundation
 
 public enum MovementCachePolicy {
+    private static func canonicalHost(_ host: String) -> String {
+        let host = SudrfHost.moduleHost(host)
+        return host == "www.vsrf.ru" ? "vsrf.ru" : host
+    }
 
     /// Слияние свежего движения с кэшированным. Заглушки и метка неполного
     /// ответа защищают ранее загруженные реальные инстанции того же
@@ -30,13 +34,13 @@ public enum MovementCachePolicy {
         var changed = false
 
         let incompleteDomains = Set(
-            (fresh.incompleteHigherCourtDomains ?? []).map(SudrfHost.moduleHost))
+            (fresh.incompleteHigherCourtDomains ?? []).map(canonicalHost))
         let freshBaseDomain = fresh.instances.first {
             MovementService.sameCaseNumber($0.caseNumber, fresh.caseNumber)
         }?.domain
-        let freshBaseCanonicalDomain = freshBaseDomain.map(SudrfHost.moduleHost)
+        let freshBaseCanonicalDomain = freshBaseDomain.map(canonicalHost)
         let baseIsIncomplete = freshBaseDomain.map {
-            incompleteDomains.contains(SudrfHost.moduleHost($0))
+            incompleteDomains.contains(canonicalHost($0))
         } ?? false
 
         // A saved-UID fallback deliberately returns a sparse base movement.
@@ -82,16 +86,52 @@ public enum MovementCachePolicy {
         func restoreCachedRealInstances(for canonical: String) -> Bool {
             let overlaysSparseBase = baseIsIncomplete && canonical == freshBaseCanonicalDomain
             let realInstances = cached.instances.filter {
-                SudrfHost.moduleHost($0.domain) == canonical
+                canonicalHost($0.domain) == canonical
                     && $0.captchaFormURL == nil
                     && $0.transientError != true
             }
             guard !realInstances.isEmpty else { return false }
             for r in realInstances {
                 if let freshIndex = instances.firstIndex(where: {
-                    SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(r.domain)
-                        && MovementService.sameCaseNumber($0.caseNumber, r.caseNumber)
+                    canonicalHost($0.domain) == canonicalHost(r.domain)
+                        && (canonical == "vsrf.ru"
+                            ? MovementService.sameVSRFCard($0.sourceURL, r.sourceURL)
+                            : MovementService.sameCaseNumber($0.caseNumber, r.caseNumber))
                 }) {
+                    if canonical == "vsrf.ru",
+                       incompleteDomains.contains(canonical),
+                       instances[freshIndex].note == "Движение временно недоступно" {
+                        // A valid search summary must not replace the last full card.
+                        instances[freshIndex] = r
+                        changed = true
+                    }
+                    if canonical == "vsrf.ru", incompleteDomains.contains(canonical) {
+                        let ownUnavailable = instances[freshIndex].note
+                            == "Движение временно недоступно · жалоба проверена"
+                        let intakeUnavailable = instances[freshIndex].note
+                            == "Движение жалобы временно недоступно"
+                        if ownUnavailable || intakeUnavailable {
+                            let freshInstance = instances[freshIndex]
+                            var preferred = ownUnavailable ? r : freshInstance
+                            // All fresh rows here are verified. Prefer their
+                            // details even when the own-card header comes from cache.
+                            var sessions = freshInstance.sessions
+                            for session in r.sessions where !sessions.contains(where: {
+                                $0.date == session.date && $0.time == session.time
+                                    && $0.room == session.room && $0.event == session.event
+                            }) {
+                                sessions.append(session)
+                            }
+                            preferred.sessions = sessions.enumerated().sorted {
+                                let lhs = MovementService.dateSortKey($0.element.date)
+                                let rhs = MovementService.dateSortKey($1.element.date)
+                                return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
+                            }.map(\.element)
+                            preferred.note = freshInstance.note
+                            instances[freshIndex] = preferred
+                            changed = true
+                        }
+                    }
                     // A material row/known card can be identified by its
                     // published header even when its card is temporarily
                     // unavailable. Keep the cached movement for that exact
@@ -186,7 +226,7 @@ public enum MovementCachePolicy {
 
         func hasCachedRealInstances(for canonical: String) -> Bool {
             cached.instances.contains {
-                SudrfHost.moduleHost($0.domain) == canonical
+                canonicalHost($0.domain) == canonical
                     && $0.captchaFormURL == nil
                     && $0.transientError != true
             }
@@ -208,7 +248,7 @@ public enum MovementCachePolicy {
         stubIndices.sort(by: >)
         for i in stubIndices {
             let inst = instances[i]
-            let canonical = SudrfHost.moduleHost(inst.domain)
+            let canonical = canonicalHost(inst.domain)
             guard hasCachedRealInstances(for: canonical) else {
                 // Кэша нет — оставляем stub в instances, идёт в персист;
                 // UI показывает captcha-form или плашку «нет связи» + retry.
@@ -228,7 +268,7 @@ public enum MovementCachePolicy {
         }
         // A recognized empty listing is not proof that a previously tracked
         // court round was deleted. Only an explicit tombstone may remove it.
-        for canonical in Set((fresh.honestZeroDomains ?? []).map(SudrfHost.moduleHost)) {
+        for canonical in Set((fresh.honestZeroDomains ?? []).map(canonicalHost)) {
             if restoreCachedRealInstances(for: canonical) { changed = true }
         }
         guard changed else { return fresh }
@@ -237,11 +277,11 @@ public enum MovementCachePolicy {
         let registrationGroups = Set(instances.compactMap { instance -> String? in
             guard instance.previousRegistration != nil
                     || instance.note == "Предыдущая регистрация" else { return nil }
-            return "\(SudrfHost.moduleHost(instance.domain))|\(instance.level.rawValue)"
+            return "\(canonicalHost(instance.domain))|\(instance.level.rawValue)"
         })
         for group in registrationGroups {
             guard let sample = instances.first(where: {
-                "\(SudrfHost.moduleHost($0.domain))|\($0.level.rawValue)" == group
+                "\(canonicalHost($0.domain))|\($0.level.rawValue)" == group
             }) else { continue }
             instances = MovementService.labelRegistrationRounds(
                 instances, domain: sample.domain, level: sample.level)

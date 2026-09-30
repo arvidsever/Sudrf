@@ -80,7 +80,13 @@ public struct VSRFEvent: Sendable, Equatable, Identifiable {
     public var id: String { (date ?? "—") + "|" + text }
     public var date: String?
     public var text: String
-    public init(date: String?, text: String) { self.date = date; self.text = text }
+    var details: String?
+    public init(date: String?, text: String) {
+        self.date = date; self.text = text; self.details = nil
+    }
+    init(date: String?, text: String, details: String?) {
+        self.date = date; self.text = text; self.details = details
+    }
 }
 
 /// Одно производство ВС РФ — общая модель для блока карточки и строки выдачи.
@@ -107,6 +113,7 @@ public struct VSRFProduction: Sendable, Equatable, Identifiable {
     public var respondents: [String]       // «Ответчики / административные ответчики»
     public var rapporteur: String?         // «Докладчик»
     public var events: [VSRFEvent]         // движение / события
+    var publishedResult: String?
 
     public init(cardID: String? = nil, cardSection: VSRFCardSection? = nil,
                 kind: VSRFProductionKind = .other, number: String? = nil,
@@ -122,7 +129,7 @@ public struct VSRFProduction: Sendable, Equatable, Identifiable {
         self.collegium = collegium; self.cassationCourt = cassationCourt; self.appealedAct = appealedAct
         self.subject = subject; self.firstInstance = firstInstance; self.applicant = applicant
         self.claimants = claimants; self.respondents = respondents; self.rapporteur = rapporteur
-        self.events = events
+        self.events = events; self.publishedResult = nil
     }
 
     public var id: String { cardID ?? ((number ?? "—") + "|" + (incomingDate ?? "")) }
@@ -279,7 +286,15 @@ public enum VSRFCardParser {
     /// Разбор карточки производства (`/lk/practice/cases|appeals/{id}`).
     public static func parse(html: String) throws -> VSRFCard {
         let doc = try Self.document(html)
-        let prods = VSRFDOM.extractProductions(doc)
+        let currentCard = VSRFDOM.hasCurrentCardMarkup(doc)
+        let prods: [VSRFProduction]
+        if currentCard {
+            prods = try VSRFDOM.extractCurrentCardProductions(doc)
+        } else {
+            prods = VSRFDOM.extractProductions(doc)
+        }
+        guard !prods.isEmpty else { throw SudrfError.parsing("Неизвестный формат карточки ВС РФ") }
+        if !currentCard { try VSRFDOM.validateLegacyCard(prods) }
         let raw = (try? doc.text()) ?? ""
         return VSRFCard(productions: prods, rawText: raw)
     }
@@ -337,6 +352,41 @@ public enum VSRFSearchParser {
 
 enum VSRFDOM {
 
+    private struct CurrentMetadata {
+        var fields: [String: String] = [:]
+        var firstInstanceCell: Element?
+        var claimants: [String] = []
+        var respondents: [String] = []
+        var applicant: String?
+    }
+
+    static func hasCurrentCardMarkup(_ doc: Document) -> Bool {
+        firstEl(doc, "[class*=CaseStyle_cardTitleRow__]") != nil
+    }
+
+    static func extractCurrentCardProductions(_ doc: Document) throws -> [VSRFProduction] {
+        let items = (try? doc.select("[class*=CaseStyle_case_item__]").array()) ?? []
+        let cardItems = items.filter { firstEl($0, "[class*=CaseStyle_cardTitleRow__]") != nil }
+        guard !cardItems.isEmpty else { throw SudrfError.parsing("В карточке ВС РФ нет производства") }
+        return try cardItems.map(buildCurrentCardItem)
+    }
+
+    static func validateLegacyCard(_ productions: [VSRFProduction]) throws {
+        let complete = productions.allSatisfy { production in
+            guard let incomingDate = production.incomingDate,
+                  firstDate(in: incomingDate) != nil else { return false }
+            let details = [production.procedureType, production.instanceType, production.uid,
+                           production.collegium, production.cassationCourt, production.appealedAct,
+                           production.subject, production.firstInstance.court,
+                           production.firstInstance.caseNumber, production.firstInstance.judge,
+                           production.firstInstance.decisionDate, production.firstInstance.result,
+                           production.applicant, production.rapporteur]
+            return details.contains { $0?.trimmed.isEmpty == false }
+                || !production.claimants.isEmpty || !production.respondents.isEmpty
+        }
+        guard complete else { throw SudrfError.parsing("Карточка ВС РФ содержит неполные сведения о производстве") }
+    }
+
     static func isSearchResultsPage(_ doc: Document) -> Bool {
         if firstEl(doc, "[class*=SearchPage_resultsBlock__]") != nil { return true }
         return firstEl(doc, "#filter-form") != nil
@@ -351,31 +401,10 @@ enum VSRFDOM {
 
     private static func buildCurrentSearchItem(_ item: Element) -> VSRFProduction {
         let link = searchCardLink(of: item)
-        var meta: [String: String] = [:]
-        var firstInstanceCell: Element?
-        for row in (try? item.select("[class*=RowElement_container__]").array()) ?? [] {
-            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]"),
-                  let value = firstEl(row, "[class*=CaseStyle_case_value__]") else { continue }
-            let key = clean((try? label.text()) ?? "").lowercased()
-            let raw = clean((try? value.text()) ?? "")
-            if key.hasPrefix("суд 1-й инстанции") { firstInstanceCell = value }
-            if !raw.isEmpty { meta[key] = raw }
-        }
-
-        var claimants: [String] = []
-        var respondents: [String] = []
-        var applicant: String?
-        for row in (try? item.select("[class*=CaseStyle_case_personalList_item__]").array()) ?? [] {
-            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]") else { continue }
-            let key = clean((try? label.text()) ?? "").lowercased()
-            let value = firstEl(row, "[class*=CaseStyle_case_personalListName__]") ?? row
-            if key.hasPrefix("в интересах") { applicant = names(in: value).first }
-            else if key.hasPrefix("заявител") {
-                claimants = names(in: value)
-                if applicant == nil { applicant = claimants.first }
-            }
-            else if key.hasPrefix("ответчик") { respondents = names(in: value) }
-        }
+        let current = currentMetadata(in: item)
+        let meta = current.fields
+        let claimants = current.claimants
+        let respondents = current.respondents
 
         var rapporteur: String?
         var events: [VSRFEvent] = []
@@ -404,12 +433,170 @@ enum VSRFDOM {
             instanceType: meta["инстанция:"],
             uid: uid,
             subject: meta["по иску:"],
-            firstInstance: parseFirstInstance(firstInstanceCell),
-            applicant: applicant ?? claimants.first,
+            firstInstance: parseFirstInstance(current.firstInstanceCell),
+            applicant: current.applicant ?? claimants.first,
             claimants: claimants,
             respondents: respondents,
             rapporteur: rapporteur,
             events: events)
+    }
+
+    private static func currentMetadata(in item: Element) -> CurrentMetadata {
+        var current = CurrentMetadata()
+        for row in (try? item.select("[class*=RowElement_container__]").array()) ?? [] {
+            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]"),
+                  let value = firstEl(row, "[class*=CaseStyle_case_value__]") else { continue }
+            let key = clean((try? label.text()) ?? "").lowercased()
+            let raw = clean((try? value.text()) ?? "")
+            if key.hasPrefix("суд 1-й инстанции") { current.firstInstanceCell = value }
+            if !raw.isEmpty { current.fields[key] = raw }
+        }
+        for row in (try? item.select("[class*=CaseStyle_case_personalList_item__]").array()) ?? [] {
+            guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]") else { continue }
+            let key = clean((try? label.text()) ?? "").lowercased()
+            let value = firstEl(row, "[class*=CaseStyle_case_personalListName__]") ?? row
+            if key.hasPrefix("в интересах") { current.applicant = names(in: value).first }
+            else if key.hasPrefix("заявител") {
+                current.claimants = names(in: value)
+                if current.applicant == nil { current.applicant = current.claimants.first }
+            } else if key.hasPrefix("ответчик") {
+                current.respondents = names(in: value)
+            }
+        }
+        return current
+    }
+
+    private static func buildCurrentCardItem(_ item: Element) throws -> VSRFProduction {
+        guard let title = firstEl(item, "[class*=CaseStyle_cardTitleRow__]"),
+              let cardID = currentCardID(in: title),
+              let number = currentCardNumber(in: title) else {
+            throw SudrfError.parsing("В карточке ВС РФ нет проверяемого номера или ID производства")
+        }
+
+        let current = currentMetadata(in: item)
+        let uid = current.fields["уникальный идентификатор дела:"]
+        let kind: VSRFProductionKind = cardID.hasPrefix("12-") ? .caseFile : .complaint
+        var events = try currentCardEvents(in: item)
+        let finalAct = try currentPublishedResult(in: item)
+        if let finalAct, let result = finalAct.text.nonEmpty {
+            let matchingResults = events.indices.filter {
+                events[$0].text.caseInsensitiveCompare("Результат рассмотрения") == .orderedSame
+                    && events[$0].date == finalAct.date
+            }
+            if matchingResults.count == 1, let index = matchingResults.first {
+                let prior = events[index].details
+                if prior?.range(of: result, options: .caseInsensitive) == nil {
+                    events[index].details = [prior, result].compactMap { $0?.nonEmpty }
+                        .joined(separator: ". ")
+                }
+            } else {
+                events.append(VSRFEvent(date: finalAct.date, text: result))
+            }
+        }
+
+        let meta = current.fields
+        var production = VSRFProduction(
+            cardID: cardID,
+            cardSection: .claims,
+            kind: kind,
+            number: number,
+            incomingDate: meta["дата поступления:"].flatMap { firstDate(in: $0) } ?? meta["дата поступления:"],
+            procedureType: meta["вид судопроизводства:"],
+            instanceType: meta["инстанция:"],
+            uid: uid,
+            collegium: meta["судебная коллегия (состав):"],
+            subject: meta["по иску:"] ?? meta["предмет иска:"],
+            firstInstance: parseFirstInstance(current.firstInstanceCell),
+            applicant: current.applicant ?? current.claimants.first,
+            claimants: current.claimants,
+            respondents: current.respondents,
+            rapporteur: finalAct?.rapporteur,
+            events: events)
+        production.publishedResult = finalAct?.text
+        return production
+    }
+
+    private static func currentCardID(in title: Element) -> String? {
+        for anchor in (try? title.select("a[id]").array()) ?? [] {
+            guard let id = try? anchor.attr("id"),
+                  let match = id.firstMatch(of: /^(?:anchor)?(12-\d+|21-\d+)(?:-|$)/) else { continue }
+            return String(match.1)
+        }
+        return nil
+    }
+
+    private static func currentCardNumber(in title: Element) -> String? {
+        for span in (try? title.select("span").array()) ?? [] {
+            guard let text = try? span.text() else { continue }
+            let value = clean(text)
+            if value.contains("-") && value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "/" }) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func currentCardEvents(in item: Element) throws -> [VSRFEvent] {
+        guard let section = firstEl(item, "[class*=CaseStyle_eventsRow__]"),
+              firstEl(section, "[class*=CaseStyle_eventsRow_title__]") != nil else {
+            throw SudrfError.parsing("В карточке ВС РФ отсутствует раздел движения по делу")
+        }
+        var events: [VSRFEvent] = []
+        for row in section.children().array() {
+            let classes = (try? row.attr("class")) ?? ""
+            if classes.contains("CaseStyle_eventsRow_title__") || classes.contains("CaseStyle_eventsRow_divider__") {
+                continue
+            }
+            let rowText = clean((try? row.text()) ?? "")
+            guard !rowText.isEmpty else { continue }
+            guard let dateCell = firstEl(row, "[class*=CaseStyle_appealEventRow_date__]"),
+                  let date = (try? dateCell.text()).map(clean).flatMap({ firstDate(in: $0) }),
+                  let value = firstEl(row, "[class*=CaseStyle_case_value__]") else {
+                throw SudrfError.parsing("Повреждена строка движения по делу ВС РФ")
+            }
+            let segments = currentEventTextSegments(in: value)
+            guard let text = segments.first?.nonEmpty else {
+                throw SudrfError.parsing("В строке движения по делу ВС РФ нет текста события")
+            }
+            let details = segments.dropFirst().joined(separator: " ").nonEmpty
+            events.append(VSRFEvent(date: date, text: text, details: details))
+        }
+        return events
+    }
+
+    private static func currentEventTextSegments(in value: Element) -> [String] {
+        let html = (try? value.html()) ?? ""
+        let withLineBreaks = html.replacingOccurrences(of: #"<br\s*/?>"#, with: "\n",
+                                                        options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"</?(?:div|p|li|section)[^>]*>"#, with: "\n",
+                                  options: [.regularExpression, .caseInsensitive])
+        let segments = withLineBreaks.components(separatedBy: "\n").map { fragment -> String in
+            clean((try? SwiftSoup.parseBodyFragment(fragment).text()) ?? "")
+        }.filter { !$0.isEmpty }
+        guard !segments.isEmpty else { return [clean((try? value.text()) ?? "")] }
+        return segments
+    }
+
+    private static func currentPublishedResult(in item: Element) throws
+        -> (date: String, text: String, rapporteur: String?)? {
+        guard let row = firstEl(item, "[class*=FinalActRow_container__]") else { return nil }
+        guard let column = firstEl(row, "[class*=FinalActRow_col__]"),
+              let dateCell = firstEl(row, "[class*=FinalActRow_date__]"),
+              let date = (try? dateCell.text()).map(clean).flatMap({ firstDate(in: $0) }) else {
+            throw SudrfError.parsing("Повреждён опубликованный судебный акт ВС РФ")
+        }
+        let rapporteur = firstEl(row, ".vs-reporter-name")
+            .flatMap { (try? $0.text()).map(clean) }.flatMap { $0.nonEmpty }
+        var resultText = clean(stripRapporteur(clean((try? column.text()) ?? "")))
+        if let rapporteur, resultText.hasSuffix(rapporteur) {
+            resultText = clean(String(resultText.dropLast(rapporteur.count)))
+        }
+        let text = resultText
+            .replacingOccurrences(of: #"\s+([)\]},.;:!?])"#, with: "$1", options: .regularExpression)
+        guard let text = text.nonEmpty else {
+            throw SudrfError.parsing("В опубликованном судебном акте ВС РФ нет текста результата")
+        }
+        return (date, text, rapporteur)
     }
 
     private static func searchCardLink(of item: Element) -> (id: String, section: VSRFCardSection?, number: String?)? {

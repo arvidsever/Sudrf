@@ -62,7 +62,7 @@
 | [#363](https://github.com/arvidsever/Sudrf/issues/363) | Удержать движение под закреплённой шапкой с системным scroll edge. |
 | [#337](https://github.com/arvidsever/Sudrf/issues/337) | Размещать накладки недели по фактической высоте карточек. |
 | [#368](https://github.com/arvidsever/Sudrf/issues/368) | Закрепить координаты навигационных кнопок месяца и недели при смене периода. |
-| [#351](https://github.com/arvidsever/Sudrf/issues/351) | Показывать события соседних месяцев в граничных неделях. |
+| [#351](https://github.com/arvidsever/Sudrf/issues/351) | **in_progress** · Даты и события всех видимых недель; месячные серии и счётчик накладок. Ветка `codex/issue-351-month-boundaries`. |
 | [#352](https://github.com/arvidsever/Sudrf/issues/352) | Короткие имена суда и картотеки в пикерах; полные — в списке, tooltip и VoiceOver. |
 | [#353](https://github.com/arvidsever/Sudrf/issues/353) | Скрыть пустой пикер «Суд» в поиске ВС РФ. |
 | [#357](https://github.com/arvidsever/Sudrf/issues/357) | Убрать внутренние ID правил из колонки «Дальше» и перенос посреди слов. |

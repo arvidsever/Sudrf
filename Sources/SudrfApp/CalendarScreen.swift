@@ -9,7 +9,7 @@ import SudrfKit
 
 // MARK: - Событие календаря
 
-private enum CalEventKind {
+enum CalEventKind {
     case hearing
     case deadlineProposed
     case deadlineConfirmed
@@ -21,7 +21,7 @@ private enum CalEventKind {
     }
 }
 
-private struct CalEvent: Identifiable {
+struct CalEvent: Identifiable {
     var id: String
     var date: Date
     var sortTime: String
@@ -256,7 +256,7 @@ struct CalendarScreen: View {
     // MARK: Режим МЕСЯЦ (4A / 4B)
 
     private var monthMode: some View {
-        let model = buildMonthModel()
+        let model = Self.buildMonthModel(month: router.calMonth, events: events)
         return VStack(alignment: .leading, spacing: 10) {
             // Варианты всей строки, а не одной легенды: внутри общего HStack со
             // Spacer легенда не получает честного предложения ширины и выталкивает
@@ -305,13 +305,14 @@ struct CalendarScreen: View {
     }
 
     // MARK: Модель месяца (issue #332) — считается ОДИН РАЗ на вычисление тела
-    // `monthMode`, а не по разу на каждую из 35 ячеек: короткие имена судов и
+    // `monthMode`, а не по разу на каждую ячейку: короткие имена судов и
     // сокращение сторон используют регулярки (`CourtNamePresentation`,
     // `PartyNamePresentation`), накладки и серии — сравнение всех заседаний
-    // месяца между собой. Раньше `events(on:)` заново фильтровал весь список
+    // видимого диапазона между собой. Раньше `events(on:)` заново фильтровал весь список
     // событий в каждой ячейке — здесь события группируются по дню один раз.
 
-    private struct MonthModel {
+    struct MonthModel {
+        var days: [Date] = []
         var itemsByDay: [Date: [CalEvent]] = [:]        // карточки дня (без «истории»), уже отсортированы
         var inactiveCountByDay: [Date: Int] = [:]        // сроки «в истории» — только счётчик
         var overlapDays: Set<Date> = []
@@ -322,16 +323,19 @@ struct CalendarScreen: View {
         var courtTier: [String: CourtTier?] = [:]        // сырой court заседания → звено
     }
 
-    private func buildMonthModel() -> MonthModel {
-        let monthDays = Set(DateUtil.datesOfMonth(router.calMonth).map { DateUtil.startOfDay($0) })
-        let monthEvents = events.filter { monthDays.contains(DateUtil.startOfDay($0.date)) }
-        let hearings = monthEvents.filter { $0.kind == .hearing }
+    static func buildMonthModel(month: Date, events: [CalEvent]) -> MonthModel {
+        let days = DateUtil.datesOfMonthGrid(month)
+        let start = days[0]
+        let end = DateUtil.addDays(days[days.count - 1], 1)
+        let visibleEvents = events.filter { $0.date >= start && $0.date < end }
+        let hearings = visibleEvents.filter { $0.kind == .hearing }
+        let allHearings = events.filter { $0.kind == .hearing }
 
-        let courtRaws = hearings.map(\.court)
+        let courtRaws = Array(Set(allHearings.map(\.court)))
         let courtKeys = CourtNamePresentation.canonicalKeys(courtRaws)
         let courtShorts = CourtNamePresentation.disambiguatedShortNames(courtRaws)
         var courtTier: [String: CourtTier?] = [:]
-        for raw in Set(courtRaws) { courtTier[raw] = CourtNamePresentation.display(raw).tier }
+        for raw in courtRaws { courtTier[raw] = CourtNamePresentation.display(raw).tier }
 
         func input(_ ev: CalEvent) -> CalendarMonthHearingInput {
             CalendarMonthHearingInput(id: ev.id, date: ev.date, time: ev.time,
@@ -346,12 +350,20 @@ struct CalendarScreen: View {
         let overlapEligible = hearings.filter { !$0.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let overlapInputs = overlapEligible.map(input)
         let overlapByID = CalendarMonthLayout.overlaps(overlapInputs)
-        let overlapDayList = CalendarMonthLayout.overlapDays(overlapInputs)
-        let seriesByID = CalendarMonthLayout.seriesPositions(hearings.map(input))
+        let overlapDays = CalendarMonthLayout.overlapDays(overlapInputs)
+        let overlapDayList = overlapDays.filter { DateUtil.startOfMonth($0) == DateUtil.startOfMonth(month) }
+        let visibleMonths = Set(days.map(DateUtil.startOfMonth))
+        let monthlyHearings = Dictionary(grouping: allHearings.filter {
+            visibleMonths.contains(DateUtil.startOfMonth($0.date))
+        }, by: { DateUtil.startOfMonth($0.date) })
+        var seriesByID: [String: (index: Int, total: Int)] = [:]
+        for group in monthlyHearings.values {
+            seriesByID.merge(CalendarMonthLayout.seriesPositions(group.map(input))) { first, _ in first }
+        }
 
         var itemsByDay: [Date: [CalEvent]] = [:]
         var inactiveCountByDay: [Date: Int] = [:]
-        for ev in monthEvents {
+        for ev in visibleEvents {
             let day = DateUtil.startOfDay(ev.date)
             if ev.kind == .deadlineInactive {
                 inactiveCountByDay[day, default: 0] += 1
@@ -366,8 +378,8 @@ struct CalendarScreen: View {
             }
         }
 
-        return MonthModel(itemsByDay: itemsByDay, inactiveCountByDay: inactiveCountByDay,
-                           overlapDays: Set(overlapDayList), overlapDayList: overlapDayList,
+        return MonthModel(days: days, itemsByDay: itemsByDay, inactiveCountByDay: inactiveCountByDay,
+                           overlapDays: Set(overlapDays), overlapDayList: overlapDayList,
                            overlapByID: overlapByID, seriesByID: seriesByID,
                            courtShort: courtShorts, courtTier: courtTier)
     }
@@ -393,7 +405,6 @@ struct CalendarScreen: View {
         let label = "Накладки: \(count) \(DateUtil.plural(count, "день", "дня", "дней"))"
         return Button {
             guard let next = advanceOverlapDay(model) else { return }
-            router.calMonth = DateUtil.startOfMonth(next)
             router.calWeekStart = DateUtil.startOfWeek(next)
             router.calSelectedDate = next
         } label: {
@@ -407,7 +418,8 @@ struct CalendarScreen: View {
             .background(Capsule().fill(Palette.confirmed.opacity(0.12)))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(label). Перейти к ближайшему дню с накладкой.")
+        .help("Накладки за \(DateUtil.monthTitle(router.calMonth)). Перейти к ближайшему дню с накладкой.")
+        .accessibilityLabel("\(label), за \(DateUtil.monthTitle(router.calMonth)). Перейти к ближайшему дню с накладкой.")
     }
 
     /// Легенда месяца: цвета звеньев суда + статусы сроков + метка накладки.
@@ -580,7 +592,8 @@ struct CalendarScreen: View {
     /// содержимое не может повлиять на размер самого GeometryReader и нет
     /// риска задержки в один кадр, которую даёт `@State`.
     private func monthGrid(_ model: MonthModel) -> some View {
-        CardBox {
+        let weeks = stride(from: 0, to: model.days.count, by: 7).map { Array(model.days[$0..<$0 + 7]) }
+        return CardBox {
             GeometryReader { geo in
                 let weekendWidth = min(Self.weekendColumnWidthCeiling, geo.size.width / 7 * 0.6)
                 let weekdayWidth = max(0, (geo.size.width - 2 * weekendWidth) / 5)
@@ -600,7 +613,7 @@ struct CalendarScreen: View {
                     ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
                         HStack(spacing: 0) {
                             ForEach(Array(week.enumerated()), id: \.offset) { idx, day in
-                                dayCell(day, isWeekend: idx >= 5, model: model,
+                                dayCell(day, model: model,
                                         columnWidth: idx >= 5 ? weekendWidth : weekdayWidth,
                                         rowHeight: rowHeight)
                             }
@@ -614,66 +627,88 @@ struct CalendarScreen: View {
     }
 
     @ViewBuilder
-    private func dayCell(_ day: Date?, isWeekend: Bool, model: MonthModel,
+    private func dayCell(_ day: Date, model: MonthModel,
                          columnWidth: CGFloat, rowHeight: CGFloat) -> some View {
-        if let day {
-            let isToday = DateUtil.isToday(day)
-            let isSel = router.calSelectedDate.map { DateUtil.sameDay($0, day) } ?? false
-            let key = DateUtil.startOfDay(day)
-            let items = model.itemsByDay[key] ?? []
-            let inactiveCount = model.inactiveCountByDay[key] ?? 0
-            let hasOverlap = model.overlapDays.contains(key)
-            let production = productionDay(day)
-            let isPast = day < DateUtil.today && !isToday
-            // Ровно то, что реально отрисовано: заголовок + ОДИН зазор перед
-            // телом (второго зазора нет — вместо концевого `Spacer` тело
-            // прижато к верху через `.frame(..., alignment: .top)`) +
-            // вертикальные паддинги ячейки.
-            let available = max(0, rowHeight - Self.dayHeaderHeight
-                                 - CalendarMonthLayout.itemSpacing - Self.dayCellVerticalPadding)
-            let layout = CalendarMonthLayout.cellLayout(itemCount: items.count, availableHeight: available)
-            Button { router.calSelectedDate = day } label: {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 5) {
-                        Text(production.symbol)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(productionTint(production))
-                            .accessibilityHidden(true)
-                        if inactiveCount > 0 { historyBadge(inactiveCount) }
-                        if hasOverlap { overlapBadge }
-                        Spacer(minLength: 0)
+        let isToday = DateUtil.isToday(day)
+        let isSel = router.calSelectedDate.map { DateUtil.sameDay($0, day) } ?? false
+        let isNeighbor = DateUtil.startOfMonth(day) != DateUtil.startOfMonth(router.calMonth)
+        let key = DateUtil.startOfDay(day)
+        let items = model.itemsByDay[key] ?? []
+        let inactiveCount = model.inactiveCountByDay[key] ?? 0
+        let hasOverlap = model.overlapDays.contains(key)
+        let production = productionDay(day)
+        let isPast = day < DateUtil.today && !isToday
+        // Ровно то, что реально отрисовано: заголовок + ОДИН зазор перед
+        // телом (второго зазора нет — вместо концевого `Spacer` тело
+        // прижато к верху через `.frame(..., alignment: .top)`) +
+        // вертикальные паддинги ячейки.
+        let available = max(0, rowHeight - Self.dayHeaderHeight
+                             - CalendarMonthLayout.itemSpacing - Self.dayCellVerticalPadding)
+        let layout = CalendarMonthLayout.cellLayout(itemCount: items.count, availableHeight: available)
+        Button { router.calSelectedDate = day } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 5) {
+                            Text(production.symbol).font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(productionTint(production))
+                            if inactiveCount > 0 { historyBadge(inactiveCount) }
+                            if hasOverlap { overlapBadgeFull }
+                        }
+                        HStack(spacing: 2) {
+                            Text(production.symbol).font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(productionTint(production))
+                            if inactiveCount > 0 { historyBadge(inactiveCount) }
+                            if hasOverlap { overlapBadgeCompact }
+                        }
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(spacing: 2) {
+                                Text(production.symbol).font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(productionTint(production))
+                                if inactiveCount > 0 { historyBadge(inactiveCount, compact: true) }
+                            }
+                            if hasOverlap { overlapBadgeCompact }
+                        }
+                    }
+                    .accessibilityHidden(true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(spacing: 0) {
                         Text("\(DateUtil.cal.component(.day, from: day))")
                             .font(.system(size: 11.5, weight: isToday || isSel ? .bold : .medium))
-                            .foregroundStyle(isToday ? .white : (isSel ? Color.accentColor : .primary))
-                            .frame(minWidth: 22, minHeight: 22)
-                            .background(
-                                Circle().fill(isToday ? Color.accentColor
-                                              : (isSel ? Color.accentColor.opacity(0.16) : .clear)))
+                            .foregroundStyle(isToday ? .white : (isSel ? Color.accentColor : (isNeighbor ? .secondary : .primary)))
+                        if let month = DateUtil.neighborMonthLabel(for: day, month: router.calMonth) {
+                            Text(month).font(.system(size: 7)).foregroundStyle(isToday ? .white : .secondary)
+                                .lineLimit(1)
+                        }
                     }
-                    .frame(height: Self.dayHeaderHeight)
-                    monthCellBody(items: items, layout: layout, model: model)
-                        .padding(.top, CalendarMonthLayout.itemSpacing)
-                        .opacity(isPast ? 0.7 : 1)
+                    .frame(minWidth: 22, minHeight: 22)
+                    .fixedSize()
+                    .layoutPriority(1)
+                    .background(
+                        Circle().fill(isToday ? Color.accentColor
+                                      : (isSel ? Color.accentColor.opacity(0.16) : .clear)))
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
-                .padding(.horizontal, 6).padding(.top, 5).padding(.bottom, 8)
-                .frame(width: columnWidth, height: rowHeight, alignment: .topLeading)
-                .background(isSel ? Color.accentColor.opacity(0.06)
-                            : productionBackground(production))
-                .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
-                .contentShape(Rectangle())
-                .clipped()
+                .frame(height: Self.dayHeaderHeight)
+                monthCellBody(items: items, layout: layout, model: model)
+                    .padding(.top, CalendarMonthLayout.itemSpacing)
+                    .opacity(isPast ? 0.7 : 1)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(dayCellAccessibilityLabel(day, production: production, items: items,
-                                                           layout: layout, model: model,
-                                                           hasOverlap: hasOverlap,
-                                                           inactiveCount: inactiveCount))
-        } else {
-            Color.primary.opacity(0.02)
-                .frame(width: columnWidth, height: rowHeight)
-                .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 6).padding(.top, 5).padding(.bottom, 8)
+            .frame(width: columnWidth, height: rowHeight, alignment: .topLeading)
+            .background(isSel ? Color.accentColor.opacity(0.06)
+                        : productionBackground(production))
+            .overlay(Rectangle().frame(width: 1).foregroundStyle(Color.primary.opacity(0.04)), alignment: .leading)
+            .contentShape(Rectangle())
+            .clipped()
         }
+        .buttonStyle(.plain)
+        .help(DateUtil.fullDate(day))
+        .accessibilityIdentifier("calendar-day-\(DateUtil.startOfDay(day).timeIntervalSince1970)")
+        .accessibilityLabel(dayCellAccessibilityLabel(day, production: production, items: items,
+                                                       layout: layout, model: model,
+                                                       hasOverlap: hasOverlap,
+                                                       inactiveCount: inactiveCount))
     }
 
     /// Полный текст видимых карточек дня — иначе он «проглатывается» общей
@@ -686,7 +721,7 @@ struct CalendarScreen: View {
                                            model: MonthModel, hasOverlap: Bool, inactiveCount: Int) -> String {
         let hearingsCount = items.filter { $0.kind == .hearing }.count
         let deadlineCount = items.filter { $0.kind != .hearing }.count
-        var parts = [DateUtil.fmt(day), production.accessibilityLabel, summary(hearingsCount, deadlineCount)]
+        var parts = [DateUtil.fullDate(day), production.accessibilityLabel, summary(hearingsCount, deadlineCount)]
         if hasOverlap { parts.append("есть накладка") }
         if inactiveCount > 0 {
             parts.append("\(inactiveCount) \(DateUtil.plural(inactiveCount, "срок", "срока", "сроков")) в истории")
@@ -712,25 +747,15 @@ struct CalendarScreen: View {
         return "Срок: \(what), № \(number), \(deadlineStatusText(ev))"
     }
 
-    private func historyBadge(_ count: Int) -> some View {
+    private func historyBadge(_ count: Int, compact: Bool = false) -> some View {
         HStack(spacing: 2) {
-            Image(systemName: "clock").font(.system(size: 8.5))
-            Text("\(count)").font(.system(size: 9.5, weight: .semibold))
+            Image(systemName: "clock").font(.system(size: compact ? 7 : 8.5))
+            Text("\(count)").font(.system(size: compact ? 8 : 9.5, weight: .semibold))
         }
         .foregroundStyle(.tertiary)
         .help("\(count) \(DateUtil.plural(count, "срок", "срока", "сроков")) в истории")
     }
 
-    /// В узкой (выходной) колонке символ дня + бейдж истории + бейдж накладки
-    /// + число дня легко превышают ~70pt — «накладка» текстом схлопывается до
-    /// компактного «!» (ревью решения 5); история — не трогаем, она и так
-    /// компактна.
-    private var overlapBadge: some View {
-        ViewThatFits(in: .horizontal) {
-            overlapBadgeFull
-            overlapBadgeCompact
-        }
-    }
     private var overlapBadgeFull: some View {
         Text("накладка")
             .font(.system(size: 9, weight: .bold))
@@ -1064,7 +1089,7 @@ struct CalendarScreen: View {
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(DateUtil.weekday(day)), \(DateUtil.fmt(day))").font(.system(size: 15, weight: .bold))
+                    Text("\(DateUtil.weekday(day)), \(DateUtil.fullDate(day))").font(.system(size: 15, weight: .bold))
                     Text(summary(hearings.count, deadlines.count)).font(.system(size: 11)).foregroundStyle(.tertiary)
                 }
                 Spacer()

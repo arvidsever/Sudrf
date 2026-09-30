@@ -77,6 +77,9 @@ enum DateUtil {
     static func fmt(_ d: Date) -> String {
         d.formatted(.dateTime.locale(ruLocale).day().month(.wide))
     }
+    static func fullDate(_ d: Date) -> String {
+        "\(fmt(d)) \(cal.component(.year, from: d)) года"
+    }
     /// «16.06» — короткая для повестки/лент.
     static func shortDM(_ d: Date) -> String {
         d.formatted(.dateTime.locale(ruLocale).day(.twoDigits).month(.twoDigits))
@@ -131,6 +134,20 @@ enum DateUtil {
     static func datesOfMonth(_ d: Date) -> [Date] {
         let first = startOfMonth(d)
         return (0..<daysInMonth(d)).compactMap { addDays(first, $0) }
+    }
+    /// Полные недели, пересекающие месяц, с понедельника по воскресенье.
+    static func datesOfMonthGrid(_ d: Date) -> [Date] {
+        let first = startOfWeek(startOfMonth(d))
+        let last = addDays(startOfWeek(addDays(startOfMonth(d), daysInMonth(d) - 1)), 6)
+        return (0...daysBetween(first, last)).map { addDays(first, $0) }
+    }
+
+    static func neighborMonthLabel(for day: Date, month: Date) -> String? {
+        guard startOfMonth(day) != startOfMonth(month),
+              day == startOfWeek(startOfMonth(month)) || cal.component(.day, from: day) == 1 else {
+            return nil
+        }
+        return cal.shortStandaloneMonthSymbols[cal.component(.month, from: day) - 1]
     }
 
     // MARK: Склонение

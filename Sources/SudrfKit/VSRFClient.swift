@@ -21,6 +21,7 @@ import Foundation
 public actor VSRFClient {
 
     private let transport: HTMLCourtTransport
+    private let actFileLoader: ActFileLoader
     public var maxAttempts = 3
 
     public init(minInterval: TimeInterval = 1.5,
@@ -32,11 +33,12 @@ public actor VSRFClient {
         cfg.httpCookieAcceptPolicy = .always
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.timeoutIntervalForRequest = 30
-        let delegate: (any URLSessionDelegate)? = trustVSRFCertificate ? VSRFTLSDelegate() : nil
+        let delegate = VSRFTLSDelegate(trustVSRFCertificate: trustVSRFCertificate)
         self.transport = HTMLCourtTransport(
             session: URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil),
             userAgent: userAgent, minInterval: minInterval,
             decodingPolicy: .utf8ThenWindows1251, throttleSemantics: .reserveSlots)
+        self.actFileLoader = ActFileLoader()
     }
 
     /// Внутренний init для тестов с URLProtocol-stub'ом.
@@ -46,6 +48,7 @@ public actor VSRFClient {
         self.transport = HTMLCourtTransport(
             session: session, userAgent: userAgent, minInterval: minInterval,
             decodingPolicy: .utf8ThenWindows1251, throttleSemantics: .reserveSlots)
+        self.actFileLoader = ActFileLoader()
     }
 
     // MARK: - Карточка
@@ -65,6 +68,34 @@ public actor VSRFClient {
             throw SudrfError.parsing("у производства нет cardID — карточки нет")
         }
         return try await fetchCard(productionID: id, section: production.resolvedSection)
+    }
+
+    /// Fetches a published PDF from a Supreme Court production card. The PDF
+    /// bytes are retained even when PDFKit cannot extract text (for scanned
+    /// judgments); MGS continues to require searchable text.
+    public func fetchPublishedAct(url: URL,
+                                  expectedProductionNumber: String? = nil) async throws -> PublishedActFile {
+        guard PublishedActURLPolicy.isAllowedVSRFPublishedAct(url) else {
+            throw PublishedActFileError.unsafeSourceURL
+        }
+        let response = try await transport.fetchFile(
+            url, maxAttempts: maxAttempts,
+            allowedHosts: PublishedActURLPolicy.allowedVSRFHosts,
+            maxBytes: ActFileLoader.Limits.production.maxDownloadBytes)
+        guard PublishedActURLPolicy.isAllowedVSRFPublishedAct(response.finalURL) else {
+            throw PublishedActFileError.unsafeFinalURL
+        }
+        let file = try await actFileLoader.extract(
+            data: response.data,
+            sourceURL: url,
+            finalURL: response.finalURL,
+            contentType: response.contentType,
+            allowEmptyPDFText: true,
+            expectedProductionNumber: expectedProductionNumber)
+        guard file.provenance.format == .pdf else {
+            throw PublishedActFileError.unsupportedFormat
+        }
+        return file
     }
 
     // MARK: - Поиск
@@ -118,19 +149,38 @@ public actor VSRFClient {
 
 /// Делегат TLS, принимающий серверный сертификат ТОЛЬКО для vsrf.ru
 /// (включается опционально — если vsrf.ru отдаёт сертификат на корнях Минцифры).
-final class VSRFTLSDelegate: NSObject, URLSessionDelegate {
+final class VSRFTLSDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    private let trustVSRFCertificate: Bool
+
+    init(trustVSRFCertificate: Bool = true) {
+        self.trustVSRFCertificate = trustVSRFCertificate
+        super.init()
+    }
+
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
+              let trust = challenge.protectionSpace.serverTrust,
+              trustVSRFCertificate else {
             completionHandler(.performDefaultHandling, nil); return
         }
         let host = challenge.protectionSpace.host.lowercased()
-        if host == "vsrf.ru" || host.hasSuffix(".vsrf.ru") {
+        if PublishedActURLPolicy.allowedVSRFHosts.contains(host) {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.performDefaultHandling, nil)
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, PublishedActURLPolicy.isAllowedVSRFHostURL(url) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

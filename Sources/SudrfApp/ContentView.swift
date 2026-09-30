@@ -652,7 +652,7 @@ private struct InspectorHeader: View {
 
 // MARK: - Переключатель актов (инспектор в режиме движения)
 
-private struct ActSwitcherPane: View {
+struct ActSwitcherPane: View {
     @ObservedObject var model: SearchModel
     let openWindow: OpenWindowAction
 
@@ -660,6 +660,17 @@ private struct ActSwitcherPane: View {
         model.movement.map(CourtActPresentation.rows(in:)) ?? []
     }
     private var body0: String? { model.selectedActText }
+    private var selected: CourtActDisplay? {
+        acts.first { model.selectedActID.map($0.contains) ?? false }
+    }
+    private var isPDF: Bool {
+        guard let host = selected?.sourceFileURL?.host?.lowercased() else { return false }
+        return host == "vsrf.ru" || host == "www.vsrf.ru"
+    }
+    private var actNumber: String {
+        selected?.productionNumber ?? model.movement?.caseNumber ?? ""
+    }
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -673,15 +684,16 @@ private struct ActSwitcherPane: View {
                     HStack(spacing: 5) {
                         Button {
                             openWindow(value: ActWindowPayload(
-                                caseNumber: model.movement?.caseNumber ?? "",
-                                actText: body0 ?? ""))
+                                caseNumber: actNumber, actText: body0 ?? "",
+                                pdfFileURL: model.selectedPublishedAct.fileURL,
+                                pdfProvenance: model.selectedPublishedAct.provenance))
                         } label: { Image(systemName: "arrow.up.forward.app") }
-                        .help("Открыть в отдельном окне").disabled(body0 == nil)
+                        .help("Открыть в отдельном окне").disabled(isPDF ? model.selectedPublishedAct.fileURL == nil : body0 == nil)
                         Button {
-                            ActPDFExporter.save(caseNumber: model.movement?.caseNumber ?? "",
-                                                text: body0 ?? "")
+                            ActPDFExporter.save(caseNumber: actNumber, text: body0 ?? "",
+                                                originalPDF: model.selectedPublishedAct.data)
                         } label: { Image(systemName: "square.and.arrow.down") }
-                        .help("Сохранить в PDF").disabled(body0 == nil)
+                        .help("Сохранить в PDF").disabled(isPDF ? model.selectedPublishedAct.data == nil : body0 == nil)
                         Button { model.closeInspector() } label: { Image(systemName: "xmark") }
                         .help("Закрыть")
                     }
@@ -702,18 +714,13 @@ private struct ActSwitcherPane: View {
                 }
             }
             .padding(EdgeInsets(top: 14, leading: 14, bottom: 10, trailing: 14))
-            Group {
-                if let txt = body0 {
-                    ScrollView {
-                        ActTextView(text: txt)
-                            .padding(EdgeInsets(top: 18, leading: 22, bottom: 24, trailing: 22))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    CenterNote(title: "Судебные акты по делу не опубликованы",
-                               caption: "Карточки инстанций получены, но тексты актов отсутствуют в публикации (262-ФЗ).")
-                }
-            }
+            CourtActContent(text: body0, pdfData: model.selectedPublishedAct.data,
+                            isPublishedFile: isPDF,
+                            isLoading: model.selectedPublishedAct.isLoading,
+                            error: model.selectedPublishedAct.error,
+                            retry: { model.selectedPublishedAct.retry() })
+            .id(model.selectedActID)
+
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: Layout.sheetRadius).fill(Color(nsColor: .textBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: Layout.sheetRadius).strokeBorder(Color.primary.opacity(0.05)))

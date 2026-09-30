@@ -11,6 +11,9 @@ struct CourtActDisplay: Identifiable {
     let text: String
     let originalURL: URL?
     let instanceLevel: CaseInstance.Level
+    var sourceFileURL: URL? = nil
+    var productionNumber: String? = nil
+    var fileProvenance: PublishedActProvenance? = nil
 
     func contains(_ sourceID: String) -> Bool { sourceIDs.contains(sourceID) }
 }
@@ -38,15 +41,18 @@ enum CourtActPresentation {
 
     static func rows(in movement: CaseMovement) -> [CourtActDisplay] {
         let sources = movement.acts.compactMap { act -> Source? in
-            guard let text = movement.actBodies[act.id],
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let text = movement.actBodies[act.id] ?? ""
+            let fileURL = (act.sourceFileURL ?? act.fileProvenance?.sourceURL)
+                .flatMap(PublishedActURLPolicy.safePublishedURL)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || fileURL != nil else { return nil }
             let instance = movement.instances.first { $0.linkedActIDs.contains(act.id) }
             let courtName = instance.flatMap { meaningfulCourt($0.court) }
                 ?? meaningfulCourt(act.courtShort)
             let host = instance.map { SudrfHost.moduleHost($0.domain) }
             let title = heading(in: text) ?? act.title
             return Source(act: act, text: text,
-                          fingerprint: normalizedText(text),
+                          fingerprint: text.isEmpty ? "published-file:" + act.id : normalizedText(text),
                           courtHost: host, courtName: courtName,
                           linkedLevel: instance?.level,
                           kind: kind(of: title))
@@ -86,8 +92,8 @@ enum CourtActPresentation {
                 ?? group.compactMap { humanTitle($0.act.title) }.first
                 ?? fallbackTitle(level)
             let sourceIDs = group.map { $0.act.id }
-            let fileURL = group.compactMap { $0.act.fileProvenance?.sourceURL }
-                .compactMap(PublishedActURLPolicy.safeMosGorSudURL).first
+            let fileURL = group.compactMap { $0.act.fileProvenance?.sourceURL ?? $0.act.sourceFileURL }
+                .compactMap(PublishedActURLPolicy.safePublishedURL).first
             let cardURL = movement.instances
                 .filter { !$0.linkedActIDs.filter(sourceIDs.contains).isEmpty }
                 .compactMap { instance -> URL? in
@@ -99,7 +105,9 @@ enum CourtActPresentation {
                                    stage: stageLabel(level),
                                    text: representative.text,
                                    originalURL: fileURL ?? cardURL,
-                                   instanceLevel: level)
+                                   instanceLevel: level, sourceFileURL: fileURL,
+                                   productionNumber: representative.act.productionNumber,
+                                   fileProvenance: group.compactMap { $0.act.fileProvenance }.first)
         }.sorted { lhs, rhs in
             let left = sources.firstIndex { lhs.contains($0.act.id) } ?? .max
             let right = sources.firstIndex { rhs.contains($0.act.id) } ?? .max
@@ -115,6 +123,8 @@ enum CourtActPresentation {
     private static func compatible(_ source: Source, with group: [Source]) -> Bool {
         group.allSatisfy { other in
             source.fingerprint == other.fingerprint
+                && (source.act.productionNumber == nil || other.act.productionNumber == nil
+                    || source.act.productionNumber == other.act.productionNumber)
                 && (source.linkedLevel == nil || other.linkedLevel == nil
                     || source.linkedLevel == other.linkedLevel)
                 && (source.date == nil || other.date == nil || source.date == other.date)
@@ -137,8 +147,15 @@ enum CourtActPresentation {
 
     private static func verifiedCardURL(_ url: URL, domain: String) -> URL? {
         guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
-              let host = url.host,
-              SudrfHost.moduleHost(host) == SudrfHost.moduleHost(domain) else { return nil }
+              let host = url.host else { return nil }
+        let vsHosts = ["vsrf.ru", "www.vsrf.ru"]
+        if vsHosts.contains(host.lowercased()), vsHosts.contains(domain.lowercased()),
+           url.path.range(of: #"^/lk/practice/(cases|claims|appeals)/[0-9-]+$"#, options: .regularExpression) != nil {
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.fragment = nil
+            return components?.url
+        }
+        guard SudrfHost.moduleHost(host) == SudrfHost.moduleHost(domain) else { return nil }
         if let link = try? SudrfCaseCardLink(url: url) { return link.sanitizedURL }
         if PublishedActURLPolicy.isAllowedMosGorSud(url),
            MosGorSudRouting.section(fromCardURL: url) != nil {

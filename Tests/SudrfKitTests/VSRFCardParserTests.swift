@@ -100,6 +100,61 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertEqual(production.publishedResult, "Определение. Жалоба (представление) оставлена без удовлетворения")
     }
 
+    func testCurrentCardCollectsPublishedPDFLinksOncePerProduction() throws {
+        let first = #"<div class="CaseStyle_case_item__test"><div class="CaseStyle_cardTitleRow__test"><a id="12-101-HASH"></a><span>3-ИКАД25-3-А2</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div><div class="FinalActRow_container__test"><div class="FinalActRow_date__test">15.10.2025</div><div class="FinalActRow_col__test"><span><a href="/lk/practice/stor_pdf/2496438"><svg></svg></a></span><a href="https://vsrf.ru/lk/practice/stor_pdf/2496438?source=card">Определение.</a> Жалоба оставлена без удовлетворения</div></div></div>"#
+        let second = #"<div class="CaseStyle_case_item__test"><div class="CaseStyle_cardTitleRow__test"><a id="12-102-HASH"></a><span>3-ИКАД25-4-А2</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div><div class="FinalActRow_container__test"><div class="FinalActRow_date__test">16.10.2025</div><div class="FinalActRow_col__test"><a href="/lk/practice/stor_pdf/2496439">Постановление.</a><a href="/lk/practice/archive/second-round-act.pdf">Дополнительный PDF</a></div></div></div>"#
+        let unrelated = #"<a href="https://example.com/lk/practice/stor_pdf/should-not-attach">Внешний акт</a>"#
+        let html = #"<html><body>"# + first + second + unrelated + "</body></html>"
+
+        let card = try VSRFCardParser.parse(html: html)
+
+        XCTAssertEqual(card.productions.count, 2)
+        let firstProduction = try XCTUnwrap(card.productions.first { $0.cardID == "12-101" })
+        XCTAssertEqual(firstProduction.publishedActs, [
+            VSRFPublishedAct(url: URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/2496438")!,
+                            date: "15.10.2025", title: "Определение")
+        ])
+        let secondProduction = try XCTUnwrap(card.productions.first { $0.cardID == "12-102" })
+        XCTAssertEqual(secondProduction.publishedActs.map(\.url.absoluteString), [
+            "https://www.vsrf.ru/lk/practice/stor_pdf/2496439",
+            "https://www.vsrf.ru/lk/practice/archive/second-round-act.pdf"
+        ])
+    }
+
+    func testCurrentCardIgnoresNonVSOrNonPublishedFileURLs() throws {
+        let html = #"<div class="CaseStyle_case_item__test"><div class="CaseStyle_cardTitleRow__test"><a id="12-103-HASH"></a><span>3-ИКАД25-5-А2</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div><div class="FinalActRow_container__test"><div class="FinalActRow_date__test">15.10.2025</div><div class="FinalActRow_col__test"><a href="http://www.vsrf.ru/lk/practice/stor_pdf/1">HTTP</a><a href="https://vsrf.ru/lk/practice/cases/12-104">Карточка</a><a href="https://example.com/lk/practice/stor_pdf/2">Другой суд</a><a href="https://mos-gorsud.ru/documents/foreign.pdf">Решение</a></div></div></div>"#
+        let production = try XCTUnwrap(VSRFCardParser.parse(html: html).productions.first)
+        XCTAssertTrue(production.publishedActs.isEmpty)
+    }
+
+    func testLegacyCardCollectsOnlyPublishedActsFromTheirOwnProductionRows() throws {
+        let first = #"<div data-subscribe-claim-id="21-111"><div class="vs-items-separate vs-appeal-title"><span class="vs-items-label"><a>3-КФ26-1-К1</a></span></div><div class="row vs-item-detail"><div class="col-md-3">Дата поступления:</div><div class="col-md-7">01.10.2025</div></div><div class="row vs-item-detail"><div class="col-md-3">Вид судопроизводства:</div><div class="col-md-7">Гражданское</div></div><div class="row vs-item-detail"><div class="col-md-3">Опубликованный судебный акт:</div><div class="col-md-7"><a href="/lk/practice/stor_pdf/301">Определение от 15.10.2025</a><a href="https://vsrf.ru/lk/practice/stor_pdf/301?copy=1">Определение от 15.10.2025</a></div></div></div>"#
+        let second = #"<div data-subscribe-claim-id="12-222"><div class="vs-items-separate vs-case-title"><span class="vs-items-label"><a>3-КГ26-2-К1</a></span></div><div class="row vs-item-detail"><div class="col-md-3">Дата поступления:</div><div class="col-md-7">02.10.2025</div></div><div class="row vs-item-detail"><div class="col-md-3">Вид судопроизводства:</div><div class="col-md-7">Гражданское</div></div><div class="row vs-item-detail"><div class="col-md-3">Опубликованный судебный акт:</div><div class="col-md-7"><a href="/lk/practice/stor_pdf/302">Заочное решение от 16.10.2025</a></div></div></div>"#
+        let html = "<html><body>" + first + second + "</body></html>"
+
+        let card = try VSRFCardParser.parse(html: html)
+        XCTAssertEqual(card.productions.count, 2)
+        let complaint = try XCTUnwrap(card.productions.first { $0.cardID == "21-111" })
+        XCTAssertEqual(complaint.publishedActs, [
+            VSRFPublishedAct(url: URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/301")!,
+                            date: "15.10.2025", title: "Определение")
+        ])
+        let caseFile = try XCTUnwrap(card.productions.first { $0.cardID == "12-222" })
+        XCTAssertEqual(caseFile.publishedActs, [
+            VSRFPublishedAct(url: URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/302")!,
+                            date: "16.10.2025", title: "Заочное решение")
+        ])
+    }
+
+    func testLegacyPublishedActDoesNotBorrowDateOrKindFromNeighboringRows() {
+        let header = #"<div data-subscribe-claim-id="21-333"><div class="vs-items-separate vs-appeal-title"><span class="vs-items-label"><a>3-КФ26-3-К1</a></span></div><div class="row vs-item-detail"><div class="col-md-3">Дата поступления:</div><div class="col-md-7">01.10.2025</div></div>"#
+        let missingOwnDate = #"<div class="row vs-item-detail"><div class="col-md-3">Опубликованный судебный акт:</div><div class="col-md-7"><a href="/lk/practice/stor_pdf/303">Определение</a></div></div><div class="row vs-item-detail"><div class="col-md-3">Обжалуется:</div><div class="col-md-7">Решение от 15.10.2025</div></div>"#
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: header + missingOwnDate + "</div>"))
+
+        let missingOwnKind = #"<div class="row vs-item-detail"><div class="col-md-3">Опубликованный судебный акт:</div><div class="col-md-7"><a href="/lk/practice/stor_pdf/304">Скачать</a> 15.10.2025</div></div><div class="row vs-item-detail"><div class="col-md-3">Обжалуется:</div><div class="col-md-7">Определение от 15.10.2025</div></div>"#
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: header + missingOwnKind + "</div>"))
+    }
+
     func testCurrentCardRequiresMovementSectionButAcceptsExplicitEmptySection() throws {
         let title = #"<div class="CaseStyle_cardTitleRow__test"><a id="12-1-HASH"></a><span>Дело №</span><span>3-КГ1-1-К1</span></div>"#
         let empty = #"<div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div>"#
@@ -145,6 +200,14 @@ final class VSRFCardParserTests: XCTestCase {
     }
 
     // MARK: - Выдача
+
+    func testLegacySearchDoesNotPublishOrValidateDocumentLinksBeforeCardFetch() throws {
+        let html = try loadFixture("vsrf_search_uid").replacingOccurrences(of: "</body>", with:
+            #"<div class="row vs-item-detail"><div class="col-md-7"><a href="/lk/practice/stor_pdf/123">Скачать</a></div></div></body>"#)
+        let results = try VSRFSearchParser.parse(html: html)
+        XCTAssertEqual(results.results.count, 1)
+        XCTAssertTrue(results.results.allSatisfy { $0.publishedActs.isEmpty })
+    }
 
     func testSearchByUID() throws {
         let res = try VSRFSearchParser.parse(html: try loadFixture("vsrf_search_uid"))

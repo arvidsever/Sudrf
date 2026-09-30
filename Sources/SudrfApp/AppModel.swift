@@ -131,6 +131,7 @@ final class AppRouter: ObservableObject {
     @Published var liveMovement: CaseMovement? = nil
     @Published var loadingMovement = false
     @Published var movementError: String? = nil
+    @Published var selectedPublishedAct: PublishedActSelection
     @Published var selectedActID: String? = nil {
         didSet {
             if oldValue != selectedActID {
@@ -145,6 +146,7 @@ final class AppRouter: ObservableObject {
             }
             updateCurrentEntityActivity()
             loadSelectedActDocument()
+            loadSelectedPublishedAct()
         }
     }
     @Published var focusedMaterialInstanceID: String? = nil
@@ -406,6 +408,7 @@ final class AppRouter: ObservableObject {
          modelContainerIsPrepared: Bool = false,
          captchaCorpus: CorpusStore = .shared,
          refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil,
+         selectedPublishedAct: PublishedActSelection? = nil,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
          trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil) throws {
@@ -420,6 +423,7 @@ final class AppRouter: ObservableObject {
                                      prepared: modelContainerIsPrepared)
         }
         self.store = store
+        self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
         self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
@@ -1482,6 +1486,60 @@ final class AppRouter: ObservableObject {
         _ = cacheSelectedActDocument(
             document, caseKey: caseKey, sourceActID: sourceActID,
             sourceHash: sourceHash)
+    }
+
+    func loadSelectedPublishedAct() {
+        guard let caseKey = openedKey, let selectedActID, let movement = liveMovement,
+              let sourceAct = selectedPublishedActSource(in: movement, selectedID: selectedActID) else {
+            selectedPublishedAct.clear()
+            return
+        }
+        selectedPublishedAct.select(
+            caseKey: caseKey, selectedActID: selectedActID, sourceAct: sourceAct,
+            existingText: movement.actBodies[sourceAct.id]) { [weak self] key, selectedID, sourceID, file in
+                self?.applySelectedPublishedAct(file, caseKey: key,
+                                                selectedActID: selectedID, sourceActID: sourceID)
+            }
+    }
+
+    private func selectedPublishedActSource(in movement: CaseMovement,
+                                            selectedID: String) -> CaseAct? {
+        let candidates: [CaseAct]
+        if let row = CourtActPresentation.row(for: selectedID, in: movement) {
+            candidates = row.sourceIDs.compactMap { id in movement.acts.first { $0.id == id } }
+        } else {
+            candidates = movement.acts.filter { $0.id == selectedID }
+        }
+        return candidates.first { act in
+            guard let url = act.sourceFileURL ?? act.fileProvenance?.sourceURL else { return false }
+            return PublishedActURLPolicy.isAllowedVSRFPublishedAct(url)
+        }
+    }
+
+    private func applySelectedPublishedAct(_ file: PublishedActFile, caseKey: String,
+                                           selectedActID: String, sourceActID: String) {
+        guard openedKey == caseKey, self.selectedActID == selectedActID,
+              var updated = liveMovement,
+              let index = updated.acts.firstIndex(where: { $0.id == sourceActID }) else { return }
+
+        if !file.text.isEmpty { updated.actBodies[sourceActID] = file.text }
+        updated.acts[index].fileProvenance = file.provenance
+        if updated.acts[index].sourceFileURL == nil {
+            updated.acts[index].sourceFileURL = file.provenance.sourceURL
+        }
+        liveMovement = updated
+
+        if let record = store.record(forKey: caseKey) {
+            do {
+                try store.commit(projection: { _ in .cases([caseKey]) }) {
+                    record.movement = MovementCachePolicy.stripped(forPersist: updated)
+                }
+            } catch {
+                reportPersistenceFailure(error)
+            }
+        }
+        invalidateCachedActIfNeeded()
+        loadSelectedActDocument()
     }
 
     func loadSelectedActSummary() {

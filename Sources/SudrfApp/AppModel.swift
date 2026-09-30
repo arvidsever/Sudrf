@@ -916,7 +916,22 @@ final class AppRouter: ObservableObject {
         rec.seenAt = Date()
         do {
             try store.save()
-            reload()
+            guard lifecyclePresentationCache.isCurrent(for: DateUtil.today) else {
+                reload()
+                return
+            }
+            for index in cases.indices
+                where cases[index].recordKey == rec.key
+                    && (cases[index].isNew || cases[index].newDot) {
+                cases[index].isNew = false
+                cases[index].newDot = false
+            }
+            for index in feed.indices
+                where feed[index].recordKey == rec.key
+                    && feed[index].kind != .enforcement && feed[index].isUnread {
+                feed[index].isUnread = false
+            }
+            FeedNotifier.shared.setBadge(newBadge)
         } catch {
             reportPersistenceFailure(error)
         }

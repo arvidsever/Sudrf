@@ -10,6 +10,7 @@ struct CaseLifecyclePresentationCache {
     private var day: Date?
 
     var count: Int { values.count }
+    func isCurrent(for today: Date) -> Bool { day == DateUtil.startOfDay(today) }
 
     mutating func prepare(for today: Date, changedCaseKeys: Set<String>?) {
         let day = DateUtil.startOfDay(today)

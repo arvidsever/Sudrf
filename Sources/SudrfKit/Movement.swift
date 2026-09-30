@@ -2237,8 +2237,57 @@ extension MovementService {
         var seen = Set<String>()
         let unique = prods.filter { seen.insert($0.cardID ?? ($0.number ?? UUID().uuidString)).inserted }
 
-        let cases = unique.filter { $0.kind == .caseFile }
-        let complaints = unique.filter { $0.kind == .complaint }
+        // Search rows contain a disposition, not the published timeline.
+        // Hydrate only the exact selected production; errors remain per card.
+        var hydrated: [VSRFProduction] = []
+        var unavailable = Set<String>()
+        for row in unique {
+            try Task.checkCancellation()
+            do {
+                guard let id = row.cardID, let number = row.number else {
+                    throw SudrfError.parsing("У производства ВС РФ нет идентификатора или номера")
+                }
+                let card = try await vsrf.fetchCard(productionID: id, section: row.resolvedSection)
+                let matches = card.productions.filter { $0.cardID == id }
+                guard matches.count == 1, var detail = matches.first,
+                      VSRFLinkKey.normCaseNo(detail.number) == VSRFLinkKey.normCaseNo(number),
+                      detail.kind == row.kind else {
+                    throw SudrfError.parsing("Карточка ВС РФ не соответствует найденному производству")
+                }
+                if JudicialUIDObservation.validity(of: row.uid) == .valid,
+                   VSRFLinkKey.normUID(detail.uid) != VSRFLinkKey.normUID(row.uid) {
+                    throw SudrfError.parsing("УИД карточки ВС РФ не соответствует выдаче")
+                }
+                // Keep the verified request route, including legacy aliases.
+                detail.cardSection = row.resolvedSection
+                hydrated.append(detail)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+                throw error
+            } catch {
+                incomplete = true
+                unavailable.insert(row.id)
+                hydrated.append(row)
+            }
+        }
+        func mapped(_ production: VSRFProduction, extraEvents: [VSRFEvent] = []) -> CaseInstance {
+            var instance = mapProduction(production, extraEvents: extraEvents)
+            if unavailable.contains(production.id) {
+                instance.note = "Движение временно недоступно"
+                if !extraEvents.isEmpty {
+                    // The header retains the search disposition; only verified
+                    // intake rows may supplement the previous detailed card.
+                    var intake = production
+                    intake.events = []
+                    instance.sessions = mapProduction(intake, extraEvents: extraEvents).sessions
+                    instance.note = "Движение временно недоступно · жалоба проверена"
+                }
+            }
+            return instance
+        }
+        let cases = hydrated.filter { $0.kind == .caseFile }
+        let complaints = hydrated.filter { $0.kind == .complaint }
 
         var out: [CaseInstance] = []
         if !cases.isEmpty {
@@ -2247,6 +2296,7 @@ extension MovementService {
             // ко всем раундам ВС РФ и смешивали их хронологию.
             var intakeByCase = Array(repeating: [VSRFEvent](), count: cases.count)
             var attachedComplaints = Set<Int>()
+            var incompleteIntake = Set<Int>()
             for (complaintIndex, complaint) in complaints.enumerated() where complaint.caseRequested {
                 let requestDate = complaint.events.first(where: {
                     $0.text.localizedCaseInsensitiveContains("Истребовано дело")
@@ -2261,37 +2311,63 @@ extension MovementService {
                         })
                         .min(by: { dateSortKey(cases[$0].incomingDate) < dateSortKey(cases[$1].incomingDate) })
                 else { continue }
-                intakeByCase[caseIndex].append(contentsOf: complaint.events)
+                if unavailable.contains(complaint.id) {
+                    incompleteIntake.insert(caseIndex)
+                } else {
+                    intakeByCase[caseIndex].append(contentsOf: complaint.events)
+                }
                 attachedComplaints.insert(complaintIndex)
             }
             for (index, d) in cases.enumerated() {
-                out.append(mapProduction(d, extraEvents: intakeByCase[index]))
+                var instance = mapped(d, extraEvents: intakeByCase[index])
+                if incompleteIntake.contains(index), !unavailable.contains(d.id) {
+                    instance.note = "Движение жалобы временно недоступно"
+                }
+                out.append(instance)
             }
             // Не связанные с конкретным последующим делом жалобы остаются видны
             // отдельными инстанциями, а не теряются и не приписываются эвристикой.
             for (index, complaint) in complaints.enumerated() where !attachedComplaints.contains(index) {
-                out.append(mapProduction(complaint))
+                out.append(mapped(complaint))
             }
         } else {
-            for c in complaints { out.append(mapProduction(c)) }
+            for c in complaints { out.append(mapped(c)) }
         }
         return (out, incomplete)
+    }
+
+    static func sameVSRFCard(_ lhs: URL?, _ rhs: URL?) -> Bool {
+        func identity(_ url: URL?) -> String? {
+            guard let url, ["vsrf.ru", "www.vsrf.ru"].contains(url.host?.lowercased() ?? ""),
+                  let match = url.path.firstMatch(of: /^\/lk\/practice\/(cases|appeals|claims)\/([0-9-]+)$/) else {
+                return nil
+            }
+            return String(match.1) + "/" + String(match.2)
+        }
+        guard let first = identity(lhs), let second = identity(rhs) else { return false }
+        return first == second
     }
 
     /// Отображает производство ВС РФ в инстанцию второй кассации.
     static func mapProduction(_ p: VSRFProduction, extraEvents: [VSRFEvent] = []) -> CaseInstance {
         // Движение: события производства + (для дела) события истребовавшей жалобы,
         // в хронологическом порядке.
-        let merged = (p.events + extraEvents)
-            .sorted { dateSortKey($0.date) < dateSortKey($1.date) }
-        var sessions = merged.map { CaseSession(date: $0.date ?? "—", event: $0.text) }
+        let merged = (p.events + extraEvents).enumerated()
+            .sorted {
+                let lhs = dateSortKey($0.element.date), rhs = dateSortKey($1.element.date)
+                return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
+            }.map(\.element)
+        var sessions = merged.map {
+            CaseSession(date: $0.date ?? "—", event: $0.text, result: $0.details)
+        }
         if sessions.isEmpty, let inc = p.incomingDate {
             sessions = [CaseSession(date: inc, event: "Поступило в ВС РФ")]
         }
-        let disposition = merged.last?.text ?? p.events.last?.text
+        let disposition = p.publishedResult ?? p.events.last?.text
 
         // Пометка «отказ/возврат».
-        let joined = merged.map { $0.text.lowercased() }.joined(separator: " ")
+        let joined = (merged.map { $0.text + " " + ($0.details ?? "") }
+            + [disposition ?? ""]).joined(separator: " ").lowercased()
         let note: String?
         if joined.contains("возврат") { note = "возврат без рассмотрения" }
         else if joined.contains("отказ в передаче") { note = "отказ в передаче" }

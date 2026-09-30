@@ -44,6 +44,24 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertEqual(j.events.first { $0.text.contains("Истребовано дело") }?.date, "19.12.2022")
     }
 
+    func testTruncatedLegacyComplaintCannotBecomeEmptyCard() {
+        let header = #"<div data-subscribe-claim-id="21-12345678"><div class="vs-items-separate vs-appeal-title"><span class="vs-items-label"><a>3-КФ24-1-К1</a></span></div>"#
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: header + "</div>"))
+
+        let receiptOnly = #"<div class="row vs-item-detail"><div class="col-md-3">Дата поступления:</div><div class="col-md-7">08.11.2022</div></div>"#
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: header + receiptOnly + "</div>"))
+    }
+
+    func testLegacyCardAcceptsExplicitlyEmptyEventListWithPublishedDetails() throws {
+        let header = #"<div data-subscribe-claim-id="21-12345678"><div class="vs-items-separate vs-appeal-title"><span class="vs-items-label"><a>3-КФ24-1-К1</a></span></div>"#
+        let details = #"<div class="row vs-item-detail"><div class="col-md-3">Дата поступления:</div><div class="col-md-7">08.11.2022</div></div><div class="row vs-item-detail"><div class="col-md-3">Кассационный суд:</div><div class="col-md-7">Третий кассационный суд общей юрисдикции</div></div>"#
+        let card = try VSRFCardParser.parse(html: header + details + "</div>")
+        let complaint = try XCTUnwrap(card.productions.first)
+        XCTAssertEqual(complaint.incomingDate, "08.11.2022")
+        XCTAssertEqual(complaint.cassationCourt, "Третий кассационный суд общей юрисдикции")
+        XCTAssertTrue(complaint.events.isEmpty)
+    }
+
     func testCardCase() throws {
         let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_card_vorobyev"))
         let d = try XCTUnwrap(card.productions.first { $0.kind == .caseFile })
@@ -60,6 +78,70 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertEqual(d.cardURL?.absoluteString, "https://vsrf.ru/lk/practice/cases/12-34154493")
         XCTAssertTrue(d.events.contains { $0.text.contains("Передано судье") && $0.date == "25.01.2023" })
         XCTAssertTrue(d.events.contains { $0.text.contains("Отказ в передаче") && $0.date == "10.03.2023" })
+    }
+
+    func testCurrentCardKeepsEventsAndPublishedResult() throws {
+        let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_current_card_340"))
+        let production = try XCTUnwrap(card.productions.first)
+        XCTAssertEqual(card.productions.count, 1)
+        XCTAssertEqual(production.cardID, "12-36321243")
+        XCTAssertEqual(production.cardSection, .claims)
+        XCTAssertEqual(production.number, "3-ИКАД25-3-А2")
+        XCTAssertEqual(production.uid, "11OS0000-01-2025-000169-68")
+        XCTAssertEqual(production.cardURL?.absoluteString, "https://www.vsrf.ru/lk/practice/claims/12-36321243")
+        XCTAssertEqual(production.events.map(\.date), ["16.09.2025", "15.10.2025", "15.10.2025"])
+        XCTAssertEqual(production.events.map(\.text), [
+            "Передано судье", "Результат рассмотрения", "Назначение даты судебного заседания"
+        ])
+        XCTAssertEqual(production.events[1].details,
+                       "Вынесено решение по существу. Определение. Жалоба (представление) оставлена без удовлетворения")
+        XCTAssertEqual(production.events[2].details,
+                       "Дата размещения информации о времени и месте заседания 16.09.2025 16:24")
+        XCTAssertEqual(production.publishedResult, "Определение. Жалоба (представление) оставлена без удовлетворения")
+    }
+
+    func testCurrentCardRequiresMovementSectionButAcceptsExplicitEmptySection() throws {
+        let title = #"<div class="CaseStyle_cardTitleRow__test"><a id="12-1-HASH"></a><span>Дело №</span><span>3-КГ1-1-К1</span></div>"#
+        let empty = #"<div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div>"#
+        let card = try VSRFCardParser.parse(html: #"<div class="CaseStyle_case_item__test">"# + title + empty + "</div>")
+        XCTAssertTrue(try XCTUnwrap(card.productions.first).events.isEmpty)
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: #"<div class="CaseStyle_case_item__test">"# + title + "</div>"))
+    }
+
+    func testCurrentCardRejectsMalformedMovementRow() {
+        let html = #"<div class="CaseStyle_case_item__test"><div class="CaseStyle_cardTitleRow__test"><a id="12-1-HASH"></a><span>3-КГ1-1-К1</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div><div>15.10.2025 сломанная строка</div></div></div>"#
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: html))
+    }
+
+    func testCurrentCardRejectsIncompletePublishedAct() {
+        let card = #"<div class="CaseStyle_case_item__test"><div class="CaseStyle_cardTitleRow__test"><a id="12-1-HASH"></a><span>3-КГ1-1-К1</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div></div>"#
+        let malformed = [
+            #"<div class="FinalActRow_container__test"><div class="FinalActRow_date__test">15.10.2025</div></div>"#,
+            #"<div class="FinalActRow_container__test"><div class="FinalActRow_col__test">Определение</div></div>"#,
+            #"<div class="FinalActRow_container__test"><div class="FinalActRow_date__test">15.10.2025</div><div class="FinalActRow_col__test"></div></div>"#
+        ]
+        for finalAct in malformed {
+            XCTAssertThrowsError(try VSRFCardParser.parse(html: card + finalAct + "</div>"))
+        }
+    }
+
+    func testCurrentCardKeepsAmbiguousPublishedResultAsSeparateEvent() throws {
+        let header = #"<div class="CaseStyle_cardTitleRow__test"><a id="12-1-HASH"></a><span>3-КГ1-1-К1</span></div>"#
+        let section = #"<div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение по делу</div>"#
+        let row = #"<div><div class="CaseStyle_appealEventRow_date__test">15.10.2025</div><div><div class="CaseStyle_case_value__test">Результат рассмотрения<br/>Вынесено решение по существу</div></div></div>"#
+        let finalAct = #"<div class="FinalActRow_container__test"><div class="FinalActRow_date__test">15.10.2025</div><div class="FinalActRow_col__test">Определение. Жалоба оставлена без удовлетворения</div></div>"#
+        let html = #"<div class="CaseStyle_case_item__test">"# + header + section + row + row + "</div>" + finalAct + "</div>"
+        let production = try XCTUnwrap(VSRFCardParser.parse(html: html).productions.first)
+        XCTAssertEqual(production.events.count, 3)
+        XCTAssertEqual(production.events[0].details, "Вынесено решение по существу")
+        XCTAssertEqual(production.events[1].details, "Вынесено решение по существу")
+        XCTAssertEqual(production.events[2].text, "Определение. Жалоба оставлена без удовлетворения")
+        XCTAssertNil(production.events[2].details)
+    }
+
+    func testUnknownAndEmptyCardMarkupFailsClosed() {
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: ""))
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: "<html><body><p>blocked</p></body></html>"))
     }
 
     // MARK: - Выдача

@@ -1,6 +1,10 @@
 #!/bin/bash
 # GUI host for the existing synthetic XCTest fixture; never starts SudrfApp.
 set -euo pipefail
+rm -f /private/tmp/sudrf-351-gui-result.txt
+for index in {0..6}; do
+    rm -f "/private/tmp/sudrf-351-hosted/hosted-$index.png"
+done
 cd "$(dirname "$0")/../../.."
 swift test --filter CalendarMonthViewTests
 BIN_DIR="$(swift build --show-bin-path)"

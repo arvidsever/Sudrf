@@ -261,8 +261,10 @@ final class TrackedCaseRepairTests: XCTestCase {
         appealSnapshot.deadlines = [StoredDeadline(
             kind: "cassation", what: "Кассационная жалоба", basis: "legacy fixture",
             calLabel: "касс. жалоба", dateRef: 222, statusRaw: "confirmed")]
+        appealSnapshot.deadlineAssessments = nil
         firstSnapshot.deadlines[0].statusRaw = "confirmed"
         firstSnapshot.deadlines[0].dateRef = 111
+        let canonicalDeadline = firstSnapshot.deadlines[0]
         let survivor = try insertLegacy(
             into: store, context: first, snapshot: firstSnapshot,
             movement: firstMovement, collections: ["A"])
@@ -293,14 +295,147 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertNil(merged.seenAt)
         XCTAssertEqual(Set(merged.movement?.acts.map(\.id) ?? []), ["first-act", "appeal-act"])
         XCTAssertEqual(merged.movement?.actBodies.count, 2)
-        XCTAssertEqual(merged.snapshot?.deadlines.first?.statusRaw, "confirmed")
-        XCTAssertEqual(merged.snapshot?.deadlines.first?.dateRef, 111,
-                       "confirmed deadline of canonical record must win")
+        let canonical = try XCTUnwrap(merged.snapshot?.deadlines.first {
+            $0.occurrenceKey == canonicalDeadline.occurrenceKey
+        })
+        XCTAssertEqual(canonical.status, .confirmed)
+        XCTAssertEqual(canonical.dateRef, 111,
+                       "the canonical exact occurrence keeps its confirmed date")
+        let opaqueAliasDeadline = try XCTUnwrap(merged.snapshot?.deadlines.first {
+            $0.dateRef == 222
+        })
+        XCTAssertEqual(opaqueAliasDeadline.status, .confirmed)
+        XCTAssertNil(opaqueAliasDeadline.occurrenceKey,
+                     "an unidentifiable alias deadline stays unattached by kind")
+        XCTAssertNil(opaqueAliasDeadline.provenance)
         XCTAssertNil(merged.movementFetchedAt)
 
         let second = try await coordinator.runAll()
         XCTAssertFalse(second.hasReport)
         XCTAssertEqual(store.all().count, 1)
+    }
+
+    func testAliasMergeKeepsActiveExactPrivateDeadlineAheadOfClosedMonthlyHistory()
+        throws {
+        for closedRowIsCanonical in [true, false] {
+            let store = TrackedStore(inMemory: true)
+            let caseNumber = "2-125\(closedRowIsCanonical ? "10" : "11")/2026"
+            let closedContext = context(
+                level: .first, number: caseNumber, domain: "syktsud--komi.sudrf.ru",
+                cartoteka: "g1", courtLevel: .district)
+            var correctedContext = context(
+                level: .first, number: caseNumber,
+                domain: "vyborgsky--lo.sudrf.ru", cartoteka: "g1",
+                courtLevel: .district)
+            let aliasCardID = "id-\(caseNumber)-alias"
+            let aliasCardUID = "guid-\(caseNumber)-alias"
+            correctedContext.caseID = aliasCardID
+            correctedContext.caseUID = aliasCardUID
+            correctedContext.cardURLString = "https://vyborgsky--lo.sudrf.ru/modules.php"
+                + "?name=sud_delo&name_op=case&case_id=\(aliasCardID)"
+                + "&case_uid=\(aliasCardUID)&delo_id=5&new=5"
+            let movement = issue125Movement(for: closedContext)
+            let today = DateUtil.parse("01.09.2026")!
+            let current = try XCTUnwrap(MovementDerivation.snapshot(
+                from: movement, context: closedContext, today: today).deadlines.first {
+                    $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })
+            let targetKey = try XCTUnwrap(current.occurrenceKey)
+            let privateSnapshot = MovementDerivation.snapshot(
+                from: movement, context: correctedContext, today: today)
+            var correctedDeadline = try XCTUnwrap(privateSnapshot.deadlines.first {
+                $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            })
+            correctedDeadline.statusRaw = DeadlineStatus.overridden.rawValue
+            correctedDeadline.dateRef = DateUtil.parse("20.10.2026")!.timeIntervalSinceReferenceDate
+            var correctedSnapshot = privateSnapshot
+            correctedSnapshot.deadlines = [correctedDeadline]
+
+            let oldRuleID = "GPK-APPEAL-GENERAL"
+            let oldRule = try XCTUnwrap(LegalDeadlineRegistry.load().rule(id: oldRuleID))
+            let trigger = try XCTUnwrap(current.provenance?.trigger)
+            let monthDate = DateUtil.cal.date(
+                byAdding: .month, value: 1, to: DateUtil.parse(trigger.dateRaw)!)!
+            let timeline = CaseLifecycleResolver.timeline(in: movement, production: .civil)
+            let round = timeline.currentRoundStart?.instance.id
+                ?? timeline.deadlineFirst?.id ?? movement.uid
+            let triggerIdentity = [round, trigger.levelRaw, trigger.caseNumber,
+                                   trigger.dateRaw, trigger.event, trigger.result ?? ""]
+                .joined(separator: "\u{1F}")
+            var monthlyDeadline = current
+            monthlyDeadline.dateRef = monthDate.timeIntervalSinceReferenceDate
+            monthlyDeadline.statusRaw = DeadlineStatus.proposed.rawValue
+            monthlyDeadline.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+            monthlyDeadline.occurrenceKey = oldRuleID + "|"
+                + Data(triggerIdentity.utf8).base64EncodedString()
+            var monthlyProvenance = try XCTUnwrap(current.provenance)
+            monthlyProvenance.ruleID = oldRuleID
+            monthlyProvenance.registryRevision = oldRule.revision
+            monthlyProvenance.sourceHash = oldRule.sourceHash
+            monthlyProvenance.policyIDs = []
+            monthlyProvenance.formula = oldRule.duration.raw
+                ?? oldRule.durationText ?? oldRule.duration.kind.rawValue
+            monthlyProvenance.source = oldRule.source
+            monthlyProvenance.calculatedDateRef = monthDate.timeIntervalSinceReferenceDate
+            monthlyDeadline.provenance = monthlyProvenance
+            var closedSnapshot = MovementDerivation.snapshot(
+                from: movement, context: closedContext, today: today)
+            closedSnapshot.deadlines = [monthlyDeadline]
+            closedSnapshot.deadlineAssessments = [DeadlineRuleAssessment(
+                ruleID: oldRuleID, kind: "appeal",
+                statusRaw: DeadlineAssessmentStatus.applicable.rawValue)]
+
+            let closedRecord = try insertLegacy(
+                into: store, context: closedContext, snapshot: closedSnapshot,
+                movement: movement, collections: ["Closed monthly"])
+            let correctedRecord = try insertLegacy(
+                into: store, context: correctedContext, snapshot: correctedSnapshot,
+                movement: movement, collections: ["Corrected private"])
+            closedRecord.addedAt = Date(timeIntervalSince1970: closedRowIsCanonical ? 100 : 200)
+            correctedRecord.addedAt = Date(timeIntervalSince1970: closedRowIsCanonical ? 200 : 100)
+            try store.save()
+
+            XCTAssertEqual(try store.reconcileStoredIdentity().merged, 1)
+            XCTAssertEqual(store.all().count, 1)
+            let merged = try XCTUnwrap(store.all().first)
+            let snapshot = try XCTUnwrap(merged.snapshot)
+            let active = try XCTUnwrap(snapshot.deadlines.first {
+                $0.occurrenceKey == targetKey && $0.isActive
+            })
+            XCTAssertEqual(active.status, .overridden)
+            XCTAssertEqual(active.date, DateUtil.parse("20.10.2026"))
+            XCTAssertEqual(snapshot.deadlines.filter(\.isActive).count, 1)
+            XCTAssertTrue(snapshot.deadlines.contains {
+                $0.occurrenceKey == monthlyDeadline.occurrenceKey
+                    && $0.lifecycle == .superseded
+            })
+
+            XCTAssertEqual(try store.reconcileStoredIdentity().merged, 0)
+            let repeated = try XCTUnwrap(store.all().first?.snapshot)
+            XCTAssertEqual(repeated.deadlines.filter(\.isActive).count, 1)
+            XCTAssertEqual(repeated.deadlines.first {
+                $0.occurrenceKey == targetKey
+            }?.date, DateUtil.parse("20.10.2026"))
+        }
+    }
+
+    private func issue125Movement(for context: MovementContext) -> CaseMovement {
+        let result = "Исковое заявление возвращено"
+        let actID = "issue-125-\(context.caseID)"
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: result,
+            sessions: [CaseSession(date: "03.09.2026", event: "Судебное заседание",
+                                   result: result)],
+            actID: actID)
+        let act = CaseAct(id: actID, title: "Определение о возвращении искового заявления",
+                          date: "03.09.2026", courtShort: context.courtTitle,
+                          instanceLevel: .first)
+        return CaseMovement(
+            uid: uid, caseNumber: context.caseNumber, inForce: false,
+            instances: [first], complaints: [:], acts: [act],
+            actBodies: [actID: "Текст определения"], category: "Споры из договоров")
     }
 
     func testUIDMergePreservesExecutionDocumentsAndEnforcementHistory() async throws {

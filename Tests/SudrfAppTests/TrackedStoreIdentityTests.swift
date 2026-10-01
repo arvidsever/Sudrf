@@ -98,6 +98,77 @@ final class TrackedStoreIdentityTests: XCTestCase {
                             category: "Споры из договоров")
     }
 
+    private func issue125Movement(for context: MovementContext,
+                                  category: String = "Споры из договоров",
+                                  date: String = "03.09.2026",
+                                  result: String = "Исковое заявление возвращено") -> CaseMovement {
+        let actID = "issue125-\(context.caseID)"
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.searchDomain, foundByUID: false,
+            result: result,
+            sessions: [CaseSession(date: date, event: "Судебное заседание", result: result)],
+            actID: actID)
+        let act = CaseAct(id: actID, title: "Определение о возвращении искового заявления",
+                          date: date, courtShort: context.courtTitle, instanceLevel: .first)
+        return CaseMovement(
+            uid: "11RS0001-01-2026-011255-03", caseNumber: context.caseNumber,
+            inForce: false, instances: [first], complaints: [:], acts: [act],
+            actBodies: [actID: "Текст определения"], category: category)
+    }
+
+    private func issue125OldSnapshot(
+        movement: CaseMovement,
+        context: MovementContext,
+        oldRuleID: String,
+        status: DeadlineStatus,
+        lifecycle: DeadlineLifecycle = .active,
+        keyed: Bool = true,
+        manualDate: String? = nil,
+        retainOldSession: Bool = true
+    ) throws -> CaseSnapshot {
+        var snapshot = MovementDerivation.snapshot(
+            from: movement, context: context, today: calendarTestToday)
+        let privateRuleIDs: Set<String> = ["GPK-PRIVATE-COMPLAINT-GENERAL",
+                                           "KAS-PRIVATE-GENERAL",
+                                           "KAS-PRIVATE-ELECTION"]
+        let trigger = try XCTUnwrap(snapshot.deadlines.first(where: {
+            privateRuleIDs.contains($0.provenance?.ruleID ?? "")
+        })?.provenance?.trigger, "Нужен текущий trigger частной жалобы для legacy fixture")
+        let dateRaw = trigger.dateRaw
+        let rule = try XCTUnwrap(LegalDeadlineRegistry.load().rule(id: oldRuleID))
+        let monthDate = DateUtil.cal.date(
+            byAdding: .month, value: 1, to: DateUtil.parse(dateRaw)!)!
+        let computedDate = manualDate.flatMap(DateUtil.parse) ?? monthDate
+        let provenance = DeadlineProvenance(
+            ruleID: oldRuleID, registryRevision: rule.revision,
+            sourceHash: rule.sourceHash, trigger: trigger, policyIDs: [],
+            formula: rule.duration.raw ?? rule.durationText ?? rule.duration.kind.rawValue,
+            source: rule.source,
+            calculatedDateRef: monthDate.timeIntervalSinceReferenceDate)
+        let timeline = CaseLifecycleResolver.timeline(
+            in: movement, production: oldRuleID.hasPrefix("GPK-") ? .civil : .kas)
+        let round = timeline.currentRoundStart?.instance.id
+            ?? timeline.deadlineFirst?.id ?? movement.uid
+        let identity = [round, trigger.levelRaw, trigger.caseNumber, trigger.dateRaw,
+                        trigger.event, trigger.result ?? ""].joined(separator: "\u{1F}")
+        let occurrenceKey = keyed
+            ? oldRuleID + "|" + Data(identity.utf8).base64EncodedString() : nil
+        snapshot.deadlines = [StoredDeadline(
+            kind: "appeal", what: rule.stage, basis: rule.durationText ?? "1 месяц",
+            calLabel: "Апелляция", dateRef: computedDate.timeIntervalSinceReferenceDate,
+            statusRaw: status.rawValue, occurrenceKey: occurrenceKey,
+            provenance: keyed || status.isUserControlled ? provenance : nil,
+            lifecycleRaw: lifecycle.rawValue)]
+        snapshot.deadlineAssessments = [DeadlineRuleAssessment(
+            ruleID: oldRuleID, kind: "appeal",
+            statusRaw: DeadlineAssessmentStatus.applicable.rawValue)]
+        if !retainOldSession {
+            snapshot.sessions = []
+        }
+        return snapshot
+    }
+
     private func automaticAppealIndex(in snapshot: CaseSnapshot) throws -> Int {
         try XCTUnwrap(snapshot.deadlines.firstIndex(where: { $0.kind == "appeal" }),
                       "Нужна исходная автоматическая апелляция для проверки пересчёта")
@@ -1446,5 +1517,483 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.key)), Set([first.key, appeal.key]))
         XCTAssertEqual(records.first { $0.key == first.key }?.collectionNames, ["First"])
         XCTAssertEqual(records.first { $0.key == appeal.key }?.collectionNames, ["Appeal"])
+    }
+
+    func testIssue125PreparationReclassifiesOnlyTheVerifiedRuleAndAct() throws {
+        let scenarios: [(cartoteka: String, category: String, oldRule: String, newRule: String)] = [
+            ("g1", "Споры из договоров", "GPK-APPEAL-GENERAL",
+             "GPK-PRIVATE-COMPLAINT-GENERAL"),
+            ("p1", "Оспаривание решения органа", "KAS-APPEAL-GENERAL",
+             "KAS-PRIVATE-GENERAL"),
+            ("p1", "Защита избирательных прав", "KAS-APPEAL-GENERAL",
+             "KAS-PRIVATE-ELECTION"),
+        ]
+        for (scenarioIndex, scenario) in scenarios.enumerated() {
+            for (statusIndex, status) in [DeadlineStatus.proposed, .confirmed, .overridden].enumerated() {
+                let store = TrackedStore(inMemory: true)
+                let number = "2-125\(scenarioIndex)\(statusIndex)/2026"
+                let value = context(number: number, cardID: "issue125-\(scenarioIndex)-\(statusIndex)",
+                                    cartoteka: scenario.cartoteka)
+                let movement = issue125Movement(for: value, category: scenario.category)
+                let manualDate = status == .overridden ? "20.10.2026" : nil
+                let oldSnapshot = try issue125OldSnapshot(
+                    movement: movement, context: value, oldRuleID: scenario.oldRule,
+                    status: status, keyed: !(scenarioIndex == 1 && status == .confirmed),
+                    manualDate: manualDate)
+                let fetchedAt = Date(timeIntervalSince1970: 1_700_000_125)
+                let record = try store.reconcileAndUpsert(
+                    context: value, snapshot: oldSnapshot, movement: movement,
+                    collections: ["Issue 125"], movementFetchedAt: fetchedAt)
+                let journal = record.eventJournalData
+                try store.container.mainContext.save()
+
+                XCTAssertTrue(try TrackedStorePreparation.prepare(
+                    context: store.container.mainContext, today: calendarTestToday))
+                let prepared = try XCTUnwrap(store.record(forKey: record.key))
+                let current = try XCTUnwrap(prepared.snapshot?.deadlines.first {
+                    $0.provenance?.ruleID == scenario.newRule && $0.isActive
+                })
+                let calculated = try XCTUnwrap(MovementDerivation.snapshot(
+                    from: movement, context: value, today: calendarTestToday).deadlines.first {
+                        $0.provenance?.ruleID == scenario.newRule
+                    })
+                XCTAssertNotEqual(current.occurrenceKey, oldSnapshot.deadlines.first?.occurrenceKey)
+                XCTAssertEqual(current.provenance?.ruleID, scenario.newRule)
+                XCTAssertEqual(current.provenance?.calculatedDateRef, calculated.dateRef)
+                if status == .overridden {
+                    XCTAssertEqual(current.status, .overridden)
+                    XCTAssertEqual(current.date, DateUtil.parse("20.10.2026"))
+                } else {
+                    XCTAssertEqual(current.status, .proposed)
+                    XCTAssertEqual(current.date, calculated.date)
+                }
+                XCTAssertEqual(prepared.collectionNames, ["Issue 125"])
+                XCTAssertEqual(prepared.movement?.acts, movement.acts)
+                XCTAssertEqual(prepared.movement?.actBodies, movement.actBodies)
+                XCTAssertEqual(prepared.movementFetchedAt, fetchedAt)
+                XCTAssertEqual(prepared.eventJournalData, journal)
+                let preparedData = prepared.snapshotData
+                XCTAssertFalse(try TrackedStorePreparation.prepare(
+                    context: store.container.mainContext, today: calendarTestToday))
+                XCTAssertEqual(prepared.snapshotData, preparedData)
+            }
+        }
+    }
+
+    func testIssue125ReclassificationSurvivesDiskRestartForEveryDeadlineState() throws {
+        let scenarios: [(name: String, status: DeadlineStatus,
+                         lifecycle: DeadlineLifecycle, manualDate: String?)] = [
+            ("proposed", .proposed, .active, nil),
+            ("confirmed", .confirmed, .active, nil),
+            ("overridden", .overridden, .active, "20.10.2026"),
+            ("closed", .proposed, .superseded, nil),
+        ]
+
+        for (index, scenario) in scenarios.enumerated() {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("issue125-restart-\(UUID().uuidString)",
+                                        isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let storeURL = directory.appendingPathComponent("test.store")
+            let value = context(number: "2-12507\(index)/2026",
+                                cardID: "issue125-restart-\(scenario.name)")
+            let movement = issue125Movement(for: value)
+            let oldSnapshot = try issue125OldSnapshot(
+                movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+                status: scenario.status, lifecycle: scenario.lifecycle,
+                manualDate: scenario.manualDate)
+            let calculated = try XCTUnwrap(MovementDerivation.snapshot(
+                from: movement, context: value, today: calendarTestToday).deadlines.first {
+                    $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })
+            let expectedStatus: DeadlineStatus = scenario.status == .overridden
+                ? .overridden : .proposed
+            let expectedDate = scenario.manualDate.flatMap(DateUtil.parse) ?? calculated.date
+            let fetchedAt = Date(timeIntervalSince1970: 1_700_000_127 + Double(index))
+            var recordKey = ""
+            var initialJournal: CaseEventJournal?
+
+            let verify: (TrackedCaseRecord) throws -> Void = { record in
+                let snapshot = try XCTUnwrap(record.snapshot)
+                XCTAssertEqual(record.collectionNames, ["Issue 125 disk"])
+                XCTAssertEqual(record.movement?.acts, movement.acts)
+                XCTAssertEqual(record.movement?.actBodies, movement.actBodies)
+                XCTAssertEqual(record.movementFetchedAt, fetchedAt)
+                XCTAssertEqual(record.eventJournal, initialJournal)
+                if scenario.lifecycle == .active {
+                    let active = snapshot.deadlines.filter(\.isActive)
+                    XCTAssertEqual(active.count, 1)
+                    let current = try XCTUnwrap(active.first)
+                    XCTAssertEqual(current.provenance?.ruleID,
+                                   "GPK-PRIVATE-COMPLAINT-GENERAL")
+                    XCTAssertEqual(current.status, expectedStatus)
+                    XCTAssertEqual(current.date, expectedDate)
+                    XCTAssertEqual(current.provenance?.calculatedDateRef,
+                                   calculated.provenance?.calculatedDateRef)
+                } else {
+                    XCTAssertTrue(snapshot.deadlines.filter(\.isActive).isEmpty)
+                    let closed = try XCTUnwrap(snapshot.deadlines.first {
+                        $0.provenance?.ruleID == "GPK-APPEAL-GENERAL"
+                    })
+                    XCTAssertEqual(closed.lifecycle, .superseded)
+                }
+            }
+
+            do {
+                let container = try SudrfModelContainerFactory.make(
+                    inMemory: false, storeURL: storeURL)
+                let store = try TrackedStore(container: container, prepared: true)
+                let record = try store.reconcileAndUpsert(
+                    context: value, snapshot: oldSnapshot, movement: movement,
+                    collections: ["Issue 125 disk"], movementFetchedAt: fetchedAt)
+                recordKey = record.key
+                initialJournal = record.eventJournal
+                try container.mainContext.save()
+
+                XCTAssertEqual(try TrackedStorePreparation.prepare(
+                    context: container.mainContext, today: calendarTestToday),
+                    scenario.lifecycle == .active)
+                try verify(try XCTUnwrap(store.record(forKey: recordKey)))
+                try container.mainContext.save()
+            }
+
+            do {
+                let container = try SudrfModelContainerFactory.make(
+                    inMemory: false, storeURL: storeURL)
+                _ = try TrackedStorePreparation.prepare(
+                    context: container.mainContext, today: calendarTestToday)
+                let store = try TrackedStore(container: container, prepared: true)
+                let record = try XCTUnwrap(store.record(forKey: recordKey))
+                try verify(record)
+                let bytes = record.snapshotData
+                XCTAssertFalse(try TrackedStorePreparation.prepare(
+                    context: container.mainContext, today: calendarTestToday))
+                XCTAssertEqual(record.snapshotData, bytes)
+                try verify(record)
+            }
+        }
+    }
+
+    func testIssue125ProposedLegacyMonthlyDeadlineUsesExactSavedReturnSession() throws {
+        for keyed in [false, true] {
+            let store = TrackedStore(inMemory: true)
+            let value = context(number: "2-12506/2026",
+                                cardID: "issue125-proposed-\(keyed ? "keyed" : "keyless")")
+            let movement = issue125Movement(for: value)
+            var oldSnapshot = try issue125OldSnapshot(
+                movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+                status: .proposed, keyed: keyed)
+            oldSnapshot.deadlines[0].provenance = nil
+            XCTAssertEqual(oldSnapshot.deadlines.first?.occurrenceKey != nil, keyed)
+            XCTAssertEqual(oldSnapshot.deadlineAssessments?.filter {
+                $0.status == .applicable && $0.kind == "appeal"
+            }.map(\.ruleID), ["GPK-APPEAL-GENERAL"])
+            let record = try store.reconcileAndUpsert(
+                context: value, snapshot: oldSnapshot, movement: movement,
+                collections: ["Issue 125"])
+            try store.container.mainContext.save()
+
+            XCTAssertTrue(try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday))
+            let prepared = try XCTUnwrap(store.record(forKey: record.key)?.snapshot)
+            let current = try XCTUnwrap(prepared.deadlines.first {
+                $0.isActive && $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            })
+            let expected = try XCTUnwrap(MovementDerivation.snapshot(
+                from: movement, context: value, today: calendarTestToday).deadlines.first {
+                    $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })
+            XCTAssertNotEqual(current.occurrenceKey, oldSnapshot.deadlines.first?.occurrenceKey)
+            XCTAssertEqual(current.status, .proposed)
+            XCTAssertEqual(current.date, expected.date)
+            XCTAssertEqual(current.provenance?.trigger, expected.provenance?.trigger)
+            XCTAssertFalse(prepared.deadlines.contains {
+                $0.provenance?.ruleID == "GPK-APPEAL-GENERAL" && $0.isActive
+            })
+            let bytes = record.snapshotData
+
+            XCTAssertFalse(try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday))
+            XCTAssertEqual(record.snapshotData, bytes)
+            XCTAssertEqual(record.snapshot?.deadlines.filter(\.isActive).count, 1)
+        }
+    }
+
+    func testIssue125KeylessLegacyDoesNotAttachAcrossCompetingSameDayDecision() throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-12508/2026", cardID: "issue125-competing-act")
+        let movement = issue125Movement(for: value)
+        var oldSnapshot = try issue125OldSnapshot(
+            movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+            status: .overridden, keyed: false, manualDate: "20.10.2026")
+        oldSnapshot.deadlines[0].provenance = nil
+        var competingDecision = try XCTUnwrap(oldSnapshot.sessions.first)
+        competingDecision.result = "Иск удовлетворён; решение принято в окончательной форме"
+        oldSnapshot.sessions.append(competingDecision)
+        let current = try XCTUnwrap(MovementDerivation.snapshot(
+            from: movement, context: value, today: calendarTestToday).deadlines.first {
+                $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            })
+        guard case .ambiguous = DeadlineRuleEngine.provesIssue125Transition(
+            from: oldSnapshot.deadlines[0], to: current, movement: movement,
+            context: value, oldSnapshot: oldSnapshot) else {
+            return XCTFail("A second dated decision must make legacy recovery ambiguous")
+        }
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: oldSnapshot, movement: movement,
+            collections: ["Issue 125"])
+        try store.container.mainContext.save()
+
+        for _ in 0..<2 {
+            _ = try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday)
+            let snapshot = try XCTUnwrap(store.record(forKey: record.key)?.snapshot)
+            let preserved = try XCTUnwrap(snapshot.deadlines.first {
+                $0.occurrenceKey == nil && $0.provenance == nil
+            })
+            XCTAssertEqual(preserved.status, .overridden)
+            XCTAssertEqual(preserved.date, DateUtil.parse("20.10.2026"))
+            XCTAssertFalse(snapshot.deadlines.contains {
+                $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL" && $0.isActive
+            })
+            XCTAssertEqual(snapshot.deadlineAssessments?.first(where: {
+                $0.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            })?.status, .needsLegalReview)
+        }
+    }
+
+    func testIssue125RefreshTransfersOverrideAndRepeatedExactKeyKeepsCurrentDeadline() async throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-12501/2026", cardID: "issue125-refresh")
+        let movement = issue125Movement(for: value)
+        let oldSnapshot = try issue125OldSnapshot(
+            movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+            status: .overridden, manualDate: "20.10.2026")
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: oldSnapshot, movement: movement,
+            collections: ["Issue 125"],
+            movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_126))
+        let initialJournal = record.eventJournal
+        let source = FixedDeadlineMovement(movement)
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(minInterval: 0),
+            serviceBuilder: { _ in source })
+
+        let firstExecution = await center.refresh(key: record.key, manually: true)?.value
+        XCTAssertEqual(firstExecution?.outcome, .refreshed)
+        let refreshed = try XCTUnwrap(store.record(forKey: record.key))
+        let deadline = try XCTUnwrap(refreshed.snapshot?.deadlines.first {
+            $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL" && $0.isActive
+        })
+        XCTAssertEqual(deadline.status, .overridden)
+        XCTAssertEqual(deadline.date, DateUtil.parse("20.10.2026"))
+        XCTAssertEqual(refreshed.collectionNames, ["Issue 125"])
+        XCTAssertEqual(refreshed.movement?.acts, movement.acts)
+        XCTAssertNotNil(refreshed.movementFetchedAt)
+        let initialEvents = initialJournal?.events ?? []
+        let refreshedEvents = refreshed.eventJournal?.events ?? []
+        XCTAssertTrue(initialEvents.allSatisfy { refreshedEvents.contains($0) })
+        let initialEventIDs = Set(initialEvents.map(\.id))
+        let addedEvents = refreshedEvents.filter { !initialEventIDs.contains($0.id) }
+        XCTAssertEqual(addedEvents.count, 1)
+        XCTAssertEqual(addedEvents.first?.kind, .deadlineProposed)
+        XCTAssertEqual(addedEvents.first?.evidence.ruleID,
+                       "GPK-PRIVATE-COMPLAINT-GENERAL")
+        XCTAssertEqual(addedEvents.first?.evidence.occurrenceKey, deadline.occurrenceKey)
+        let journal = refreshed.eventJournal
+        let snapshot = refreshed.snapshot
+
+        let repeatedExecution = await center.refresh(key: record.key, manually: true)?.value
+        XCTAssertEqual(repeatedExecution?.outcome, .refreshed)
+        let repeated = try XCTUnwrap(store.record(forKey: record.key))
+        XCTAssertEqual(repeated.snapshot, snapshot)
+        XCTAssertEqual(repeated.eventJournal, journal)
+        XCTAssertEqual(repeated.snapshot?.deadlines.filter(\.isActive).count, 1)
+    }
+
+    func testIssue125AmbiguousLegacyChoiceWarnsAndClosedOccurrenceStaysClosed() async throws {
+        let scenarios: [(suffix: String, status: DeadlineStatus,
+                         includeOldAssessment: Bool, manualDate: String?)] = [
+            ("assessment", .overridden, true, "20.10.2026"),
+            ("opaque", .overridden, false, "20.10.2026"),
+            ("proposed", .proposed, true, nil),
+        ]
+        for scenario in scenarios {
+            let store = TrackedStore(inMemory: true)
+            let value = context(number: "2-12502/2026",
+                                cardID: "issue125-ambiguous-\(scenario.suffix)")
+            let sourceDate = scenario.status == .proposed ? "03.11.2026" : "03.09.2026"
+            let movement = issue125Movement(for: value, date: sourceDate)
+            var oldSnapshot = try issue125OldSnapshot(
+                movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+                status: scenario.status, keyed: false, manualDate: scenario.manualDate,
+                retainOldSession: false)
+            oldSnapshot.deadlines[0].provenance = nil
+            if !scenario.includeOldAssessment { oldSnapshot.deadlineAssessments = nil }
+            let monthLater = try XCTUnwrap(DateUtil.cal.date(
+                byAdding: .month, value: 1, to: DateUtil.parse(sourceDate)!))
+            let expectedDate = scenario.manualDate.flatMap(DateUtil.parse)
+                ?? monthLater
+            let record = try store.reconcileAndUpsert(
+                context: value, snapshot: oldSnapshot, movement: movement,
+                collections: ["Issue 125"])
+            try store.container.mainContext.save()
+
+            for _ in 0..<2 {
+                _ = try TrackedStorePreparation.prepare(
+                    context: store.container.mainContext, today: calendarTestToday)
+                let prepared = try XCTUnwrap(store.record(forKey: record.key)?.snapshot)
+                let preserved = try XCTUnwrap(prepared.deadlines.first {
+                    $0.occurrenceKey == nil && $0.provenance == nil
+                })
+                XCTAssertEqual(preserved.status, scenario.status)
+                XCTAssertEqual(preserved.date, expectedDate)
+                XCTAssertTrue(prepared.deadlines.filter(\.isActive).allSatisfy {
+                    $0.provenance?.ruleID != "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })
+                XCTAssertEqual(prepared.deadlineAssessments?.first(where: {
+                    $0.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })?.status, .needsLegalReview)
+                XCTAssertFalse(prepared.deadlineAssessments?.contains(where: {
+                    $0.ruleID == "GPK-APPEAL-GENERAL" && $0.status == .applicable
+                }) == true)
+            }
+
+            let source = FixedDeadlineMovement(movement)
+            let center = RefreshCenter(
+                store: store, client: SudrfClient(minInterval: 0),
+                serviceBuilder: { _ in source })
+            for _ in 0..<2 {
+                let execution = await center.refresh(key: record.key, manually: true)?.value
+                XCTAssertEqual(execution?.outcome, .refreshed)
+                let refreshed = try XCTUnwrap(store.record(forKey: record.key)?.snapshot)
+                let preserved = try XCTUnwrap(refreshed.deadlines.first {
+                    $0.occurrenceKey == nil && $0.provenance == nil
+                })
+                XCTAssertEqual(preserved.status, scenario.status)
+                XCTAssertEqual(preserved.date, expectedDate)
+                XCTAssertTrue(refreshed.deadlines.filter(\.isActive).allSatisfy {
+                    $0.provenance?.ruleID != "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })
+                XCTAssertEqual(refreshed.deadlineAssessments?.first(where: {
+                    $0.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })?.status, .needsLegalReview)
+                XCTAssertFalse(refreshed.deadlineAssessments?.contains(where: {
+                    $0.ruleID == "GPK-APPEAL-GENERAL" && $0.status == .applicable
+                }) == true)
+            }
+        }
+
+        let closedStore = TrackedStore(inMemory: true)
+        let closedContext = context(number: "2-12503/2026", cardID: "issue125-closed")
+        let closedMovement = issue125Movement(for: closedContext)
+        var closedSnapshot = try issue125OldSnapshot(
+            movement: closedMovement, context: closedContext,
+            oldRuleID: "GPK-APPEAL-GENERAL", status: .proposed,
+            lifecycle: .superseded, keyed: false)
+        closedSnapshot.deadlines[0].provenance = nil
+        let closedRecord = try closedStore.reconcileAndUpsert(
+            context: closedContext, snapshot: closedSnapshot, movement: closedMovement,
+            collections: ["Issue 125"])
+        let source = FixedDeadlineMovement(closedMovement)
+        let center = RefreshCenter(
+            store: closedStore, client: SudrfClient(minInterval: 0),
+            serviceBuilder: { _ in source })
+
+        for _ in 0..<2 {
+            let execution = await center.refresh(key: closedRecord.key, manually: true)?.value
+            XCTAssertEqual(execution?.outcome, .refreshed)
+            let deadlines = try XCTUnwrap(
+                closedStore.record(forKey: closedRecord.key)?.snapshot?.deadlines)
+            let closed = try XCTUnwrap(deadlines.first)
+            XCTAssertEqual(closed.lifecycle, .superseded)
+            XCTAssertFalse(closed.isActive)
+            XCTAssertNil(closed.occurrenceKey)
+            XCTAssertNil(closed.provenance)
+            XCTAssertEqual(deadlines.filter(\.isActive).count, 0)
+            XCTAssertEqual(closedStore.record(forKey: closedRecord.key)?.snapshot?
+                .deadlineAssessments?.first(where: {
+                    $0.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                })?.status, .needsLegalReview)
+        }
+    }
+
+    func testIssue125ExactActivePrivateKeyOutranksClosedMonthlyHistoryInEitherOrder() throws {
+        let value = context(number: "2-12504/2026", cardID: "issue125-key-priority")
+        let movement = issue125Movement(for: value)
+        let current = MovementDerivation.snapshot(
+            from: movement, context: value, today: calendarTestToday)
+        let active = try XCTUnwrap(current.deadlines.first {
+            $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+        })
+        let oldMonthlySnapshot = try issue125OldSnapshot(
+            movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
+            status: .proposed, lifecycle: .superseded)
+        let closed = try XCTUnwrap(oldMonthlySnapshot.deadlines.first)
+
+        for deadlines in [[closed, active], [active, closed]] {
+            var old = oldMonthlySnapshot
+            old.deadlines = deadlines
+            let merged = MovementDerivation.preservingConfirmedDeadlines(
+                current, old: old, today: calendarTestToday,
+                movement: movement, context: value)
+
+            XCTAssertEqual(merged.deadlines.filter(\.isActive).count, 1)
+            XCTAssertEqual(merged.deadlines.first(where: \.isActive)?.occurrenceKey,
+                           active.occurrenceKey)
+            XCTAssertEqual(merged.deadlines.filter { !$0.isActive }.count, 1)
+            XCTAssertTrue(merged.deadlines.contains {
+                $0.occurrenceKey == closed.occurrenceKey && $0.lifecycle == .superseded
+            })
+
+            let repeated = MovementDerivation.preservingConfirmedDeadlines(
+                current, old: merged, today: calendarTestToday,
+                movement: movement, context: value)
+            XCTAssertEqual(repeated.deadlines.filter(\.isActive).count, 1)
+            XCTAssertEqual(repeated.deadlines.first(where: \.isActive)?.occurrenceKey,
+                           active.occurrenceKey)
+        }
+    }
+
+    func testIssue125RecoverableKeylessClosedOccurrenceDoesNotReviveOnRefresh() async throws {
+        let store = TrackedStore(inMemory: true)
+        let value = context(number: "2-12505/2026", cardID: "issue125-keyless-closed")
+        let movement = issue125Movement(for: value)
+        var oldSnapshot = MovementDerivation.snapshot(
+            from: movement, context: value, today: calendarTestToday)
+        var closed = try XCTUnwrap(oldSnapshot.deadlines.first)
+        closed.occurrenceKey = nil
+        closed.statusRaw = DeadlineStatus.proposed.rawValue
+        closed.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+        oldSnapshot.deadlines = [closed]
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: oldSnapshot, movement: movement,
+            collections: ["Issue 125"])
+        try store.container.mainContext.save()
+        for _ in 0..<2 {
+            _ = try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday)
+            let deadlines = try XCTUnwrap(store.record(forKey: record.key)?.snapshot?.deadlines)
+            XCTAssertEqual(deadlines.filter(\.isActive).count, 0)
+            XCTAssertEqual(deadlines.first(where: { $0.occurrenceKey == nil })?.lifecycle,
+                           .superseded)
+        }
+        let source = FixedDeadlineMovement(movement)
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(minInterval: 0),
+            serviceBuilder: { _ in source })
+
+        for _ in 0..<2 {
+            let execution = await center.refresh(key: record.key, manually: true)?.value
+            XCTAssertEqual(execution?.outcome, .refreshed)
+            let deadlines = try XCTUnwrap(store.record(forKey: record.key)?.snapshot?.deadlines)
+            XCTAssertEqual(deadlines.filter(\.isActive).count, 0)
+            let preserved = try XCTUnwrap(deadlines.first {
+                $0.occurrenceKey == nil && $0.provenance?.ruleID == closed.provenance?.ruleID
+            })
+            XCTAssertEqual(preserved.lifecycle, .superseded)
+            XCTAssertEqual(preserved.date, closed.date)
+        }
     }
 }

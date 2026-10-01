@@ -1299,13 +1299,19 @@ final class TrackedCaseRepairCoordinator {
         survivor.movementFetchedAt = nil
         if let movement {
             var snapshot = MovementDerivation.snapshot(from: movement, context: context)
+            let oldSnapshots = all.compactMap(\.snapshot)
+            let protectedActiveOccurrenceKeys = Set(oldSnapshots.flatMap { old in
+                old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey)
+            })
             // Confirmed and manual deadlines remain user state across a
             // registration change. Fresh automatic calculations are derived
             // above from the accepted current card.
-            for old in all.compactMap(\.snapshot).reversed() {
+            for old in oldSnapshots.reversed() {
                 snapshot = MovementDerivation.preservingConfirmedDeadlines(
                     snapshot, old: old,
-                    preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
+                    preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
+                    movement: movement, context: context,
+                    protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
             }
             survivor.snapshot = snapshot
         }

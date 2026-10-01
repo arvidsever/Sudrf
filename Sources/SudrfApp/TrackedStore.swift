@@ -222,13 +222,16 @@ enum TrackedStorePreparation {
                 old: old, fresh: refreshed, today: today)
             guard old.deadlines.contains(where: \.isActive) || repairBaseline != old else { continue }
             let newlyDerived = refreshed.deadlines
-            refreshed.deadlines = refreshed.deadlines.filter { fresh in
-                hasStoredActiveOccurrence(fresh, in: repairBaseline.deadlines,
-                                          allFresh: newlyDerived)
+            let freshSnapshot = refreshed
+            refreshed.deadlines = newlyDerived.filter { fresh in
+                hasStoredActiveOccurrence(
+                    fresh, in: repairBaseline, freshSnapshot: freshSnapshot,
+                    movement: movement, context: movementContext, today: today)
             }
             refreshed = MovementDerivation.preservingConfirmedDeadlines(
                 refreshed, old: repairBaseline, today: today,
-                preserveActiveProposedWhenMissing: record.sourceRefreshAttempt?.kind == .partial)
+                preserveActiveProposedWhenMissing: record.sourceRefreshAttempt?.kind == .partial,
+                movement: movement, context: movementContext)
 
             // Не обновляем весь snapshot на старте: участники, события,
             // semantic observation и прочие проекции принадлежат refresh.
@@ -256,21 +259,50 @@ enum TrackedStorePreparation {
         }
     }
 
-    /// Startup не открывает новые kinds и не меняет круг trigger-ов: он лишь
-    /// проверяет ранее показанный active occurrence тем же сохранённым
-    /// movement. Это включает manual дату: сохраняем её state/date, но
-    /// обновляем calculation provenance, чтобы показать расхождение.
-    /// Legacy snapshot без occurrence key допускается только при единственном
-    /// новом кандидате того же kind.
-    private static func hasStoredActiveOccurrence(_ fresh: StoredDeadline,
-                                                   in old: [StoredDeadline],
-                                                   allFresh: [StoredDeadline]) -> Bool {
-        let candidates = old.filter(\.isActive)
-        if let key = fresh.occurrenceKey {
-            if candidates.contains(where: { $0.occurrenceKey == key }) { return true }
+    /// Startup admits exact active keys, a proved #125 transition, or a
+    /// uniquely recoverable legacy source. Uncertain candidates are passed to
+    /// preservation so the old choice stays visible with a warning.
+    private static func hasStoredActiveOccurrence(
+        _ fresh: StoredDeadline,
+        in old: CaseSnapshot,
+        freshSnapshot: CaseSnapshot,
+        movement: CaseMovement,
+        context: MovementContext,
+        today: Date
+    ) -> Bool {
+        let activeCandidates = old.deadlines.filter(\.isActive)
+        if let key = fresh.occurrenceKey,
+           activeCandidates.contains(where: { $0.occurrenceKey == key }) { return true }
+
+        let proofs = old.deadlines.map {
+            DeadlineRuleEngine.provesIssue125Transition(
+                from: $0, to: fresh, movement: movement, context: context,
+                oldSnapshot: old)
         }
-        return candidates.filter { $0.occurrenceKey == nil && $0.kind == fresh.kind }.count == 1
-            && allFresh.filter { $0.kind == fresh.kind }.count == 1
+        if proofs.contains(where: {
+            switch $0 {
+            case .proved, .ambiguous: true
+            case .none: false
+            }
+        }) { return true }
+
+        let legacyCandidates = activeCandidates.filter {
+            $0.occurrenceKey == nil && $0.kind == fresh.kind
+        }
+        guard legacyCandidates.count == 1, let legacy = legacyCandidates.first,
+              let legacyIndex = MovementDerivation.recoverableLegacyDeadlineIndex(
+                  legacy, old: old, fresh: freshSnapshot, deadlines: freshSnapshot.deadlines),
+              freshSnapshot.deadlines.indices.contains(legacyIndex)
+        else {
+            return activeCandidates.contains { legacy in
+                MovementDerivation.opaqueIssue125LegacyCandidates(
+                    legacy, old: old, deadlines: freshSnapshot.deadlines,
+                    movement: movement, today: today).contains { index in
+                        freshSnapshot.deadlines[index].occurrenceKey == fresh.occurrenceKey
+                    }
+            }
+        }
+        return freshSnapshot.deadlines[legacyIndex].occurrenceKey == fresh.occurrenceKey
     }
 }
 
@@ -1207,17 +1239,25 @@ final class TrackedStore {
                     [survivor.movement, mv].compactMap { $0 })
                 let projectionContext = adoptsIncomingCard ? ctx : survivor.context
                 if let projectedMovement, let canonicalContext = projectionContext {
+                    let oldSnapshots = [snap, cachedSnapshot].compactMap { $0 }
+                    let protectedActiveOccurrenceKeys = Set(oldSnapshots.flatMap { old in
+                        old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey)
+                    })
                     var derived = MovementDerivation.snapshot(
                         from: projectedMovement, context: canonicalContext)
                     if let snap {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
                             derived, old: snap,
-                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
+                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
+                            movement: projectedMovement, context: canonicalContext,
+                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
                     }
                     if let cachedSnapshot {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
                             derived, old: cachedSnapshot,
-                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial)
+                            preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
+                            movement: projectedMovement, context: canonicalContext,
+                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
                     }
                     projectedSnapshot = derived
                 } else {

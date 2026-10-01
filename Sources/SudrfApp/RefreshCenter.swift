@@ -1624,7 +1624,8 @@ final class RefreshCenter: ObservableObject {
         let oldSnapshot = rec.snapshot
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
             MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot,
-            preserveActiveProposedWhenMissing: !isComplete)
+            preserveActiveProposedWhenMissing: !isComplete,
+            movement: merged, context: projectionContext)
         let correctedBaseline = verifiedContext.flatMap { _ in
             Self.correctedMirrorBaseline(
                 oldSnapshot: oldSnapshot, oldMovement: oldMovement,

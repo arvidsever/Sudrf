@@ -28,7 +28,7 @@ final class MaterialDeadlineTests: XCTestCase {
                             complaints: [:], acts: [], category: "Общие вопросы")
     }
 
-    func testStandaloneMaterialsDoNotReceiveMainCaseDeadlineBindings() throws {
+    func testStandaloneMaterialsOnlyAdmitProvedBlockingDeterminations() throws {
         for (number, cartoteka) in [("13-100/2026", "m"), ("13а-100/2026", "m"),
                                    ("3/12-100/2026", "m"), ("15-100/2026", "adm")] {
             let context = context(number: number, cartoteka: cartoteka)
@@ -41,8 +41,21 @@ final class MaterialDeadlineTests: XCTestCase {
                 context: .init(movementContext: context),
                 timeline: CaseLifecycleResolver.timeline(in: movement, production: classification.production),
                 today: DateUtil.parse("01.05.2026")!)
-            XCTAssertTrue(evaluated.deadlines.isEmpty, number)
-            XCTAssertTrue(evaluated.assessments.isEmpty, number)
+            if classification.production == .civil || classification.production == .kas {
+                // #125 admits a dated whole-proceeding determination even for
+                // a material; it still must not receive main-case appeal rules.
+                let ruleID = classification.production == .civil
+                    ? "GPK-PRIVATE-COMPLAINT-GENERAL" : "KAS-PRIVATE-GENERAL"
+                XCTAssertEqual(evaluated.deadlines.count, 1, number)
+                XCTAssertEqual(evaluated.deadlines.first?.provenance?.ruleID, ruleID, number)
+                XCTAssertEqual(evaluated.deadlines.first?.what, "Частная жалоба", number)
+                XCTAssertEqual(evaluated.deadlines.first?.date, DateUtil.parse("22.04.2026"), number)
+                XCTAssertEqual(evaluated.assessments.filter { $0.status == .applicable }
+                    .map(\.ruleID), [ruleID], number)
+            } else {
+                XCTAssertTrue(evaluated.deadlines.isEmpty, number)
+                XCTAssertTrue(evaluated.assessments.isEmpty, number)
+            }
             XCTAssertEqual(CaseLifecycleResolver.resolve(
                 movement: movement, production: classification.production, deadlines: [],
                 deadlineAssessments: evaluated.assessments,

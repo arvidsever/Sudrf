@@ -1951,7 +1951,8 @@ final class AppRouter: ObservableObject {
                     let oldSnapshot = rec.snapshot
                     rec.movement = MovementCachePolicy.stripped(forPersist: updated)
                     let newSnapshot = MovementDerivation.preservingConfirmedDeadlines(
-                        MovementDerivation.snapshot(from: updated, context: mctx), old: oldSnapshot)
+                        MovementDerivation.snapshot(from: updated, context: mctx), old: oldSnapshot,
+                        movement: updated, context: mctx)
                     rec.snapshot = newSnapshot
                     let observedAt = Date()
                     let attempt = SourceAttempt(

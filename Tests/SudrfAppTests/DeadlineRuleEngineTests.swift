@@ -173,6 +173,146 @@ final class DeadlineRuleEngineTests: XCTestCase {
                        "KAS-CASSATION-KSOYU")
     }
 
+    func testActiveCalendarMonthRulesUseCalendarArithmeticAndRecordBusinessDayTrace() throws {
+        struct Example {
+            let ruleID: String
+            let kind: String
+            let cartoteka: String
+            let trigger: String
+            let rawEnd: String
+            let finalEnd: String
+            let formula: String
+            let policyID: String
+        }
+        let examples = [
+            Example(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", cartoteka: "g",
+                    trigger: "18.08.2026", rawEnd: "18.09.2026", finalEnd: "18.09.2026",
+                    formula: "1 календарный месяц", policyID: "GPK-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", cartoteka: "g",
+                    trigger: "31.01.2025", rawEnd: "28.02.2025", finalEnd: "28.02.2025",
+                    formula: "1 календарный месяц", policyID: "GPK-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", cartoteka: "p",
+                    trigger: "31.01.2024", rawEnd: "29.02.2024", finalEnd: "29.02.2024",
+                    formula: "1 календарный месяц", policyID: "KAS-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", cartoteka: "g",
+                    trigger: "31.03.2026", rawEnd: "30.04.2026", finalEnd: "30.04.2026",
+                    formula: "1 календарный месяц", policyID: "GPK-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "GPK-CASSATION-CSOY", kind: "cassation", cartoteka: "g",
+                    trigger: "30.06.2026", rawEnd: "30.09.2026", finalEnd: "30.09.2026",
+                    formula: "3 календарных месяца", policyID: "GPK-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "KAS-CASSATION-KSOYU", kind: "cassation", cartoteka: "p",
+                    trigger: "31.08.2023", rawEnd: "29.02.2024", finalEnd: "29.02.2024",
+                    formula: "6 календарных месяцев", policyID: "KAS-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", cartoteka: "p",
+                    trigger: "31.12.2025", rawEnd: "31.01.2026", finalEnd: "02.02.2026",
+                    formula: "1 календарный месяц", policyID: "KAS-COUNTING-MONTH-YEAR-CALENDAR"),
+            Example(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", cartoteka: "p",
+                    trigger: "04.10.2026", rawEnd: "04.11.2026", finalEnd: "05.11.2026",
+                    formula: "1 календарный месяц", policyID: "KAS-COUNTING-MONTH-YEAR-CALENDAR"),
+        ]
+        let registry = try LegalDeadlineRegistry.load()
+        let calendar = try LegalCalendar.load()
+        let timeZone = DateUtil.cal.timeZone
+
+        for example in examples {
+            let mv: CaseMovement
+            if example.kind == "cassation" {
+                mv = movement(cartoteka: example.cartoteka,
+                              category: example.cartoteka == "p" ? "Оспаривание решения органа" : "Споры из договоров",
+                              inForce: true,
+                              sessions: [CaseSession(date: example.trigger,
+                                                    event: "Решение вступило в законную силу")])
+            } else if example.cartoteka == "p" {
+                mv = movement(cartoteka: "p", category: "Оспаривание решения органа",
+                              sessions: [CaseSession(date: example.trigger, event: "Судебное заседание",
+                                                     result: "Административное исковое заявление удовлетворено; решение принято в окончательной форме")])
+            } else {
+                mv = qualifiedCivilMovement(date: example.trigger)
+            }
+            let rule = try XCTUnwrap(registry.rule(id: example.ruleID))
+            let evaluated = try evaluation(mv, cartoteka: example.cartoteka, registry: registry)
+            let deadline = try XCTUnwrap(evaluated.deadlines.single(where: {
+                $0.provenance?.ruleID == example.ruleID
+            }), example.ruleID)
+            let provenance = try XCTUnwrap(deadline.provenance)
+            let trace = try XCTUnwrap(provenance.calendarTrace)
+            let rawEndDate = try XCTUnwrap(DateUtil.parse(example.rawEnd))
+            let rawEnd = try XCTUnwrap(LegalCalendarDate(date: rawEndDate, timeZone: timeZone))
+            let shifted = try XCTUnwrap(calendar.movingToNextWorkingDay(rawEnd, forCode: rule.code))
+            let calendarFinal = try XCTUnwrap(shifted.date.date(timeZone: timeZone))
+            let expectedFinal = try XCTUnwrap(DateUtil.parse(example.finalEnd))
+
+            XCTAssertEqual(evaluated.deadlines.count, 1, example.ruleID)
+            XCTAssertEqual(deadline.kind, example.kind, example.ruleID)
+            XCTAssertEqual(rule.duration.kind, .months, example.ruleID)
+            XCTAssertEqual(rule.duration.unit, .months, example.ruleID)
+            XCTAssertEqual(rule.duration.raw, example.formula, example.ruleID)
+            XCTAssertEqual(provenance.ruleID, example.ruleID, example.ruleID)
+            XCTAssertEqual(provenance.registryRevision, rule.revision, example.ruleID)
+            XCTAssertEqual(provenance.sourceHash, rule.sourceHash, example.ruleID)
+            XCTAssertEqual(provenance.trigger.dateRaw, example.trigger, example.ruleID)
+            XCTAssertEqual(provenance.formula, example.formula, example.ruleID)
+            XCTAssertTrue(provenance.policyIDs.contains(example.policyID), example.ruleID)
+            XCTAssertEqual(trace.operation, .moveToNextWorkingDay, example.ruleID)
+            XCTAssertEqual(trace.start, rawEnd, "raw calendar end for \(example.ruleID)")
+            XCTAssertEqual(trace.result, shifted.trace.result, example.ruleID)
+            XCTAssertEqual(calendarFinal, expectedFinal, example.ruleID)
+            XCTAssertEqual(deadline.date, expectedFinal, example.ruleID)
+            XCTAssertEqual(deadline.date, trace.result.date(timeZone: timeZone), example.ruleID)
+            XCTAssertEqual(deadline.dateRef, provenance.calculatedDateRef, example.ruleID)
+        }
+    }
+
+    func testInjectedCalendarYearRuleUsesYearArithmeticWithoutActivatingProductionRule() throws {
+        let base = try LegalDeadlineRegistry.load()
+        let original = try XCTUnwrap(base.rule(id: "GPK-APPEAL-GENERAL"))
+        XCTAssertEqual(original.duration.kind, .months)
+        let annual = LegalDeadlineRule(
+            ruleID: original.ruleID, stage: original.stage, actContext: original.actContext,
+            duration: LegalDeadlineDuration(kind: .years, value: 1, unit: .years,
+                                            raw: "1 календарный год"),
+            durationText: "1 календарный год", trigger: original.trigger, source: original.source,
+            priority: original.priority, notes: original.notes, code: original.code,
+            document: original.document, revision: original.revision, sourceHash: original.sourceHash)
+        let registry = LegalDeadlineRegistry(
+            schemaVersion: base.schemaVersion, sources: base.sources,
+            coreRules: base.coreRules.map { $0.ruleID == annual.ruleID ? annual : $0 },
+            policies: base.policies, triggerDependencies: base.triggerDependencies,
+            constraints: base.constraints, exclusions: base.exclusions,
+            openQuestions: base.openQuestions)
+        let calendar = try LegalCalendar.load()
+        let timeZone = DateUtil.cal.timeZone
+
+        for (trigger, rawEnd, finalEnd) in [("18.08.2025", "18.08.2026", "18.08.2026"),
+                                            ("01.03.2023", "01.03.2024", "01.03.2024"),
+                                            ("29.02.2024", "28.02.2025", "28.02.2025")] {
+            let evaluated = try evaluation(qualifiedCivilMovement(date: trigger), registry: registry)
+            let deadline = try XCTUnwrap(evaluated.deadlines.single(where: {
+                $0.provenance?.ruleID == annual.ruleID
+            }))
+            let provenance = try XCTUnwrap(deadline.provenance)
+            let trace = try XCTUnwrap(provenance.calendarTrace)
+            let rawEndDate = try XCTUnwrap(DateUtil.parse(rawEnd))
+            let rawEndDateOnly = try XCTUnwrap(LegalCalendarDate(date: rawEndDate, timeZone: timeZone))
+            let shifted = try XCTUnwrap(calendar.movingToNextWorkingDay(rawEndDateOnly,
+                                                                       forCode: annual.code))
+            let calendarFinal = try XCTUnwrap(shifted.date.date(timeZone: timeZone))
+            let expectedFinal = try XCTUnwrap(DateUtil.parse(finalEnd))
+
+            XCTAssertEqual(evaluated.deadlines.count, 1)
+            XCTAssertEqual(annual.duration.kind, .years)
+            XCTAssertEqual(annual.duration.unit, .years)
+            XCTAssertEqual(annual.duration.value, 1)
+            XCTAssertEqual(provenance.trigger.dateRaw, trigger)
+            XCTAssertEqual(provenance.formula, "1 календарный год")
+            XCTAssertEqual(trace.start, rawEndDateOnly)
+            XCTAssertEqual(trace.result, shifted.trace.result)
+            XCTAssertEqual(calendarFinal, expectedFinal)
+            XCTAssertEqual(deadline.date, expectedFinal)
+            XCTAssertEqual(deadline.dateRef, provenance.calculatedDateRef)
+        }
+    }
+
     func testKASIssue294SelectsElectionAndGeneralPrivateRules() throws {
         let electionCategory = "О защите избирательных прав и права на участие в референдуме (гл. 24 КАС РФ)"
         let decision = movement(
@@ -360,6 +500,14 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertEqual(evaluated.assessments.single(where: {
             $0.ruleID == "KOAP-APPEAL-INITIAL-GENERAL"
         })?.status, .unsupportedCalculation)
+
+        let unconfirmedMonth = try evaluation(qualifiedCivilMovement(date: "31.12.2026"))
+        XCTAssertTrue(unconfirmedMonth.deadlines.isEmpty)
+        let assessment = try XCTUnwrap(unconfirmedMonth.assessments.single(where: {
+            $0.ruleID == "GPK-APPEAL-GENERAL"
+        }))
+        XCTAssertEqual(assessment.status, .unsupportedCalculation)
+        XCTAssertEqual(assessment.missingPolicyIDs, ["GPK-END-NONWORKING-NEXT-WORKING"])
     }
 
     func testExistingKoAPBindingUsesWorkingDayCalendarWithoutActivatingAnotherRule() throws {

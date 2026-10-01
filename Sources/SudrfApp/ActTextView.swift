@@ -48,21 +48,19 @@ enum CourtActFormatter {
 
     // MARK: классификация строки
 
-    private static let titleWords: Set<String> = [
-        "РЕШЕНИЕ", "ЗАОЧНОЕРЕШЕНИЕ", "ПОСТАНОВЛЕНИЕ", "ОПРЕДЕЛЕНИЕ", "ПРИГОВОР",
-    ]
-
     private static func classify(_ line: String) -> [Block] {
         let compact = removingWhitespace(line)
         let lowercase = compact.lowercased()
         if lowercase.hasPrefix("уид") || lowercase.hasPrefix("дело№") {
             return [.meta(line)]
         }
-        if titleWords.contains(compact.uppercased()), compact == compact.uppercased() {
-            return [.title(spacedCaps(compact))]
-        }
-        if lowercase == "именемроссийскойфедерации" {
-            return [.subtitle("Именем Российской Федерации")]
+        if let headings = CourtActHeadingNormalizer.normalize(line) {
+            return headings.map {
+                switch $0 {
+                case .title(let text): .title(text)
+                case .subtitle(let text): .subtitle(text)
+                }
+            }
         }
         if let verb = verbMatch(line) {
             return [.verb(verb)]
@@ -82,11 +80,6 @@ enum CourtActFormatter {
         String(text.unicodeScalars.filter {
             !CharacterSet.whitespacesAndNewlines.contains($0)
         })
-    }
-
-    /// «ПОСТАНОВЛЕНИЕ» → «П О С Т А Н О В Л Е Н И Е» — традиционная разрядка.
-    private static func spacedCaps(_ word: String) -> String {
-        word.map(String.init).joined(separator: " ")
     }
 
 }
@@ -127,6 +120,7 @@ struct ActTextView: View {
         case .title(let s):
             Text(s)
                 .font(bodyFont(size: 14).weight(.bold))
+                .tracking(1.5)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, 6)
         case .subtitle(let s):

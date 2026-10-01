@@ -32,6 +32,18 @@ final class ActPresentationTests: XCTestCase {
     }
 
     @MainActor
+    func testPDFHeadingUsesCanonicalWordsWithLetterSpacing() {
+        let source = "ЗАОЧНОЕРЕШЕНИЕИменемРоссийскойФедерации"
+        let paragraph = ActParagraph(ordinal: 19, text: source)
+        let output = ActPDFExporter.attributedAct(source, paragraphs: [paragraph])
+
+        XCTAssertEqual(output.string,
+                       "ЗАОЧНОЕ РЕШЕНИЕ\nИменем Российской Федерации\n")
+        XCTAssertEqual((output.attribute(.kern, at: 0, effectiveRange: nil) as? NSNumber)?.doubleValue,
+                       1.5)
+    }
+
+    @MainActor
     func testShortAndLongActRenderThroughViewAndPDF() throws {
         let longSource = "Дело № 2-2/2026 Р Е Ш Е Н И Е Именем Российской Федерации "
             + String(repeating: "Суд рассмотрел материалы. ", count: 240)

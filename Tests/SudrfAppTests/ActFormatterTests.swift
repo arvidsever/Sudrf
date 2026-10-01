@@ -9,7 +9,7 @@ final class ActFormatterTests: XCTestCase {
 
         XCTAssertEqual(CourtActFormatter.parse(source, paragraphs: paragraphs), [
             .meta("Дело № 2-1/2026"),
-            .title("Р Е Ш Е Н И Е"),
+            .title("РЕШЕНИЕ"),
             .subtitle("Именем Российской Федерации"),
             .verb("установил:"),
             .paragraph("обстоятельства доказаны."),
@@ -27,7 +27,39 @@ final class ActFormatterTests: XCTestCase {
 
         XCTAssertEqual(CourtActFormatter.parse("", paragraphs: paragraphs), [
             .meta("Дело\u{00a0}№\u{00a0}2-1/2026"),
-            .title("П О С Т А Н О В Л Е Н И Е"),
+            .title("ПОСТАНОВЛЕНИЕ"),
+            .subtitle("Именем Российской Федерации"),
+        ])
+    }
+
+    func testCompoundHeadingNormalizesAndKeepsSavedParagraphIdentity() {
+        let paragraph = ActParagraph(
+            ordinal: 17,
+            text: "З  А  О  Ч  Н  О  Е  Р  Е  Ш  Е  Н  И  ЕИменем Российской Федерации")
+
+        let blocks = CourtActFormatter.parseIdentified("", paragraphs: [paragraph])
+
+        XCTAssertEqual(blocks.map(\.block), [
+            .title("ЗАОЧНОЕ РЕШЕНИЕ"),
+            .subtitle("Именем Российской Федерации"),
+        ])
+        XCTAssertEqual(blocks.map(\.paragraphID), ["¶17", "¶17"])
+        XCTAssertEqual(blocks.map(\.blockID), ["¶17", "¶17.1"])
+    }
+
+    func testIssue359FixtureUsesTheSharedNormalizerForItsSavedCompoundParagraph() throws {
+        let fixture = try XCTUnwrap(Bundle.module.url(
+            forResource: "issue359_2-7212_2025", withExtension: "html",
+            subdirectory: "Fixtures"))
+        let html = try String(contentsOf: fixture, encoding: .utf8)
+        let text = try XCTUnwrap(CaseCardParser.parse(html: html).actText)
+        let paragraphs = ActParagraphizer.paragraphs(in: text)
+        let headingParagraph = try XCTUnwrap(paragraphs.first {
+            CourtActHeadingNormalizer.normalize($0.text)?.count == 2
+        })
+
+        XCTAssertEqual(CourtActHeadingNormalizer.normalize(headingParagraph.text), [
+            .title("ЗАОЧНОЕ РЕШЕНИЕ"),
             .subtitle("Именем Российской Федерации"),
         ])
     }

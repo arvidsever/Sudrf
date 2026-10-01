@@ -11,6 +11,15 @@ final class TrackedStoreIdentityTests: XCTestCase {
 
     private enum ForcedPreparationSaveError: Error { case forced }
 
+    private actor FixedDeadlineMovement: MovementProviding {
+        let value: CaseMovement
+        init(_ value: CaseMovement) { self.value = value }
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            value
+        }
+    }
+
     private func context(number: String, cardID: String, caseUID: String = "link-1",
                          judicialUID: String? = nil, domain: String = "court--komi.sudrf.ru",
                          courtCode: String = "11RS0001", cartoteka: String = "g1",
@@ -647,7 +656,10 @@ final class TrackedStoreIdentityTests: XCTestCase {
         var stale = MovementDerivation.snapshot(from: cachedMovement, context: value,
                                                 today: calendarTestToday)
         XCTAssertNotNil(stale.deadlines.first(where: { $0.kind == "appeal" })?.provenance?.calendarTrace)
-        stale.deadlines[try automaticAppealIndex(in: stale)].provenance?.calendarTrace = nil
+        let appeal = try automaticAppealIndex(in: stale)
+        let wrongDate = DateUtil.addDays(DateUtil.parse("03.09.2026")!, 30)
+        stale.deadlines[appeal].dateRef = wrongDate.timeIntervalSinceReferenceDate
+        stale.deadlines[appeal].provenance?.calendarTrace = nil
         let record = try store.reconcileAndUpsert(
             context: value, snapshot: stale, movement: cachedMovement,
             collections: ["Календарь"], movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_000))
@@ -665,9 +677,10 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertTrue(try TrackedStorePreparation.prepare(
             context: store.container.mainContext, today: calendarTestToday))
         let repaired = try XCTUnwrap(record.snapshot)
-        XCTAssertNotNil(repaired.deadlines.first(where: {
-            $0.kind == "appeal"
-        })?.provenance?.calendarTrace)
+        let repairedAppeal = try XCTUnwrap(repaired.deadlines.first { $0.kind == "appeal" && $0.isActive })
+        XCTAssertEqual(repairedAppeal.date, DateUtil.parse("05.10.2026"))
+        XCTAssertNotEqual(repairedAppeal.date, wrongDate)
+        XCTAssertNotNil(repairedAppeal.provenance?.calendarTrace)
         XCTAssertEqual(record.movementFetchedAt, fetchedAt)
         XCTAssertEqual(record.sourceRefreshAttempt, attempt)
         XCTAssertEqual(record.eventJournalData, journal)
@@ -678,30 +691,238 @@ final class TrackedStoreIdentityTests: XCTestCase {
     }
 
     func testPreparationPreservesManualDeadlineDateWhileRefreshingCalendarProvenance() throws {
-        let store = TrackedStore(inMemory: true)
-        let value = context(number: "2-225/2026", cardID: "manual-calendar-deadline",
-                            cartoteka: "g")
-        let cachedMovement = movementWithAutomaticCivilDeadline(for: value)
-        var stale = MovementDerivation.snapshot(from: cachedMovement, context: value,
-                                                today: calendarTestToday)
-        let appeal = try automaticAppealIndex(in: stale)
-        stale.deadlines[appeal].statusRaw = DeadlineStatus.overridden.rawValue
-        stale.deadlines[appeal].dateRef = DateUtil.parse("20.10.2026")!.timeIntervalSinceReferenceDate
-        stale.deadlines[appeal].provenance?.calendarTrace = nil
-        let record = try store.reconcileAndUpsert(
-            context: value, snapshot: stale, movement: cachedMovement, collections: [],
-            movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_001))
-        try store.container.mainContext.save()
+        for (index, status) in [DeadlineStatus.confirmed, .overridden].enumerated() {
+            let store = TrackedStore(inMemory: true)
+            let value = context(number: "2-\(225 + index)/2026",
+                                cardID: "manual-calendar-deadline-\(index)", cartoteka: "g1")
+            let cachedMovement = movementWithAutomaticCivilDeadline(for: value)
+            var stale = MovementDerivation.snapshot(from: cachedMovement, context: value,
+                                                    today: calendarTestToday)
+            let appeal = try automaticAppealIndex(in: stale)
+            let manualDate = DateUtil.parse(index == 0 ? "20.10.2026" : "21.10.2026")!
+            stale.deadlines[appeal].statusRaw = status.rawValue
+            stale.deadlines[appeal].dateRef = manualDate.timeIntervalSinceReferenceDate
+            stale.deadlines[appeal].occurrenceKey = nil
+            stale.deadlines[appeal].provenance = nil
+            stale.semanticProjectionVersion = nil
+            let record = try store.reconcileAndUpsert(
+                context: value, snapshot: stale, movement: cachedMovement, collections: [],
+                movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_001))
+            try store.container.mainContext.save()
 
-        XCTAssertTrue(try TrackedStorePreparation.prepare(
-            context: store.container.mainContext, today: calendarTestToday))
-        let repaired = try XCTUnwrap(record.snapshot?.deadlines.first(where: {
-            $0.kind == "appeal"
+            XCTAssertTrue(try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday))
+            let activeAppeals = record.snapshot?.deadlines.filter {
+                $0.kind == "appeal" && $0.isActive
+            } ?? []
+            XCTAssertEqual(activeAppeals.count, 1)
+            let repaired = try XCTUnwrap(activeAppeals.first)
+            XCTAssertEqual(repaired.status, status)
+            XCTAssertEqual(repaired.date, manualDate)
+            XCTAssertEqual(repaired.provenance?.calculatedDateRef,
+                           DateUtil.parse("05.10.2026")!.timeIntervalSinceReferenceDate)
+            XCTAssertNotNil(repaired.provenance?.calendarTrace)
+            XCTAssertFalse(try TrackedStorePreparation.prepare(
+                context: store.container.mainContext, today: calendarTestToday))
+        }
+    }
+
+    func testPreparationPersistsLegacyNinetyDayCorrectionAcrossRestart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deadline-129-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("test.store")
+        let fetchedAt = Date(timeIntervalSince1970: 1_700_000_010)
+        let fixtureURL = try XCTUnwrap(Bundle.module.url(
+            forResource: "issue371_movement", withExtension: "json", subdirectory: "Fixtures"))
+        var cachedMovement = try JSONDecoder().decode(
+            CaseMovement.self, from: Data(contentsOf: fixtureURL))
+        var value = context(number: cachedMovement.caseNumber,
+                             cardID: "legacy-ninety-day", domain: "syktsud--komi.sudrf.ru",
+                             courtCode: "11RS0001", cartoteka: "g1")
+        value.courtTitle = "Сыктывкарский городской суд"
+        let act = CaseAct(id: "deadline-129-preserved-act", title: "Определение",
+                          date: "13.07.2026", courtShort: value.courtTitle,
+                          instanceLevel: .first)
+        let firstInstance = try XCTUnwrap(cachedMovement.instances.firstIndex {
+            $0.level == .first
+        })
+        cachedMovement.instances[firstInstance].actID = act.id
+        cachedMovement.instances[firstInstance].actIDs = [act.id]
+        cachedMovement.acts.append(act)
+        cachedMovement.actBodies[act.id] = "Сохранённый текст определения"
+        var legacy = MovementDerivation.snapshot(from: cachedMovement, context: value,
+                                                 today: calendarTestToday)
+        let cassation = try XCTUnwrap(legacy.deadlines.firstIndex(where: {
+            $0.provenance?.ruleID == "GPK-CASSATION-CSOY"
         }))
-        XCTAssertEqual(repaired.status, .overridden)
-        XCTAssertEqual(repaired.date, DateUtil.parse("20.10.2026"))
-        XCTAssertNotNil(repaired.provenance?.calendarTrace)
-        XCTAssertNotEqual(repaired.dateRef, repaired.provenance?.calculatedDateRef)
+        let wrongDate = DateUtil.addDays(DateUtil.parse("13.07.2026")!, 90)
+        let expectedDate = DateUtil.parse("13.10.2026")!
+        XCTAssertEqual(wrongDate, DateUtil.parse("11.10.2026"))
+        legacy.deadlines[cassation].dateRef = wrongDate.timeIntervalSinceReferenceDate
+        legacy.deadlines[cassation].occurrenceKey = nil
+        legacy.deadlines[cassation].provenance = nil
+        legacy.deadlines[cassation].lifecycleRaw = nil
+        legacy.semanticProjectionVersion = nil
+
+        let key: String
+        let oldMovementData: Data
+        let oldJournalData: Data
+        let oldCollections: [String]
+        let oldFetchedAt: Date?
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false,
+                                                                 storeURL: storeURL)
+            let store = try TrackedStore(container: container, prepared: true)
+            let record = try store.reconcileAndUpsert(
+                context: value, snapshot: legacy, movement: cachedMovement,
+                collections: ["Сохранённое дело"], movementFetchedAt: fetchedAt)
+            key = record.key
+            oldMovementData = try XCTUnwrap(record.movementData)
+            oldJournalData = try XCTUnwrap(record.eventJournalData)
+            oldCollections = record.collectionNames
+            oldFetchedAt = record.movementFetchedAt
+            try store.save()
+        }
+
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false,
+                                                                 storeURL: storeURL)
+            XCTAssertTrue(try TrackedStorePreparation.prepare(
+                context: container.mainContext, today: calendarTestToday))
+            let store = try TrackedStore(container: container, prepared: true)
+            let record = try XCTUnwrap(store.record(forKey: key))
+            let activeCassations = record.snapshot?.deadlines.filter {
+                $0.kind == "cassation" && $0.isActive
+            } ?? []
+            XCTAssertEqual(activeCassations.count, 1)
+            let repaired = try XCTUnwrap(activeCassations.first)
+            XCTAssertEqual(repaired.date, expectedDate)
+            XCTAssertEqual(repaired.status, .proposed)
+            XCTAssertNotNil(repaired.occurrenceKey)
+            XCTAssertEqual(repaired.provenance?.calculatedDateRef,
+                           expectedDate.timeIntervalSinceReferenceDate)
+            XCTAssertNotNil(repaired.provenance?.calendarTrace)
+            XCTAssertEqual(record.movementData, oldMovementData)
+            XCTAssertEqual(record.movement?.acts, cachedMovement.acts)
+            XCTAssertEqual(record.movement?.actBodies, cachedMovement.actBodies)
+            XCTAssertEqual(record.movementFetchedAt, oldFetchedAt)
+            XCTAssertEqual(record.collectionNames, oldCollections)
+            XCTAssertEqual(record.eventJournalData, oldJournalData)
+            XCTAssertTrue(record.eventJournal?.events.isEmpty == true)
+
+            let snapshotData = record.snapshotData
+            XCTAssertFalse(try TrackedStorePreparation.prepare(
+                context: container.mainContext, today: calendarTestToday))
+            XCTAssertEqual(record.snapshotData, snapshotData)
+        }
+
+        let finalContainer = try SudrfModelContainerFactory.make(inMemory: false,
+                                                                  storeURL: storeURL)
+        XCTAssertFalse(try TrackedStorePreparation.prepare(
+            context: finalContainer.mainContext, today: calendarTestToday))
+        let finalStore = try TrackedStore(container: finalContainer, prepared: true)
+        let persisted = try XCTUnwrap(finalStore.record(forKey: key)?.snapshot?.deadlines.first {
+            $0.kind == "cassation" && $0.isActive
+        })
+        XCTAssertEqual(persisted.date, expectedDate)
+        XCTAssertEqual(persisted.provenance?.calculatedDateRef,
+                       expectedDate.timeIntervalSinceReferenceDate)
+    }
+
+    func testRefreshRepairsLegacyProposalAndDoesNotReviveClosedOccurrence() async throws {
+        let fixtureURL = try XCTUnwrap(Bundle.module.url(
+            forResource: "issue371_movement", withExtension: "json", subdirectory: "Fixtures"))
+        var movement = try JSONDecoder().decode(
+            CaseMovement.self, from: Data(contentsOf: fixtureURL))
+        let value = context(number: movement.caseNumber,
+                            cardID: "legacy-refresh-deadline", cartoteka: "g1")
+        let act = CaseAct(id: "deadline-129-refresh-act", title: "Апелляционное определение",
+                          date: "13.07.2026", courtShort: "Тестовый суд", instanceLevel: .appeal)
+        let appealInstance = try XCTUnwrap(movement.instances.firstIndex { $0.level == .appeal })
+        movement.instances[appealInstance].actID = act.id
+        movement.instances[appealInstance].actIDs = [act.id]
+        movement.acts.append(act)
+        movement.actBodies[act.id] = "Сохранённый текст апелляционного определения"
+        var legacy = MovementDerivation.snapshot(from: movement, context: value,
+                                                 today: calendarTestToday)
+        let index = try XCTUnwrap(legacy.deadlines.firstIndex(where: {
+            $0.provenance?.ruleID == "GPK-CASSATION-CSOY"
+        }))
+        let wrongDate = DateUtil.addDays(DateUtil.parse("13.07.2026")!, 90)
+        legacy.deadlines[index].dateRef = wrongDate.timeIntervalSinceReferenceDate
+        legacy.deadlines[index].occurrenceKey = nil
+        legacy.deadlines[index].provenance = nil
+        legacy.deadlines[index].lifecycleRaw = nil
+        legacy.semanticProjectionVersion = nil
+        let store = TrackedStore(inMemory: true)
+        let record = try store.reconcileAndUpsert(
+            context: value, snapshot: legacy, movement: movement,
+            collections: ["Сохранённое дело"],
+            movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_011))
+        let oldJournal = record.eventJournal
+        let source = FixedDeadlineMovement(movement)
+        let center = RefreshCenter(
+            store: store, client: SudrfClient(minInterval: 0),
+            serviceBuilder: { _ in source })
+        var refreshCallbacks = 0
+        center.onRefreshed = { _, _, _ in refreshCallbacks += 1 }
+
+        let execution = await center.refresh(key: record.key, manually: true)?.value
+
+        XCTAssertEqual(execution?.outcome, .refreshed)
+        XCTAssertEqual(refreshCallbacks, 1)
+        let refreshed = try XCTUnwrap(store.record(forKey: record.key))
+        let deadline = try XCTUnwrap(refreshed.snapshot?.deadlines.first(where: {
+            $0.provenance?.ruleID == "GPK-CASSATION-CSOY" && $0.occurrenceKey != nil
+        }))
+        let expectedDate = DateUtil.parse("13.10.2026")!
+        XCTAssertEqual(deadline.date, expectedDate)
+        XCTAssertEqual(deadline.status, .proposed)
+        // Refresh uses the real day: expiration after the grace window is independent
+        // of arithmetic repair, and an archived case still retains its available term.
+        let isCurrent = DateUtil.daysBetween(expectedDate, DateUtil.today) <= AppRouter.deadlineGraceDays
+        XCTAssertEqual(deadline.lifecycle, isCurrent ? .active : .expiredUnconfirmed)
+        XCTAssertEqual(refreshed.snapshot?.deadlines.filter { $0.kind == "cassation" && $0.isActive }.count,
+                       isCurrent ? 1 : 0)
+        XCTAssertNotNil(deadline.provenance?.calendarTrace)
+        XCTAssertEqual(refreshed.collectionNames, ["Сохранённое дело"])
+        XCTAssertEqual(refreshed.movement?.acts, movement.acts)
+        XCTAssertEqual(refreshed.movement?.actBodies, movement.actBodies)
+        XCTAssertEqual(refreshed.eventJournal, oldJournal)
+        XCTAssertTrue(refreshed.eventJournal?.events.isEmpty == true)
+        XCTAssertNotEqual(refreshed.movementFetchedAt, Date(timeIntervalSince1970: 1_700_000_011))
+
+        let firstDeadlines = refreshed.snapshot?.deadlines
+        let repeated = await center.refresh(key: record.key, manually: true)?.value
+        XCTAssertEqual(repeated?.outcome, .refreshed)
+        XCTAssertEqual(refreshed.snapshot?.deadlines, firstDeadlines)
+        XCTAssertEqual(refreshed.snapshot?.deadlines.filter {
+            $0.occurrenceKey == deadline.occurrenceKey
+        }.count, 1)
+        XCTAssertEqual(refreshed.movement?.acts, movement.acts)
+        XCTAssertEqual(refreshed.movement?.actBodies, movement.actBodies)
+        XCTAssertEqual(refreshed.collectionNames, ["Сохранённое дело"])
+        XCTAssertEqual(refreshed.eventJournal, oldJournal)
+
+        var closedSnapshot = try XCTUnwrap(refreshed.snapshot)
+        let closedIndex = try XCTUnwrap(closedSnapshot.deadlines.firstIndex(where: {
+            $0.occurrenceKey == deadline.occurrenceKey
+        }))
+        closedSnapshot.deadlines[closedIndex].lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+        refreshed.snapshot = closedSnapshot
+        try store.save()
+
+        let secondRefresh = await center.refresh(key: record.key, manually: true)?.value
+
+        XCTAssertEqual(secondRefresh?.outcome, .refreshed)
+        let closed = try XCTUnwrap(store.record(forKey: record.key)?.snapshot?.deadlines.first {
+            $0.occurrenceKey == deadline.occurrenceKey
+        })
+        XCTAssertEqual(closed.lifecycle, .superseded)
+        XCTAssertFalse(closed.isActive)
+        XCTAssertEqual(store.record(forKey: record.key)?.snapshot?.deadlines.filter(\.isActive).count, 0)
     }
 
     func testPreparationRechecksExistingProposalWithoutFullCacheTimestamp() throws {

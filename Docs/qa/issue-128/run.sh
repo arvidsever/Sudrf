@@ -49,4 +49,4 @@ PLIST
 if [[ "${SUDRF_DEADLINE128_LAUNCH:-0}" == "1" ]]; then
     open "$APP"
 fi
-printf '%s\n' 'Open /private/tmp/SudrfDeadline128.app, inspect its accessibility tree, then press Command-R to run GUI checks.'
+printf '%s\n' 'Launch with SUDRF_DEADLINE128_QA_OUTPUT as documented in README.md, then press Command-R. A skipped acceptance test is a failure.'

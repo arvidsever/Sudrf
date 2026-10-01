@@ -9,7 +9,8 @@
         let failures = suite.testRun?.failureCount ?? 1
         let report = "GUI tests: \(suite.testRun?.executionCount ?? 0), failures: \(failures), skips: \(suite.testRun?.skipCount ?? 0)\n"
         try? report.write(toFile: "/private/tmp/sudrf-128-gui-result.txt", atomically: true, encoding: .utf8)
-        exit(failures == 0 ? 0 : 1)
+        exit(failures == 0 && suite.testRun?.executionCount == 1
+            && suite.testRun?.skipCount == 0 ? 0 : 1)
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -19,7 +20,8 @@
                 screen.1.stageFilter = .first
                 screen.1.myView = .stages
                 screen.0.contentView = NSHostingView(rootView: MyCasesView()
-                    .environmentObject(screen.1).environment(\.colorScheme, .light))
+                    .environmentObject(screen.1).environment(\.colorScheme, .light)
+                    .frame(width: 1440, height: 900))
             }
             screen.0.makeKeyAndOrderFront(nil)
             let menu = NSMenu()

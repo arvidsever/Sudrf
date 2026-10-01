@@ -24,12 +24,24 @@
 - [Обзор](overview.png): частная жалоба 2 октября 2026 года, общий срок 15 рабочих дней; избирательная — 3 октября 2026 года, 5 календарных дней.
 - [Календарь и открытая панель дня](calendar.png): дата и основание общей частной жалобы.
 
+## Результаты проверки
+
+1 октября 2026 года: production-код `3736c5d`, совместимость тестов с Xcode 26/27 `7ea9f9a`:
+
+- 153 профильных XCTest — без ошибок.
+- Полный набор: 1763 XCTest, из них 6 opt-in пропущены; 28 Swift Testing — без ошибок, включая полный прогон с `-strict-concurrency=complete`.
+- Отдельный запуск `PrivateComplaintVisualTests`: настоящий «Обзор» и календарь, 1 тест без ошибок, снимки сохранены выше.
+- Генератор registry подтверждает актуальность данных. Xcode-проект пересоздан, Debug-сборка успешна.
+- Независимые Astra advisory и финальное read-only review не нашли оставшихся блокирующих замечаний. Отдельно проверены отрицательные формы отказа и приоритет действующего точного ключа при объединении записей.
+
+CI кода `7ea9f9a` прошёл; версия и release-документы проверяются на итоговом коммите PR #389. Сведения о результате доступны в проверках PR. Основной `main` после merge обновляется отдельно, с пересозданием его Xcode-проекта и сборкой из основной папки.
+
 ## Команды проверки
 
 ```sh
 swift test --filter 'Issue125|DeadlineRuleEngineTests|MaterialDeadlineTests|Issue319|TrackedStoreIdentityTests|TrackedCaseRepairTests'
 SUDRF_DEADLINE125_QA_OUTPUT="$PWD/Docs/qa/issue-125" swift test --filter PrivateComplaintVisualTests
-swift test
+swift test -Xswiftc -strict-concurrency=complete
 python3 Scripts/generate-legal-deadline-registry.py --check
 xcodegen generate
 xcodebuild -project Sudrf.xcodeproj -scheme Sudrf -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build

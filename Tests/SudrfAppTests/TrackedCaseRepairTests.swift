@@ -421,7 +421,7 @@ final class TrackedCaseRepairTests: XCTestCase {
 
     private func issue125Movement(for context: MovementContext) -> CaseMovement {
         let result = "Исковое заявление возвращено"
-        let actID = "issue-125-\(context.caseID)"
+        let actID = "issue-125-\(context.caseID ?? context.caseNumber)"
         let first = CaseInstance(
             level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
             judge: nil, domain: context.searchDomain, foundByUID: false,

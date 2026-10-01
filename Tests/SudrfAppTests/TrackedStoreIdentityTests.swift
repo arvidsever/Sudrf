@@ -102,7 +102,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
                                   category: String = "Споры из договоров",
                                   date: String = "03.09.2026",
                                   result: String = "Исковое заявление возвращено") -> CaseMovement {
-        let actID = "issue125-\(context.caseID)"
+        let actID = "issue125-\(context.caseID ?? context.caseNumber)"
         let first = CaseInstance(
             level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
             judge: nil, domain: context.searchDomain, foundByUID: false,
@@ -1614,7 +1614,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
             var recordKey = ""
             var initialJournal: CaseEventJournal?
 
-            let verify: (TrackedCaseRecord) throws -> Void = { record in
+            let verify: @MainActor (TrackedCaseRecord) throws -> Void = { record in
                 let snapshot = try XCTUnwrap(record.snapshot)
                 XCTAssertEqual(record.collectionNames, ["Issue 125 disk"])
                 XCTAssertEqual(record.movement?.acts, movement.acts)

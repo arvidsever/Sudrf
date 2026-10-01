@@ -1029,7 +1029,8 @@ enum DeadlineRuleEngine {
     }
 
     private static func blockingDisposition(_ value: String) -> BlockingDisposition? {
-        guard !isRefusalToTerminateProceeding(value), !isPartialProceedingTermination(value) else {
+        guard !isRefusalToTerminateProceeding(value), !isPartialProceedingTermination(value),
+              !isRefusalOfAncillaryApplication(value) else {
             return nil
         }
         let claimApplication = value.range(
@@ -1082,6 +1083,12 @@ enum DeadlineRuleEngine {
         return value.contains("в части") || value.contains("частичн")
     }
 
+    private static func isRefusalOfAncillaryApplication(_ value: String) -> Bool {
+        value.range(
+            of: #"отказ(?:ано|е)\s+в\s+удовлетворении\s+заявлен\w*[^.!?]{0,60}\s+об?\s+(?:возврат|оставлен|прекращ)\w*|в\s+удовлетворении\s+заявлен\w*[^.!?]{0,60}\s+об?\s+(?:возврат|оставлен|прекращ)\w*[^.!?]{0,60}\s+отказано"#,
+            options: .regularExpression) != nil
+    }
+
     private static func isUnsupportedActWording(_ value: String) -> Bool {
         let intermediate = ["ходатайств", "доказательств", "отвод", "запрос",
                             "подготов", "отлож", "перенес", "без движен",
@@ -1089,10 +1096,8 @@ enum DeadlineRuleEngine {
                             "замен стороны", "правопреем", "вступлен треть",
                             "соединен иск", "выделен иск", "передач дела",
                             "назначено заседан", "назначении заседан"]
-        let refusedTerminationApplication = value.range(
-            of: #"отказано\s+в\s+удовлетворении\s+заявлен\w*[^.!?]{0,40}\s+о\s+прекращ\w*"#,
-            options: .regularExpression) != nil
-        guard !intermediate.contains(where: value.contains), !refusedTerminationApplication else {
+        guard !intermediate.contains(where: value.contains),
+              !isRefusalOfAncillaryApplication(value) else {
             return true
         }
         if isRefusalToTerminateProceeding(value) { return true }

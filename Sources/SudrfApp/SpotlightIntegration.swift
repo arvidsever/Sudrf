@@ -134,7 +134,7 @@ struct CourtActEntity: IndexedEntity, Sendable, Hashable {
         attributes.displayName = document.kind
         attributes.contentDescription = [document.court, document.date, document.judicialUID]
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-        attributes.textContent = document.paragraphs.map(\.text).joined(separator: "\n")
+        attributes.textContent = indexedTextContent
         attributes.keywords = [document.caseNumber, document.judicialUID,
                                document.court, document.kind, document.date]
             .compactMap { $0 }.filter { !$0.isEmpty }
@@ -149,9 +149,17 @@ struct CourtActEntity: IndexedEntity, Sendable, Hashable {
         ActParagraphizer.sourceHash(for: [document.sourceHash, document.caseNumber,
                                           document.judicialUID, document.court,
                                           document.kind, document.date,
-                                          String(document.paragraphizerVersion)]
+                                          String(document.paragraphizerVersion),
+                                          indexedTextContent]
             .compactMap { $0 }
             .joined(separator: "\n"))
+    }
+
+    private var indexedTextContent: String {
+        document.paragraphs.map { paragraph in
+            CourtActHeadingNormalizer.normalize(paragraph.text)?.map(\.text)
+                .joined(separator: "\n") ?? paragraph.text
+        }.joined(separator: "\n")
     }
 }
 

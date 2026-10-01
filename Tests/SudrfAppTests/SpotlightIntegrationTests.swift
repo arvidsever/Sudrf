@@ -103,6 +103,57 @@ final class SpotlightIntegrationTests: XCTestCase {
                           CourtActEntity(document: legacy).fingerprint)
     }
 
+    @MainActor
+    func testLegacyHeadingTextIsNormalizedAndInvalidatesSpotlightIndex() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        let source = "ЗАОЧНОЕРЕШЕНИЕ\nИменем Российской Федерации\nСуд рассмотрел дело."
+        _ = try store.upsert(context: context, snapshot: nil,
+                             movement: makeMovement(text: source), collections: [])
+        let catalog = CaseCatalog(container: store.container)
+        let records = try await catalog.acts()
+        let document = try XCTUnwrap(records.first?.document)
+        let entity = CourtActEntity(document: document)
+        let oldFingerprint = ActParagraphizer.sourceHash(for: [
+            document.sourceHash, document.caseNumber, document.judicialUID,
+            document.court, document.kind, document.date,
+            String(document.paragraphizerVersion),
+        ].compactMap { $0 }.joined(separator: "\n"))
+
+        XCTAssertEqual(entity.attributeSet.textContent,
+                       "ЗАОЧНОЕ РЕШЕНИЕ\nИменем Российской Федерации\nСуд рассмотрел дело.")
+        XCTAssertNotEqual(entity.fingerprint, oldFingerprint)
+        XCTAssertEqual(document.id, "\(context.key)#act-1")
+        XCTAssertEqual(document.sourceText, source)
+        XCTAssertEqual(document.sourceHash, ActParagraphizer.sourceHash(for: source))
+        XCTAssertEqual(document.paragraphizerVersion, ActParagraphizer.currentVersion)
+        XCTAssertEqual(document.paragraphs.first?.text, "ЗАОЧНОЕРЕШЕНИЕ")
+
+        let suite = "SpotlightHeadingTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        await manifest.save(SpotlightManifest(acts: [
+            document.id: SpotlightActManifestEntry(
+                fingerprint: oldFingerprint, caseKey: document.caseKey),
+        ]))
+        let writer = RecordingSpotlightWriter()
+        let indexer = SpotlightIndexer(
+            catalog: catalog, writer: writer, manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        try await indexer.synchronize()
+
+        var state = await writer.snapshot()
+        XCTAssertEqual(state.indexedActIDs, [document.id])
+
+        try await indexer.synchronize()
+        state = await writer.snapshot()
+        XCTAssertEqual(state.indexedActIDs, [document.id])
+        let savedManifest = await manifest.load()
+        XCTAssertEqual(savedManifest.acts[document.id]?.fingerprint, entity.fingerprint)
+    }
+
     func testDeepLinksRoundTripReservedCharacters() throws {
         let links: [SudrfDeepLink] = [
             .caseRecord(key: "court.example/2-1/2026 # 7"),

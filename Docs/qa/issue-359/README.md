@@ -43,7 +43,10 @@ SUDRF_HEADING359_QA_OUTPUT="$PWD/Docs/qa/issue-359" \
   и [извлечённый текст PDF](heading-extracted.txt) проверены. В обоих представлениях
   и PDF есть межсловный пробел; исходный опубликованный PDF не используется.
 - Независимое review производственного кода Astra: блокирующих замечаний нет.
-  CI и review итогового SHA проверяются в PR перед merge.
+  [CI коммита кода](https://github.com/arvidsever/Sudrf/actions/runs/36892962287)
+  прошёл: build-test и package-app. Hosted runner не содержит Xcode 27;
+  локальная сборка и тесты выполнялись на Xcode 27.0. Release-документы и версия
+  проверяются на итоговом SHA [PR #390](https://github.com/arvidsever/Sudrf/pull/390).
 
 Фикстура — синтетическая производная существующей санитизированной карточки #358,
 с разрядкой из описания #359; это не новый снимок живого сайта. SHA-256 HTML:

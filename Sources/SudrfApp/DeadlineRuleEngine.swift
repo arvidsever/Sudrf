@@ -106,8 +106,7 @@ enum DeadlineRuleEngine {
     private enum TriggerMode {
         case decisionFinalForm
         case decision
-        case termination
-        case kasPrivateDetermination
+        case blockingDetermination
         case finalAct
         case koapInitialReceipt
         case koapSubsequentReceipt
@@ -135,6 +134,27 @@ enum DeadlineRuleEngine {
         case notApplicable
     }
 
+    private enum CurrentFirstInstanceAct {
+        case missing
+        case unsupported
+        case decision(DeadlineTriggerProvenance)
+        case blockingDetermination(DeadlineTriggerProvenance)
+        case ambiguous
+    }
+
+    private enum BlockingDisposition: Equatable {
+        case claimReturned
+        case refusalToAccept
+        case leftWithoutConsideration
+        case proceedingTerminated
+    }
+
+    enum Issue125TransitionProof {
+        case proved
+        case ambiguous
+        case none
+    }
+
     private enum DateCalculation {
         case calculated(Calculation)
         case unsupported([String])
@@ -146,15 +166,15 @@ enum DeadlineRuleEngine {
         Binding(ruleID: "GPK-APPEAL-GENERAL", kind: "appeal", production: .civil,
                 trigger: .decisionFinalForm),
         Binding(ruleID: "GPK-PRIVATE-COMPLAINT-GENERAL", kind: "appeal", production: .civil,
-                trigger: .termination),
+                trigger: .blockingDetermination),
         Binding(ruleID: "KAS-APPEAL-GENERAL", kind: "appeal", production: .kas,
                 trigger: .decisionFinalForm),
         Binding(ruleID: "KAS-APPEAL-ELECTION", kind: "appeal", production: .kas,
                 trigger: .decision, categoryScope: .election),
         Binding(ruleID: "KAS-PRIVATE-GENERAL", kind: "appeal", production: .kas,
-                trigger: .kasPrivateDetermination),
+                trigger: .blockingDetermination),
         Binding(ruleID: "KAS-PRIVATE-ELECTION", kind: "appeal", production: .kas,
-                trigger: .kasPrivateDetermination, categoryScope: .election),
+                trigger: .blockingDetermination, categoryScope: .election),
         Binding(ruleID: "UPK-APPEAL-GENERAL", kind: "appeal", production: .crim,
                 trigger: .finalAct),
         Binding(ruleID: "KOAP-APPEAL-INITIAL-GENERAL", kind: "appeal", production: .koap,
@@ -223,6 +243,243 @@ enum DeadlineRuleEngine {
                               status: .needsLegalReview) })
     }
 
+    static func provesIssue125Transition(
+        from previous: StoredDeadline, to fresh: StoredDeadline,
+        movement: CaseMovement, context: MovementContext?, oldSnapshot: CaseSnapshot
+    ) -> Issue125TransitionProof {
+        guard previous.kind == "appeal", fresh.kind == "appeal" else { return .none }
+        guard let freshProvenance = fresh.provenance else {
+            guard previous.status == .proposed else { return .none }
+            let warnings = (oldSnapshot.deadlineAssessments ?? []).filter {
+                $0.kind == "appeal" && $0.status == .needsLegalReview
+                    && ["GPK-PRIVATE-COMPLAINT-GENERAL", "KAS-PRIVATE-GENERAL",
+                        "KAS-PRIVATE-ELECTION"].contains($0.ruleID)
+            }
+            guard !warnings.isEmpty else { return .none }
+            let classification = MaterialProductionContext.resolve(context: context, movement: movement)
+            let timeline = CaseLifecycleResolver.timeline(
+                in: movement, production: classification.production)
+            guard let first = timeline.deadlineFirst,
+                  case .blockingDetermination = currentFirstInstanceAct(in: first) else { return .none }
+            let matchingWarning = warnings.contains { warning in
+                let isGPK = warning.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+                guard classification.production == (isGPK ? .civil : .kas) else { return false }
+                if warning.ruleID == "KAS-PRIVATE-ELECTION" {
+                    return isElectionCategory(movement.category)
+                }
+                return !categorySelectsSpecialRule(movement.category,
+                                                   code: isGPK ? "GPK" : "KAS",
+                                                   forRule: warning.ruleID)
+            }
+            return matchingWarning ? .ambiguous : .none
+        }
+        let oldUID = CaseOriginResolver.normalizedUID(oldSnapshot.uid)
+        let currentUID = CaseOriginResolver.normalizedUID(movement.uid)
+        guard oldUID.isEmpty || currentUID.isEmpty || oldUID == currentUID else { return .none }
+        let classification = MaterialProductionContext.resolve(context: context, movement: movement)
+        let code = freshProvenance.ruleID.hasPrefix("GPK-") ? "GPK" : "KAS"
+        let expectedProduction: ProductionType = code == "GPK" ? .civil : .kas
+        guard classification.production == expectedProduction else { return .none }
+        let category = normalized(movement.category)
+        guard !category.isEmpty else { return .none }
+        let categoryAllowsTarget = freshProvenance.ruleID == "KAS-PRIVATE-ELECTION"
+            ? code == "KAS" && isElectionCategory(category)
+            : !categorySelectsSpecialRule(category, code: code,
+                                          forRule: freshProvenance.ruleID)
+        guard categoryAllowsTarget else { return .none }
+
+        let timeline = CaseLifecycleResolver.timeline(in: movement, production: expectedProduction)
+        guard let first = timeline.deadlineFirst else { return .ambiguous }
+        guard case .blockingDetermination(let currentTrigger) = currentFirstInstanceAct(in: first)
+        else { return .none }
+        guard freshProvenance.trigger == currentTrigger,
+              fresh.occurrenceKey == occurrenceKey(
+                ruleID: freshProvenance.ruleID, timeline: timeline,
+                movement: movement, trigger: currentTrigger) else { return .none }
+
+        let applicableOldRules = (oldSnapshot.deadlineAssessments ?? []).filter {
+            $0.kind == previous.kind && $0.status == .applicable
+                && ["GPK-APPEAL-GENERAL", "KAS-APPEAL-GENERAL",
+                    "KAS-APPEAL-ELECTION"].contains($0.ruleID)
+        }
+        let oldRuleID = previous.provenance?.ruleID
+            ?? previous.occurrenceKey.flatMap(occurrenceRule)
+            ?? (applicableOldRules.count == 1 ? applicableOldRules[0].ruleID : nil)
+        guard let oldRuleID,
+              isIssue125RulePair(oldRuleID, freshProvenance.ruleID),
+              oldRuleID.hasPrefix(code) else {
+            let targetWarningRemains = (oldSnapshot.deadlineAssessments ?? []).contains {
+                $0.ruleID == freshProvenance.ruleID && $0.kind == previous.kind
+                    && $0.status == .needsLegalReview
+            }
+            if previous.status == .proposed && targetWarningRemains { return .ambiguous }
+            return previous.isUserControlled ? .ambiguous : .none
+        }
+
+        let oldTrigger: DeadlineTriggerProvenance?
+        if let trigger = previous.provenance?.trigger {
+            oldTrigger = trigger
+        } else if let oldKey = previous.occurrenceKey {
+            oldTrigger = storedTrigger(oldKey, ruleID: oldRuleID, snapshot: oldSnapshot,
+                                       matching: first, context: context)
+        } else {
+            oldTrigger = recoveredLegacyTrigger(ruleID: oldRuleID, snapshot: oldSnapshot,
+                                                matching: first, current: currentTrigger,
+                                                context: context)
+        }
+        guard let oldTrigger else { return .ambiguous }
+        guard sameTriggerCard(oldTrigger, currentTrigger, instance: first) else { return .none }
+        guard sameDay(oldTrigger.dateRaw, currentTrigger.dateRaw) else { return .ambiguous }
+        guard storedSessions(oldSnapshot, contain: oldTrigger, matching: first,
+                             context: context) else { return .ambiguous }
+        if let oldKey = previous.occurrenceKey {
+            guard let oldRound = occurrenceRound(oldKey, ruleID: oldRuleID) else { return .ambiguous }
+            let currentRound = timeline.currentRoundStart?.instance.id
+                ?? timeline.deadlineFirst?.id ?? movement.uid
+            guard oldRound == currentRound else { return .none }
+            guard oldKey == occurrenceKey(ruleID: oldRuleID, timeline: timeline,
+                                          movement: movement, trigger: oldTrigger) else {
+                return .ambiguous
+            }
+        }
+        return oldTrigger == currentTrigger ? .proved : .ambiguous
+    }
+
+    private static func isIssue125RulePair(_ old: String, _ new: String) -> Bool {
+        (old == "GPK-APPEAL-GENERAL" && new == "GPK-PRIVATE-COMPLAINT-GENERAL")
+            || (old == "KAS-APPEAL-GENERAL"
+                && ["KAS-PRIVATE-GENERAL", "KAS-PRIVATE-ELECTION"].contains(new))
+            || (old == "KAS-APPEAL-ELECTION" && new == "KAS-PRIVATE-ELECTION")
+    }
+
+    private static func sameTriggerCard(_ lhs: DeadlineTriggerProvenance,
+                                        _ rhs: DeadlineTriggerProvenance,
+                                        instance: CaseInstance) -> Bool {
+        lhs.levelRaw == rhs.levelRaw && lhs.levelRaw == instance.level.rawValue
+            && CaseOriginResolver.sameCaseNumber(lhs.caseNumber, rhs.caseNumber)
+            && CaseOriginResolver.sameCaseNumber(lhs.caseNumber, instance.caseNumber)
+            && CaseOriginResolver.normalizedTitle(lhs.court)
+                == CaseOriginResolver.normalizedTitle(rhs.court)
+            && CaseOriginResolver.normalizedTitle(lhs.court)
+                == CaseOriginResolver.normalizedTitle(instance.court)
+    }
+
+    private static func sameDay(_ lhs: String, _ rhs: String) -> Bool {
+        guard let left = DateUtil.parse(lhs), let right = DateUtil.parse(rhs) else { return false }
+        return DateUtil.startOfDay(left) == DateUtil.startOfDay(right)
+    }
+
+    private static func storedSessions(_ snapshot: CaseSnapshot,
+                                       contain trigger: DeadlineTriggerProvenance,
+                                       matching instance: CaseInstance,
+                                       context: MovementContext?) -> Bool {
+        let currentCard = context.map { CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: $0) }
+        let matches = snapshot.sessions.filter { session in
+            let cardMatches: Bool
+            if let number = session.caseNumber {
+                cardMatches = CaseOriginResolver.sameCaseNumber(number, trigger.caseNumber)
+            } else if let sourceCardID = session.sourceCardID, let currentCard {
+                cardMatches = sourceCardID == currentCard
+            } else {
+                cardMatches = false
+            }
+            return session.dateRaw == trigger.dateRaw && session.event == trigger.event
+                && session.result == trigger.result && session.court == trigger.court
+                && session.levelRaw == trigger.levelRaw
+                && cardMatches
+                && (session.sourceCardID == nil || currentCard == nil
+                    || session.sourceCardID == currentCard)
+        }
+        return matches.count == 1
+    }
+
+    private static func storedTrigger(_ key: String, ruleID: String, snapshot: CaseSnapshot,
+                                      matching instance: CaseInstance,
+                                      context: MovementContext?) -> DeadlineTriggerProvenance? {
+        guard let values = occurrenceIdentity(key, ruleID: ruleID), values.count == 6 else { return nil }
+        let currentCard = context.map { CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: $0) }
+        let sessions = snapshot.sessions.filter { session in
+            let cardMatches: Bool
+            if let number = session.caseNumber {
+                cardMatches = CaseOriginResolver.sameCaseNumber(number, values[2])
+            } else if let sourceCardID = session.sourceCardID, let currentCard {
+                cardMatches = sourceCardID == currentCard
+            } else {
+                cardMatches = false
+            }
+            return session.levelRaw == values[1] && cardMatches
+                && session.dateRaw == values[3] && session.event == values[4]
+                && (session.result ?? "") == values[5]
+                && (session.sourceCardID == nil || currentCard == nil
+                    || session.sourceCardID == currentCard)
+        }
+        guard sessions.count == 1, let session = sessions.first else { return nil }
+        let trigger = DeadlineTriggerProvenance(
+            event: session.event, result: session.result, dateRaw: session.dateRaw,
+            court: session.court, levelRaw: session.levelRaw,
+            caseNumber: session.caseNumber ?? values[2])
+        return trigger
+    }
+
+    private static func recoveredLegacyTrigger(ruleID: String, snapshot: CaseSnapshot,
+                                               matching instance: CaseInstance,
+                                               current: DeadlineTriggerProvenance,
+                                               context: MovementContext?) -> DeadlineTriggerProvenance? {
+        let oldRuleAssessments = snapshot.deadlineAssessments?.filter {
+            $0.ruleID == ruleID && $0.status == .applicable
+        } ?? []
+        guard oldRuleAssessments.count == 1 else { return nil }
+        let currentCard = context.map { CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: $0) }
+        let cardSessions = snapshot.sessions.filter { session in
+            guard session.levelRaw == instance.level.rawValue,
+                  CaseOriginResolver.normalizedTitle(session.court)
+                    == CaseOriginResolver.normalizedTitle(instance.court),
+                  session.sourceCardID == nil || currentCard == nil
+                    || session.sourceCardID == currentCard else { return false }
+            if let number = session.caseNumber {
+                return CaseOriginResolver.sameCaseNumber(number, instance.caseNumber)
+            }
+            return session.sourceCardID != nil && session.sourceCardID == currentCard
+        }
+        let possibleActs = cardSessions.filter { session in
+            guard DateUtil.parse(session.dateRaw) != nil else { return false }
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            return !isUnsupportedActWording(value)
+                && (blockingDisposition(value) != nil
+                    || CaseLifecycleResolver.isFinalActAnnouncement(
+                        event: session.event, result: session.result))
+        }
+        guard possibleActs.count == 1, let session = possibleActs.first else { return nil }
+        let savedTrigger = DeadlineTriggerProvenance(
+            event: session.event, result: session.result, dateRaw: session.dateRaw,
+            court: session.court, levelRaw: session.levelRaw,
+            caseNumber: session.caseNumber ?? instance.caseNumber)
+        guard savedTrigger == current,
+              storedSessions(snapshot, contain: current, matching: instance, context: context) else {
+            return nil
+        }
+        // The old assessment identifies the only candidate rule; the exact
+        // source row must also be the sole dated final/blocking act for this card.
+        return current
+    }
+
+    private static func occurrenceRule(_ key: String) -> String? {
+        guard let separator = key.firstIndex(of: "|") else { return nil }
+        return String(key[..<separator])
+    }
+
+    private static func occurrenceRound(_ key: String, ruleID: String) -> String? {
+        occurrenceIdentity(key, ruleID: ruleID)?.first
+    }
+
+    private static func occurrenceIdentity(_ key: String, ruleID: String) -> [String]? {
+        guard let separator = key.firstIndex(of: "|"),
+              String(key[..<separator]) == ruleID,
+              let data = Data(base64Encoded: String(key[key.index(after: separator)...])),
+              let identity = String(data: data, encoding: .utf8) else { return nil }
+        return identity.components(separatedBy: "\u{1F}")
+    }
+
     private static func evaluate(binding: Binding, rule: LegalDeadlineRule,
                                  registry: LegalDeadlineRegistry, movement: CaseMovement,
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
@@ -263,7 +520,8 @@ enum DeadlineRuleEngine {
         }
         if binding.kind == "appeal" {
             switch binding.categoryScope {
-            case .general where categorySelectsSpecialRule(movement.category, code: rule.code):
+            case .general where categorySelectsSpecialRule(
+                movement.category, code: rule.code, forRule: rule.ruleID):
                 // A known special category displaces the general rule.
                 return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
                                         status: .notApplicable))
@@ -281,46 +539,44 @@ enum DeadlineRuleEngine {
             guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType, .finalForm])
             }
-            guard decision(in: first) != nil else {
-                if binding.production == .kas, kasPrivateDetermination(in: first) != nil {
-                    triggerResult = .notApplicable
-                    break
-                }
-                triggerResult = finalAct(in: first) == nil
-                    ? .missing([.finalAct, .actType]) : .notApplicable
-                break
+            switch currentFirstInstanceAct(in: first) {
+            case .decision:
+                triggerResult = finalForm(in: first).map(TriggerExtraction.found)
+                    ?? .missing([.finalForm])
+            case .missing:
+                triggerResult = .missing([.finalAct, .actType, .finalForm])
+            case .unsupported, .blockingDetermination:
+                triggerResult = .notApplicable
+            case .ambiguous:
+                triggerResult = .missing([.finalAct, .actType])
             }
-            triggerResult = finalForm(in: first).map(TriggerExtraction.found)
-                ?? .missing([.finalForm])
         case .decision:
             guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType])
             }
-            if let act = decision(in: first) {
+            switch currentFirstInstanceAct(in: first) {
+            case .decision(let act):
                 triggerResult = .found(act)
-            } else {
-                triggerResult = finalAct(in: first) == nil
-                    ? .missing([.finalAct, .actType]) : .notApplicable
+            case .missing:
+                triggerResult = .missing([.finalAct, .actType])
+            case .unsupported, .blockingDetermination:
+                triggerResult = .notApplicable
+            case .ambiguous:
+                triggerResult = .missing([.finalAct, .actType])
             }
-        case .termination:
+        case .blockingDetermination:
             guard let first = timeline.deadlineFirst else {
                 return insufficient(rule, binding: binding, [.finalAct, .actType])
             }
-            if let act = termination(in: first) {
+            switch currentFirstInstanceAct(in: first) {
+            case .blockingDetermination(let act):
                 triggerResult = .found(act)
-            } else {
-                triggerResult = finalAct(in: first) == nil
-                    ? .missing([.finalAct, .actType]) : .notApplicable
-            }
-        case .kasPrivateDetermination:
-            guard let first = timeline.deadlineFirst else {
-                return insufficient(rule, binding: binding, [.finalAct, .actType])
-            }
-            if let act = kasPrivateDetermination(in: first) {
-                triggerResult = .found(act)
-            } else {
-                triggerResult = finalAct(in: first) == nil
-                    ? .missing([.finalAct, .actType]) : .notApplicable
+            case .missing:
+                triggerResult = .missing([.finalAct, .actType])
+            case .unsupported, .decision:
+                triggerResult = .notApplicable
+            case .ambiguous:
+                triggerResult = .missing([.finalAct, .actType])
             }
         case .finalAct:
             guard let first = timeline.deadlineFirst else {
@@ -606,7 +862,8 @@ enum DeadlineRuleEngine {
     }
 
     private static func supportsMaterial(_ binding: Binding) -> Bool {
-        binding.ruleID.hasPrefix("KAS-PRIVATE-")
+        binding.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            || binding.ruleID.hasPrefix("KAS-PRIVATE-")
             || binding.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
     }
 
@@ -614,8 +871,12 @@ enum DeadlineRuleEngine {
         _ binding: Binding, timeline: CaseLifecycleResolver.Timeline
     ) -> Bool {
         guard let instance = timeline.deadlineFirst else { return false }
-        if binding.ruleID.hasPrefix("KAS-PRIVATE-") {
-            return kasAcceptanceRefusal(in: instance) != nil
+        if binding.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+            || binding.ruleID.hasPrefix("KAS-PRIVATE-") {
+            switch currentFirstInstanceAct(in: instance) {
+            case .blockingDetermination, .ambiguous: return true
+            case .missing, .unsupported, .decision: return false
+            }
         }
         return binding.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
             && koapReturnDetermination(in: instance) != nil
@@ -653,15 +914,25 @@ enum DeadlineRuleEngine {
     /// The binding needs only enough case taxonomy to avoid applying a general
     /// rule where Docs declares a special one. Activation of the selected
     /// special rule remains intentionally deferred to #222.
-    private static func categorySelectsSpecialRule(_ category: String?, code: String) -> Bool {
+    private static func categorySelectsSpecialRule(_ category: String?, code: String,
+                                                   forRule ruleID: String? = nil) -> Bool {
         let value = normalized(category)
         switch code {
         case "GPK":
             return ["упрощенн", "возвращени ребен", "доступ к ребен", "усынов",
                     "заочн", "иностранн государств"].contains { value.contains($0) }
         case "KAS":
-            return ["избират", "референдум", "муниципальн", "иностранн граждан", "административн надзор",
-                    "недобровольн", "психиатр"].contains { value.contains($0) }
+            // Municipal subject matter displaces the monthly decision-appeal
+            // rule, but does not displace the general private-complaint rule
+            // under KAS Article 314. Keep all other known special-category
+            // exclusions fail-closed until their dedicated rules are approved.
+            let fragments = ["избират", "референдум", "иностранн граждан",
+                             "административн надзор", "недобровольн", "психиатр"]
+            if ruleID == "KAS-PRIVATE-GENERAL", value.contains("муниципальн") {
+                return fragments.contains { value.contains($0) }
+            }
+            return fragments.contains { value.contains($0) }
+                || value.contains("муниципальн")
         case "KOAP":
             return isElectionCategory(category)
         default:
@@ -683,39 +954,163 @@ enum DeadlineRuleEngine {
         .max { left, right in left.0 == right.0 ? left.1 < right.1 : left.0 < right.0 }?.2
     }
 
-    private static func decision(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
-        latestSession(in: instance) { session in
+    private static func currentFirstInstanceAct(in instance: CaseInstance) -> CurrentFirstInstanceAct {
+        let sourceOutcome = normalized(instance.result)
+        let sourceDate = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse)
+        let sourceDisposition = cardOutcomeDisposition(sourceOutcome)
+        let sourceSupportsBlocking = sourceDisposition != nil
+            && !isUnsupportedActWording(sourceOutcome)
+        let acts = instance.sessions.enumerated().compactMap { index, session
+            -> (Date, Int, DeadlineTriggerProvenance, CurrentFirstInstanceAct)? in
+            guard let date = DateUtil.parse(session.date) else { return nil }
+            var trigger = provenance(for: session, in: instance)
             let value = normalized(session.event + " " + (session.result ?? ""))
+            let sessionDisposition = blockingDisposition(value)
+            let sourceOutcomeOnThisDate = sourceSupportsBlocking
+                && sourceDate.map { DateUtil.startOfDay($0) == DateUtil.startOfDay(date) } == true
+            let sourceOutcomeConflict = sourceOutcomeOnThisDate
+                && isFinalDecisionWording(value)
+            let contradictoryBlocking = sourceOutcomeOnThisDate
+                && sessionDisposition != nil && sessionDisposition != sourceDisposition
+            let cardOutcomeOnThisDate = sourceOutcomeOnThisDate
+                && isCardOutcomeCorroboratingSession(session)
             guard CaseLifecycleResolver.isFinalActAnnouncement(
-                event: session.event, result: session.result) else { return false }
-            return value.contains("решен")
-                || value.contains("иск")
-                    && (value.contains("удовлетвор") || value.contains("отказано"))
+                    event: session.event, result: session.result)
+                    || sessionDisposition != nil && value.contains("определен")
+                    || cardOutcomeOnThisDate || sourceOutcomeConflict else {
+                return nil
+            }
+            let classification: CurrentFirstInstanceAct
+            if isUnsupportedActWording(value) {
+                classification = .unsupported
+            } else if sourceOutcomeConflict || contradictoryBlocking {
+                classification = .ambiguous
+            } else if sessionDisposition != nil {
+                classification = .blockingDetermination(trigger)
+            } else if cardOutcomeOnThisDate {
+                trigger.result = instance.result
+                classification = .blockingDetermination(trigger)
+            } else if isFinalDecisionWording(value) {
+                classification = .decision(trigger)
+            } else {
+                classification = .unsupported
+            }
+            return (date, index, trigger, classification)
         }
+        guard let latestDate = acts.map(\.0).max() else { return .missing }
+        let latest = acts.filter { $0.0 == latestDate }
+        var unique = [(DeadlineTriggerProvenance, CurrentFirstInstanceAct)]()
+        for (_, _, trigger, classification) in latest where !unique.contains(where: { $0.0 == trigger }) {
+            unique.append((trigger, classification))
+        }
+        guard unique.count == 1 else { return .ambiguous }
+        return unique[0].1
     }
 
-    private static func termination(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
-        latestSession(in: instance) { session in
-            let value = normalized(session.event + " " + (session.result ?? ""))
-            return CaseLifecycleResolver.isFinalActAnnouncement(
-                event: session.event, result: session.result)
-                && value.contains("производств") && value.contains("прекращ")
-        }
+    /// A card's own dated decision result may supply the disposition when its
+    /// chronology row names only the procedural step (for example, materials
+    /// returned after the correction period). Keep the session as the dated
+    /// trigger and require it to match the card's published decision date.
+    private static func isCardOutcomeCorroboratingSession(_ session: CaseSession) -> Bool {
+        let value = normalized(session.event + " " + (session.result ?? ""))
+        guard !value.isEmpty, !isUnsupportedActWording(value) else { return false }
+        let returnedMaterials = value.contains("материал")
+            && (value.contains("возвращ") || value.contains("возврат"))
+        let acceptanceStep = value.contains("решен") && value.contains("вопрос")
+            && value.contains("принят") && value.contains("производств")
+        let determinationHeading = value.contains("определен")
+            && !isFinalDecisionWording(value)
+            && blockingDisposition(value) == nil
+        return returnedMaterials || acceptanceStep || determinationHeading
     }
 
-    private static func kasPrivateDetermination(in instance: CaseInstance)
-        -> DeadlineTriggerProvenance? {
-        if let termination = termination(in: instance) { return termination }
-        return kasAcceptanceRefusal(in: instance)
+    private static func isSupportedBlockingDetermination(_ value: String) -> Bool {
+        blockingDisposition(value) != nil
     }
 
-    private static func kasAcceptanceRefusal(in instance: CaseInstance)
-        -> DeadlineTriggerProvenance? {
-        latestSession(in: instance) { session in
-            let value = normalized(session.event + " " + (session.result ?? ""))
-            return value.contains("отказ") && value.contains("принят")
-                && (value.contains("иск") || value.contains("заявлен"))
+    private static func blockingDisposition(_ value: String) -> BlockingDisposition? {
+        guard !isRefusalToTerminateProceeding(value), !isPartialProceedingTermination(value),
+              !isRefusalOfAncillaryApplication(value) else {
+            return nil
         }
+        let claimApplication = value.range(
+            of: #"иск\w*\s+заявлен\w*"#,
+            options: .regularExpression) != nil
+        let returnedClaim = claimApplication
+            && (value.contains("возврат") || value.contains("возвращ"))
+        let refusedAcceptance = claimApplication && value.range(
+            of: #"отказ(?:ано|е|а|ать)?\s+(?:в\s+)?принят"#,
+            options: .regularExpression) != nil
+        let leftClaimWithoutConsideration = (value.contains("иск") || value.contains("дел"))
+            && value.contains("остав") && value.contains("без рассмотр")
+        let wholeProceedingTerminated = value.contains("прекращ")
+            && value.contains("производств")
+            && (value.contains("дел") || value.contains("иск"))
+        if returnedClaim { return .claimReturned }
+        if refusedAcceptance { return .refusalToAccept }
+        if leftClaimWithoutConsideration { return .leftWithoutConsideration }
+        if wholeProceedingTerminated { return .proceedingTerminated }
+        return nil
+    }
+
+    /// The card's own result may abbreviate the object to «Заявление возвращено
+    /// заявителю». Accept that only as a dated card outcome paired with a same-day
+    /// corroborating chronology row; a session phrase alone must identify a claim.
+    private static func cardOutcomeDisposition(_ value: String) -> BlockingDisposition? {
+        if let disposition = blockingDisposition(value) { return disposition }
+        guard !isUnsupportedActWording(value),
+              value.range(of: #"заявлен\w*\s+возвращ\w*\s+заявител\w*"#,
+                          options: .regularExpression) != nil else { return nil }
+        return .claimReturned
+    }
+
+    private static func isFinalDecisionWording(_ value: String) -> Bool {
+        value.contains("иск") && (value.contains("удовлетвор")
+            || value.range(of: #"отказ(?:ано|е|а|ать)?\s+(?:в\s+)?удовлетвор"#,
+                           options: .regularExpression) != nil)
+            || value.contains("решен") && !value.contains("вопрос")
+                && CaseLifecycleResolver.isFinalActAnnouncement(event: value, result: nil)
+    }
+
+    private static func isRefusalToTerminateProceeding(_ value: String) -> Bool {
+        value.range(
+            of: #"отказ(?:ано|е)\s+в\s+прекращ\w*|в\s+прекращ\w*[^.!?]{0,60}\s+отказано"#,
+            options: .regularExpression) != nil
+    }
+
+    private static func isPartialProceedingTermination(_ value: String) -> Bool {
+        guard value.contains("прекращ") && value.contains("производств") else { return false }
+        return value.contains("в части") || value.contains("частичн")
+    }
+
+    private static func isRefusalOfAncillaryApplication(_ value: String) -> Bool {
+        value.range(
+            of: #"отказ(?:ано|е)?\s+в\s+удовлетворении\s+заявлен\w*[^.!?]{0,60}\s+об?\s+(?:возврат|оставлен|прекращ)\w*|в\s+удовлетворении\s+заявлен\w*[^.!?]{0,60}\s+об?\s+(?:возврат|оставлен|прекращ)\w*[^.!?]{0,60}\s+отказано|отказ(?:ано|е)?\s+в\s+(?:возврат|оставлен|прекращ)\w*|в\s+(?:возврат|оставлен|прекращ)\w*[^.!?]{0,100}\s+отказано"#,
+            options: .regularExpression) != nil
+    }
+
+    private static func isUnsupportedActWording(_ value: String) -> Bool {
+        let intermediate = ["ходатайств", "доказательств", "отвод", "запрос",
+                            "подготов", "отлож", "перенес", "без движен",
+                            "обеспеч", "восстановлен", "рассроч", "отсроч",
+                            "замен стороны", "правопреем", "вступлен треть",
+                            "соединен иск", "выделен иск", "передач дела",
+                            "назначено заседан", "назначении заседан"]
+        guard !intermediate.contains(where: value.contains),
+              !isRefusalOfAncillaryApplication(value) else {
+            return true
+        }
+        if isRefusalToTerminateProceeding(value) { return true }
+        let tokens = value.split(whereSeparator: { !$0.isLetter }).map(String.init)
+        let dispositions = ["отказ", "принят", "возвращ", "остав", "прекращ", "удовлетвор"]
+        if tokens.indices.contains(where: { index in
+            tokens[index] == "не" && tokens[(index + 1)..<min(index + 4, tokens.count)]
+                .contains(where: { word in dispositions.contains(where: word.hasPrefix) })
+        }) { return true }
+        let historical = ["предыдущ", "ранее", "первоначальн", "нижестоящ",
+                          "обжалованного", "отменен", "отменено", "без изменен"]
+        return historical.contains(where: value.contains)
+            && (value.contains("решен") || value.contains("определен"))
     }
 
     private static func koapInitialDecision(in instance: CaseInstance)

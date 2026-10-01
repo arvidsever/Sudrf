@@ -628,47 +628,154 @@ enum MovementDerivation {
     static func preservingConfirmedDeadlines(_ snap: CaseSnapshot,
                                              old: CaseSnapshot?,
                                              today: Date = DateUtil.today,
-                                             preserveActiveProposedWhenMissing: Bool = false) -> CaseSnapshot {
+                                             preserveActiveProposedWhenMissing: Bool = false,
+                                             movement: CaseMovement? = nil,
+                                             context: MovementContext? = nil,
+                                             protectedActiveOccurrenceKeys: Set<String> = []) -> CaseSnapshot {
         guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
         var out = snap
         var fresh = out.deadlines
         var historical: [StoredDeadline] = []
         var usedFresh = Set<Int>()
         var suppressedFresh = Set<Int>()
+        let activeExactKeys = Set(old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey))
+            .union(protectedActiveOccurrenceKeys)
 
         func freshIndex(matching deadline: StoredDeadline) -> Int? {
             guard let key = deadline.occurrenceKey else { return nil }
             return fresh.indices.first { fresh[$0].occurrenceKey == key }
         }
 
+        func issue125Matches(_ previous: StoredDeadline)
+            -> (proved: Int?, ambiguous: [Int]) {
+            guard let movement, let context else { return (nil, []) }
+            var proved: [Int] = []
+            var ambiguous: [Int] = []
+            for index in fresh.indices where !usedFresh.contains(index) && fresh[index].isActive {
+                switch DeadlineRuleEngine.provesIssue125Transition(
+                    from: previous, to: fresh[index], movement: movement,
+                    context: context, oldSnapshot: old) {
+                case .proved: proved.append(index)
+                case .ambiguous: ambiguous.append(index)
+                case .none: break
+                }
+            }
+            if proved.count == 1 && ambiguous.isEmpty { return (proved[0], []) }
+            return (nil, proved + ambiguous)
+        }
+
+        func markAmbiguousRule(_ deadline: StoredDeadline) {
+            guard let ruleID = deadline.provenance?.ruleID else { return }
+            var assessments = out.deadlineAssessments ?? []
+            if let index = assessments.firstIndex(where: { $0.ruleID == ruleID }) {
+                assessments[index].statusRaw = DeadlineAssessmentStatus.needsLegalReview.rawValue
+            } else {
+                assessments.append(DeadlineRuleAssessment(
+                    ruleID: ruleID, kind: deadline.kind,
+                    statusRaw: DeadlineAssessmentStatus.needsLegalReview.rawValue))
+            }
+            out.deadlineAssessments = assessments
+        }
+
         for previous in old.deadlines {
-            if let index = freshIndex(matching: previous) {
+            let exactIndex = freshIndex(matching: previous)
+            let transition: (proved: Int?, ambiguous: [Int]) = exactIndex == nil
+                ? issue125Matches(previous) : (proved: nil, ambiguous: [])
+            if exactIndex == nil, let index = transition.proved,
+               let key = fresh[index].occurrenceKey, activeExactKeys.contains(key) {
+                var superseded = previous
+                if superseded.isActive {
+                    superseded.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+                }
+                historical.append(superseded)
+                continue
+            }
+            if let index = exactIndex ?? transition.proved {
                 usedFresh.insert(index)
+                let changingRule = storedRuleID(previous, in: old)
+                    != fresh[index].provenance?.ruleID
                 // An inactive occurrence is immutable, even if a later source
                 // refresh happens to expose its old trigger again.
                 if !previous.isActive {
                     historical.append(previous)
-                    suppressedFresh.insert(index)
+                    if fresh[index].occurrenceKey.map({ !activeExactKeys.contains($0) }) ?? true {
+                        suppressedFresh.insert(index)
+                        if changingRule { markAmbiguousRule(fresh[index]) }
+                    }
+                    continue
+                }
+                if previous.isUserControlled {
+                    if !changingRule || previous.status == .overridden {
+                        fresh[index].dateRef = previous.dateRef
+                        fresh[index].statusRaw = previous.statusRaw
+                    } else {
+                        // A confirmed month-long calculation is not confirmation
+                        // of the newly applicable private-complaint deadline.
+                        fresh[index].statusRaw = DeadlineStatus.proposed.rawValue
+                    }
+                }
+                continue
+            }
+
+            if !transition.ambiguous.isEmpty {
+                historical.append(previous)
+                let indices = transition.ambiguous
+                let exactCurrentOccurrence = indices.contains { index in
+                    fresh[index].occurrenceKey.map { activeExactKeys.contains($0) } ?? false
+                }
+                if !exactCurrentOccurrence {
+                    // Keep an opaque legacy choice visible until its source act
+                    // can be recovered; do not place a competing calculated date.
+                    suppressedFresh.formUnion(indices)
+                    for index in indices { markAmbiguousRule(fresh[index]) }
+                } else {
+                    for index in indices where fresh[index].occurrenceKey.map({
+                        !activeExactKeys.contains($0)
+                    }) ?? true {
+                        suppressedFresh.insert(index)
+                        markAmbiguousRule(fresh[index])
+                    }
+                    if previous.isActive {
+                        historical[historical.count - 1].lifecycleRaw =
+                            DeadlineLifecycle.superseded.rawValue
+                    }
+                }
+                continue
+            }
+
+            let opaqueCandidates = opaqueIssue125LegacyCandidates(
+                previous, old: old, deadlines: fresh, movement: movement, today: today)
+            if !opaqueCandidates.isEmpty {
+                let unproven = opaqueCandidates.filter { index in
+                    fresh[index].occurrenceKey.map { !activeExactKeys.contains($0) } ?? true
+                }
+                var preserved = previous
+                if unproven.isEmpty, preserved.isActive {
+                    preserved.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+                }
+                historical.append(preserved)
+                suppressedFresh.formUnion(unproven)
+                for index in unproven { markAmbiguousRule(fresh[index]) }
+                continue
+            }
+
+            // Legacy snapshots have no occurrence key. A user-controlled
+            // deadline migrates only when its source can be recovered uniquely.
+            if let index = recoverableLegacyDeadlineIndex(
+                previous, old: old, fresh: snap, deadlines: fresh,
+                excluding: usedFresh) {
+                usedFresh.insert(index)
+                if !previous.isActive {
+                    historical.append(previous)
+                    if fresh[index].occurrenceKey.map({ !activeExactKeys.contains($0) }) ?? true {
+                        suppressedFresh.insert(index)
+                    }
                     continue
                 }
                 if previous.isUserControlled {
                     fresh[index].dateRef = previous.dateRef
                     fresh[index].statusRaw = previous.statusRaw
                 }
-                continue
-            }
-
-            // Legacy snapshots have no occurrence key. A user-controlled
-            // deadline may safely migrate to the sole fresh deadline of its
-            // kind; proposed legacy values are replaced by the registry result.
-            if previous.occurrenceKey == nil,
-               previous.isUserControlled,
-               let index = fresh.indices.first(where: {
-                   !usedFresh.contains($0) && fresh[$0].kind == previous.kind
-               }) {
-                usedFresh.insert(index)
-                fresh[index].dateRef = previous.dateRef
-                fresh[index].statusRaw = previous.statusRaw
                 continue
             }
 
@@ -698,6 +805,113 @@ enum MovementDerivation {
             .filter { !suppressedFresh.contains($0.offset) }
             .map(\.element) + historical
         return applyingDeadlineRetention(to: out, today: today)
+    }
+
+    /// The old kind-only fallback could attach an opaque manual date to a
+    /// different trigger. Recover only from a unique applicable rule and the
+    /// unchanged, uniquely matching source session.
+    static func recoverableLegacyDeadlineIndex(
+        _ previous: StoredDeadline,
+        old: CaseSnapshot,
+        fresh freshSnapshot: CaseSnapshot,
+        deadlines: [StoredDeadline],
+        excluding used: Set<Int> = []
+    ) -> Int? {
+        guard previous.occurrenceKey == nil,
+              hasSameDeadlineSource(old, freshSnapshot),
+              let index = deadlines.indices.first(where: {
+                  !used.contains($0) && deadlines[$0].isActive
+                      && deadlines[$0].kind == previous.kind
+              }),
+              deadlines.indices.filter({
+                  !used.contains($0) && deadlines[$0].isActive
+                      && deadlines[$0].kind == previous.kind
+              }).count == 1,
+              let current = deadlines[index].provenance,
+              freshSnapshot.sessions.filter({ matches($0, current.trigger) }).count == 1,
+              old.sessions.filter({ matches($0, current.trigger) }).count == 1
+        else { return nil }
+
+        if let provenance = previous.provenance {
+            return provenance.ruleID == current.ruleID
+                && provenance.trigger == current.trigger ? index : nil
+        }
+
+        let applicable = old.deadlineAssessments?.filter {
+            $0.kind == previous.kind && $0.status == .applicable
+        } ?? []
+        return applicable.count == 1 && applicable[0].ruleID == current.ruleID ? index : nil
+    }
+
+    /// Opaque user decisions cannot be attached to a new occurrence by kind.
+    /// When the same tracked case now has one private-complaint candidate and
+    /// no recoverable old-rule identity, keep the decision visible and ask for
+    /// review instead of silently replacing it or publishing a competing date.
+    static func opaqueIssue125LegacyCandidates(
+        _ previous: StoredDeadline,
+        old: CaseSnapshot,
+        deadlines: [StoredDeadline],
+        movement: CaseMovement?,
+        today: Date = DateUtil.today
+    ) -> [Int] {
+        let retainableProposed = previous.status == .proposed && previous.isActive
+            && DateUtil.startOfDay(previous.date) >= DateUtil.startOfDay(today)
+        guard previous.kind == "appeal", (previous.isUserControlled || retainableProposed),
+              previous.occurrenceKey == nil, previous.provenance == nil,
+              let movement,
+              !CaseOriginResolver.normalizedUID(old.uid).isEmpty,
+              CaseOriginResolver.normalizedUID(movement.uid)
+                == CaseOriginResolver.normalizedUID(old.uid),
+              !(old.deadlineAssessments ?? []).contains(where: {
+                  $0.kind == previous.kind && $0.status == .applicable
+                      && ["GPK-APPEAL-GENERAL", "KAS-APPEAL-GENERAL",
+                          "KAS-APPEAL-ELECTION"].contains($0.ruleID)
+              })
+        else { return [] }
+
+        let candidates = deadlines.indices.filter { index in
+            guard deadlines[index].isActive,
+                  deadlines[index].kind == previous.kind,
+                  let ruleID = deadlines[index].provenance?.ruleID else { return false }
+            return ["GPK-PRIVATE-COMPLAINT-GENERAL", "KAS-PRIVATE-GENERAL",
+                    "KAS-PRIVATE-ELECTION"].contains(ruleID)
+        }
+        return candidates.count == 1 ? candidates : []
+    }
+
+    private static func storedRuleID(_ deadline: StoredDeadline,
+                                     in snapshot: CaseSnapshot) -> String? {
+        if let ruleID = deadline.provenance?.ruleID { return ruleID }
+        if let key = deadline.occurrenceKey, let separator = key.firstIndex(of: "|") {
+            return String(key[..<separator])
+        }
+        let applicable = snapshot.deadlineAssessments?.filter {
+            $0.kind == deadline.kind && $0.status == .applicable
+        } ?? []
+        return applicable.count == 1 ? applicable[0].ruleID : nil
+    }
+
+    private static func hasSameDeadlineSource(_ old: CaseSnapshot,
+                                              _ fresh: CaseSnapshot) -> Bool {
+        (old.uid == fresh.uid && !old.uid.isEmpty
+            || old.sessions.contains(where: { $0.sourceCardID != nil })
+                && old.sessions.contains { oldSession in
+                    fresh.sessions.contains { $0.sourceCardID == oldSession.sourceCardID }
+                })
+            && old.sessions.count == fresh.sessions.count
+            && zip(old.sessions, fresh.sessions).allSatisfy { previous, current in
+                previous.hasSameRefreshSource(as: current)
+                    && (previous.sourceCardID == current.sourceCardID
+                        || previous.sourceCardID == nil || current.sourceCardID == nil)
+            }
+    }
+
+    private static func matches(_ session: StoredSession,
+                                _ trigger: DeadlineTriggerProvenance) -> Bool {
+        session.dateRaw == trigger.dateRaw && session.event == trigger.event
+            && session.result == trigger.result && session.court == trigger.court
+            && session.levelRaw == trigger.levelRaw
+            && (session.caseNumber == trigger.caseNumber || session.caseNumber == nil)
     }
 
     /// Startup normally never revives inactive occurrences. The sole repair is

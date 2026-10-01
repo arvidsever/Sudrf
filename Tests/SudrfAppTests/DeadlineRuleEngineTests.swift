@@ -768,7 +768,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertFalse(projection.calendar.contains(revisionHash),
                        "хеш остаётся в provenance, а не в пользовательском объяснении")
         XCTAssertEqual(projection.status, "Дата изменена пользователем")
-        XCTAssertEqual(projection.lifecycle, "Заменён новым trigger")
+        XCTAssertEqual(projection.lifecycle, "Не действует")
     }
 
     func testDeadlineInfoProjectionMarksOldAutomaticCalendarCalculationUnverified() throws {

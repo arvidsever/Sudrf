@@ -184,7 +184,7 @@ struct CalendarScreen: View {
                 kind = .deadlineInactive
                 chipPrefix = "срок · история · "
                 heading = d.lifecycle == .superseded
-                    ? "ДЕДЛАЙН · ЗАМЕНЁН" : "ДЕДЛАЙН · ИСТЁК БЕЗ ПОДТВЕРЖДЕНИЯ"
+                    ? "ДЕДЛАЙН · НЕ ДЕЙСТВУЕТ" : "ДЕДЛАЙН · ИСТЁК БЕЗ ПОДТВЕРЖДЕНИЯ"
             } else if d.status == .overridden {
                 kind = .deadlineOverridden
                 chipPrefix = "срок · вручную · "

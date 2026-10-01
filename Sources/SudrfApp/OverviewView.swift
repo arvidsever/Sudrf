@@ -678,7 +678,7 @@ struct DeadlineActions: View {
                 if router.editingDeadline == id {
                     editor
                 } else if d.lifecycle == .superseded {
-                    StatusChip(text: "заменён новым расчётом", kind: .gray)
+                    StatusChip(text: "не действует", kind: .gray)
                 } else if d.lifecycle == .expiredUnconfirmed {
                     StatusChip(text: "расчётный · истёк", kind: .gray)
                 } else if d.status == .proposed {
@@ -882,7 +882,7 @@ struct DeadlineInfoProjection: Equatable {
         switch deadline.lifecycle {
         case .active: lifecycle = "Активен"
         case .expiredUnconfirmed: lifecycle = "Истёк без подтверждения"
-        case .superseded: lifecycle = "Заменён новым trigger"
+        case .superseded: lifecycle = "Не действует"
         }
     }
 

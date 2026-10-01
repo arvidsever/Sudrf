@@ -636,6 +636,7 @@ enum MovementDerivation {
         var out = snap
         var fresh = out.deadlines
         var historical: [StoredDeadline] = []
+        var ambiguousPreserved: [StoredDeadline] = []
         var usedFresh = Set<Int>()
         var suppressedFresh = Set<Int>()
         let activeExactKeys = Set(old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey))
@@ -664,8 +665,8 @@ enum MovementDerivation {
             return (nil, proved + ambiguous)
         }
 
-        func markAmbiguousRule(_ deadline: StoredDeadline) {
-            guard let ruleID = deadline.provenance?.ruleID else { return }
+        func markAmbiguousRule(_ deadline: StoredDeadline, ruleID knownRuleID: String? = nil) {
+            guard let ruleID = knownRuleID ?? deadline.provenance?.ruleID else { return }
             var assessments = out.deadlineAssessments ?? []
             if let index = assessments.firstIndex(where: { $0.ruleID == ruleID }) {
                 assessments[index].statusRaw = DeadlineAssessmentStatus.needsLegalReview.rawValue
@@ -678,6 +679,32 @@ enum MovementDerivation {
         }
 
         for previous in old.deadlines {
+            if let movement {
+                switch DeadlineRuleEngine.historicalAppealDeadlineEvidence(
+                    for: previous, in: old, movement: movement, context: context) {
+                case .provenFalse:
+                    var invalid = previous
+                    if invalid.isActive { invalid.lifecycleRaw = DeadlineLifecycle.superseded.rawValue }
+                    historical.append(invalid)
+                    continue
+                case .ambiguous(let ruleID):
+                    let candidates = fresh.indices.filter {
+                        fresh[$0].kind == previous.kind && fresh[$0].isActive
+                    }
+                    let hasKnownActiveOccurrence = candidates.contains {
+                        fresh[$0].occurrenceKey.map { activeExactKeys.contains($0) } ?? false
+                    }
+                    if previous.isActive, !hasKnownActiveOccurrence {
+                        historical.append(previous)
+                        ambiguousPreserved.append(previous)
+                        suppressedFresh.formUnion(candidates)
+                        if let ruleID { markAmbiguousRule(previous, ruleID: ruleID) }
+                        for index in candidates { markAmbiguousRule(fresh[index]) }
+                        continue
+                    }
+                case .none: break
+                }
+            }
             let exactIndex = freshIndex(matching: previous)
             let transition: (proved: Int?, ambiguous: [Int]) = exactIndex == nil
                 ? issue125Matches(previous) : (proved: nil, ambiguous: [])
@@ -804,7 +831,7 @@ enum MovementDerivation {
         out.deadlines = fresh.enumerated()
             .filter { !suppressedFresh.contains($0.offset) }
             .map(\.element) + historical
-        return applyingDeadlineRetention(to: out, today: today)
+        return applyingDeadlineRetention(to: out, today: today, preserving: ambiguousPreserved)
     }
 
     /// The old kind-only fallback could attach an opaque manual date to a
@@ -952,10 +979,11 @@ enum MovementDerivation {
     }
 
     private static func applyingDeadlineRetention(to snapshot: CaseSnapshot,
-                                                   today: Date) -> CaseSnapshot {
+                                                   today: Date,
+                                                   preserving protected: [StoredDeadline] = []) -> CaseSnapshot {
         var out = snapshot
         out.deadlines = out.deadlines.map { deadline in
-            guard deadline.isActive,
+            guard !protected.contains(deadline), deadline.isActive,
                   deadline.status == .proposed,
                   DateUtil.daysBetween(deadline.date, today) > AppRouter.deadlineGraceDays
             else { return deadline }

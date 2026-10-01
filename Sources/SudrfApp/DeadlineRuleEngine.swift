@@ -345,6 +345,136 @@ enum DeadlineRuleEngine {
         return oldTrigger == currentTrigger ? .proved : .ambiguous
     }
 
+    enum HistoricalAppealDeadlineEvidence {
+        case provenFalse(ruleID: String)
+        case ambiguous(ruleID: String?)
+        case none
+    }
+
+    /// A missing fresh act is not proof. Only a uniquely identified saved
+    /// procedural row can disprove the old month-long appeal calculation.
+    static func historicalAppealDeadlineEvidence(
+        for previous: StoredDeadline, in snapshot: CaseSnapshot,
+        movement: CaseMovement, context: MovementContext?
+    ) -> HistoricalAppealDeadlineEvidence {
+        guard previous.kind == "appeal" else { return .none }
+        let production = MaterialProductionContext.resolve(context: context, movement: movement).production
+        guard production == .civil || production == .kas else { return .none }
+        let expectedRule = production == .civil ? "GPK-APPEAL-GENERAL" : "KAS-APPEAL-GENERAL"
+        let legacyPattern = #"^1 месяц со дня решения \((\d{2}\.\d{2})\) — расчётный, проверьте$"#
+        let legacyDate = previous.basis.range(of: legacyPattern, options: .regularExpression)
+            .map { _ in String(previous.basis.dropFirst("1 месяц со дня решения (".count).prefix(5)) }
+        let applicable = (snapshot.deadlineAssessments ?? []).filter {
+            $0.kind == previous.kind && $0.status == .applicable
+        }
+        let ruleID = previous.provenance?.ruleID
+            ?? previous.occurrenceKey.flatMap(occurrenceRule)
+            ?? (legacyDate == nil && applicable.count == 1 ? applicable[0].ruleID : nil)
+        if let ruleID, ruleID != expectedRule { return .none }
+        guard ruleID != nil || legacyDate != nil else {
+            return previous.isUserControlled ? .ambiguous(ruleID: expectedRule) : .none
+        }
+        let oldUID = CaseOriginResolver.normalizedUID(snapshot.uid)
+        let newUID = CaseOriginResolver.normalizedUID(movement.uid)
+        guard oldUID.isEmpty || newUID.isEmpty || oldUID == newUID else { return .none }
+        let timeline = CaseLifecycleResolver.timeline(in: movement, production: production)
+        guard let first = timeline.deadlineFirst else { return .ambiguous(ruleID: expectedRule) }
+        let currentCard = context.map { CaseSnapshotSourceIdentity.sourceCardID(for: first, context: $0) }
+        let savedRows = snapshot.sessions.filter { session in
+            guard session.levelRaw == first.level.rawValue,
+                  CaseOriginResolver.normalizedTitle(session.court)
+                    == CaseOriginResolver.normalizedTitle(first.court),
+                  session.sourceCardID == nil || currentCard == nil || session.sourceCardID == currentCard,
+                  DateUtil.parse(session.dateRaw) != nil else { return false }
+            if let number = session.caseNumber {
+                return CaseOriginResolver.sameCaseNumber(number, first.caseNumber)
+            }
+            return currentCard != nil && session.sourceCardID == currentCard
+        }
+        let trigger: DeadlineTriggerProvenance?
+        if let provenance = previous.provenance {
+            trigger = provenance.trigger
+        } else if let key = previous.occurrenceKey {
+            trigger = storedTrigger(key, ruleID: expectedRule, snapshot: snapshot,
+                                    matching: first, context: context)
+        } else if let legacyDate {
+            let rows = savedRows.filter { session in
+                guard let date = DateUtil.parse(session.dateRaw) else { return false }
+                return DateUtil.shortDM(date) == legacyDate
+            }
+            if rows.count == 1, let row = rows.first {
+                trigger = DeadlineTriggerProvenance(event: row.event, result: row.result,
+                    dateRaw: row.dateRaw, court: row.court, levelRaw: row.levelRaw,
+                    caseNumber: row.caseNumber ?? first.caseNumber)
+            } else { trigger = nil }
+        } else {
+            switch currentFirstInstanceAct(in: first) {
+            case .decision(let current), .blockingDetermination(let current):
+                trigger = recoveredLegacyTrigger(ruleID: expectedRule, snapshot: snapshot,
+                                                 matching: first, current: current, context: context)
+            default: trigger = nil
+            }
+        }
+        guard let trigger, let triggerDate = DateUtil.parse(trigger.dateRaw),
+              sameTriggerCard(trigger, trigger, instance: first),
+              !previous.isActive || (timeline.currentRoundDate.map({ triggerDate >= $0 }) ?? true),
+              storedSessions(snapshot, contain: trigger, matching: first, context: context)
+        else { return .ambiguous(ruleID: expectedRule) }
+        if let key = previous.occurrenceKey {
+            guard storedTrigger(key, ruleID: expectedRule, snapshot: snapshot,
+                                matching: first, context: context) == trigger else {
+                return .ambiguous(ruleID: expectedRule)
+            }
+        }
+        if previous.isActive, let key = previous.occurrenceKey {
+            let round = timeline.currentRoundStart?.instance.id ?? first.id
+            guard occurrenceRound(key, ruleID: expectedRule) == round else { return .none }
+            guard key == occurrenceKey(ruleID: expectedRule, timeline: timeline,
+                                       movement: movement, trigger: trigger) else {
+                return .ambiguous(ruleID: expectedRule)
+            }
+        }
+        if CaseLifecycleResolver.isFinalActAnnouncement(event: trigger.event, result: trigger.result)
+            || blockingDisposition(normalized(trigger.event + " " + (trigger.result ?? ""))) != nil {
+            return .none
+        }
+        if previous.isActive, first.sessions.contains(where: { session in
+            sameDay(session.date, trigger.dateRaw)
+                && (CaseLifecycleResolver.isFinalActAnnouncement(event: session.event, result: session.result)
+                    || blockingDisposition(normalized(session.event + " " + (session.result ?? ""))) != nil)
+        }) {
+            return .ambiguous(ruleID: expectedRule)
+        }
+        guard !savedRows.contains(where: {
+            sameDay($0.dateRaw, trigger.dateRaw)
+                && (CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+                    || blockingDisposition(normalized($0.event + " " + ($0.result ?? ""))) != nil)
+        }), !(previous.isActive
+              && (first.sourceEvidence?.decisionDate.map { sameDay($0, trigger.dateRaw) } ?? false)),
+              isKnownNonfinalStep(event: trigger.event, result: trigger.result) else {
+            return .ambiguous(ruleID: expectedRule)
+        }
+        return .provenFalse(ruleID: expectedRule)
+    }
+
+    private static func isKnownNonfinalStep(event: String, result: String?) -> Bool {
+        let heading = normalized(event).trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = normalized(result).trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = heading + " " + outcome
+        guard !CaseLifecycleResolver.isFinalActAnnouncement(event: event, result: result),
+              blockingDisposition(value) == nil, !isFinalDecisionWording(value) else { return false }
+        let positivePattern = #"^(?:иск принят к производству|иск \(заявление, жалоба\) принят к производству|оставление иска без движения|вынесено определение о подготовке дела к судебному разбирательству|вынесено определение о назначении дела к судебному разбирательству|(?:недостатки устранены;\s*)?(?:административное )?исковое заявление (?:принято к производству|оставлено без движения)|(?:дело|материалы) передан[оы] судье|передача материалов судье|рассмотрение исправленных материалов(?:, поступивших в суд)?|(?:определение о )?подготовк[аи] дела к судебному разбирательству|назначено судебное заседание|судебное заседание назначено|(?:судебное заседание|заседание|судебное разбирательство|административное дело|дело) отложено|отложено)[.!]?$"#
+        func isPositive(_ text: String) -> Bool {
+            text.range(of: positivePattern, options: .regularExpression) != nil
+        }
+        if outcome.isEmpty { return isPositive(heading) }
+        guard isPositive(outcome) else { return false }
+        return isPositive(heading) || ["определение", "судебное заседание",
+            "судебное разбирательство", "решение вопроса о принятии иска к рассмотрению"].contains(heading)
+            || heading.range(of: #"^решение вопроса о принятии (?:административного )?искового заявления(?: к производству| к рассмотрению)?$"#,
+                             options: .regularExpression) != nil
+    }
+
     private static func isIssue125RulePair(_ old: String, _ new: String) -> Bool {
         (old == "GPK-APPEAL-GENERAL" && new == "GPK-PRIVATE-COMPLAINT-GENERAL")
             || (old == "KAS-APPEAL-GENERAL"

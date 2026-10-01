@@ -1615,12 +1615,17 @@ final class TrackedStoreIdentityTests: XCTestCase {
             var initialJournal: CaseEventJournal?
 
             let verify: @MainActor (TrackedCaseRecord) throws -> Void = { record in
-                let snapshot = try XCTUnwrap(record.snapshot)
-                XCTAssertEqual(record.collectionNames, ["Issue 125 disk"])
-                XCTAssertEqual(record.movement?.acts, movement.acts)
-                XCTAssertEqual(record.movement?.actBodies, movement.actBodies)
-                XCTAssertEqual(record.movementFetchedAt, fetchedAt)
-                XCTAssertEqual(record.eventJournal, initialJournal)
+                let storedSnapshot = record.snapshot
+                let collections = record.collectionNames
+                let storedMovement = record.movement
+                let storedFetchedAt = record.movementFetchedAt
+                let storedJournal = record.eventJournal
+                let snapshot = try XCTUnwrap(storedSnapshot)
+                XCTAssertEqual(collections, ["Issue 125 disk"])
+                XCTAssertEqual(storedMovement?.acts, movement.acts)
+                XCTAssertEqual(storedMovement?.actBodies, movement.actBodies)
+                XCTAssertEqual(storedFetchedAt, fetchedAt)
+                XCTAssertEqual(storedJournal, initialJournal)
                 if scenario.lifecycle == .active {
                     let active = snapshot.deadlines.filter(\.isActive)
                     XCTAssertEqual(active.count, 1)

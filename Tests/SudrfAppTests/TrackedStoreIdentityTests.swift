@@ -1165,7 +1165,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let automatic = StoredDeadline(
             kind: "appeal", what: "Апелляция", basis: "старый расчёт", calLabel: "апелляция",
             dateRef: DateUtil.parse("01.02.2012")!.timeIntervalSinceReferenceDate,
-            statusRaw: DeadlineStatus.proposed.rawValue, occurrenceKey: "old-auto",
+            statusRaw: DeadlineStatus.proposed.rawValue, occurrenceKey: nil,
             lifecycleRaw: DeadlineLifecycle.active.rawValue)
         let confirmed = StoredDeadline(
             kind: "cassation", what: "Кассация", basis: "ручная дата", calLabel: "кассация",
@@ -1186,7 +1186,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertTrue(try TrackedStorePreparation.prepare(
             context: store.container.mainContext, today: calendarTestToday))
         let repaired = try XCTUnwrap(record.snapshot)
-        XCTAssertEqual(repaired.deadlines.first(where: { $0.occurrenceKey == "old-auto" })?.lifecycle,
+        XCTAssertEqual(repaired.deadlines.first(where: { $0.basis == "старый расчёт" })?.lifecycle,
                        .superseded)
         XCTAssertEqual(repaired.deadlines.first(where: {
             $0.occurrenceKey == "confirmed-history"

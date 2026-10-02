@@ -266,7 +266,8 @@ enum CaseLifecycleResolver {
     }
 
     static func timeline(in movement: CaseMovement,
-                         production: ProductionType? = nil) -> Timeline {
+                         production: ProductionType? = nil,
+                         verifiedMaterialScope: Bool = false) -> Timeline {
         let sourceOrdered = lifecycleInstances(in: movement).enumerated()
             .filter { _, instance in
                 (instance.level != .material || isRootMaterial(instance, in: movement))
@@ -360,7 +361,7 @@ enum CaseLifecycleResolver {
                 }
             }
         }
-        if production == .civil || production == .kas, let first = latestFirst {
+        if !verifiedMaterialScope, production == .civil || production == .kas, let first = latestFirst {
             let kinds = first.instance.sourceEvidence?.appealKinds?.map(normalized)
             let privateOnly = kinds?.contains(where: { $0.contains("частн") }) == true
                 && kinds?.contains(where: { $0.contains("апелляцион") }) != true
@@ -1031,7 +1032,7 @@ enum CaseLifecycleResolver {
         return nonempty(first.result) ?? result
     }
 
-    private static func courtTitlesAgree(_ lhs: String, _ rhs: String, domain: String) -> Bool {
+    static func courtTitlesAgree(_ lhs: String, _ rhs: String, domain: String) -> Bool {
         if CaseOriginResolver.normalizedTitle(lhs) == CaseOriginResolver.normalizedTitle(rhs) { return true }
         guard let region = CourtDirectory.regionSuffix(ofDomain: domain)
             .flatMap(CourtDirectory.subjectCode(forRegionSuffix:))
@@ -1427,6 +1428,12 @@ enum CaseLifecycleResolver {
         let bareDecision = value.contains("решен") && value.contains("вынес")
         return civilOrKAS || criminal || koap || proceduralReturn || bareDecision
             || isTerminalDisposition(value)
+    }
+
+    static func isMaterialAdjudication(event: String, result: String?) -> Bool {
+        let value = normalized(result ?? "")
+        return isReliableMaterialTerminalResult(value) || value == "удовлетворено частично"
+            || isFinalActAnnouncement(event: event, result: result)
     }
 
     private static func isReliableMaterialTerminalResult(_ value: String) -> Bool {

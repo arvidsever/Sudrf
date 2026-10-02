@@ -593,24 +593,24 @@
     {
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
-      "markdownSha256": "c974be6c48932f031434a58153a578c0f8da98717dfaba7489f20611df228aa6",
+      "markdownSha256": "0e4d83c23cf80570c5ebe027c2937984063eb7fa887af64ed852975ea123e5b2",
       "title": "КАС РФ: сроки обжалования судебных актов",
-      "date": "2026-08-31",
+      "date": "2026-10-03",
       "scope": "Только КАС РФ; сроки подачи апелляционных, частных, кассационных и надзорных жалоб/представлений и отдельно смежные отменительные механизмы.",
       "payload": {
         "artifact": {
           "title": "КАС РФ: сроки обжалования судебных актов",
-          "revision": 1,
-          "date": "2026-08-31",
+          "revision": 2,
+          "date": "2026-10-03",
           "scope": "Только КАС РФ; сроки подачи апелляционных, частных, кассационных и надзорных жалоб/представлений и отдельно смежные отменительные механизмы."
         },
         "source": {
           "file": "К-21-ФЗ-08_03_2015.rtf",
           "sha256": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
-          "externalVerification": false,
-          "basis": "Предоставленная пользователем актуальная редакция КАС РФ."
+          "externalVerification": true,
+          "basis": "Первоначальная инвентаризация по предоставленному КАС РФ; отдельная проверка статей 318–319 и пунктов 9–10 Пленума № 17 для маршрута ВС РФ 3 октября 2026 года."
         },
         "audit": {
           "revision": 1,
@@ -2826,7 +2826,7 @@
       "notes": "Месяц не заменять 30 днями.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "1 календарный месяц"
     },
@@ -2850,7 +2850,7 @@
       "notes": "Главы 24, 28–31.1 не допускаются к упрощенному производству; поэтому исключения календарного подсчета ст. 92 ч. 2 здесь не применяются. Нужна фактическая дата получения, а не дата направления.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "не более 15 рабочих дней"
     },
@@ -2874,7 +2874,7 @@
       "notes": "Эта категория не входит в перечень календарных исключений ст. 92 ч. 2.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 рабочих дней"
     },
@@ -2898,7 +2898,7 @@
       "notes": "Нерабочие дни включаются; почтовая сдача до окончания срока не создает safe harbor.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "5 календарных дней"
     },
@@ -2922,7 +2922,7 @@
       "notes": "Нерабочие дни включаются; почтовая сдача не считается достаточной для соблюдения срока.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "5 календарных дней"
     },
@@ -2946,7 +2946,7 @@
       "notes": "Мотивированное решение изготавливается в день принятия по ст. 269 ч. 3.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 календарных дней"
     },
@@ -2970,7 +2970,7 @@
       "notes": "Глава 29 не названа в календарных исключениях ст. 92 ч. 2; следовательно, внутри срока учитываются только рабочие дни.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 рабочих дней"
     },
@@ -2994,7 +2994,7 @@
       "notes": "Мотивированное решение в перечисленных категориях изготавливается в день принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 календарных дней"
     },
@@ -3018,7 +3018,7 @@
       "notes": "Для дел главы 31.1 действует отдельный вариант календарного подсчета ниже.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "15 рабочих дней"
     },
@@ -3042,7 +3042,7 @@
       "notes": "Длительность та же, что в ст. 314 ч. 1, но нерабочие дни внутри срока включаются.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "15 календарных дней"
     },
@@ -3066,7 +3066,7 @@
       "notes": "Почтовая сдача не создает safe harbor.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "5 календарных дней"
     },
@@ -3090,7 +3090,7 @@
       "notes": null,
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 календарных дней"
     },
@@ -3114,7 +3114,7 @@
       "notes": "Глава 29 не входит в календарные исключения ст. 92 ч. 2.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 рабочих дней"
     },
@@ -3138,7 +3138,7 @@
       "notes": null,
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 календарных дней"
     },
@@ -3162,7 +3162,7 @@
       "notes": null,
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "10 календарных дней"
     },
@@ -3186,7 +3186,7 @@
       "notes": "Жалобу вправе подать лицо, на которое наложен штраф; требуется доказанная дата получения.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "1 календарный месяц"
     },
@@ -3210,7 +3210,7 @@
       "notes": "Определение подлежит немедленному исполнению.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "1 календарный месяц"
     },
@@ -3234,7 +3234,7 @@
       "notes": "Требуется исчерпание способов обжалования до вступления акта в силу; месяц нельзя сводить к 30 дням.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "6 календарных месяцев"
     },
@@ -3258,7 +3258,7 @@
       "notes": "КАС не устанавливает новый шестимесячный срок после первой кассации; route и deadline должны храниться раздельно.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "в пределах того же 6-месячного периода"
     },
@@ -3282,7 +3282,7 @@
       "notes": null,
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "durationText": "3 календарных месяца"
     },
@@ -3931,7 +3931,7 @@
       "source": "ст. 92 ч. 2 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-COUNTING-DAY-WORKING-GENERAL"
     },
@@ -3941,7 +3941,7 @@
       "source": "ст. 92 ч. 2 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-COUNTING-DAY-CALENDAR-EXCEPTIONS"
     },
@@ -3951,7 +3951,7 @@
       "source": "ст. 92 ч. 3 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-COUNTING-START-NEXT-DAY"
     },
@@ -3961,7 +3961,7 @@
       "source": "ст. 92 ч. 4–5 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-COUNTING-HOURS-IMMEDIATE"
     },
@@ -3971,7 +3971,7 @@
       "source": "ст. 93 ч. 1 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-COUNTING-MONTH-YEAR-CALENDAR"
     },
@@ -3981,7 +3981,7 @@
       "source": "ст. 93 ч. 2 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-END-NONWORKING-NEXT-WORKING"
     },
@@ -3991,7 +3991,7 @@
       "source": "ст. 93 ч. 3 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-END-HOUR"
     },
@@ -4001,7 +4001,7 @@
       "source": "ст. 93 ч. 4 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-END-POST-24H-GENERAL"
     },
@@ -4011,7 +4011,7 @@
       "source": "ст. 93 ч. 4 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-END-POST-NO-SAFE-HARBOR-ELECTION"
     },
@@ -4021,7 +4021,7 @@
       "source": "ст. 93 ч. 5 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-END-COURT-OFFICE-HOURS"
     },
@@ -4031,7 +4031,7 @@
       "source": "ст. 95 ч. 1–3 КАС РФ",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "policy_id": "KAS-RESTORATION-SEPARATE-MECHANISM"
     },
@@ -4371,7 +4371,7 @@
       "significance": "Для общей апелляции нужна фактическая дата принятия решения в окончательной форме. Нормативный максимум не заменяет фактическую дату; специальные правила могут требовать изготовления в день принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-FIRST-INSTANCE-MOTIVATED-DECISION"
     },
@@ -4384,7 +4384,7 @@
       "significance": "Срок по ст. 294 начинается не с направления, а с фактического получения копии; дата направления служит только вспомогательным evidence.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-SIMPLIFIED-COPY-SENDING"
     },
@@ -4397,7 +4397,7 @@
       "significance": "Окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-FOREIGN-MOTIVATED-SAME-DAY"
     },
@@ -4410,7 +4410,7 @@
       "significance": "Окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-SUPERVISION-MOTIVATED-SAME-DAY"
     },
@@ -4423,7 +4423,7 @@
       "significance": "Окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-PSYCHIATRIC-HOSPITAL-MOTIVATED-SAME-DAY"
     },
@@ -4436,7 +4436,7 @@
       "significance": "Окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-PSYCHIATRIC-EXAM-MOTIVATED-SAME-DAY"
     },
@@ -4449,7 +4449,7 @@
       "significance": "Окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-TB-MOTIVATED-SAME-DAY"
     },
@@ -4462,7 +4462,7 @@
       "significance": "Для общей месячной апелляции окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-LIFE-SAVING-INTERVENTION-SAME-DAY"
     },
@@ -4475,7 +4475,7 @@
       "significance": "Для общей месячной апелляции окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-MINOR-TEMPORARY-CENTER-SAME-DAY"
     },
@@ -4488,7 +4488,7 @@
       "significance": "Для общей месячной апелляции окончательная форма должна совпадать с днем принятия.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-MINOR-CLOSED-SCHOOL-SAME-DAY"
     },
@@ -4501,7 +4501,7 @@
       "significance": "Определяет trigger шестимесячного кассационного срока.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-FIRST-INSTANCE-DECISION-FORCE"
     },
@@ -4514,7 +4514,7 @@
       "significance": "Определяет trigger кассационного срока по определению.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-FIRST-INSTANCE-RULING-FORCE"
     },
@@ -4527,7 +4527,7 @@
       "significance": "Надежная дата для последующих маршрутов пересмотра.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-APPEAL-DETERMINATION-FORCE"
     },
@@ -4540,7 +4540,7 @@
       "significance": "Надежная дата для последующей кассации.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-PRIVATE-APPEAL-DETERMINATION-FORCE"
     },
@@ -4553,7 +4553,7 @@
       "significance": "Устанавливает силу кассационного акта; не создает новый шестимесячный срок ст. 318.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "dependency_id": "KAS-TRIGGER-CASSATION-DETERMINATION-FORCE"
     },
@@ -5018,7 +5018,7 @@
       "implementationConstraint": "Deadline engine не должен автоматически перезапускать шестимесячный срок после определения КСОЮ. Маршрут, исчерпание предыдущей ступени и остаток общего срока должны моделироваться раздельно; иное правило потребует отдельного нормативного основания вне предоставленного текста.",
       "code": "KAS",
       "document": "Docs/legal-deadlines/kas-appeal-deadlines.md",
-      "revision": 1,
+      "revision": 2,
       "sourceHash": "a2ca99744ffb3f637a32765c17ea6d038a263854ec20db86250a6fbfc4a1c0a2",
       "question_id": "KAS-CASSATION-SIX-MONTH-SHARED-WINDOW"
     },

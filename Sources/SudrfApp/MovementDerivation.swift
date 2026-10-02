@@ -300,6 +300,7 @@ enum MovementDerivation {
                                               assessments: [DeadlineRuleAssessment],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
+        let deadlines = deadlines.filter { deadlineScopeKey($0) == nil }
         let production = MaterialProductionContext.resolve(context: context, movement: mv).production
         let inForce = CaseLifecycleResolver.effectiveLegalForce(
             in: mv, production: production)
@@ -454,7 +455,8 @@ enum MovementDerivation {
             if assessment.missingPolicyIDs.contains("vsrfCassationCalculation") {
                 return "Срок обращения в ВС РФ пока не рассчитывается"
             }
-            if assessment.missingPolicyIDs.contains("historicalCassationRegime") {
+            if assessment.missingPolicyIDs.contains("historicalCassationRegime")
+                || assessment.missingPolicyIDs.contains("historicalVSCassationRegime") {
                 return "Срок не рассчитан: исторический порядок кассации пока не поддерживается"
             }
         }
@@ -490,6 +492,11 @@ enum MovementDerivation {
         case .deliveryOrReceipt: return "вручение или получение акта"
         case .legalForce: return "вступление акта в силу"
         case .motivatedAppealDetermination: return "мотивированное апелляционное определение"
+        case .firstCourtCassationReceipt: return "поступление кассационной жалобы в суд первой инстанции"
+        case .cassationFinalForm: return "окончательная форма кассационного определения"
+        case .appealFinalForm: return "окончательная форма апелляционного определения"
+        case .conflictingDates: return "непротиворечивые собственные даты акта"
+        case .cassationRoute: return "подтверждённый маршрут обращения в ВС РФ"
         }
     }
 
@@ -633,7 +640,74 @@ enum MovementDerivation {
     /// Совмещает свежий расчёт с сохранёнными occurrences. Ручное решение
     /// переносится только на тот же rule/round/trigger; старые и просроченные
     /// occurrences остаются историей и не могут возродиться при refresh.
+    /// Partition before kind/legacy reconciliation: a material never lends its
+    /// confirmation, manual date or closed history to the main dispute.
     static func preservingConfirmedDeadlines(_ snap: CaseSnapshot,
+                                             old: CaseSnapshot?,
+                                             today: Date = DateUtil.today,
+                                             preserveActiveProposedWhenMissing: Bool = false,
+                                             movement: CaseMovement? = nil,
+                                             context: MovementContext? = nil,
+                                             protectedActiveOccurrenceKeys: Set<String> = []) -> CaseSnapshot {
+        guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
+        let scopedKeys = Set((snap.deadlines + old.deadlines).compactMap(deadlineScopeKey))
+        guard !scopedKeys.isEmpty else {
+            return preservingSubjectDeadlines(snap, old: old, today: today,
+                preserveActiveProposedWhenMissing: preserveActiveProposedWhenMissing,
+                movement: movement, context: context,
+                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+        }
+        let subjects = movement.flatMap { mv in context.map {
+            MaterialDeadlineScope.proven(in: mv, context: $0)
+        }} ?? []
+        var out = snap
+        out.deadlines = []
+        for key in [nil] + scopedKeys.sorted().map(Optional.some) {
+            var freshSubject = snap
+            freshSubject.deadlines = snap.deadlines.filter { deadlineScopeKey($0) == key }
+            var oldSubject = old
+            oldSubject.deadlines = old.deadlines.filter { deadlineScopeKey($0) == key }
+            let subject = subjects.first { $0.sourceCardID == key }
+            if key != nil {
+                freshSubject.deadlineAssessments = []
+                oldSubject.deadlineAssessments = []
+            }
+            let preserved = preservingSubjectDeadlines(freshSubject, old: oldSubject, today: today,
+                preserveActiveProposedWhenMissing: preserveActiveProposedWhenMissing
+                    || key != nil && subject == nil,
+                movement: key == nil ? movement : subject?.movement,
+                context: key == nil ? context : subject?.context,
+                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+            out.deadlines += preserved.deadlines
+            if key == nil { out.deadlineAssessments = preserved.deadlineAssessments }
+        }
+        return out
+    }
+
+    /// Six components are the unchanged main/legacy identity. Unknown keys are
+    /// kept in their own opaque partition; they cannot adopt another subject.
+    static func deadlineScopeKey(_ deadline: StoredDeadline) -> String? {
+        let scope = MaterialDeadlineScope.scopeKey(in: deadline.occurrenceKey)
+        if scope == "main" { return nil }
+        return MaterialDeadlineScope.materialSourceCardID(in: deadline.occurrenceKey) ?? scope
+    }
+
+    static func deadlineDisplayNumber(_ deadline: StoredDeadline, movement: CaseMovement?,
+                                      context: MovementContext?, sessions: [StoredSession],
+                                      defaultNumber: String) -> String {
+        guard let scope = deadlineScopeKey(deadline) else { return defaultNumber }
+        if let movement, let context, let instance = movement.instances.first(where: {
+            $0.level == .material && CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context) == scope
+        }) { return CaseNumberPresentation.primary(instance.caseNumber) }
+        let numbers = Set(sessions.filter { $0.sourceCardID == scope }.compactMap(\.caseNumber))
+        if numbers.count == 1 { return CaseNumberPresentation.primary(numbers.first!) }
+        if let marker = deadline.calLabel.range(of: " · материал № ", options: .backwards) {
+            return String(deadline.calLabel[marker.upperBound...])
+        }
+        return defaultNumber
+    }
+
+    private static func preservingSubjectDeadlines(_ snap: CaseSnapshot,
                                              old: CaseSnapshot?,
                                              today: Date = DateUtil.today,
                                              preserveActiveProposedWhenMissing: Bool = false,
@@ -961,15 +1035,16 @@ enum MovementDerivation {
         var repaired = old
         for index in repaired.deadlines.indices {
             let stored = repaired.deadlines[index]
-            guard stored.lifecycle == .superseded,
+            guard deadlineScopeKey(stored) == nil,
+                  stored.lifecycle == .superseded,
                   stored.status == .proposed,
                   let key = stored.occurrenceKey,
                   let provenance = stored.provenance,
                   old.deadlineAssessments?.contains(where: {
                       $0.ruleID == provenance.ruleID && $0.status == .applicable
                   }) == true,
-                  repaired.deadlines.filter({ $0.kind == stored.kind }).count == 1,
-                  fresh.deadlines.filter({ $0.kind == stored.kind }).count == 1,
+                  repaired.deadlines.filter({ $0.kind == stored.kind && deadlineScopeKey($0) == nil }).count == 1,
+                  fresh.deadlines.filter({ $0.kind == stored.kind && deadlineScopeKey($0) == nil }).count == 1,
                   let candidate = fresh.deadlines.first(where: {
                       $0.isActive
                           && $0.kind == stored.kind
@@ -1079,10 +1154,39 @@ enum MovementDerivation {
             return DeadlineRuleEngine.unavailable(context: engineContext)
         }
         let timeline = CaseLifecycleResolver.timeline(in: movement, production: production)
-        return DeadlineRuleEngine.evaluate(
+        var result = DeadlineRuleEngine.evaluate(
             registry: registry, movement: movement,
-            context: engineContext,
-            timeline: timeline, today: today)
+            context: engineContext, timeline: timeline, today: today)
+        for item in materialDeadlineEvaluations(from: movement, context: context, today: today) {
+            result.deadlines += item.evaluation.deadlines.map { deadline in
+                var value = deadline
+                value.calLabel += " · материал № " + CaseNumberPresentation.primary(item.caseNumber)
+                return value
+            }
+        }
+        return result
+    }
+
+    struct MaterialDeadlineEvaluation: Identifiable {
+        var id: String
+        var caseNumber: String
+        var evaluation: DeadlineRuleEngine.Evaluation
+        var sourceUnavailable = false
+    }
+
+    static func materialDeadlineEvaluations(from movement: CaseMovement,
+                                           context: MovementContext,
+                                           today: Date = DateUtil.today) -> [MaterialDeadlineEvaluation] {
+        guard let registry = try? LegalDeadlineRegistry.load() else { return [] }
+        return MaterialDeadlineScope.proven(in: movement, context: context).map { subject in
+            let evaluation = DeadlineRuleEngine.evaluate(registry: registry,
+                movement: subject.movement, context: .init(movementContext: subject.context),
+                timeline: CaseLifecycleResolver.timeline(in: subject.movement,
+                    production: subject.classification.production, verifiedMaterialScope: true), today: today,
+                classification: subject.classification, materialSourceCardID: subject.sourceCardID)
+            return MaterialDeadlineEvaluation(id: subject.sourceCardID,
+                caseNumber: subject.movement.caseNumber, evaluation: evaluation)
+        }
     }
 
     // MARK: Ярлыки

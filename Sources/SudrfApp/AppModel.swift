@@ -175,6 +175,13 @@ final class AppRouter: ObservableObject {
     var openDeadlineAssessments: [DeadlineRuleAssessment] {
         openedKey.flatMap { store.record(forKey: $0)?.snapshot?.deadlineAssessments } ?? []
     }
+    var openStoredDeadlines: [StoredDeadline] {
+        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.deadlines } ?? []
+    }
+    var openDeadlineRecordKey: String? { openedKey }
+    var openDeadlineSessions: [StoredSession] {
+        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.sessions } ?? []
+    }
     var openedPreviousCaseNumbers: [String] {
         guard let openedKey, let record = store.record(forKey: openedKey) else { return [] }
         return Self.caseNumberAliases(for: record).previous
@@ -2199,7 +2206,10 @@ final class AppRouter: ObservableObject {
                     recordKey: rec.key, what: dl.what,
                     caseNumber: rec.caseNumber, basis: dl.basis, calLabel: dl.calLabel,
                     date: dl.date, status: dl.status, lifecycle: dl.lifecycle,
-                    provenance: dl.provenance)
+                    provenance: dl.provenance,
+                    displayCaseNumber: MovementDerivation.deadlineScopeKey(dl) == nil ? nil
+                        : MovementDerivation.deadlineDisplayNumber(dl, movement: rec.movement,
+                            context: rec.context, sessions: snap.sessions, defaultNumber: rec.caseNumber))
                 if dl.isActive { dls.append(tracked) }
                 else { inactiveDls.append(tracked) }
             }

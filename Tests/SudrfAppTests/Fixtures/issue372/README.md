@@ -4,4 +4,8 @@ The seven source movements were received in `/private/tmp/sudrf372-cases.json` o
 
 The source websites have since reset; their current contents have not been live-confirmed. The fixtures preserve the received copy and do not claim to describe current portal state.
 
-Sanitized JSON SHA-256: `6168463784b52e4a49f54ab788b4979eda127a5df0b889ebb9f514752df90d5c`.
+Sanitized JSON SHA-256: `b581962118f55256b03377974b432a954de1d642544db08a780741fc0649a6ff`.
+
+В этапе #222 добавлен собственный фрагмент кассационного акта `2а-11046/2024`: поступление в первую инстанцию 9 апреля 2025 года отличается от поступления в КСОЮ 22 апреля 2025 года. Дата окончательной формы в исходной копии не найдена; она не дописана.
+
+Для части #222 возвращены собственная фраза о мотивированном определении 5 августа 2026 года и фраза о поступлении жалобы в первую инстанцию 9 апреля 2025 года. УИД заменены валидными синтетическими УИД с сохранением исходных связей внутри досье; это позволяет проверить существующий классификатор материалов без угадывания вида производства.

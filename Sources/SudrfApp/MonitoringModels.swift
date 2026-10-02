@@ -279,6 +279,9 @@ struct TrackedDeadline: Identifiable {
     var status: DeadlineStatus
     var lifecycle: DeadlineLifecycle = .active
     var provenance: DeadlineProvenance? = nil
+    /// Display only; recordKey and the root number retain dossier navigation.
+    var displayCaseNumber: String? = nil
+    var displayNumber: String { CaseNumberPresentation.primary(displayCaseNumber ?? caseNumber) }
 }
 
 struct TrackedHearing: Identifiable {

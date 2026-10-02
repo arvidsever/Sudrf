@@ -273,7 +273,7 @@ struct OverviewView: View {
     private func deadlineBody(_ d: TrackedDeadline) -> some View {
         let title = caseTitles.title(for: d.recordKey)
         return VStack(alignment: .leading, spacing: 2) {
-            Text("\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))")
+            Text("\(d.what) · № \(d.displayNumber)")
                 .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
             Text(title)

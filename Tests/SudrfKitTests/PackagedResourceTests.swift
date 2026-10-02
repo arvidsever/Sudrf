@@ -31,7 +31,7 @@ final class PackagedResourceTests: XCTestCase {
         XCTAssertEqual(registry.coreRules.count, 67)
         XCTAssertEqual(Set(registry.coreRules.map(\.ruleID)).count, 67)
         XCTAssertEqual(registry.sources.count, 4)
-        XCTAssertEqual(registry.sources.map(\.revision), [3, 1, 1, 1])
+        XCTAssertEqual(registry.sources.map(\.revision), [3, 2, 1, 1])
         XCTAssertEqual(registry.rule(id: "GPK-APPEAL-GENERAL")?.duration.kind, .months)
         XCTAssertEqual(registry.rule(id: "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI")?.duration.kind,
                        .calendarSutki)

@@ -14,6 +14,11 @@ enum DeadlineEvidenceRequirement: String, Codable, CaseIterable, Equatable {
     case deliveryOrReceipt
     case legalForce
     case motivatedAppealDetermination
+    case firstCourtCassationReceipt
+    case cassationFinalForm
+    case appealFinalForm
+    case conflictingDates
+    case cassationRoute
 }
 
 typealias DeadlineAssessmentStatus = DeadlineRuleSupport
@@ -113,6 +118,8 @@ enum DeadlineRuleEngine {
         case koapReturnReceipt
         case gpkCassation
         case legalForce
+        case gpkVS
+        case kasVS
     }
 
     private enum CategoryScope {
@@ -158,6 +165,7 @@ enum DeadlineRuleEngine {
     private enum DateCalculation {
         case calculated(Calculation)
         case unsupported([String])
+        case missing([DeadlineEvidenceRequirement])
     }
 
     /// Only explicitly approved Docs rules are activated here. The full catalog
@@ -191,12 +199,16 @@ enum DeadlineRuleEngine {
                 trigger: .gpkCassation),
         Binding(ruleID: "KAS-CASSATION-KSOYU", kind: "cassation", production: .kas,
                 trigger: .legalForce),
+        Binding(ruleID: "GPK-CASSATION-SUPREME-COURT", kind: "cassation", production: .civil, trigger: .gpkVS),
+        Binding(ruleID: "KAS-CASSATION-SUPREME-COURT", kind: "cassation", production: .kas, trigger: .kasVS),
     ]
 
     static func evaluate(registry: LegalDeadlineRegistry, movement: CaseMovement,
                          context: Context, timeline: CaseLifecycleResolver.Timeline,
-                         today: Date) -> Evaluation {
-        let classification = MaterialProductionContext.resolve(
+                         today: Date,
+                         classification suppliedClassification: MaterialProductionContext.Classification? = nil,
+                         materialSourceCardID: String? = nil) -> Evaluation {
+        let classification = suppliedClassification ?? MaterialProductionContext.resolve(
             context: context.movementContext, movement: movement)
         guard let production = classification.production else {
             return Evaluation(deadlines: [], assessments: [])
@@ -220,7 +232,7 @@ enum DeadlineRuleEngine {
 
             let result = evaluate(binding: binding, rule: rule, registry: registry,
                                   movement: movement, context: context, timeline: timeline,
-                                  today: today, calendar: calendar)
+                                  today: today, calendar: calendar, materialSourceCardID: materialSourceCardID)
             assessments.append(result.assessment)
             if let deadline = result.deadline { deadlines.append(deadline) }
         }
@@ -526,7 +538,12 @@ enum DeadlineRuleEngine {
     private static func storedTrigger(_ key: String, ruleID: String, snapshot: CaseSnapshot,
                                       matching instance: CaseInstance,
                                       context: MovementContext?) -> DeadlineTriggerProvenance? {
-        guard let values = occurrenceIdentity(key, ruleID: ruleID), values.count == 6 else { return nil }
+        guard let values = occurrenceIdentity(key, ruleID: ruleID), [6, 7].contains(values.count) else { return nil }
+        if values.count == 7 {
+            guard let context, context.baseInstanceLevel == .material,
+                  CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context) == values[6]
+            else { return nil }
+        }
         let currentCard = context.map { CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: $0) }
         let sessions = snapshot.sessions.filter { session in
             let cardMatches: Bool
@@ -613,7 +630,7 @@ enum DeadlineRuleEngine {
     private static func evaluate(binding: Binding, rule: LegalDeadlineRule,
                                  registry: LegalDeadlineRegistry, movement: CaseMovement,
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
-                                 today: Date, calendar: LegalCalendar?)
+                                 today: Date, calendar: LegalCalendar?, materialSourceCardID: String?)
         -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
         var rule = rule
         switch binding.kind {
@@ -626,32 +643,50 @@ enum DeadlineRuleEngine {
             }
         case "cassation":
             let reviews = timeline.lifecycleOrdered.map(\.instance)
-            let provedVSRoute = reviews.contains { instance in
-                if let start = timeline.currentRoundDate,
-                   instance.sessions.compactMap({ DateUtil.parse($0.date) }).min().map({ $0 >= start }) != true {
-                    return false
-                }
-                return instance.level == .cassation
-                    && CaseLifecycleResolver.isConcludedReview(instance)
-                    && !instance.sessions.contains {
-                        CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result)?.hasPrefix("remand:") == true
-                            || CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result) == "returned"
-                    }
-                    || instance.level == .appeal && instance.linkedActIDs.contains { id in
-                        let tail = movement.actBodies[id].flatMap(CaseLifecycleResolver.operativeDisposition) ?? ""
-                        let value = normalized(tail)
-                        return value.contains("судебную коллегию")
-                            && value.contains("верховного суда российской федерации")
-                    }
-            }
-            if provedVSRoute, !reviews.contains(where: { instance in
+            let directCategory = directVSCategoryProof(movement: movement, context: context, timeline: timeline)
+            let hasCurrentVS = reviews.contains { instance in
                 guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
                 guard let start = timeline.currentRoundDate else { return true }
-                return instance.sessions.compactMap { DateUtil.parse($0.date) }.min().map { $0 >= start } == true
+                return reviewActDate(instance, movement: movement).map { $0 >= start } == true
+            }
+            let directClaim = binding.production == .kas && reviews.contains { instance in
+                instance.level == .appeal && directVSInstruction(instance, movement: movement)
+                    && timeline.currentRoundDate.map { start in
+                        reviewActDate(instance, movement: movement).map { $0 >= start } == true
+                    } != false
+            }
+            if binding.production == .kas, directCategory == true, !directClaim, !hasCurrentVS {
+                if binding.trigger == .kasVS { return insufficient(rule, binding: binding, [.cassationRoute]) }
+                return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind, status: .notApplicable))
+            }
+            if directClaim, directCategory == nil, !hasCurrentVS {
+                if binding.trigger == .kasVS { return insufficient(rule, binding: binding, [.caseCategory]) }
+                return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind, status: .notApplicable))
+            }
+            let provedVSRoute = reviews.contains { instance in
+                if let start = timeline.currentRoundDate,
+                   reviewActDate(instance, movement: movement).map({ $0 >= start }) != true { return false }
+                return instance.level == .cassation && reviewMerits(instance)
+                    || binding.production == .kas && directCategory == true && instance.level == .appeal
+                        && directVSInstruction(instance, movement: movement)
+            }
+            if binding.trigger != .gpkVS && binding.trigger != .kasVS, provedVSRoute, !reviews.contains(where: { instance in
+                guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                guard let start = timeline.currentRoundDate else { return true }
+                return reviewActDate(instance, movement: movement).map { $0 >= start } == true
             }) {
                 return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
-                                        status: .unsupportedCalculation,
-                                        missingPolicyIDs: ["vsrfCassationCalculation"]))
+                                        status: .notApplicable))
+            }
+            if binding.trigger == .gpkVS || binding.trigger == .kasVS {
+                guard provedVSRoute, !reviews.contains(where: { instance in
+                    guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                    guard let start = timeline.currentRoundDate else { return true }
+                    return reviewActDate(instance, movement: movement).map { $0 >= start } == true
+                }) else {
+                    return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind, status: .notApplicable))
+                }
+                break
             }
             guard !timeline.hasCassationInCurrentRound else {
                 return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
@@ -886,6 +921,40 @@ enum DeadlineRuleEngine {
             } else {
                 return insufficient(rule, binding: binding, [.motivatedAppealDetermination])
             }
+        case .gpkVS, .kasVS:
+            let cassations = timeline.lifecycleOrdered.map(\.instance).filter { instance in
+                instance.level == .cassation && reviewMerits(instance)
+                    && timeline.currentRoundDate.map { start in
+                        reviewActDate(instance, movement: movement).map { $0 >= start } == true
+                    } != false
+            }
+            if binding.trigger == .gpkVS {
+                guard let cassation = cassations.max(by: MovementService.precedesInChronology),
+                      let complete = ownReviewFinalForm(in: cassation, movement: movement, appeal: false) else {
+                    return insufficient(rule, binding: binding, [.finalForm])
+                }
+                if let full = DateUtil.parse(complete.dateRaw), reviewDatesConflict(cassation, movement: movement, final: full) {
+                    return insufficient(rule, binding: binding, [.conflictingDates])
+                }
+                guard let regimeDate = reviewActDate(cassation, movement: movement) else {
+                    return insufficient(rule, binding: binding, [.finalAct])
+                }
+                if regimeDate < DateUtil.parse("01.09.2024")! {
+                    return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                            status: .unsupportedCalculation,
+                                            missingPolicyIDs: ["historicalVSCassationRegime"]))
+                }
+                triggerResult = .found(complete)
+            } else {
+                let force: DeadlineTriggerProvenance?
+                if timeline.hasAppealInCurrentRound {
+                    force = currentAppeal(in: timeline).flatMap { reviewAnnouncement(in: $0, movement: movement) }
+                } else {
+                    force = timeline.deadlineFirst.flatMap(legalForce)
+                }
+                guard let force else { return insufficient(rule, binding: binding, [.legalForce]) }
+                triggerResult = .found(force)
+            }
         case .legalForce:
             guard routeSupportsCSOY(context.movementContext) else {
                 return insufficient(rule, binding: binding, [.production])
@@ -920,8 +989,14 @@ enum DeadlineRuleEngine {
                                     status: .needsLegalReview))
         }
 
-        switch calculate(rule: rule, triggerDate: triggerDate(for: rule, trigger: trigger),
-                         registry: registry, calendar: calendar) {
+        let calculation = binding.trigger == .kasVS
+            ? sharedKASCalculation(rule: rule, trigger: trigger, movement: movement,
+                                   timeline: timeline, registry: registry, calendar: calendar)
+            : calculate(rule: rule, triggerDate: triggerDate(for: rule, trigger: trigger),
+                        registry: registry, calendar: calendar)
+        switch calculation {
+        case .missing(let requirements):
+            return insufficient(rule, binding: binding, requirements)
         case .unsupported(let missingPolicies):
             return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
                                     status: .unsupportedCalculation,
@@ -936,22 +1011,231 @@ enum DeadlineRuleEngine {
                 calendarTrace: calculation.calendarTrace)
             let deadline = StoredDeadline(
                 kind: binding.kind, what: rule.stage,
-                basis: "\(formula) · \(rule.trigger)",
+                basis: "\(formula) · \(rule.trigger)" + (calculation.basisSuffix.map { " · " + $0 } ?? ""),
                 calLabel: "\(rule.stage.lowercased()) \(shortCaseNumber(movement.caseNumber))",
                 dateRef: calculation.date.timeIntervalSinceReferenceDate,
                 statusRaw: DeadlineStatus.proposed.rawValue,
                 occurrenceKey: occurrenceKey(ruleID: rule.ruleID, timeline: timeline,
-                                             movement: movement, trigger: trigger),
+                                             movement: movement, trigger: trigger, materialSourceCardID: materialSourceCardID),
                 provenance: provenance, lifecycleRaw: DeadlineLifecycle.active.rawValue)
             return (deadline, assessment(ruleID: rule.ruleID, kind: binding.kind,
                                          status: .applicable))
         }
     }
 
+    /// A routing instruction does not establish eligibility under article 20.
+    /// Unknown category remains an evidence warning, never a guessed route.
+    private static func directVSCategoryProof(movement: CaseMovement, context: Context,
+        timeline: CaseLifecycleResolver.Timeline) -> Bool? {
+        guard let first = timeline.deadlineFirst else { return nil }
+        let level = first.sourceEvidence?.sourceCourtLevel
+            ?? CourtDirectory.court(forDomain: first.domain)?.level ?? context.movementContext?.courtLevel
+        guard level == .subject else { return false }
+        let category = normalized(movement.category ?? first.sourceEvidence?.category ?? "")
+        if category.contains("определении срока назначения выборов")
+            || category.range(of: #"пункт\w*\s+12\s+(?:част\w*\s+1\s+)?стать\w*\s+20"#, options: .regularExpression) != nil { return false }
+        if category.range(of: #"пункт\w*\s+(?:7|8|9|10|11)\s+(?:част\w*\s+1\s+)?стать\w*\s+20"#, options: .regularExpression) != nil { return true }
+        if category.contains("расформирован")
+            && (category.contains("избирательной комиссии") || category.contains("комиссии референдума")) { return true }
+        let eligibleElection = category.contains("государственную думу")
+            || category.contains("высшего должностного лица субъекта")
+            || category.contains("главы субъекта")
+            || category.contains("законодательн") && category.contains("орган") && category.contains("субъект")
+        if category.contains("отмене регистрации кандидата") && eligibleElection { return true }
+        return nil
+    }
+
+    private static func directVSInstruction(_ instance: CaseInstance, movement: CaseMovement) -> Bool {
+        guard reviewMerits(instance) else { return false }
+        return instance.linkedActIDs.contains { id in
+            guard let body = movement.actBodies[id],
+                  let tail = CaseLifecycleResolver.operativeDisposition(in: body) else { return false }
+            return ActParagraphizer.paragraphs(in: tail).contains { paragraph in
+                let text = normalized(paragraph.text)
+                return text.hasPrefix("апелляционное определение") && text.contains("может быть обжаловано")
+                    && text.contains("в судебную коллегию") && text.contains("верховного суда российской федерации")
+                    && !["кассационный суд", "ксою", "затем", "после рассмотрения"].contains(where: text.contains)
+            }
+        }
+    }
+
+    private static func reviewActDate(_ instance: CaseInstance, movement: CaseMovement) -> Date? {
+        if let date = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) { return date }
+        let own = Set(instance.linkedActIDs)
+        let dates = Set(movement.acts.filter { own.contains($0.id) && $0.instanceLevel == instance.level }
+            .compactMap { DateUtil.parse($0.date) })
+        if dates.count == 1 { return dates.first }
+        let terminalDates = instance.sessions.filter {
+            CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result) != nil
+                || CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+        }.compactMap { DateUtil.parse($0.date) }
+        if let date = terminalDates.max() { return date }
+        guard CaseLifecycleResolver.isConcludedReview(instance) else { return nil }
+        let adjudications = Set(instance.sessions.filter {
+            normalized($0.event) == "рассмотрено" || normalized($0.event) == "судебное заседание"
+        }.compactMap { DateUtil.parse($0.date) })
+        return adjudications.count == 1 ? adjudications.first : nil
+    }
+
+    private static func reviewMerits(_ instance: CaseInstance) -> Bool {
+        guard CaseLifecycleResolver.isConcludedReview(instance) else { return false }
+        let values = [instance.result ?? ""] + instance.sessions.map { $0.event + " " + ($0.result ?? "") }
+        return !values.contains { value in
+            let disposition = CaseLifecycleResolver.semanticDisposition(result: value)
+            let text = normalized(value)
+            return disposition == "returned" || text.contains("без рассмотр")
+                || text.contains("отказ") && (text.contains("восстанов") && text.contains("срок")
+                    || text.contains("передач"))
+        }
+    }
+
+    private static func reviewDatesConflict(_ instance: CaseInstance, movement: CaseMovement, final: Date) -> Bool {
+        var dates = Set(instance.sessions.filter {
+            CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+        }.compactMap { DateUtil.parse($0.date) })
+        if let date = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) { dates.insert(date) }
+        let own = Set(instance.linkedActIDs)
+        dates.formUnion(movement.acts.filter { own.contains($0.id) && $0.instanceLevel == instance.level }
+            .compactMap { DateUtil.parse($0.date) })
+        return dates.count > 1 || dates.first.map { $0 > final } == true
+    }
+
+    private static func reviewAnnouncement(in instance: CaseInstance, movement: CaseMovement)
+        -> DeadlineTriggerProvenance? {
+        guard reviewMerits(instance) else { return nil }
+        var candidates = instance.sessions.filter {
+            CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+                && $0.event != "Резолютивная часть опубликованного акта"
+        }.map { provenance(for: $0, in: instance) }
+        let ownIDs = Set(instance.linkedActIDs)
+        let rawDates = [instance.sourceEvidence?.decisionDate].compactMap { $0 }
+            + movement.acts.filter { ownIDs.contains($0.id) && $0.instanceLevel == instance.level }.map(\.date)
+        candidates += rawDates.filter { DateUtil.parse($0) != nil }.map {
+            DeadlineTriggerProvenance(event: "Опубликованная дата принятия определения", result: instance.result,
+                dateRaw: $0, court: instance.court, levelRaw: instance.level.rawValue, caseNumber: instance.caseNumber)
+        }
+        guard Set(candidates.compactMap { DateUtil.parse($0.dateRaw) }).count == 1 else { return nil }
+        return candidates.first
+    }
+
+    /// Intervals count elapsed days; filing and disposition dates are not both
+    /// counted as full days. Merge overlap before extending the raw endpoint.
+    static func excludedElapsedDays(_ intervals: [(Date, Date)]) -> Int? {
+        guard intervals.allSatisfy({ $0.1 >= $0.0 }) else { return nil }
+        var merged: [(Date, Date)] = []
+        for interval in intervals.sorted(by: { $0.0 < $1.0 }) {
+            if let last = merged.last, interval.0 <= last.1 {
+                merged[merged.count - 1].1 = max(last.1, interval.1)
+            } else { merged.append(interval) }
+        }
+        return merged.reduce(0) { $0 + (DateUtil.cal.dateComponents([.day], from: $1.0, to: $1.1).day ?? 0) }
+    }
+
+    private static func sharedKASCalculation(rule: LegalDeadlineRule, trigger: DeadlineTriggerProvenance,
+        movement: CaseMovement, timeline: CaseLifecycleResolver.Timeline,
+        registry: LegalDeadlineRegistry, calendar: LegalCalendar?) -> DateCalculation {
+        guard let force = DateUtil.parse(trigger.dateRaw), let months = rule.duration.value,
+              let rawEndpoint = DateUtil.cal.date(byAdding: .month, value: months, to: force)
+        else { return .unsupported([]) }
+        let cassations = timeline.lifecycleOrdered.map(\.instance).filter { instance in
+            instance.level == .cassation && reviewMerits(instance)
+                && timeline.currentRoundDate.map { start in
+                    reviewActDate(instance, movement: movement).map { $0 >= start } == true
+                } != false
+        }.sorted(by: MovementService.precedesInChronology)
+        if cassations.contains(where: { ownReviewFinalForm(in: $0, movement: movement, appeal: false) == nil }) {
+            return .missing([.cassationFinalForm])
+        }
+        var intervals: [(Date, Date)] = []
+        if let appeal = currentAppeal(in: timeline) {
+            guard let announced = reviewAnnouncement(in: appeal, movement: movement).flatMap({ DateUtil.parse($0.dateRaw) }),
+                  let full = ownReviewFinalForm(in: appeal, movement: movement, appeal: true).flatMap({ DateUtil.parse($0.dateRaw) })
+            else { return .missing([.appealFinalForm]) }
+            guard full >= announced else { return .missing([.conflictingDates]) }
+            intervals.append((announced, full))
+        }
+        var previousEnd = force
+        for cassation in cassations {
+            guard let full = ownReviewFinalForm(in: cassation, movement: movement, appeal: false)
+                .flatMap({ DateUtil.parse($0.dateRaw) }) else { return .missing([.cassationFinalForm]) }
+            if reviewDatesConflict(cassation, movement: movement, final: full) {
+                return .missing([.conflictingDates])
+            }
+            let receipt = cassation.sourceEvidence?.receiptDate.flatMap(DateUtil.parse)
+                ?? cassation.sessions.compactMap { DateUtil.parse($0.date) }.min()
+            let dates = timeline.deadlineFirst?.sessions.compactMap { session -> Date? in
+                let value = normalized(session.event + " " + (session.result ?? ""))
+                guard value.contains("кассацион"), value.contains("жалоб") || value.contains("представлен"),
+                      value.contains("поступ") || value.contains("подан") || value.contains("принят"),
+                      let date = DateUtil.parse(session.date), date >= previousEnd,
+                      receipt.map({ date <= $0 }) != false else { return nil }
+                return date
+            } ?? []
+            var ownDates = cassation.sessions.compactMap { session -> Date? in
+                let value = normalized(session.event + " " + (session.result ?? ""))
+                guard value.contains("первой инстанц"), value.contains("кассацион"),
+                      value.contains("поступ") || value.contains("подан"),
+                      let date = DateUtil.parse(session.date), date >= force,
+                      receipt.map({ date <= $0 }) != false else { return nil }
+                return date
+            }
+            if let first = timeline.deadlineFirst {
+                for id in cassation.linkedActIDs {
+                    guard let body = movement.actBodies[id] else { continue }
+                    for paragraph in ActParagraphizer.paragraphs(in: body) {
+                        let value = normalized(paragraph.text)
+                        guard value.contains("кассацион"), value.contains("жалоб") || value.contains("представлен"),
+                              let expression = try? NSRegularExpression(pattern:
+                                #"(?:подан\w*|поступивш\w*|поступил\w*)\s+(?:в|через)\s+([^\d.!?]{3,160}?)\s+(\d{1,2}(?:\.\d{1,2}\.|\s+[а-я]+\s+)\d{4})"#)
+                        else { continue }
+                        for match in expression.matches(in: value, range: NSRange(value.startIndex..., in: value)) {
+                            guard let courtRange = Range(match.range(at: 1), in: value),
+                                  let dateRange = Range(match.range(at: 2), in: value),
+                                  let date = CaseLifecycleResolver.explicitActDates(in: String(value[dateRange])).first,
+                                  date >= force, receipt.map({ date <= $0 }) != false else { continue }
+                            let court = String(value[courtRange]).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+                            guard court == "суд первой инстанции"
+                                || CaseLifecycleResolver.courtTitlesAgree(court, first.court, domain: first.domain) else { continue }
+                            ownDates.append(date)
+                        }
+                    }
+                }
+            }
+            let starts = Set(ownDates.isEmpty ? dates : ownDates)
+            guard starts.count == 1, let start = starts.first, full >= start else {
+                return .missing([.firstCourtCassationReceipt])
+            }
+            intervals.append((start, full))
+            previousEnd = full
+        }
+        guard let excluded = excludedElapsedDays(intervals), let calendar,
+              let originDay = LegalCalendarDate(date: force, timeZone: proceduralTimeZone),
+              let rawDay = LegalCalendarDate(date: rawEndpoint, timeZone: proceduralTimeZone),
+              calendar.day(on: originDay) != nil, calendar.day(on: rawDay) != nil,
+              intervals.allSatisfy({ interval in
+                  calendar.day(on: interval.0, timeZone: proceduralTimeZone) != nil
+                    && calendar.day(on: interval.1, timeZone: proceduralTimeZone) != nil
+              }),
+              let endpoint = LegalCalendarDate(date: DateUtil.addDays(rawEndpoint, excluded), timeZone: proceduralTimeZone),
+              let moved = calendar.movingToNextWorkingDay(endpoint, forCode: rule.code),
+              let date = moved.date.date(timeZone: proceduralTimeZone) else {
+            return .unsupported(registry.policies.filter { $0.code == rule.code && $0.policyID.contains("END-NONWORKING") }.map(\.policyID))
+        }
+        let policies = registry.policies.filter { $0.code == rule.code
+            && ($0.policyID.contains("MONTH") || $0.policyID.contains("START") || $0.policyID.contains("NONWORKING")) }.map(\.policyID)
+        let bounds = intervals.sorted(by: { $0.0 < $1.0 }).map {
+            "\(DateUtil.fullDate($0.0)) — \(DateUtil.fullDate($0.1))"
+        }.joined(separator: "; ")
+        let explanation = "Исходный конец: \(DateUtil.fullDate(rawEndpoint)); исключено \(excluded) календарных дней"            + (bounds.isEmpty ? "" : " (\(bounds))")
+        return .calculated(Calculation(date: date, policyIDs: policies + moved.trace.proceduralPolicyIDs,
+                                      calendarTrace: moved.trace, basisSuffix: explanation))
+    }
+
     private struct Calculation {
         var date: Date
         var policyIDs: [String]
         var calendarTrace: LegalCalendarTrace?
+        var basisSuffix: String? = nil
     }
 
     /// `failure` means the registry requires a policy that this app does not
@@ -1094,7 +1378,8 @@ enum DeadlineRuleEngine {
     }
 
     private static func supportsMaterial(_ binding: Binding) -> Bool {
-        binding.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
+        binding.ruleID.hasPrefix("GPK-CASSATION-") || binding.ruleID.hasPrefix("KAS-CASSATION-")
+            || binding.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
             || binding.ruleID.hasPrefix("KAS-PRIVATE-")
             || binding.ruleID == "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI"
     }
@@ -1103,6 +1388,7 @@ enum DeadlineRuleEngine {
         _ binding: Binding, timeline: CaseLifecycleResolver.Timeline
     ) -> Bool {
         guard let instance = timeline.deadlineFirst else { return false }
+        if binding.kind == "cassation" { return true }
         if binding.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"
             || binding.ruleID.hasPrefix("KAS-PRIVATE-") {
             switch currentFirstInstanceAct(in: instance) {
@@ -1496,12 +1782,17 @@ enum DeadlineRuleEngine {
 
     private static func motivatedAppealDetermination(in instance: CaseInstance, movement: CaseMovement)
         -> DeadlineTriggerProvenance? {
+        ownReviewFinalForm(in: instance, movement: movement, appeal: true)
+    }
+
+    private static func ownReviewFinalForm(in instance: CaseInstance, movement: CaseMovement, appeal: Bool)
+        -> DeadlineTriggerProvenance? {
         let sessions = instance.sessions.filter { session in
             // The synthetic operative row is dated by announcement and may
             // contain a later final-form statement in its tail.
             guard session.event != "Резолютивная часть опубликованного акта" else { return false }
             let value = normalized(session.event + " " + (session.result ?? ""))
-            return value.contains("апелляцион") && value.contains("определен")
+            return (appeal ? value.contains("апелляцион") : !value.contains("апелляцион")) && value.contains("определен")
                 && (value.contains("мотивирован") || value.contains("окончательн"))
                 && (value.contains("изготов") || value.contains("составлен") || value.contains("составлено"))
         }
@@ -1511,9 +1802,11 @@ enum DeadlineRuleEngine {
                   let tail = CaseLifecycleResolver.operativeDisposition(in: body) else { continue }
             for paragraph in ActParagraphizer.paragraphs(in: tail) {
                 let value = normalized(paragraph.text)
-                guard (value.hasPrefix("мотивированное определение")
-                    || value.hasPrefix("мотивированное апелляционное определение")
-                    || value.hasPrefix("апелляционное определение")),
+                let ownHeading = value.hasPrefix("мотивированное определение")
+                    || (appeal
+                        ? value.hasPrefix("мотивированное апелляционное определение") || value.hasPrefix("апелляционное определение")
+                        : value.hasPrefix("кассационное определение") || value.hasPrefix("мотивированное кассационное определение"))
+                guard ownHeading,
                       value.contains("изготов") || value.contains("составлен"),
                       value.contains("мотивирован") || value.contains("окончательн") else { continue }
                 let dates = CaseLifecycleResolver.explicitActDates(in: paragraph.text)
@@ -1598,11 +1891,13 @@ enum DeadlineRuleEngine {
 
     private static func occurrenceKey(ruleID: String, timeline: CaseLifecycleResolver.Timeline,
                                       movement: CaseMovement,
-                                      trigger: DeadlineTriggerProvenance) -> String {
+                                      trigger: DeadlineTriggerProvenance, materialSourceCardID: String? = nil) -> String {
         let round = timeline.currentRoundStart?.instance.id
             ?? timeline.deadlineFirst?.id ?? movement.uid
-        let identity = [round, trigger.levelRaw, trigger.caseNumber, trigger.dateRaw,
-                        trigger.event, trigger.result ?? ""].joined(separator: "\u{1F}")
+        var fields = [round, trigger.levelRaw, trigger.caseNumber, trigger.dateRaw,
+                      trigger.event, trigger.result ?? ""]
+        if let materialSourceCardID { fields.append(materialSourceCardID) }
+        let identity = fields.joined(separator: "\u{1F}")
         return ruleID + "|" + Data(identity.utf8).base64EncodedString()
     }
 

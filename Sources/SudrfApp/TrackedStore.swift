@@ -274,10 +274,18 @@ enum TrackedStorePreparation {
         context: MovementContext,
         today: Date
     ) -> Bool {
+        let scope = MovementDerivation.deadlineScopeKey(fresh)
+        var old = old
+        old.deadlines = old.deadlines.filter { MovementDerivation.deadlineScopeKey($0) == scope }
+        var freshSnapshot = freshSnapshot
+        freshSnapshot.deadlines = freshSnapshot.deadlines.filter { MovementDerivation.deadlineScopeKey($0) == scope }
         let activeCandidates = old.deadlines.filter(\.isActive)
         if let key = fresh.occurrenceKey,
            activeCandidates.contains(where: { $0.occurrenceKey == key }) { return true }
 
+        // New material routes are admitted by a normal refresh, never by a
+        // kind-only startup migration from the main dispute or another material.
+        guard scope == nil else { return false }
         let proofs = old.deadlines.map {
             DeadlineRuleEngine.provesIssue125Transition(
                 from: $0, to: fresh, movement: movement, context: context,

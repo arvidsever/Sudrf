@@ -1,0 +1,27 @@
+3 октября 2026 года, изолированная ветка codex/vsrf-cassation-deadlines-222
+Исходный проверенный commit: cb5bdfd7649c979323d9e9d13f84431f5e01d28a
+
+swift test --scratch-path /private/tmp/sudrf372-scratch
+SudrfKitTests: 700 tests, 0 failures
+SudrfAppTests: 1046 tests, 10 opt-in skipped, 0 failures
+FSSPCaptchaLabTests: 10 tests, 0 failures
+CaptchaSolverTests: 75 tests, 0 failures
+Swift Testing / CaseEventDeriverTests: 28 tests, 0 failures
+
+Профильные XCTest: 294 tests, 3 opt-in skipped, 0 failures
+Изолированный native GUI host: 1 test, 0 failures, 0 skipped
+Python / Tests/ScriptTests: 26 tests, 0 failures, 6 skipped
+Registry --check: up to date
+XcodeGen + Xcode 27, CODE_SIGNING_ALLOWED=NO: BUILD SUCCEEDED
+
+Независимый Astra review: CLEAR
+DeadlineRuleEngine.swift SHA256 5275cfed197cecd7402b8ceacbcb175f1c426aadb0fe5ab9065b1ec01687b288
+MaterialDeadlineScope.swift SHA256 7f9c4954a8a3370c0ac5cec7128d7966dcd5f8cb63c992c96e5fdd4c1890f0c2
+MovementDerivation.swift SHA256 2cae46b43b9ec89a367f79727c738e8bbbd9597a1908130f9838fd0fcbfae22b
+
+CI проверенного commit cb5bdfd: run 37070904870, SUCCESS
+https://github.com/arvidsever/Sudrf/actions/runs/37070904870
+build-test / package-app: SUCCESS
+build-test-xcode-27: SUCCESS, compiler unavailable; actual build/tests skipped
+Локальный Xcode 27 выполнен выше; это не эквивалент серверного прогона.
+Версия второго этапа: 0.61.0 (226), PR #394; CI финального commit проверяется перед merge.

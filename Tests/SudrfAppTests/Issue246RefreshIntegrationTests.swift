@@ -70,12 +70,14 @@ final class Issue246RefreshIntegrationTests: XCTestCase {
         cached.instances.removeAll { $0.caseNumber == currentNumber }
         cached.caseNumber = oldNumber
         var oldSnapshot = MovementDerivation.snapshot(from: cached, context: old)
+        // A genuine legacy judicial term has no occurrence key. Unknown opaque
+        // keys belong to their own scope and cannot stand in for a main-case key.
         oldSnapshot.deadlines = [
             StoredDeadline(
                 kind: "appeal", what: "Частная жалоба на возврат", basis: "fixture",
                 calLabel: "старый срок", dateRef: DateUtil.parse("01.09.2026")!.timeIntervalSinceReferenceDate,
                 statusRaw: DeadlineStatus.proposed.rawValue,
-                occurrenceKey: "issue-246-return-deadline"),
+                occurrenceKey: nil),
             StoredDeadline(
                 kind: "custom", what: "Пользовательский срок", basis: "fixture",
                 calLabel: "ручной", dateRef: DateUtil.parse("20.10.2026")!.timeIntervalSinceReferenceDate,
@@ -142,7 +144,7 @@ final class Issue246RefreshIntegrationTests: XCTestCase {
             context: promoted.context, movement: promoted.movement).isMaterial)
         XCTAssertEqual(promoted.snapshot?.stageRaw, CaseStageKind.first.rawValue)
         XCTAssertEqual(promoted.snapshot?.deadlines.first {
-            $0.occurrenceKey == "issue-246-return-deadline"
+            $0.what == "Частная жалоба на возврат"
         }?.lifecycle, .superseded)
         XCTAssertEqual(promoted.snapshot?.deadlines.first {
             $0.occurrenceKey == "issue-246-user-deadline"

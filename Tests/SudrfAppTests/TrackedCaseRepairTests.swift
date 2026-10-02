@@ -522,7 +522,7 @@ final class TrackedCaseRepairTests: XCTestCase {
             StoredDeadline(kind: "appeal", what: "Автоматический старый срок",
                            basis: "fixture", calLabel: "старый", dateRef: 100,
                            statusRaw: DeadlineStatus.proposed.rawValue,
-                           occurrenceKey: "preliminary-automatic"),
+                           occurrenceKey: nil),
             StoredDeadline(kind: "appeal", what: "Подтверждённый срок",
                            basis: "fixture", calLabel: "ручной", dateRef: 200,
                            statusRaw: DeadlineStatus.confirmed.rawValue,
@@ -569,7 +569,7 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(saved.movement?.acts.map(\.id), ["preliminary-act"])
         XCTAssertEqual(saved.movement?.actBodies["preliminary-act"], "Текст preliminary-act")
         XCTAssertEqual(saved.snapshot?.deadlines.first {
-            $0.occurrenceKey == "preliminary-automatic"
+            $0.what == "Автоматический старый срок"
         }?.lifecycleRaw, DeadlineLifecycle.superseded.rawValue)
         XCTAssertEqual(saved.snapshot?.deadlines.first {
             $0.occurrenceKey == "preliminary-confirmed"
@@ -678,7 +678,7 @@ final class TrackedCaseRepairTests: XCTestCase {
         previousSnapshot.deadlines = [StoredDeadline(
             kind: "appeal", what: "Старый расчётный срок", basis: "fixture", calLabel: "старый",
             dateRef: 100, statusRaw: DeadlineStatus.proposed.rawValue,
-            occurrenceKey: "previous-9a-automatic")]
+            occurrenceKey: nil)]
         let original = try store.upsert(context: previous, snapshot: previousSnapshot,
                                         movement: historical, collections: [])
 
@@ -706,7 +706,7 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(summary.reanchored, 1)
         XCTAssertEqual(saved.snapshot?.stageRaw, CaseStageKind.first.rawValue)
         XCTAssertEqual(saved.snapshot?.deadlines.first {
-            $0.occurrenceKey == "previous-9a-automatic"
+            $0.what == "Старый расчётный срок"
         }?.lifecycleRaw, DeadlineLifecycle.superseded.rawValue)
         XCTAssertEqual(savedMovement.instances.first {
             $0.caseNumber == previous.caseNumber

@@ -202,8 +202,8 @@ struct CalendarScreen: View {
                 date: d.date, sortTime: "99:99",
                 kind: kind, chip: chipPrefix + d.calLabel,
                 time: "срок", heading: heading,
-                title: "\(d.what) · № \(CaseNumberPresentation.primary(d.caseNumber))", sub: d.basis,
-                caseNumber: d.caseNumber, displayCaseNumber: CaseNumberPresentation.primary(d.caseNumber),
+                title: "\(d.what) · № \(d.displayNumber)", sub: d.basis,
+                caseNumber: d.caseNumber, displayCaseNumber: d.displayNumber,
                 secondaryLabel: nil,
                 deadlineId: d.id, what: d.what))
         }
@@ -1770,7 +1770,7 @@ struct CalendarScreen: View {
                             ForEach(waiting) { d in
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("\(DateUtil.fmt(d.date)) · \(d.what)").font(.system(size: 12, weight: .semibold))
-                                    Text("дело № \(CaseNumberPresentation.primary(d.caseNumber))")
+                                    Text("дело № \(d.displayNumber)")
                                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                                     DeadlineActions(id: d.id, compact: true)
                                 }

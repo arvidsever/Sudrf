@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_RULE_COUNTS = {"GPK": 22, "KAS": 20, "KOAP": 10, "UPK": 14}
+EXPECTED_RULE_COUNTS = {"GPK": 23, "KAS": 20, "KOAP": 10, "UPK": 14}
 SOURCE_FILES = {
     "GPK": "gpk-appeal-deadlines.md",
     "KAS": "kas-appeal-deadlines.md",

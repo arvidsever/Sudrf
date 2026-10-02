@@ -450,6 +450,14 @@ enum MovementDerivation {
     /// только из registry/provenance popover.
     static func deadlineAssessmentReason(_ assessments: [DeadlineRuleAssessment]) -> String? {
         guard let assessment = assessments.first(where: { $0.isIndeterminate }) else { return nil }
+        if assessment.status == .unsupportedCalculation {
+            if assessment.missingPolicyIDs.contains("vsrfCassationCalculation") {
+                return "Срок обращения в ВС РФ пока не рассчитывается"
+            }
+            if assessment.missingPolicyIDs.contains("historicalCassationRegime") {
+                return "Срок не рассчитан: исторический порядок кассации пока не поддерживается"
+            }
+        }
         let detail: String
         switch assessment.status {
         case .insufficientEvidence:
@@ -1059,7 +1067,7 @@ enum MovementDerivation {
 
     // MARK: Сроки
 
-    private static func deadlineEvaluation(from movement: CaseMovement,
+    static func deadlineEvaluation(from movement: CaseMovement,
                                            context: MovementContext,
                                            production: ProductionType?,
                                            today: Date) -> DeadlineRuleEngine.Evaluation {

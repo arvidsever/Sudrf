@@ -1765,7 +1765,7 @@ final class MovementDerivationTests: XCTestCase {
         let out = presentation(mv)
 
         XCTAssertEqual(snap.stageRaw, "done")
-        XCTAssertEqual(out.nextEvent, "завершено")
+        XCTAssertEqual(out.nextEvent, "Срок обращения в ВС РФ пока не рассчитывается")
         XCTAssertEqual(out.nextEventCourt, "3 КСОЮ")
         XCTAssertNotEqual(snap.statusText, "Назначено заседание")
         XCTAssertTrue(MovementDerivation.futureHearings(snap.sessions, today: today).isEmpty)

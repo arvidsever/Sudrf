@@ -172,6 +172,9 @@ final class AppRouter: ObservableObject {
     /// Ключ записи открытой карточки — фоновые результаты применяются к UI
     /// только при совпадении ключа (карточку могли закрыть/сменить).
     private var openedKey: String? = nil
+    var openDeadlineAssessments: [DeadlineRuleAssessment] {
+        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.deadlineAssessments } ?? []
+    }
     var openedPreviousCaseNumbers: [String] {
         guard let openedKey, let record = store.record(forKey: openedKey) else { return [] }
         return Self.caseNumberAliases(for: record).previous

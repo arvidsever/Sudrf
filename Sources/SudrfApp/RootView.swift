@@ -952,6 +952,7 @@ private struct CaseCardHost: View {
                     onBack: { router.closeCase() },
                     sourceURL: router.openCaseSourceURL,
                     sourceContext: router.openMovementContext,
+                    savedDeadlineAssessments: router.openDeadlineAssessments,
                     onSolveCaptcha: { router.beginCaptcha(for: $0) },
                     onUntrack: { router.untrackOpenCase() },
                     lastUpdated: router.movementFetchedAt,

@@ -132,7 +132,7 @@ final class Issue319LifecycleTests: XCTestCase {
                             result: "Оставлено без изменения"),
             ], sourceEvidence: .init(decisionDate: "05.09.2026"))
         let source = movement(number: first.caseNumber, instances: [first, appeal])
-        XCTAssertTrue(CaseLifecycleResolver.timeline(
+        XCTAssertFalse(CaseLifecycleResolver.timeline(
             in: source, production: .civil).hasAmbiguousAppealEffect)
         XCTAssertEqual(CaseLifecycleResolver.resolve(
             movement: source, production: .civil, deadlines: [], today: today).stage,

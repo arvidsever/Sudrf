@@ -182,8 +182,81 @@ enum CaseLifecycleResolver {
             changed = false
             for candidate in instances where isReview(candidate.instance.level)
                 && !excluded.contains(candidate.index) {
-                guard let lower = candidate.instance.sourceEvidence?.lowerCourt?.caseNumber,
-                      ancillaryNumbers.contains(normalizedCaseNumber(lower)) else { continue }
+                let review = candidate.instance
+                let lower = review.sourceEvidence?.lowerCourt
+                let linkedDisposition = review.linkedActIDs.compactMap {
+                    movement.actBodies[$0].flatMap(operativeDisposition)
+                }.joined(separator: " ")
+                let targetDates = explicitTargetActDates(in: linkedDisposition)
+                let matchingMaterials = movement.instances.filter { material in
+                    let lowerCourt = lower?.courtTitle ?? ""
+                    guard material.level == .material, !isRootMaterial(material, in: movement),
+                          lowerCourt.isEmpty || courtTitlesAgree(lowerCourt, material.court, domain: material.domain)
+                    else { return false }
+                    return material.sessions.contains { session in
+                        guard let date = DateUtil.parse(session.date), targetDates.contains(date),
+                              let result = nonempty(session.result) else { return false }
+                        let value = normalized(result)
+                        return isReliableMaterialTerminalResult(value)
+                            || value == "удовлетворено частично"
+                            || isTerminalDisposition(value)
+                    }
+                }
+                let mainDates = Set(movement.instances.filter {
+                    $0.level == .first || isRootMaterial($0, in: movement)
+                }.flatMap {
+                    $0.sessions.filter { isFinalActAnnouncement(event: $0.event, result: $0.result) }
+                        .compactMap { DateUtil.parse($0.date) }
+                })
+                let targetsMaterial = matchingMaterials.count == 1
+                    && targetDates.isDisjoint(with: mainDates)
+                let matchingReviews = instances.filter { prior in
+                    prior.index != candidate.index && isReview(prior.instance.level)
+                        && reviewEventDate(in: prior.instance).map(targetDates.contains) == true
+                }
+                let targetsAncillaryReview = matchingReviews.count == 1
+                    && matchingReviews.first.map { excluded.contains($0.index) } == true
+                let mainActs = movement.instances.filter {
+                    $0.level == .first || isRootMaterial($0, in: movement)
+                }.flatMap { instance -> [CaseSession] in
+                    var sessions = instance.sessions
+                    if let date = instance.sourceEvidence?.decisionDate,
+                       let result = instance.result,
+                       isFinalActAnnouncement(event: "", result: result) {
+                        sessions.append(CaseSession(date: date, event: "Опубликованный итог первой инстанции", result: result))
+                    }
+                    return sessions
+                }.compactMap { session -> (Date, CaseSession)? in
+                    guard isFinalActAnnouncement(event: session.event, result: session.result),
+                          let date = DateUtil.parse(session.date),
+                          reviewEventDate(in: review).map({ date <= $0 }) != false else { return nil }
+                    return (date, session)
+                }
+                let latestMainDate = mainActs.map(\.0).max()
+                let latestMainActs = mainActs.filter { $0.0 == latestMainDate }
+                let mainHasDecision = !latestMainActs.isEmpty && latestMainActs.allSatisfy { _, session in
+                    let text = normalized(session.event + " " + (session.result ?? ""))
+                    return text.range(of: #"(?:вынесено|вынесен|принято)\s+решение(?:\s+по\s+делу)?"#,
+                                      options: .regularExpression) != nil
+                        || text.contains("иск") && (text.contains("удовлетвор")
+                            || text.contains("отказано"))
+                            && !text.contains("заявление возвращ")
+                            && !text.contains("приняти") && !text.contains("принятия")
+                }
+                let referencesMainRegistration = movement.instances.contains { first in
+                    guard first.level == .first || isRootMaterial(first, in: movement),
+                          let lowerNumber = lower?.caseNumber,
+                          let lowerTitle = lower?.courtTitle, !lowerTitle.isEmpty else { return false }
+                    return normalizedCaseNumber(lowerNumber) == normalizedCaseNumber(first.caseNumber)
+                        && courtTitlesAgree(lowerTitle, first.court, domain: first.domain)
+                }
+                let separateDetermination = review.level == .appeal && referencesMainRegistration && mainHasDecision
+                    && normalized(review.result ?? "").range(
+                        of: #"^определение\s+(?:оставлено\s+без\s+изменения|отменено)"#,
+                        options: .regularExpression) != nil
+                    && !normalized(linkedDisposition).hasPrefix("решение")
+                guard lower?.caseNumber.map({ ancillaryNumbers.contains(normalizedCaseNumber($0)) }) == true
+                    || targetsMaterial || targetsAncillaryReview || separateDetermination else { continue }
                 excluded.insert(candidate.index)
                 ancillaryNumbers.insert(normalizedCaseNumber(candidate.instance.caseNumber))
                 changed = true
@@ -223,8 +296,19 @@ enum CaseLifecycleResolver {
                     && stage(for: $0.instance, production: production) == target
             }
             guard !targets.isEmpty else { continue }
-            let remandDate = earliestDatedSessionDate(in: remand.instance)
-            for targetInstance in targets {
+            let remandDate = remand.instance.sessions.compactMap { session -> Date? in
+                guard remandTarget(from: signal(in: session.result ?? session.event)) == target else { return nil }
+                return DateUtil.parse(session.date)
+            }.max() ?? reviewEventDate(in: remand.instance)
+                ?? { () -> Date? in
+                    guard remandTarget(in: remand.instance.result ?? "") == target else { return nil }
+                    let dates = Set(remand.instance.sessions.filter {
+                        normalized($0.event).trimmingCharacters(in: .whitespacesAndNewlines) == "рассмотрено"
+                            || isHearingEvent(event: $0.event)
+                    }.compactMap { DateUtil.parse($0.date) })
+                    return dates.count == 1 ? dates.first : nil
+                }()
+            let continuations = targets.filter { targetInstance in
                 let targetDate = earliestDatedSessionDate(in: targetInstance.instance)
                 let followsRemand: Bool
                 if let remandDate, let targetDate {
@@ -232,7 +316,12 @@ enum CaseLifecycleResolver {
                 } else {
                     followsRemand = targetInstance.index > remand.index || targets.count > 1
                 }
-                if followsRemand { roundStarts.append(targetInstance) }
+                return followsRemand
+            }
+            if let continuation = continuations.min(by: {
+                MovementService.precedesInChronology($0.instance, $1.instance)
+            }) {
+                roundStarts.append(continuation)
             }
         }
         // A published acceptance after a concluded review starts a new round
@@ -246,6 +335,15 @@ enum CaseLifecycleResolver {
                             && review.instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) != nil))
                     && reviewEventDate(in: review.instance).map { $0 < acceptance } == true
             }) { roundStarts.append(first) }
+        }
+        let currentRoundStart = roundStarts.max { left, right in
+            let leftKey = MovementService.instanceOrderKey(left.instance)
+            let rightKey = MovementService.instanceOrderKey(right.instance)
+            return leftKey == rightKey ? left.index < right.index : leftKey < rightKey
+        }
+        let currentRoundDate = currentRoundStart.flatMap { first in
+            continuationDate(in: first.instance, acceptanceOnly: true)
+                ?? earliestDatedSessionDate(in: first.instance)
         }
         let latestFirst = dated.last(where: { isFirstLike($0.instance) })
         var excludedAppeals = Set<Int>()
@@ -269,7 +367,8 @@ enum CaseLifecycleResolver {
             let hasMainAppeal = kinds?.contains(where: { $0.contains("апелляцион") }) == true
             for review in relevant where review.instance.level == .appeal {
                 guard let start = earliestDatedSessionDate(in: first.instance),
-                      let reviewDate = reviewEventDate(in: review.instance), reviewDate >= start else { continue }
+                      let reviewDate = reviewEventDate(in: review.instance), reviewDate >= start,
+                      currentRoundDate.map({ reviewDate >= $0 }) != false else { continue }
                 let lower = review.instance.sourceEvidence?.lowerCourt
                 let differentNumber = lower?.caseNumber.map {
                     normalizedCaseNumber($0) != normalizedCaseNumber(first.instance.caseNumber)
@@ -277,7 +376,7 @@ enum CaseLifecycleResolver {
                 let lowerCourtTitle = CaseOriginResolver.normalizedTitle(lower?.courtTitle ?? "")
                 let firstCourtTitle = CaseOriginResolver.normalizedTitle(first.instance.court)
                 let differentCourt = !lowerCourtTitle.isEmpty && !firstCourtTitle.isEmpty
-                    && lowerCourtTitle != firstCourtTitle
+                    && !courtTitlesAgree(lower?.courtTitle ?? "", first.instance.court, domain: first.instance.domain)
                 if differentNumber || differentCourt {
                     // A published reference to another registration cannot
                     // conclude the current first instance just because dates overlap.
@@ -299,15 +398,6 @@ enum CaseLifecycleResolver {
         }
         let lifecycleOrdered = relevant.filter { !excludedAppeals.contains($0.index) }
         let lifecycleDated = relevantDated.filter { !excludedAppeals.contains($0.index) }
-        let currentRoundStart = roundStarts.max { left, right in
-            let leftKey = MovementService.instanceOrderKey(left.instance)
-            let rightKey = MovementService.instanceOrderKey(right.instance)
-            return leftKey == rightKey ? left.index < right.index : leftKey < rightKey
-        }
-        let currentRoundDate = currentRoundStart.flatMap { first in
-            continuationDate(in: first.instance, acceptanceOnly: true)
-                ?? earliestDatedSessionDate(in: first.instance)
-        }
         let currentDated: IndexedInstance?
         if let currentRoundStart, let startDate = currentRoundDate {
             currentDated = lifecycleDated.filter {
@@ -941,6 +1031,14 @@ enum CaseLifecycleResolver {
         return nonempty(first.result) ?? result
     }
 
+    private static func courtTitlesAgree(_ lhs: String, _ rhs: String, domain: String) -> Bool {
+        if CaseOriginResolver.normalizedTitle(lhs) == CaseOriginResolver.normalizedTitle(rhs) { return true }
+        guard let region = CourtDirectory.regionSuffix(ofDomain: domain)
+            .flatMap(CourtDirectory.subjectCode(forRegionSuffix:))
+            .flatMap(CourtDirectory.subjectName(forSubjectCode:)) else { return false }
+        return CaseOriginResolver.sameCourtTitle(lhs, rhs, region: region)
+    }
+
     private static func reviewBelongsToRoot(
         _ review: CaseInstance, first: CaseInstance, timeline: Timeline
     ) -> Bool {
@@ -948,7 +1046,7 @@ enum CaseLifecycleResolver {
         let lowerCourtTitle = CaseOriginResolver.normalizedTitle(lower.courtTitle ?? "")
         let rootCourtTitle = CaseOriginResolver.normalizedTitle(first.court)
         let sameOrUnknownCourt = lowerCourtTitle.isEmpty || rootCourtTitle.isEmpty
-            || lowerCourtTitle == rootCourtTitle
+            || courtTitlesAgree(lower.courtTitle ?? "", first.court, domain: first.domain)
         guard let lowerCaseNumber = lower.caseNumber else { return sameOrUnknownCourt }
         let lowerNumber = normalizedCaseNumber(lowerCaseNumber)
         let rootNumber = normalizedCaseNumber(first.caseNumber)
@@ -1037,7 +1135,7 @@ enum CaseLifecycleResolver {
     /// После доказанного возврата лишь завершённый недатированный пересмотр
     /// можно отнести к старому кругу. Активная карточка без даты остаётся
     /// консервативным свидетельством подачи, но сама не повышает стадию.
-    private static func isConcludedReview(_ instance: CaseInstance) -> Bool {
+    static func isConcludedReview(_ instance: CaseInstance) -> Bool {
         switch latestSignal(for: instance) {
         case .remand, .legalForce, .terminal:
             return true
@@ -1225,7 +1323,31 @@ enum CaseLifecycleResolver {
         }
     }
 
-    private static func operativeDisposition(in source: String) -> String? {
+    static func explicitTargetActDates(in source: String) -> Set<Date> {
+        let value = normalized(source)
+        let pattern = #"(?:определение|решение)\s+[^.!?]{0,250}?\sот\s+(?:\d{1,2}\.\d{1,2}\.\d{4}|\d{1,2}\s+[а-я]+\s+\d{4})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return Set(regex.matches(in: value, range: NSRange(value.startIndex..., in: value)).flatMap { match -> [Date] in
+            guard let range = Range(match.range, in: value) else { return [] }
+            return Array(explicitActDates(in: String(value[range])))
+        })
+    }
+
+    static func explicitActDates(in source: String) -> Set<Date> {
+        let value = normalized(source)
+        let months = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                      "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+        guard let regex = try? NSRegularExpression(
+            pattern: #"\b(\d{1,2})[.\s]+(\d{1,2}|"# + months.joined(separator: "|") + #")[.\s]+(\d{4})\b"#) else { return [] }
+        return Set(regex.matches(in: value, range: NSRange(value.startIndex..., in: value)).compactMap { match in
+            let fields = (1...3).compactMap { Range(match.range(at: $0), in: value).map { String(value[$0]) } }
+            guard fields.count == 3,
+                  let month = Int(fields[1]) ?? months.firstIndex(of: fields[1]).map({ $0 + 1 }) else { return nil }
+            return DateUtil.parse("\(fields[0]).\(month).\(fields[2])")
+        })
+    }
+
+    static func operativeDisposition(in source: String) -> String? {
         let paragraphs = ActParagraphizer.paragraphs(in: source)
         let markers = Set(["решил", "решила", "постановил", "постановила",
                            "определил", "определила", "приговорил", "приговорила"])
@@ -1246,7 +1368,7 @@ enum CaseLifecycleResolver {
         let inline = String(markerText[markerText.index(after: marker.colon)...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let trailing = paragraphs.dropFirst(marker.paragraph + 1).map(\.text)
-        let disposition = ([inline] + trailing).filter { !$0.isEmpty }.joined(separator: " ")
+        let disposition = ([inline] + trailing).filter { !$0.isEmpty }.joined(separator: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return disposition.isEmpty ? nil : disposition
     }

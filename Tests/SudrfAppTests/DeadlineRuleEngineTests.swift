@@ -578,7 +578,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
                        DateUtil.parse("13.05.2026"))
     }
 
-    func testKASCassationOpenQuestionNeverCreatesRestartedDeadline() throws {
+    func testPendingKASCassationDoesNotCreateRestartedDeadline() throws {
         let cassation = CaseInstance(
             level: .cassation, court: "Третий КСОЮ", caseNumber: "8а-1/2026",
             judge: nil, domain: "3kas.sudrf.ru", foundByUID: true, result: nil,
@@ -592,7 +592,7 @@ final class DeadlineRuleEngineTests: XCTestCase {
         XCTAssertTrue(assessed.deadlines.isEmpty)
         XCTAssertEqual(assessed.assessments.single(where: {
             $0.ruleID == "KAS-CASSATION-KSOYU"
-        })?.status, .needsLegalReview)
+        })?.status, .notApplicable)
     }
 
     func testNotApplicableAssessmentPreservesExistingTerminalClassification() {

@@ -211,8 +211,7 @@ enum TrackedStorePreparation {
             guard let old = record.snapshot,
                   let movement = record.movement,
                   !movement.instances.isEmpty,
-                  let movementContext = record.context,
-                  !old.deadlines.isEmpty
+                  let movementContext = record.context
             else { continue }
 
             var refreshed = MovementDerivation.snapshot(from: movement,
@@ -220,18 +219,23 @@ enum TrackedStorePreparation {
                                                         today: today)
             let repairBaseline = MovementDerivation.repairingOrphanedSupersededProposedDeadlines(
                 old: old, fresh: refreshed, today: today)
-            guard old.deadlines.contains(where: \.isActive) || repairBaseline != old else { continue }
-            let newlyDerived = refreshed.deadlines
-            let freshSnapshot = refreshed
-            refreshed.deadlines = newlyDerived.filter { fresh in
-                hasStoredActiveOccurrence(
-                    fresh, in: repairBaseline, freshSnapshot: freshSnapshot,
-                    movement: movement, context: movementContext, today: today)
+            // Assessments are refreshed even without active terms; deadline
+            // reconciliation retains its existing admission and history gates.
+            if old.deadlines.contains(where: \.isActive) || repairBaseline != old {
+                let newlyDerived = refreshed.deadlines
+                let freshSnapshot = refreshed
+                refreshed.deadlines = newlyDerived.filter { fresh in
+                    hasStoredActiveOccurrence(
+                        fresh, in: repairBaseline, freshSnapshot: freshSnapshot,
+                        movement: movement, context: movementContext, today: today)
+                }
+                refreshed = MovementDerivation.preservingConfirmedDeadlines(
+                    refreshed, old: repairBaseline, today: today,
+                    preserveActiveProposedWhenMissing: record.sourceRefreshAttempt?.kind == .partial,
+                    movement: movement, context: movementContext)
+            } else {
+                refreshed.deadlines = old.deadlines
             }
-            refreshed = MovementDerivation.preservingConfirmedDeadlines(
-                refreshed, old: repairBaseline, today: today,
-                preserveActiveProposedWhenMissing: record.sourceRefreshAttempt?.kind == .partial,
-                movement: movement, context: movementContext)
 
             // Не обновляем весь snapshot на старте: участники, события,
             // semantic observation и прочие проекции принадлежат refresh.

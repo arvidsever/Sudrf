@@ -144,7 +144,8 @@ final class AppealChronologyLifecycleTests: XCTestCase {
             let movement = CaseMovement(
                 uid: "11RS0001-01-2025-009990-15", caseNumber: "2-6719/2025",
                 inForce: false, instances: instances, complaints: [:], acts: [])
-            XCTAssertTrue(CaseLifecycleResolver.timeline(
+            // Ambiguity of the historical appeal does not affect the proved new round.
+            XCTAssertFalse(CaseLifecycleResolver.timeline(
                 in: movement, production: .civil).hasAmbiguousAppealEffect)
 
             let snapshot = MovementDerivation.snapshot(

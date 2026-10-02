@@ -4,16 +4,16 @@
     {
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
-      "markdownSha256": "fc345f384f926337ac8dc1737fe93d14fd24f36a3b171be1de7501a93a9fc99f",
+      "markdownSha256": "0805eabe7934b51e74da5d9244d8622008d0cab1a9fe8f7377a77489e6d1f488",
       "title": "ГПК РФ: сроки обжалования судебных постановлений",
       "date": "2026-08-31",
       "scope": "Только ГПК РФ; сроки подачи жалоб/представлений и отдельно смежные отменительные механизмы.",
       "payload": {
         "artifact": {
           "title": "ГПК РФ: сроки обжалования судебных постановлений",
-          "revision": 2,
+          "revision": 3,
           "date": "2026-08-31",
           "scope": "Только ГПК РФ; сроки подачи жалоб/представлений и отдельно смежные отменительные механизмы."
         },
@@ -357,6 +357,16 @@
             "source": "ст. 376.1 ч. 1; ст. 377 ч. 2 ГПК РФ",
             "priority": "Общая первая кассация для актов вне ветви ст. 375.1",
             "notes": ""
+          },
+          {
+            "rule_id": "GPK-CASSATION-CSOY-2019",
+            "stage": "Кассация",
+            "act_context": "КСОЮ: исторический режим с 1 октября 2019 года до 31 августа 2024 года",
+            "duration": "3 календарных месяца",
+            "trigger": "со дня вступления обжалуемого судебного постановления в законную силу",
+            "source": "ст. 376.1 ч. 1 ГПК РФ в редакции, действовавшей с 1 октября 2019 года до 31 августа 2024 года",
+            "priority": "Исторический вариант первой кассации",
+            "notes": "Абзац о мотивированном апелляционном определении введён Федеральным законом от 12 июня 2024 года № 135-ФЗ с 1 сентября 2024 года. Не применяется к современным актам или порядку до 1 октября 2019 года."
           },
           {
             "rule_id": "GPK-CASSATION-CSOY-TERM-RESTORATION-RULING",
@@ -2264,7 +2274,7 @@
       "notes": "Месяц не заменять 30 днями.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2288,7 +2298,7 @@
       "notes": "Фраза о переносе trigger относится именно к мотивированному решению, составленному по заявлению участника/представителя.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "15 рабочих дней"
     },
@@ -2312,7 +2322,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "10 рабочих дней"
     },
@@ -2336,7 +2346,7 @@
       "notes": "Текст нормы касается именно удовлетворения заявления. Для отказа специальный срок в ст. 274 не установлен — действует общее правило ст. 321 ч. 1.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "10 рабочих дней"
     },
@@ -2360,7 +2370,7 @@
       "notes": "ГПК в этой норме прямо называет именно этот trigger для ответчика.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2384,7 +2394,7 @@
       "notes": "Внутренний 7-дневный срок считается в рабочих днях.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2408,7 +2418,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2432,7 +2442,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2456,7 +2466,7 @@
       "notes": "Не сводить к обычному месячному сроку: в норме прямо указаны два месяца.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "2 календарных месяца"
     },
@@ -2480,7 +2490,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "15 рабочих дней"
     },
@@ -2504,7 +2514,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "15 рабочих дней"
     },
@@ -2528,7 +2538,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "10 рабочих дней"
     },
@@ -2552,7 +2562,7 @@
       "notes": "Определение подлежит немедленному исполнению.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2576,7 +2586,7 @@
       "notes": "Редакция, действующая по предоставленному тексту после изменений от 09.04.2026.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2600,7 +2610,7 @@
       "notes": "Редакция, действующая по предоставленному тексту после изменений от 09.04.2026.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2624,7 +2634,7 @@
       "notes": "Не смешивать с кассационным судом общей юрисдикции.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "3 календарных месяца"
     },
@@ -2648,7 +2658,31 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
+      "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
+      "durationText": "3 календарных месяца"
+    },
+    {
+      "rule_id": "GPK-CASSATION-CSOY-2019",
+      "stage": "Кассация",
+      "act_context": "КСОЮ: исторический режим с 1 октября 2019 года до 31 августа 2024 года",
+      "duration": {
+        "kind": "months",
+        "value": 3,
+        "unit": "months",
+        "raw": "3 календарных месяца",
+        "isUpperBound": false,
+        "relation": null,
+        "reference": null,
+        "qualifier": null
+      },
+      "trigger": "со дня вступления обжалуемого судебного постановления в законную силу",
+      "source": "ст. 376.1 ч. 1 ГПК РФ в редакции, действовавшей с 1 октября 2019 года до 31 августа 2024 года",
+      "priority": "Исторический вариант первой кассации",
+      "notes": "Абзац о мотивированном апелляционном определении введён Федеральным законом от 12 июня 2024 года № 135-ФЗ с 1 сентября 2024 года. Не применяется к современным актам или порядку до 1 октября 2019 года.",
+      "code": "GPK",
+      "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "3 календарных месяца"
     },
@@ -2672,7 +2706,7 @@
       "notes": "Рассматривает коллегиальный состав того же кассационного суда.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2696,7 +2730,7 @@
       "notes": "Подается в тот же кассационный суд.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "1 календарный месяц"
     },
@@ -2720,7 +2754,7 @@
       "notes": "Trigger — не абстрактное вступление акта в силу, а окончательная форма определения первой кассации по существу.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "3 календарных месяца"
     },
@@ -2744,7 +2778,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "3 календарных месяца"
     },
@@ -2768,7 +2802,7 @@
       "notes": "",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "durationText": "6 календарных месяцев"
     },
@@ -3837,7 +3871,7 @@
       "source": "ст. 107 ч. 3 абз. 1 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-COUNTING-START-NEXT-DAY"
     },
@@ -3847,7 +3881,7 @@
       "source": "ст. 107 ч. 3 абз. 2 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-COUNTING-DAYS-EXCLUDE-NONWORKING"
     },
@@ -3857,7 +3891,7 @@
       "source": "ст. 108 ч. 1 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-COUNTING-MONTH-YEAR-CALENDAR"
     },
@@ -3867,7 +3901,7 @@
       "source": "ст. 108 ч. 2 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-END-NONWORKING-NEXT-WORKING"
     },
@@ -3877,7 +3911,7 @@
       "source": "ст. 108 ч. 3 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-END-POST-24H"
     },
@@ -3887,7 +3921,7 @@
       "source": "ст. 108 ч. 4 ГПК РФ",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "policy_id": "GPK-END-COURT-OFFICE-HOURS"
     },
@@ -4220,7 +4254,7 @@
       "significance": "В мотивированном решении должна быть указана фактическая дата изготовления; именно фактическая дата принятия решения в окончательной форме служит trigger по ст. 321 ч. 1.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-FIRST-INSTANCE-MOTIVATED-DECISION"
     },
@@ -4233,7 +4267,7 @@
       "significance": "Определяет, может ли появиться отдельная дата изготовления мотивированного решения.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-MAGISTRATE-MOTIVATION-REQUEST-PRESENT"
     },
@@ -4246,7 +4280,7 @@
       "significance": "Определяет, может ли появиться отдельная дата изготовления мотивированного решения.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-MAGISTRATE-MOTIVATION-REQUEST-ABSENT"
     },
@@ -4259,7 +4293,7 @@
       "significance": "Нельзя заменять фактическую дату изготовления нормативно предельной датой.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-MAGISTRATE-MOTIVATED-DECISION"
     },
@@ -4272,7 +4306,7 @@
       "significance": "Если мотивированное решение составлено по такому заявлению, специальный 15-дневный срок обжалования исчисляется от окончательной формы.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-SIMPLIFIED-MOTIVATION-REQUEST"
     },
@@ -4285,7 +4319,7 @@
       "significance": "Для расчета нужен факт и дата изготовления, а не вычисленный максимальный день.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-SIMPLIFIED-MOTIVATED-DECISION"
     },
@@ -4298,7 +4332,7 @@
       "significance": "Обе ветви первой кассации после апелляции исчисляются со дня фактического изготовления мотивированного апелляционного определения.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-MOTIVATED-APPEAL-DETERMINATION"
     },
@@ -4311,7 +4345,7 @@
       "significance": "Дата изготовления потенциально значима для следующей кассационной ступени; автоматическое применение требует учесть терминологическую коллизию ст. 390.3 и 390.4.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-REGIONAL-PRESIDIUM-MOTIVATED-RULING"
     },
@@ -4324,7 +4358,7 @@
       "significance": "Вторая кассация по ст. 390.3 исчисляется от фактической даты вынесения определения в окончательной форме.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "dependency_id": "GPK-TRIGGER-CSOY-MOTIVATED-DETERMINATION"
     },
@@ -4974,7 +5008,7 @@
       "implementationConstraint": "До отдельной юридической верификации автоматический движок не должен безусловно подставлять дату изготовления постановления президиума как trigger ст. 390.3. Маршрут и срок должны храниться раздельно, а правило — иметь статус needsLegalReview.",
       "code": "GPK",
       "document": "Docs/legal-deadlines/gpk-appeal-deadlines.md",
-      "revision": 2,
+      "revision": 3,
       "sourceHash": "8c01dffe6b3c9b51b12da11ba196390c9fa4e435b08a9ff9d04f52f0a0cd87cd",
       "question_id": "GPK-390.3-REGIONAL-PRESIDIUM-TRIGGER"
     },

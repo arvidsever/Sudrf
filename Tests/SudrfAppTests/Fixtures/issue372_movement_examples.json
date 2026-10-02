@@ -1,0 +1,977 @@
+[
+  {
+    "id": "old-gpk-appeal",
+    "movement": {
+      "uid": "fixture-old-gpk-appeal",
+      "caseNumber": "2-4227/2019 ~ М-3308/2019",
+      "inForce": false,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Сыктывкарский городской суд",
+          "caseNumber": "2-4227/2019 ~ М-3308/2019",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Иск (заявление, жалоба) УДОВЛЕТВОРЕН",
+          "sessions": [
+            {
+              "date": "27.11.2019",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "28.11.2019",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&n_c=1&case_id=42726891&case_uid=7bfb7d5b-f96b-4da9-bbfc-4d697931ee0d&delo_id=1540005",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Апелляционная жалоба",
+              "Частная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "27.11.2019",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела о восстановлении на работе, государственной (муниципальной) службе → в связи с увольнением по инициативе работодателя ( ст.71, 81 ТК РФ)"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-2898/2019",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "ОПРЕДЕЛЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+          "sessions": [
+            {
+              "date": "13.05.2019",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39690281&case_uid=e0d8597f-2c89-40d6-968b-e9bcca50dde5&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-4227/2019"
+            },
+            "decisionDate": "13.05.2019",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела о восстановлении на работе, государственной (муниципальной) службе → в связи с увольнением по инициативе работодателя ( ст.71, 81 ТК РФ)"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-657/2020",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "решение (осн. требов.) изменено (без направления дела на новое рассмотрение)",
+          "sessions": [
+            {
+              "date": "30.01.2020",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39730318&case_uid=1be89f78-e41b-402c-9a7b-d1441eafb0dd&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-4227/2019 ~ М-3308/2019"
+            },
+            "decisionDate": "30.01.2020",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела о восстановлении на работе, государственной (муниципальной) службе → в связи с увольнением по инициативе работодателя ( ст.71, 81 ТК РФ)"
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [],
+      "actBodies": {},
+      "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела о восстановлении на работе, государственной (муниципальной) службе → в связи с увольнением по инициативе работодателя ( ст.71, 81 ТК РФ)",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "civil",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "remand-main-vs-private",
+    "movement": {
+      "uid": "fixture-remand-main-vs-private",
+      "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022",
+      "inForce": true,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Сыктывкарский городской суд Республики Коми",
+          "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Иск (заявление, жалоба) УДОВЛЕТВОРЕН ЧАСТИЧНО",
+          "sessions": [
+            {
+              "date": "24.01.2023",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "31.01.2023",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=30056515&case_uid=c9646f31-6f2e-49ef-b818-a05f883df6b7&delo_id=1540005",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Апелляционная жалоба",
+              "Частная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "24.01.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд [СТОРОНА]",
+          "caseNumber": "33-7231/2022",
+          "judge": null,
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "определение отменено полностью с разрешением вопроса по существу",
+          "sessions": [
+            {
+              "date": "20.10.2022",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39893767&case_uid=9ed20cf1-dd33-47d5-8cfa-b95c54d96cef&delo_id=5&new=5",
+          "sourceEvidence": {
+            "receiptDate": "10.10.2022",
+            "decisionDate": "20.10.2022",
+            "cartotekaID": "g2",
+            "sourceCourtLevel": "subject",
+            "sourceBranch": "general",
+            "lowerCourt": {
+              "caseNumber": "2-8043/2022 ~ М-7205/2022",
+              "courtTitle": "Сыктывкарский городской суд"
+            },
+            "judicialUID": "fixture-issue372-shared-uid"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-2998/2023",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "решение (осн. требов.) изменено (без направления дела на новое рассмотрение)",
+          "sessions": [
+            {
+              "date": "06.04.2023",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39937431&case_uid=252fc649-9c1a-49ee-be2e-3e555c33a8dc&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022"
+            },
+            "decisionDate": "06.04.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-4135/2023",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "ОПРЕДЕЛЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+          "sessions": [
+            {
+              "date": "15.05.2023",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39947576&case_uid=3adbf28a-c3cf-47b7-86dd-d0f57fc3ef84&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022"
+            },
+            "decisionDate": "15.05.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "cassation",
+          "court": "Третий кассационный суд",
+          "caseNumber": "8Г-16523/2023 [88-17625/2023]",
+          "domain": "3kas.sudrf.ru",
+          "foundByUID": true,
+          "result": "АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ОТМЕНЕНО - с направлением на новое рассмотрение",
+          "sessions": [
+            {
+              "date": "23.08.2023",
+              "event": "Судебное заседание",
+              "result": "АПЕЛЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ОТМЕНЕНО - с направлением на новое рассмотрение"
+            }
+          ],
+          "sourceURL": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=14212919&case_uid=fbdcf6d6-0f86-4266-9ac0-17f55b2e1700&new=2800001&delo_id=2800001",
+          "actIDs": [
+            "act_3kas.sudrf.ru#8Г-16523/2023 [88-17625/2023]"
+          ],
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022",
+              "decisionDate": "24.01.2023"
+            },
+            "decisionDate": "23.08.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "cassation",
+          "court": "Третий кассационный суд",
+          "caseNumber": "8Г-19259/2023 [88-19431/2023]",
+          "domain": "3kas.sudrf.ru",
+          "foundByUID": true,
+          "result": "Жалоба / представление ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ",
+          "sessions": [
+            {
+              "date": "26.09.2023",
+              "event": "Судебное заседание",
+              "result": "Жалоба / представление ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ"
+            }
+          ],
+          "sourceURL": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=14519992&case_uid=4933b9d1-ce52-4cca-8296-a18d74009362&new=2800001&delo_id=2800001",
+          "actIDs": [
+            "act_3kas.sudrf.ru#8Г-19259/2023 [88-19431/2023]"
+          ],
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022",
+              "decisionDate": "15.03.2023"
+            },
+            "decisionDate": "26.09.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-9844/2023",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "решение (не осн. требов.) отменено в части с вынесением нового решения",
+          "sessions": [
+            {
+              "date": "30.11.2023",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39994790&case_uid=14fc35e7-39b8-46cc-a8e0-bb5f91bd2031&delo_id=5&new=5",
+          "actIDs": [
+            "act_vs--komi.sudrf.ru#33-9844/2023"
+          ],
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022"
+            },
+            "decisionDate": "30.11.2023",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        },
+        {
+          "level": "material",
+          "court": "Сыктывкарский городской суд [СТОРОНА]",
+          "caseNumber": "13-256/2024 (13-6618/2023;)",
+          "judge": null,
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "Возвращено заявителю",
+          "sessions": [
+            {
+              "date": "11.12.2023",
+              "event": "Материалы переданы в производство судье",
+              "result": null
+            },
+            {
+              "date": "15.12.2023",
+              "event": "Решение вопроса о принятии к производству",
+              "result": "Оставлено без движения"
+            },
+            {
+              "date": "16.01.2024",
+              "event": "Возвращено в связи с истечением срока, данного для исправления недостатков",
+              "result": null
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=27640308&case_uid=68853ad7-18e0-433c-8028-d78d1f22d795&delo_id=1610001"
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд [СТОРОНА]",
+          "caseNumber": "33-2188/2024",
+          "judge": null,
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "определение отменено полностью с разрешением вопроса по существу",
+          "sessions": [
+            {
+              "date": "11.03.2024",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=40031859&case_uid=ec941d21-26c3-4820-9acf-4bab323fb07b&delo_id=5&new=5",
+          "sourceEvidence": {
+            "receiptDate": "04.03.2024",
+            "decisionDate": "11.03.2024",
+            "cartotekaID": "g2",
+            "sourceCourtLevel": "subject",
+            "sourceBranch": "general",
+            "lowerCourt": {
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022",
+              "courtTitle": "Сыктывкарский городской суд"
+            },
+            "judicialUID": "fixture-issue372-shared-uid"
+          }
+        },
+        {
+          "level": "material",
+          "court": "Сыктывкарский городской суд Республики Коми",
+          "caseNumber": "13-1834/2024",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "Удовлетворено частично",
+          "sessions": [
+            {
+              "date": "22.03.2024",
+              "event": "Решение вопроса о принятии к производству",
+              "result": "Принято к производству"
+            },
+            {
+              "date": "23.04.2024",
+              "event": "Судебное заседание",
+              "result": "Удовлетворено частично"
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=27658192&case_uid=55f9c85d-0f68-4f5c-8306-cc5ea98079d7&delo_id=1610001"
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-4340/2024",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "определение отменено полностью с разрешением вопроса по существу",
+          "sessions": [
+            {
+              "date": "13.06.2024",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=39800298&case_uid=406dc65b-90a1-4dbe-b72d-0ab87192b549&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-284/2023 (2-8043/2022;) ~ М-7205/2022"
+            },
+            "decisionDate": "13.06.2024",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе"
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [
+        {
+          "id": "act_3kas.sudrf.ru#8Г-16523/2023 [88-17625/2023]",
+          "title": "Определение суда кассационной инстанции",
+          "date": "23.08.2023",
+          "courtShort": "Третий кассационный суд",
+          "instanceLevel": "cassation"
+        },
+        {
+          "id": "act_3kas.sudrf.ru#8Г-19259/2023 [88-19431/2023]",
+          "title": "Определение суда кассационной инстанции",
+          "date": "26.09.2023",
+          "courtShort": "Третий кассационный суд",
+          "instanceLevel": "cassation"
+        },
+        {
+          "id": "act_vs--komi.sudrf.ru#33-9844/2023",
+          "title": "Апелляционное определение",
+          "date": "30.11.2023",
+          "courtShort": "Верховный суд Республики Коми",
+          "instanceLevel": "appeal"
+        }
+      ],
+      "actBodies": {
+        "act_3kas.sudrf.ru#8Г-16523/2023 [88-17625/2023]": "ОПРЕДЕЛИЛА: апелляционное определение судебной коллегии по гражданским делам Верховного суда Республики Коми от 6 апреля 2023 г. в части требований о взыскании компенсации за несвоевременную выплату денежных средств отменить, в отмененной части направить дело на новое рассмотрение в суд апелляционной инстанции. В остальной части апелляционное определение судебной коллегии по гражданским делам Верховного суда Республики Коми от 6 апреля 2023 г. оставить без изменения.",
+        "act_3kas.sudrf.ru#8Г-19259/2023 [88-19431/2023]": "ОПРЕДЕЛИЛ: определение Сыктывкарского городского суда Республики Коми от 15 марта 2023 г. и апелляционное определение Верховного суда Республики Коми от 15 мая 2023 г. оставить без изменения, кассационную жалобу [СТОРОНА] — без удовлетворения.",
+        "act_vs--komi.sudrf.ru#33-9844/2023": "ОПРЕДЕЛИЛА: решение Сыктывкарского городского суда Республики Коми от 24 января 2023 года отменить в части; вынести новое решение. Мотивированное определение изготовлено 1 декабря 2023 года."
+      },
+      "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → лиц, находящихся на государственной (муниципальной) службе",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "civil",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "returned-appeal",
+    "movement": {
+      "uid": "fixture-returned-appeal",
+      "caseNumber": "2-1878/2026 ~ М-10145/2025",
+      "inForce": false,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Сыктывкарский городской суд",
+          "caseNumber": "2-1878/2026 ~ М-10145/2025",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Иск (заявление, жалоба) УДОВЛЕТВОРЕН ЧАСТИЧНО",
+          "sessions": [
+            {
+              "date": "27.03.2026",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "17.04.2026",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=30687196&case_uid=5404aeb9-3cc8-4aa4-a3ea-3133da3c6094&delo_id=1540005",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Апелляционная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "27.03.2026",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-3286/2026",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "Жалоба, представление возвращены заявителю",
+          "sessions": [
+            {
+              "date": "09.06.2026",
+              "event": "Жалоба (жалобы), представление возвращены заявителю (заявителям)"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=41122669&case_uid=926c3bdb-63c6-43d3-acaf-ff00950e45e3&delo_id=5&new=5",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-1878/2026 ~ М-10145/2025"
+            },
+            "decisionDate": "09.06.2026",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)"
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [],
+      "actBodies": {},
+      "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "civil",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "kas-material-cost-branch",
+    "movement": {
+      "uid": "fixture-kas-material-cost-branch",
+      "caseNumber": "2а-11046/2024 ~ М-10224/2024",
+      "inForce": false,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Сыктывкарский городской суд",
+          "caseNumber": "2а-11046/2024 ~ М-10224/2024",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Производство по делу ПРЕКРАЩЕНО административный истец отказался от административного иска и отказ принят судом",
+          "sessions": [
+            {
+              "date": "28.11.2024",
+              "event": "Судебное заседание",
+              "result": "Производство по делу прекращено"
+            }
+          ],
+          "sourceURL": "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=185421164&case_uid=acdd2aee-0b97-41b7-ae23-45cf1f9554be&result=0&delo_id=41&new=0",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Частная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "28.11.2024",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Об оспаривании решений, действий (бездействия) органов государственной власти, органов местного самоуправления, иных органов, организаций, наделенных отдельными государственными или иными публич.полномочиями, должностных лиц, государственных и муници → Об оспаривании решений, действий (бездействия) судебного пристава-исполнителя → прочие о признании незаконными решений, действий (бездействия) судебного пристава-исполнителя"
+          }
+        },
+        {
+          "level": "material",
+          "court": "Сыктывкарский городской суд",
+          "caseNumber": "13а-653/2025 (13а-6413/2024;)",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "Удовлетворено частично",
+          "sessions": [
+            {
+              "date": "10.01.2025",
+              "event": "Материалы переданы в производство судье"
+            },
+            {
+              "date": "10.01.2025",
+              "event": "Решение вопроса о принятии к производству",
+              "result": "Принято к производству"
+            },
+            {
+              "date": "03.02.2025",
+              "event": "Судебное заседание",
+              "result": "Удовлетворено частично"
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=27712966&case_uid=bb29a7d7-a498-486e-992b-a482aa53bebd&delo_id=1610001"
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33а-1785/2025",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "ОПРЕДЕЛЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+          "sessions": [
+            {
+              "date": "03.04.2025",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=40104097&case_uid=ee0c2661-2ef8-4699-965d-f8f75bdf2600&delo_id=42",
+          "actIDs": [
+            "act_vs--komi.sudrf.ru#33а-1785/2025"
+          ],
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2а-11046/2024 ~ М-10224/2024"
+            },
+            "decisionDate": "03.04.2025",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Об оспаривании решений, действий (бездействия) органов государственной власти, органов местного самоуправления, иных органов, организаций, наделенных отдельными государственными или иными публич.полномочиями, должностных лиц, государственных и муници → Об оспаривании решений, действий (бездействия) судебного пристава-исполнителя → прочие о признании незаконными решений, действий (бездействия) судебного пристава-исполнителя"
+          }
+        },
+        {
+          "level": "cassation",
+          "court": "Третий кассационный суд общей юрисдикции",
+          "caseNumber": "8а-8962/2025 [88а-11864/2025]",
+          "domain": "3kas.sudrf.ru",
+          "foundByUID": false,
+          "result": null,
+          "sessions": [
+            {
+              "date": "26.06.2025",
+              "event": "Единоличное рассмотрение дела судьей",
+              "result": "Жалоба / представление ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ"
+            }
+          ],
+          "sourceURL": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=20426952&case_uid=d74c2d9d-b4b7-471d-85db-d26dc555e2e9&delo_id=43",
+          "actIDs": [
+            "act_3kas.sudrf.ru#8а-8962/2025 [88а-11864/2025]"
+          ],
+          "sourceEvidence": {
+            "reviewProcedure": "Единоличное рассмотрение дела судьей",
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2а-11046/2024",
+              "decisionDate": "03.02.2025"
+            }
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [
+        {
+          "id": "act_vs--komi.sudrf.ru#33а-1785/2025",
+          "title": "Апелляционное определение",
+          "date": "03.04.2025",
+          "courtShort": "Верховный суд Республики Коми",
+          "instanceLevel": "appeal"
+        },
+        {
+          "id": "act_3kas.sudrf.ru#8а-8962/2025 [88а-11864/2025]",
+          "title": "Определение суда кассационной инстанции",
+          "date": "—",
+          "courtShort": "Третий кассационный суд",
+          "instanceLevel": "cassation"
+        }
+      ],
+      "actBodies": {
+        "act_vs--komi.sudrf.ru#33а-1785/2025": "ОПРЕДЕЛИЛ: определение Сыктывкарского городского суда Республики Коми от 3 февраля 2025 года оставить без изменения, частную жалобу [СТОРОНА] — без удовлетворения.",
+        "act_3kas.sudrf.ru#8а-8962/2025 [88а-11864/2025]": "ОПРЕДЕЛИЛ: апелляционное определение Верховного суда Республики Коми от 3 апреля 2025 года оставить без изменения, кассационную жалобу [СТОРОНА] — без удовлетворения."
+      },
+      "category": "Об оспаривании решений, действий (бездействия) органов государственной власти, органов местного самоуправления, иных органов, организаций, наделенных отдельными государственными или иными публич.полномочиями, должностных лиц, государственных и муници → Об оспаривании решений, действий (бездействия) судебного пристава-исполнителя → прочие о признании незаконными решений, действий (бездействия) судебного пристава-исполнителя",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "administrative",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "main-cassation-vs-material-cost",
+    "movement": {
+      "uid": "fixture-main-cassation-vs-material-cost",
+      "caseNumber": "2-4869/2025 ~ М-3075/2025",
+      "inForce": true,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Сыктывкарский городской суд Республики Коми",
+          "caseNumber": "2-4869/2025 ~ М-3075/2025",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Иск (заявление, жалоба) УДОВЛЕТВОРЕН",
+          "sessions": [
+            {
+              "date": "07.11.2025",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "21.11.2025",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=30593821&case_uid=e35165c2-26d8-47c4-b1a7-1edd19ec5314&delo_id=1540005",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Частная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "07.11.2025",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)"
+          }
+        },
+        {
+          "level": "material",
+          "court": "Сыктывкарский городской суд Республики Коми",
+          "caseNumber": "13-630/2026",
+          "domain": "syktsud--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "Удовлетворено частично",
+          "sessions": [
+            {
+              "date": "21.01.2026",
+              "event": "Материалы переданы в производство судье"
+            },
+            {
+              "date": "16.02.2026",
+              "event": "Судебное заседание",
+              "result": "Удовлетворено частично"
+            }
+          ],
+          "sourceURL": "https://syktsud.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=27767593&case_uid=630d9c17-1476-4d8c-bc55-772695428ae4&delo_id=1610001"
+        },
+        {
+          "level": "appeal",
+          "court": "Верховный суд Республики Коми",
+          "caseNumber": "33-1948/2026",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": true,
+          "result": "ОПРЕДЕЛЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+          "sessions": [
+            {
+              "date": "23.04.2026",
+              "event": "Единоличное рассмотрение (без вызова лиц, участвующих в деле)",
+              "result": "Вынесено решение"
+            },
+            {
+              "date": "23.04.2026",
+              "event": "Составлено мотивированное апелляционное определение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://vs.komi.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=40888072&case_uid=e183fb6b-31fd-42ae-90ef-8889852c054e&delo_id=5&new=5",
+          "sourceEvidence": {
+            "reviewProcedure": "Единоличное рассмотрение (без вызова лиц, участвующих в деле)",
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-4869/2025 ~ М-3075/2025"
+            },
+            "decisionDate": "23.04.2026",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)"
+          }
+        },
+        {
+          "level": "cassation",
+          "court": "Третий кассационный суд",
+          "caseNumber": "8Г-13509/2026 [88-13567/2026]",
+          "domain": "3kas.sudrf.ru",
+          "foundByUID": true,
+          "result": "Жалоба / представление ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ",
+          "sessions": [
+            {
+              "date": "05.08.2026",
+              "event": "Единоличное рассмотрение дела судьей",
+              "result": "Жалоба / представление ОСТАВЛЕНО БЕЗ УДОВЛЕТВОРЕНИЯ"
+            },
+            {
+              "date": "05.08.2026",
+              "event": "Поступление исправленной жалобы (представления) в суд"
+            }
+          ],
+          "sourceURL": "https://3kas.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=24704983&case_uid=2b58299d-bb41-4c0a-8b69-ba7977ee335d&new=2800001&delo_id=2800001",
+          "actIDs": [
+            "act_3kas.sudrf.ru#8Г-13509/2026 [88-13567/2026]"
+          ],
+          "sourceEvidence": {
+            "reviewProcedure": "Единоличное рассмотрение дела судьей",
+            "lowerCourt": {
+              "courtTitle": "Сыктывкарский городской суд",
+              "caseNumber": "2-4869/2025 ~ М-3075/2025",
+              "decisionDate": "16.02.2026"
+            },
+            "decisionDate": "05.08.2026",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)"
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [
+        {
+          "id": "act_3kas.sudrf.ru#8Г-13509/2026 [88-13567/2026]",
+          "title": "Определение суда кассационной инстанции",
+          "date": "05.08.2026",
+          "courtShort": "Третий кассационный суд",
+          "instanceLevel": "cassation"
+        }
+      ],
+      "actBodies": {
+        "act_3kas.sudrf.ru#8Г-13509/2026 [88-13567/2026]": "ОПРЕДЕЛИЛ: определение Сыктывкарского городского суда Республики Коми от 16 февраля 2026 г. и апелляционное определение Верховного суда Республики Коми от 23 апреля 2026 г. оставить без изменения, кассационную жалобу [СТОРОНА] — без удовлетворения."
+      },
+      "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Дела об оплате труда → о взыскании невыплаченной заработной платы, других выплат ( и компенсации за задержку их выплаты)",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "civil",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "vsrf-review",
+    "movement": {
+      "uid": "fixture-vsrf-review",
+      "caseNumber": "3а-108/2025 ~ М-158/2025",
+      "inForce": false,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Верховный Суд Республики Коми",
+          "caseNumber": "3а-108/2025 ~ М-158/2025",
+          "domain": "vs--komi.sudrf.ru",
+          "foundByUID": false,
+          "result": "Иск (заявление, жалоба) УДОВЛЕТВОРЕН",
+          "sessions": [
+            {
+              "date": "28.11.2025",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "02.12.2025",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            }
+          ],
+          "sourceURL": "https://vs--komi.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=39214113&case_uid=aafb0a0e-3404-497b-bddb-81fbfe98d874&delo_id=41&case_type=0&new=0&srv_num=1",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Апелляционная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "28.11.2025",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "О защите избирательных прав и права на участие в референдуме граждан [СТОРОНА] (гл. 24 КАС РФ) → Об оспаривании решений избирательных комиссий по выборам в законодательные (представительные) органы государственной власти субъекта [СТОРОНА], представительные органы местного самоуправления → об исключении кандидата из заверенного списка кандидатов"
+          }
+        },
+        {
+          "level": "appeal",
+          "court": "Второй апелляционный суд",
+          "caseNumber": "66а-53/2026 (66а-811/2025;)",
+          "domain": "2ap.sudrf.ru",
+          "foundByUID": false,
+          "result": "решение (осн. требов.) отменено полностью с вынесением нового решения",
+          "sessions": [
+            {
+              "date": "26.01.2026",
+              "event": "Судебное заседание",
+              "result": "Объявлен перерыв"
+            },
+            {
+              "date": "26.01.2026",
+              "event": "Судебное заседание",
+              "result": "Объявлен перерыв"
+            }
+          ],
+          "sourceURL": "https://2ap.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=6101749&case_uid=3239fbbe-5309-4a45-896b-714bf7a63372&delo_id=42",
+          "sourceEvidence": {
+            "lowerCourt": {
+              "courtTitle": "Верховный Суд Республики Коми",
+              "caseNumber": "3а-108/2025 ~ М-158/2025"
+            },
+            "decisionDate": "26.01.2026",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "О защите избирательных прав и права на участие в референдуме граждан [СТОРОНА] (гл. 24 КАС РФ) → Об оспаривании решений избирательных комиссий по выборам в законодательные (представительные) органы государственной власти субъекта [СТОРОНА], представительные органы местного самоуправления → иные решения"
+          }
+        },
+        {
+          "level": "vsCassation",
+          "court": "Верховный Суд РФ",
+          "caseNumber": "3-ИКАД26-1-А2",
+          "domain": "vsrf.ru",
+          "foundByUID": true,
+          "result": "Жалоба (представление) оставлена без удовлетворения",
+          "sessions": [
+            {
+              "date": "16.09.2026",
+              "event": "Результат рассмотрения",
+              "result": "Вынесено решение по существу. Жалоба (представление) оставлена без удовлетворения"
+            },
+            {
+              "date": "16.09.2026",
+              "event": "Назначение даты судебного заседания",
+              "result": "Дата размещения информации о времени и месте заседания 27.08.2026 12:10"
+            }
+          ],
+          "sourceURL": "https://www.vsrf.ru/lk/practice/claims/12-37126094"
+        }
+      ],
+      "complaints": {},
+      "acts": [],
+      "actBodies": {},
+      "category": "О защите избирательных прав и права на участие в референдуме граждан [СТОРОНА] (гл. 24 КАС РФ) → Об оспаривании решений избирательных комиссий по выборам в законодательные (представительные) органы государственной власти субъекта [СТОРОНА], представительные органы местного самоуправления → об исключении кандидата из заверенного списка кандидатов",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "administrative",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  },
+  {
+    "id": "historical-gpk",
+    "movement": {
+      "uid": "fixture-historical-gpk",
+      "caseNumber": "2-3109/2017 ~ М-1958/2017",
+      "inForce": false,
+      "instances": [
+        {
+          "level": "first",
+          "court": "Октябрьский районный суд",
+          "caseNumber": "2-3109/2017 ~ М-1958/2017",
+          "domain": "oktibrsky--spb.sudrf.ru",
+          "foundByUID": false,
+          "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+          "sessions": [
+            {
+              "date": "17.07.2017",
+              "event": "Судебное заседание",
+              "result": "Вынесено решение по делу"
+            },
+            {
+              "date": "28.07.2017",
+              "event": "Изготовлено мотивированное решение в окончательной форме"
+            },
+            {
+              "date": "01.12.2017",
+              "event": "Судебное заседание"
+            },
+            {
+              "date": "01.12.2017",
+              "event": "Судебное заседание",
+              "result": null
+            }
+          ],
+          "sourceURL": "https://oktibrsky--spb.sudrf.ru/modules.php?name=sud_delo&srv_num=1&name_op=case&case_id=112242718&case_uid=6039749F-FAC5-4C94-8964-D7AB8C94AB76&delo_id=1540005",
+          "sourceEvidence": {
+            "appealKinds": [
+              "Апелляционная жалоба",
+              "Частная жалоба"
+            ],
+            "reviewProcedure": "Рассмотрено единолично судьей",
+            "decisionDate": "17.07.2017",
+            "judicialUID": "fixture-issue372-shared-uid",
+            "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Другие, возникающие из трудовых отношений → Иные, возникающие из трудовых правоотношений"
+          }
+        }
+      ],
+      "complaints": {},
+      "acts": [],
+      "actBodies": {},
+      "category": "Споры, возникающие из трудовых отношений → Трудовые споры (независимо от форм собственности работодателя): → Другие, возникающие из трудовых отношений → Иные, возникающие из трудовых правоотношений",
+      "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "thirdParties": [],
+        "kind": "civil",
+        "columns": [],
+        "roleItems": []
+      }
+    }
+  }
+]

@@ -615,6 +615,7 @@ enum DeadlineRuleEngine {
                                  context: Context, timeline: CaseLifecycleResolver.Timeline,
                                  today: Date, calendar: LegalCalendar?)
         -> (deadline: StoredDeadline?, assessment: DeadlineRuleAssessment) {
+        var rule = rule
         switch binding.kind {
         case "appeal":
             // A real higher-court card in the current round proves that this
@@ -624,10 +625,33 @@ enum DeadlineRuleEngine {
                                         status: .notApplicable))
             }
         case "cassation":
-            if timeline.hasCassationInCurrentRound,
-               needsLegalReview(rule: rule, registry: registry, timeline: timeline) {
+            let reviews = timeline.lifecycleOrdered.map(\.instance)
+            let provedVSRoute = reviews.contains { instance in
+                if let start = timeline.currentRoundDate,
+                   instance.sessions.compactMap({ DateUtil.parse($0.date) }).min().map({ $0 >= start }) != true {
+                    return false
+                }
+                return instance.level == .cassation
+                    && CaseLifecycleResolver.isConcludedReview(instance)
+                    && !instance.sessions.contains {
+                        CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result)?.hasPrefix("remand:") == true
+                            || CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result) == "returned"
+                    }
+                    || instance.level == .appeal && instance.linkedActIDs.contains { id in
+                        let tail = movement.actBodies[id].flatMap(CaseLifecycleResolver.operativeDisposition) ?? ""
+                        let value = normalized(tail)
+                        return value.contains("судебную коллегию")
+                            && value.contains("верховного суда российской федерации")
+                    }
+            }
+            if provedVSRoute, !reviews.contains(where: { instance in
+                guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                guard let start = timeline.currentRoundDate else { return true }
+                return instance.sessions.compactMap { DateUtil.parse($0.date) }.min().map { $0 >= start } == true
+            }) {
                 return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
-                                        status: .needsLegalReview))
+                                        status: .unsupportedCalculation,
+                                        missingPolicyIDs: ["vsrfCassationCalculation"]))
             }
             guard !timeline.hasCassationInCurrentRound else {
                 return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
@@ -771,18 +795,96 @@ enum DeadlineRuleEngine {
             guard routeSupportsCSOY(context.movementContext) else {
                 return insufficient(rule, binding: binding, [.production])
             }
-            if timeline.hasAppealInCurrentRound {
-                guard let appeal = currentAppeal(in: timeline),
-                      let motivated = motivatedAppealDetermination(in: appeal) else {
-                    return insufficient(rule, binding: binding, [.motivatedAppealDetermination])
+            let appeal = currentAppeal(in: timeline)
+            let appealAct = appeal.flatMap { instance in
+                latestSession(in: instance) {
+                    let value = normalized($0.event + " " + ($0.result ?? ""))
+                    return CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+                        && !value.contains("возвращ") && !value.contains("возврат")
+                        && !value.contains("без рассмотр")
                 }
+            }
+            if let appeal {
+                var announcedDates = Set(appeal.sessions.filter {
+                    CaseLifecycleResolver.isFinalActAnnouncement(event: $0.event, result: $0.result)
+                }.compactMap { DateUtil.parse($0.date) })
+                if let date = appeal.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) {
+                    announcedDates.insert(date)
+                }
+                let linkedIDs = Set(appeal.linkedActIDs)
+                announcedDates.formUnion(movement.acts.filter {
+                    linkedIDs.contains($0.id) && $0.instanceLevel == appeal.level
+                }.compactMap { DateUtil.parse($0.date) })
+                if announcedDates.count > 1 {
+                    return insufficient(rule, binding: binding, [.finalAct])
+                }
+            }
+            let ownDatedResult = appeal.flatMap { instance -> DeadlineTriggerProvenance? in
+                guard CaseLifecycleResolver.isConcludedReview(instance),
+                      let result = instance.result, !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      CaseLifecycleResolver.semanticDisposition(result: result) != "returned",
+                      !instance.sessions.contains(where: {
+                          CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result) == "returned"
+                      }) else { return nil }
+                let linkedIDs = Set(instance.linkedActIDs)
+                let ownActDates = movement.acts.filter {
+                    linkedIDs.contains($0.id) && $0.instanceLevel == instance.level
+                        && DateUtil.parse($0.date) != nil
+                }.map(\.date)
+                guard let dateRaw = instance.sourceEvidence?.decisionDate
+                    ?? (Set(ownActDates.compactMap(DateUtil.parse)).count == 1 ? ownActDates.first : nil),
+                      DateUtil.parse(dateRaw) != nil else { return nil }
+                return DeadlineTriggerProvenance(event: "Опубликованная дата принятия апелляционного определения",
+                    result: result, dateRaw: dateRaw, court: instance.court,
+                    levelRaw: instance.level.rawValue, caseNumber: instance.caseNumber)
+            }
+            let ownModernMotivated = appeal.flatMap { instance -> DeadlineTriggerProvenance? in
+                guard CaseLifecycleResolver.isConcludedReview(instance),
+                      !instance.sessions.contains(where: {
+                          CaseLifecycleResolver.semanticDisposition(event: $0.event, result: $0.result) == "returned"
+                      }),
+                      CaseLifecycleResolver.semanticDisposition(result: instance.result) != "returned",
+                      let motivated = motivatedAppealDetermination(in: instance, movement: movement),
+                      DateUtil.parse(motivated.dateRaw).map({ $0 >= DateUtil.parse("01.09.2024")! }) == true
+                else { return nil }
+                return motivated
+            }
+            if timeline.hasAppealInCurrentRound, appealAct == nil, ownDatedResult == nil, ownModernMotivated == nil {
+                return insufficient(rule, binding: binding, [.finalAct])
+            }
+            let force = timeline.deadlineFirst.flatMap(legalForce)
+            guard let reference = appealAct ?? ownDatedResult ?? ownModernMotivated ?? force else {
+                if let date = timeline.deadlineFirst?.sourceEvidence?.decisionDate.flatMap(DateUtil.parse),
+                   date < DateUtil.parse("01.10.2019")! {
+                    return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                            status: .unsupportedCalculation,
+                                            missingPolicyIDs: ["historicalCassationRegime"]))
+                }
+                return insufficient(rule, binding: binding, [.legalForce])
+            }
+            guard let date = DateUtil.parse(reference.dateRaw) else {
+                return insufficient(rule, binding: binding, [.legalForce])
+            }
+            if date < DateUtil.parse("01.10.2019")! {
+                return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                        status: .unsupportedCalculation,
+                                        missingPolicyIDs: ["historicalCassationRegime"]))
+            }
+            if date < DateUtil.parse("01.09.2024")! {
+                guard let historical = registry.rule(id: "GPK-CASSATION-CSOY-2019") else {
+                    return (nil, assessment(ruleID: rule.ruleID, kind: binding.kind,
+                                            status: .unsupportedCalculation,
+                                            missingPolicyIDs: ["historicalCassationRegime"]))
+                }
+                rule = historical
+                triggerResult = .found(reference)
+            } else if appeal == nil {
+                triggerResult = .found(reference)
+            } else if let appeal, let motivated = motivatedAppealDetermination(in: appeal, movement: movement),
+                      DateUtil.parse(motivated.dateRaw).map({ $0 >= date }) == true {
                 triggerResult = .found(motivated)
             } else {
-                guard let first = timeline.deadlineFirst,
-                      let legalForce = legalForce(in: first) else {
-                    return insufficient(rule, binding: binding, [.legalForce])
-                }
-                triggerResult = .found(legalForce)
+                return insufficient(rule, binding: binding, [.motivatedAppealDetermination])
             }
         case .legalForce:
             guard routeSupportsCSOY(context.movementContext) else {
@@ -1392,13 +1494,39 @@ enum DeadlineRuleEngine {
         }
     }
 
-    private static func motivatedAppealDetermination(in instance: CaseInstance)
+    private static func motivatedAppealDetermination(in instance: CaseInstance, movement: CaseMovement)
         -> DeadlineTriggerProvenance? {
-        latestSession(in: instance) { session in
+        let sessions = instance.sessions.filter { session in
+            // The synthetic operative row is dated by announcement and may
+            // contain a later final-form statement in its tail.
+            guard session.event != "Резолютивная часть опубликованного акта" else { return false }
             let value = normalized(session.event + " " + (session.result ?? ""))
             return value.contains("апелляцион") && value.contains("определен")
                 && (value.contains("мотивирован") || value.contains("окончательн"))
+                && (value.contains("изготов") || value.contains("составлен") || value.contains("составлено"))
         }
+        var candidates = sessions.map { provenance(for: $0, in: instance) }
+        for id in instance.linkedActIDs {
+            guard let body = movement.actBodies[id],
+                  let tail = CaseLifecycleResolver.operativeDisposition(in: body) else { continue }
+            for paragraph in ActParagraphizer.paragraphs(in: tail) {
+                let value = normalized(paragraph.text)
+                guard (value.hasPrefix("мотивированное определение")
+                    || value.hasPrefix("мотивированное апелляционное определение")
+                    || value.hasPrefix("апелляционное определение")),
+                      value.contains("изготов") || value.contains("составлен"),
+                      value.contains("мотивирован") || value.contains("окончательн") else { continue }
+                let dates = CaseLifecycleResolver.explicitActDates(in: paragraph.text)
+                guard dates.count == 1, let date = dates.first else { continue }
+                let components = DateUtil.cal.dateComponents([.day, .month, .year], from: date)
+                candidates.append(DeadlineTriggerProvenance(event: paragraph.text, result: nil,
+                    dateRaw: "\(components.day!).\(components.month!).\(components.year!)",
+                    court: instance.court, levelRaw: instance.level.rawValue, caseNumber: instance.caseNumber))
+            }
+        }
+        let dates = Set(candidates.compactMap { DateUtil.parse($0.dateRaw) })
+        guard dates.count == 1 else { return nil }
+        return candidates.first
     }
 
     private static func legalForce(in instance: CaseInstance) -> DeadlineTriggerProvenance? {

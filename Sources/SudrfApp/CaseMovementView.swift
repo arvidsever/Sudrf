@@ -41,6 +41,7 @@ struct CaseMovementView: View {
     /// для старого movement-кэша, созданного до появления per-instance URL.
     var sourceURL: URL? = nil
     var sourceContext: MovementContext? = nil
+    var savedDeadlineAssessments: [DeadlineRuleAssessment]? = nil
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Отслеживание (раздел «Мои дела»): кнопка показывается, только если задан
     /// onTrack (из поиска). Из самой карточки мониторинга — не передаётся.
@@ -70,11 +71,30 @@ struct CaseMovementView: View {
     var onSolveFSSPCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
     var focusInstanceID: String? = nil
     @State private var confirmingUntrack = false
+    @State private var deadlineAssessments: [DeadlineRuleAssessment] = []
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
+                    let assessments = (savedDeadlineAssessments ?? deadlineAssessments).filter(\.isIndeterminate)
+                    if !assessments.isEmpty {
+                        DisclosureGroup("Расчёт сроков") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(assessments) { assessment in
+                                    if let reason = MovementDerivation.deadlineAssessmentReason([assessment]) {
+                                        Text(reason)
+                                            .font(.callout)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                        }
+                        .padding(12)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                    }
                     // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
                     // отдельной секцией в конце: они идут в рамках дела, но инстанциями
                     // не являются.
@@ -126,6 +146,13 @@ struct CaseMovementView: View {
                 Button("Отмена", role: .cancel) {}
             } message: {
                 Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
+            }
+            .onChange(of: movement, initial: true) { _, value in
+                guard savedDeadlineAssessments == nil, let context = sourceContext else { return }
+                let production = MaterialProductionContext.resolve(context: context, movement: value).production
+                deadlineAssessments = MovementDerivation.deadlineEvaluation(
+                    from: value, context: context, production: production, today: DateUtil.today)
+                    .assessments
             }
             .onChange(of: focusInstanceID, initial: true) { _, target in
                 guard let target,

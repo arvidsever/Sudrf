@@ -1656,9 +1656,10 @@ final class TrackedStoreIdentityTests: XCTestCase {
                 initialJournal = record.eventJournal
                 try container.mainContext.save()
 
-                XCTAssertEqual(try TrackedStorePreparation.prepare(
-                    context: container.mainContext, today: calendarTestToday),
-                    scenario.lifecycle == .active)
+                // #372 also refreshes assessments/lifecycle when all terms are
+                // closed, while the assertions below still protect history.
+                XCTAssertTrue(try TrackedStorePreparation.prepare(
+                    context: container.mainContext, today: calendarTestToday))
                 try verify(try XCTUnwrap(store.record(forKey: recordKey)))
                 try container.mainContext.save()
             }

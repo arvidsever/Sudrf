@@ -25,7 +25,11 @@ metadata rewrite; retain the original source bytes for authenticity checks.
 - `ActPresentationTests/testRapidSelectionUsesExactStoredSnapshotEndToEnd`:
   passes. The tracked VS act projection uses `3-ИКАД25-3-А2` in the App Intent
   document metadata while retaining the root case key and source hash.
-- Root's full Swift test run: see `/private/tmp/sudrf361-full.log`.
+- Full Swift test run: 700 SudrfKit, 1064 SudrfApp (11 expected optional
+  live/visual skips), 10 FSSPCaptchaLab, and 75 CaptchaSolver tests; zero failures.
+  Final log: `/private/tmp/sudrf361-full-final2.log`.
+- Legal deadline registry generator check passed; Xcode project regenerated and
+  the app built without launching it.
 
 ## PDF evidence
 

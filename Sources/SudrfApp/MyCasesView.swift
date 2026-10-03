@@ -247,6 +247,7 @@ struct MyCasesView: View {
                         Text(c.last).font(.system(size: 11)).foregroundStyle(.secondary)
                         Text(c.next).font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(Palette.chipFg(c.nextChip))
+                            .help(c.nextEventHelp ?? c.next)
                     }
                 }
                 .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
@@ -514,7 +515,7 @@ struct MyCasesView: View {
             hcol("ДЕЛО · ВИД").frame(minWidth: 86, maxWidth: 150, alignment: .leading)
             hcol("СТОРОНЫ · СУД").frame(minWidth: 152, maxWidth: .infinity, alignment: .leading)
             hcol("СТАТУС · СОБЫТИЕ").frame(minWidth: 128, maxWidth: 210, alignment: .leading)
-            hcol("ДАЛЬШЕ").frame(minWidth: 94, maxWidth: 130, alignment: .leading)
+            hcol("ДАЛЬШЕ").frame(minWidth: 94, maxWidth: 210, alignment: .leading)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
     }
@@ -589,12 +590,13 @@ struct MyCasesView: View {
                 HStack(alignment: .center, spacing: 5) {
                     Text(c.next).font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(Palette.chipFg(c.nextChip))
+                        .help(c.nextEventHelp ?? c.next)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     collectionsMenu(for: c)
                     caseActionsMenu(for: c)
                 }
-                .frame(minWidth: 94, maxWidth: 130, alignment: .topLeading)
+                .frame(minWidth: 94, maxWidth: 210, alignment: .topLeading)
             }
             .padding(.horizontal, 16).padding(.vertical, 9)
             .contentShape(Rectangle())

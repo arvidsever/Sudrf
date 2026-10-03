@@ -151,6 +151,7 @@ struct CaseLifecyclePresentation {
     /// инстанции, когда оно назначено в апелляции или кассации.
     /// `nil` — суд берётся из записи, как раньше.
     var nextEventCourt: String?
+    var nextEventHelp: String? = nil
 }
 
 // MARK: - Движок
@@ -300,12 +301,12 @@ enum MovementDerivation {
                                               assessments: [DeadlineRuleAssessment],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
-        let deadlines = deadlines.filter { deadlineScopeKey($0) == nil }
+        let mainDeadlines = deadlines.filter { deadlineScopeKey($0) == nil }
         let production = MaterialProductionContext.resolve(context: context, movement: mv).production
         let inForce = CaseLifecycleResolver.effectiveLegalForce(
             in: mv, production: production)
         let resolution = CaseLifecycleResolver.resolve(movement: mv, production: production,
-                                                       deadlines: deadlines,
+                                                       deadlines: mainDeadlines,
                                                        deadlineAssessments: assessments,
                                                        today: today)
         let prefix = context.map {
@@ -332,13 +333,101 @@ enum MovementDerivation {
             return rootMaterialNumbers.contains(
                 CaseNumberPresentation.primary(number).lowercased())
         }
-        let nextHearing = resolution.isCompleted ? nil : futureHearings(
-            lifecycleSessions, today: today).first
-        let nextDeadline = deadlines
-            .filter(\.isActive)
-            .filter { $0.date >= today || $0 == resolution.graceDeadline }
-            .sorted(by: { $0.dateRef < $1.dateRef })
-            .first
+        let materialScopes = context.map { MaterialDeadlineScope.proven(in: mv, context: $0) } ?? []
+        let materialCards = materialScopes.flatMap { subject in
+            subject.movement.instances.map { (subject.movement.caseNumber, $0) }
+        }
+        func materialOwner(of session: StoredSession) -> (String, CaseInstance)? {
+            let matches = materialCards.filter { _, instance in
+                if let id = session.sourceCardID, let context {
+                    return CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context) == id
+                }
+                return session.level == instance.level && session.caseNumber == instance.caseNumber
+                    && CaseLifecycleResolver.courtTitlesAgree(session.court, instance.court, domain: instance.domain)
+            }
+            return matches.count == 1 ? matches.first : nil
+        }
+        let mainHearing = resolution.isCompleted ? nil
+            : futureHearings(lifecycleSessions.filter { materialOwner(of: $0) == nil }, today: today).first
+        let upcomingSessions = sessions.filter { session in
+            if let (_, instance) = materialOwner(of: session) {
+                guard !CaseLifecycleResolver.isMaterialAdjudication(event: session.event, result: session.result),
+                      !CaseLifecycleResolver.isMaterialAdjudication(event: "", result: instance.result)
+                else { return false }
+                return CaseLifecycleResolver.isHearing(event: session.event,
+                    result: [session.result, instance.result].compactMap { $0 }.joined(separator: " "))
+            }
+            if session.level != .material { return !resolution.isCompleted }
+            let isRootMaterialSession = session.sourceCardID.map { rootMaterialIDs.contains($0) } == true
+                || session.caseNumber.map {
+                    rootMaterialNumbers.contains(CaseNumberPresentation.primary($0).lowercased())
+                } == true
+            if isRootMaterialSession { return !resolution.isCompleted }
+            // Keep the existing Overview eligibility for an unprojected material card.
+            let material = mv.instances.first { instance in
+                guard instance.level == .material else { return false }
+                if let context, let id = session.sourceCardID {
+                    return CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context) == id
+                }
+                return session.caseNumber == instance.caseNumber
+            }
+            guard !CaseLifecycleResolver.isMaterialAdjudication(event: session.event, result: session.result),
+                  !CaseLifecycleResolver.isMaterialAdjudication(event: "", result: material?.result)
+            else { return false }
+            return CaseLifecycleResolver.isHearing(event: session.event,
+                result: [session.result, material?.result].compactMap { $0 }.joined(separator: " "))
+        }
+        let futureHearing = futureHearings(upcomingSessions, today: today).first
+        let futureDeadline = deadlines.filter {
+            $0.isActive && $0.date >= today
+                && (deadlineScopeKey($0) == nil
+                    || MaterialDeadlineScope.materialSourceCardID(in: $0.occurrenceKey) != nil)
+        }
+            .sorted { $0.dateRef < $1.dateRef }.first
+        // Compare calendar days: a hearing wins a same-day tie.
+        let nextHearing = futureHearing.flatMap { hearing in
+            guard let date = hearing.date else { return nil as StoredSession? }
+            if let deadline = futureDeadline {
+                return Calendar.current.startOfDay(for: date) <= Calendar.current.startOfDay(for: deadline.date)
+                    ? hearing : nil
+            }
+            return hearing
+        }
+        let nextDeadline = nextHearing == nil
+            ? (futureDeadline ?? resolution.graceDeadline) : nil
+        var diagnosticLines = assessments.filter(\.isIndeterminate).compactMap {
+            deadlineAssessmentReason([$0])
+        }
+        var diagnosticShort = assessments.first(where: \.isIndeterminate).flatMap(compactDeadlineAssessmentReason)
+        let materialEvaluations = context.map {
+            materialDeadlineEvaluations(from: mv, context: $0, today: today)
+        } ?? []
+        for material in materialEvaluations {
+                if diagnosticShort == nil,
+                   let assessment = material.evaluation.assessments.first(where: \.isIndeterminate),
+                   let reason = compactDeadlineAssessmentReason(assessment) {
+                    diagnosticShort = "\(reason) · материал № \(CaseNumberPresentation.primary(material.caseNumber))"
+                }
+                diagnosticLines += material.evaluation.assessments.filter(\.isIndeterminate).compactMap {
+                    deadlineAssessmentReason([$0]).map {
+                        "Материал № \(CaseNumberPresentation.primary(material.caseNumber)): \($0)"
+                    }
+                }
+        }
+        var savedMaterialScopes = Set<String>()
+        for deadline in deadlines where deadline.isActive {
+            guard let sourceID = MaterialDeadlineScope.materialSourceCardID(in: deadline.occurrenceKey),
+                  savedMaterialScopes.insert(sourceID).inserted,
+                  materialEvaluations.first(where: { $0.id == sourceID })?.evaluation.deadlines.isEmpty != false
+            else { continue }
+            let number = deadlineDisplayNumber(deadline, movement: mv, context: context,
+                sessions: sessions, defaultNumber: "")
+            let subject = number.isEmpty ? "Материал" : "Материал № \(number)"
+            diagnosticLines.append("\(subject): показан последний сохранённый срок; текущих данных недостаточно для повторного расчёта")
+        }
+        var seenDiagnostics = Set<String>()
+        let nextEventHelp = diagnosticLines.isEmpty ? nil
+            : diagnosticLines.filter { seenDiagnostics.insert($0).inserted }.joined(separator: "\n")
 
         // Суд ближайшего события — только когда это событие ВЫШЕСТОЯЩЕЙ
         // инстанции. Дело, идущее в первой инстанции, подписи не меняет: issue
@@ -351,7 +440,7 @@ enum MovementDerivation {
         // «номер апелляции + суд первой инстанции» issue и запрещает.
         let currentReviewNumber = reviewNumber(
             for: resolution.currentInstance, baseCaseNumber: mv.caseNumber)
-        let reviewHearing = nextHearing.flatMap { hearing -> StoredSession? in
+        let reviewHearing = mainHearing.flatMap { hearing -> StoredSession? in
             guard hearing.level != .first, hearing.level != .material else { return nil }
             return hearing
         }
@@ -364,24 +453,33 @@ enum MovementDerivation {
         if let hearing = nextHearing, let date = hearing.date {
             nextEvent = "заседание \(DateUtil.shortDM(date))"
                 + (hearing.time.map { ", \($0)" } ?? "")
+            let materialNumber = materialOwner(of: hearing)?.0
+                ?? (hearing.level == .material ? hearing.caseNumber : nil)
+            if let materialNumber {
+                nextEvent += " · материал № \(CaseNumberPresentation.primary(materialNumber))"
+            }
             nextChip = .blue
             nextEventDate = date
         } else if let deadline = nextDeadline {
-            let deadlineLabel = deadline.kind == "cassation" ? "кассации"
+            let deadlineLabel = deadline.provenance?.ruleID.contains("SUPREME-COURT") == true
+                || deadline.what.contains("ВС РФ") ? "ВС РФ"
+                : deadline.kind == "cassation" ? "кассации"
                 : deadline.what.lowercased().contains("частн") ? "частной жалобы" : "апелляции"
             nextEvent = "срок \(deadlineLabel): "
                 + DateUtil.shortDM(deadline.date)
+            if MaterialDeadlineScope.materialSourceCardID(in: deadline.occurrenceKey) != nil {
+                let number = deadlineDisplayNumber(deadline, movement: mv, context: context,
+                    sessions: sessions, defaultNumber: "")
+                if !number.isEmpty { nextEvent += " · материал № \(number)" }
+            }
             nextChip = deadline.isUserControlled
                 ? .confirmed : .proposed
             // В буфере продолжаем показывать сам истёкший срок, а в сортировке
             // держим карточку до конца седьмого календарного дня.
             nextEventDate = deadline == resolution.graceDeadline && deadline.date < today
                 ? DateUtil.addDays(deadline.date, 7) : deadline.date
-        } else if let reason = deadlineAssessmentReason(assessments) {
-            // Норма и формула остаются в registry. В проекции показываем лишь
-            // ID рассмотренного правила и отсутствующее поле/политику, чтобы
-            // предупреждение не исчезало после корректного завершения lifecycle.
-            nextEvent = reason
+        } else if nextEventHelp != nil {
+            nextEvent = diagnosticShort ?? "Срок не рассчитан"
         } else if resolution.isCompleted {
             nextEvent = "завершено"
         }
@@ -401,7 +499,7 @@ enum MovementDerivation {
         case .confirmedDeadline:
             statusText = "Срок обжалования истёк"
             statusChip = .green
-        case nil where nextHearing != nil:
+        case nil where mainHearing != nil:
             statusText = "Назначено заседание"
             statusChip = .blue
         case nil where resolution.currentInstance.map(
@@ -435,7 +533,8 @@ enum MovementDerivation {
                 for: resolution.currentInstance, context: context)
                 ?? inferredTier(stage: resolution.stage, production: production, context: context),
             currentReviewNumber: currentReviewNumber,
-            nextEventCourt: nextEventCourt)
+            nextEventCourt: nextEventCourt,
+            nextEventHelp: nextEventHelp)
     }
 
     static func effectiveLegalForce(from movement: CaseMovement,
@@ -480,6 +579,25 @@ enum MovementDerivation {
             return nil
         }
         return "срок не рассчитан · \(assessment.ruleID) · \(detail)"
+    }
+
+    private static func compactDeadlineAssessmentReason(_ assessment: DeadlineRuleAssessment) -> String? {
+        guard assessment.isIndeterminate else { return nil }
+        if assessment.status == .insufficientEvidence,
+           let requirement = assessment.missingEvidenceRaw.first.flatMap(DeadlineEvidenceRequirement.init(rawValue:)) {
+            switch requirement {
+            case .finalForm, .cassationFinalForm, .appealFinalForm, .motivatedAppealDetermination:
+                return "Нет даты окончательной формы"
+            case .finalAct: return "Нет итогового акта"
+            case .legalForce: return "Нет даты вступления в силу"
+            case .deliveryOrReceipt: return "Нет даты получения акта"
+            case .firstCourtCassationReceipt: return "Нет даты подачи кассации в первую инстанцию"
+            case .conflictingDates: return "Даты акта противоречат друг другу"
+            default: return "Не подтверждено: " + evidenceLabel(requirement)
+            }
+        }
+        if assessment.status == .needsLegalReview { return "Срок требует юридической проверки" }
+        return "Порядок расчёта срока не поддерживается"
     }
 
     private static func evidenceLabel(_ requirement: DeadlineEvidenceRequirement) -> String {
@@ -1171,7 +1289,6 @@ enum MovementDerivation {
         var id: String
         var caseNumber: String
         var evaluation: DeadlineRuleEngine.Evaluation
-        var sourceUnavailable = false
     }
 
     static func materialDeadlineEvaluations(from movement: CaseMovement,

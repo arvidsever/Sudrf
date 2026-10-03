@@ -41,10 +41,6 @@ struct CaseMovementView: View {
     /// для старого movement-кэша, созданного до появления per-instance URL.
     var sourceURL: URL? = nil
     var sourceContext: MovementContext? = nil
-    var savedDeadlineAssessments: [DeadlineRuleAssessment]? = nil
-    var savedDeadlines: [StoredDeadline]? = nil
-    var savedDeadlineRecordKey: String? = nil
-    var savedDeadlineSessions: [StoredSession] = []
     var onSolveCaptcha: (CaseInstance) -> Void = { _ in }
     /// Отслеживание (раздел «Мои дела»): кнопка показывается, только если задан
     /// onTrack (из поиска). Из самой карточки мониторинга — не передаётся.
@@ -74,80 +70,10 @@ struct CaseMovementView: View {
     var onSolveFSSPCaptcha: ((CourtEnforcementDocument) -> Void)? = nil
     var focusInstanceID: String? = nil
     @State private var confirmingUntrack = false
-    @State private var deadlineAssessments: [DeadlineRuleAssessment] = []
-    @State private var materialDeadlineEvaluations: [MovementDerivation.MaterialDeadlineEvaluation] = []
-
-    private var displayedMaterialDeadlineEvaluations: [MovementDerivation.MaterialDeadlineEvaluation] {
-        var groups = materialDeadlineEvaluations
-        let saved = (savedDeadlines ?? []).filter { $0.isActive
-            && MaterialDeadlineScope.materialSourceCardID(in: $0.occurrenceKey) != nil }
-        for source in Set(saved.compactMap(MovementDerivation.deadlineScopeKey)).sorted()
-            where !groups.contains(where: { $0.id == source }) {
-            guard let deadline = saved.first(where: { MovementDerivation.deadlineScopeKey($0) == source }) else { continue }
-            let number = MovementDerivation.deadlineDisplayNumber(deadline, movement: movement,
-                context: sourceContext, sessions: savedDeadlineSessions, defaultNumber: movement.caseNumber)
-            groups.append(.init(id: source, caseNumber: number,
-                evaluation: .init(deadlines: [], assessments: []), sourceUnavailable: true))
-        }
-        return groups
-    }
-
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
-                    if !displayedMaterialDeadlineEvaluations.isEmpty {
-                        DisclosureGroup("Сроки материалов") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                ForEach(displayedMaterialDeadlineEvaluations) { item in
-                                    let deadlines = (savedDeadlines ?? item.evaluation.deadlines)
-                                        .filter { $0.isActive && MovementDerivation.deadlineScopeKey($0) == item.id }
-                                    let warnings = item.evaluation.assessments.filter(\.isIndeterminate)
-                                    if !deadlines.isEmpty || !warnings.isEmpty {
-                                        VStack(alignment: .leading, spacing: 5) {
-                                            Text("Материал № " + CaseNumberPresentation.primary(item.caseNumber))
-                                                .font(.headline)
-                                            if item.sourceUnavailable || item.evaluation.deadlines.isEmpty && !deadlines.isEmpty {
-                                                Text("Показан последний сохранённый срок; текущих данных материала недостаточно для повторного расчёта.")
-                                                    .font(.callout).foregroundStyle(.secondary)
-                                            }
-                                            ForEach(deadlines, id: \.occurrenceKey) { deadline in
-                                                Text(deadline.what + " · " + DateUtil.fmt(deadline.date))
-                                                Text(deadline.basis).font(.caption).foregroundStyle(.secondary)
-                                                    .textSelection(.enabled)
-                                                if let key = savedDeadlineRecordKey, let occurrence = deadline.occurrenceKey {
-                                                    DeadlineActions(id: key + "#" + occurrence, compact: true)
-                                                }
-                                            }
-                                            ForEach(warnings) { assessment in
-                                                if let reason = MovementDerivation.deadlineAssessmentReason([assessment]) {
-                                                    Text(reason).font(.callout).textSelection(.enabled)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
-                        }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    let assessments = (savedDeadlineAssessments ?? deadlineAssessments).filter(\.isIndeterminate)
-                    if !assessments.isEmpty {
-                        DisclosureGroup("Расчёт сроков") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(assessments) { assessment in
-                                    if let reason = MovementDerivation.deadlineAssessmentReason([assessment]) {
-                                        Text(reason)
-                                            .font(.callout)
-                                            .textSelection(.enabled)
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 6)
-                        }
-                        .padding(12)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                    }
                     // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
                     // отдельной секцией в конце: они идут в рамках дела, но инстанциями
                     // не являются.
@@ -199,19 +125,6 @@ struct CaseMovementView: View {
                 Button("Отмена", role: .cancel) {}
             } message: {
                 Text("Дело № \(movement.caseNumber) исчезнет из «Моих дел», обзора, календаря и подборок. Его можно будет снова добавить через поиск.")
-            }
-            .onChange(of: movement, initial: true) { _, value in
-                guard let context = sourceContext else { return }
-                materialDeadlineEvaluations = MovementDerivation.materialDeadlineEvaluations(from: value, context: context)
-                guard savedDeadlineAssessments == nil else { return }
-                let production = MaterialProductionContext.resolve(context: context, movement: value).production
-                deadlineAssessments = MovementDerivation.deadlineEvaluation(
-                    from: value, context: context, production: production, today: DateUtil.today)
-                    .assessments
-            }
-            .onChange(of: sourceContext) { _, context in
-                guard let context else { materialDeadlineEvaluations = []; return }
-                materialDeadlineEvaluations = MovementDerivation.materialDeadlineEvaluations(from: movement, context: context)
             }
             .onChange(of: focusInstanceID, initial: true) { _, target in
                 guard let target,

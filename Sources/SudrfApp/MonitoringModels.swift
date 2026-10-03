@@ -434,4 +434,5 @@ struct TrackedCase: Identifiable {
     var lastEventDate: Date?
     /// Дата ближайшего будущего заседания/срока (для «по ближайшему событию»).
     var nextEventDate: Date?
+    var nextEventHelp: String? = nil
 }

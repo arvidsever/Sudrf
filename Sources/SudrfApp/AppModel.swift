@@ -172,16 +172,6 @@ final class AppRouter: ObservableObject {
     /// Ключ записи открытой карточки — фоновые результаты применяются к UI
     /// только при совпадении ключа (карточку могли закрыть/сменить).
     private var openedKey: String? = nil
-    var openDeadlineAssessments: [DeadlineRuleAssessment] {
-        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.deadlineAssessments } ?? []
-    }
-    var openStoredDeadlines: [StoredDeadline] {
-        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.deadlines } ?? []
-    }
-    var openDeadlineRecordKey: String? { openedKey }
-    var openDeadlineSessions: [StoredSession] {
-        openedKey.flatMap { store.record(forKey: $0)?.snapshot?.sessions } ?? []
-    }
     var openedPreviousCaseNumbers: [String] {
         guard let openedKey, let record = store.record(forKey: openedKey) else { return [] }
         return Self.caseNumberAliases(for: record).previous
@@ -2583,7 +2573,8 @@ final class AppRouter: ObservableObject {
                 isNew: isNew,
                 steps: makeSteps(presentation?.steps ?? snap.steps,
                                  production: production), newDot: isNew,
-                lastEventDate: past ?? rec.addedAt, nextEventDate: next)
+                lastEventDate: past ?? rec.addedAt, nextEventDate: next,
+                nextEventHelp: presentation?.nextEventHelp)
         }
         // Снимок ещё не собран. Показываем сохранённый исход последней
         // попытки, если он был: холодная импортированная запись не должна

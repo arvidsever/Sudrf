@@ -106,8 +106,11 @@ final class DeadlineRuleEngineTests: XCTestCase {
             $0.ruleID == "GPK-APPEAL-GENERAL"
         })?.missingEvidenceRaw.contains(DeadlineEvidenceRequirement.finalForm.rawValue) ?? false)
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
-        XCTAssertTrue(snap.nextEvent.contains("GPK-APPEAL-GENERAL"))
-        XCTAssertTrue(snap.nextEvent.contains("окончательная форма акта"))
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: mv, snapshot: snap, context: context("g"), today: today)
+        XCTAssertEqual(presentation.nextEvent, "Нет даты окончательной формы")
+        XCTAssertTrue(presentation.nextEventHelp?.contains("GPK-APPEAL-GENERAL") == true)
+        XCTAssertTrue(presentation.nextEventHelp?.contains("окончательная форма акта") == true)
     }
 
     func testKnownSpecialCategoryDisplacesGeneralRule() {

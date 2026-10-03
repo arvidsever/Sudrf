@@ -1765,7 +1765,8 @@ final class MovementDerivationTests: XCTestCase {
         let out = presentation(mv)
 
         XCTAssertEqual(snap.stageRaw, "done")
-        XCTAssertEqual(out.nextEvent,
+        XCTAssertEqual(out.nextEvent, "Нет даты окончательной формы")
+        XCTAssertEqual(out.nextEventHelp,
                        "срок не рассчитан · GPK-CASSATION-SUPREME-COURT · нет: окончательная форма акта")
         XCTAssertEqual(out.nextEventCourt, "3 КСОЮ")
         XCTAssertNotEqual(snap.statusText, "Назначено заседание")
@@ -1971,9 +1972,9 @@ final class MovementDerivationTests: XCTestCase {
         let snap = MovementDerivation.snapshot(from: mv, context: context(), today: today)
 
         XCTAssertEqual(snap.stageRaw, CaseStageKind.done.rawValue)
-        XCTAssertTrue(snap.nextEvent.contains("GPK-CASSATION-CSOY"))
         let presentation = MovementDerivation.lifecyclePresentation(
             from: mv, snapshot: snap, context: context(), today: today)
+        XCTAssertTrue(presentation.nextEventHelp?.contains("GPK-CASSATION-CSOY") == true)
         XCTAssertNil(presentation.nextEventDate)
     }
 

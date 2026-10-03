@@ -1,5 +1,6 @@
 import AppKit
 import PDFKit
+import CoreGraphics
 import XCTest
 import SudrfKit
 @testable import SudrfApp
@@ -88,6 +89,7 @@ final class ActPDFMetadataTests: XCTestCase {
         XCTAssertGreaterThan(renderedDocument.pageCount, 1)
         XCTAssertTrue(renderedDocument.string?.contains("Контрольная строка последней страницы") == true)
         assertMetadata(metadata, on: renderedDocument)
+        try assertSerializedKeywords(metadata.judicialUID, in: renderedData)
 
         let sourceURL = try XCTUnwrap(Bundle.module.url(
             forResource: "valid", withExtension: "pdf",
@@ -138,6 +140,7 @@ final class ActPDFMetadataTests: XCTestCase {
                        "PDFKit metadata rewrite changed source annotations")
         XCTAssertEqual(fileDocument.string, sourceText)
         assertMetadata(metadata, on: fileDocument)
+        try assertSerializedKeywords(metadata.judicialUID, in: fileCopyData)
 
         if let outputPath = ProcessInfo.processInfo.environment["SUDRF_PDF_METADATA_OUTPUT"] {
             let directory = URL(fileURLWithPath: outputPath, isDirectory: true)
@@ -150,6 +153,17 @@ final class ActPDFMetadataTests: XCTestCase {
             try Data((fileDocument.string ?? "").utf8)
                 .write(to: directory.appendingPathComponent("file-copy.txt"))
         }
+    }
+
+    private func assertSerializedKeywords(_ expected: String?, in data: Data) throws {
+        let provider = try XCTUnwrap(CGDataProvider(data: data as CFData))
+        let pdf = try XCTUnwrap(CGPDFDocument(provider))
+        let info = try XCTUnwrap(pdf.info)
+        var keywords: CGPDFStringRef?
+        XCTAssertTrue(CGPDFDictionaryGetString(info, "Keywords", &keywords),
+                      "PDF Keywords must be a text string, readable beyond PDFKit")
+        let value = try XCTUnwrap(keywords)
+        XCTAssertEqual(CGPDFStringCopyTextString(value) as String?, expected)
     }
 
     private func assertMetadata(_ metadata: ActPDFMetadata, on document: PDFDocument,

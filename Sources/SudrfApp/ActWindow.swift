@@ -242,7 +242,7 @@ struct ActPDFMetadata: Codable, Hashable {
             attributes.removeValue(forKey: PDFDocumentAttribute.subjectAttribute)
         }
         if let judicialUID = nonempty(judicialUID) {
-            attributes[PDFDocumentAttribute.keywordsAttribute] = [judicialUID]
+            attributes[PDFDocumentAttribute.keywordsAttribute] = judicialUID
         } else {
             attributes.removeValue(forKey: PDFDocumentAttribute.keywordsAttribute)
         }

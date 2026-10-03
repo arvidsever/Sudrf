@@ -2416,10 +2416,13 @@ final class AppRouter: ObservableObject {
             }
             return lhs.id < rhs.id
         }
+        let currentNumbers = Set(displayCaseNumberTokens(in: currentNumber)
+            .map(normalizedCaseNumber))
         let previous = uniqueCaseNumbers(orderedHistory.flatMap { binding -> [String] in
             guard binding.cardIdentity == currentCard else { return [] }
             return displayCaseNumberTokens(in: binding.rawValue)
         }, excluding: currentNumber)
+            .filter { !currentNumbers.contains(normalizedCaseNumber($0)) }
         let searchable = uniqueCaseNumbers(
             orderedHistory.map(\.rawValue) + knownCards.compactMap(\.caseNumber),
             excluding: currentNumber)
@@ -2441,7 +2444,10 @@ final class AppRouter: ObservableObject {
     }
 
     private nonisolated static func displayCaseNumberTokens(in value: String) -> [String] {
-        value.split(whereSeparator: { $0 == "~" || $0 == "∼" }).compactMap { part in
+        value.split(whereSeparator: {
+            $0 == "~" || $0 == "∼" || $0 == "(" || $0 == ")"
+                || $0 == "[" || $0 == "]" || $0 == ";" || $0 == ","
+        }).compactMap { part in
             let number = CaseNumberPresentation.primary(String(part))
             return number.isEmpty ? nil : number
         }

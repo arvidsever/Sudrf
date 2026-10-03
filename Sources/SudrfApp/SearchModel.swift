@@ -198,6 +198,9 @@ final class SearchModel: ObservableObject {
     @Published var cardActs: [CaseAct] = []
     @Published var cardActBodies: [String: String] = [:]
     @Published var selectedCardActID: String?
+    /// Export metadata from the currently loaded portal card. The search row's
+    /// UID can be an internal link identifier, so only the card may supply it.
+    @Published var cardPDFMetadata: ActPDFMetadata?
     @Published var actFileError: String?
     @Published var actMissing = false
     @Published var hasSearched = false
@@ -914,6 +917,13 @@ final class SearchModel: ObservableObject {
                 cardActBodies = loadedBodies
                 selectedCardActID = loadedActs.first?.id
                 actText = loadedActs.first.flatMap { loadedBodies[$0.id] } ?? ""
+                cardPDFMetadata = ActPDFMetadata.selectedAct(
+                    caseNumber: card.caseNumber ?? r.caseNumber,
+                    text: actText,
+                    sourceTitle: loadedActs.first?.title,
+                    date: loadedActs.first?.date,
+                    courtName: card.court ?? court.title,
+                    judicialUID: card.uid)
                 if failures > 0 {
                     actFileError = failures == 1
                         ? "Не удалось прочитать один опубликованный файл. Оригинал можно открыть по ссылке."
@@ -940,6 +950,8 @@ final class SearchModel: ObservableObject {
                 let text = Self.publishedActText(from: card)
                 actMissing = text == nil
                 actText = text ?? ""
+                cardPDFMetadata = Self.makeCardPDFMetadata(
+                    card, caseNumber: r.caseNumber, courtName: court.title)
             } catch {
                 reportCardLoadFailure(error, prefix: "Ошибка карточки мирового участка:",
                                       generation: generation, resultID: r.stableID)
@@ -961,6 +973,8 @@ final class SearchModel: ObservableObject {
             let text = Self.publishedActText(from: card)
             actMissing = text == nil
             actText = text ?? ""
+            cardPDFMetadata = Self.makeCardPDFMetadata(
+                card, caseNumber: r.caseNumber, courtName: court.title)
         } catch {
             reportCardLoadFailure(error, prefix: "Ошибка карточки:",
                                   generation: generation, resultID: r.stableID)
@@ -1083,6 +1097,7 @@ final class SearchModel: ObservableObject {
         cardActs = []
         cardActBodies = [:]
         selectedCardActID = nil
+        cardPDFMetadata = nil
         actFileError = nil
         actMissing = false
     }
@@ -1097,6 +1112,17 @@ final class SearchModel: ObservableObject {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else { return nil }
         return value
+    }
+
+    private static func makeCardPDFMetadata(_ card: CaseCard, caseNumber: String,
+                                            courtName: String) -> ActPDFMetadata {
+        ActPDFMetadata.selectedAct(
+            caseNumber: card.caseNumber ?? caseNumber,
+            text: publishedActText(from: card) ?? card.acts.first?.body ?? "",
+            sourceTitle: card.acts.first?.label,
+            date: card.decisionDate,
+            courtName: courtName,
+            judicialUID: card.uid)
     }
 
     private static func moscowLevel(for cartoteka: Cartoteka) -> CaseInstance.Level {

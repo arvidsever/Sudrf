@@ -36,6 +36,7 @@ struct ActWindowPayload: Codable, Hashable {
     var paragraphs: [ActParagraph]? = nil
     var pdfFileURL: URL? = nil
     var pdfProvenance: PublishedActProvenance? = nil
+    var pdfMetadata: ActPDFMetadata? = nil
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(caseNumber)
@@ -43,6 +44,7 @@ struct ActWindowPayload: Codable, Hashable {
         hasher.combine(paragraphs)
         hasher.combine(pdfFileURL)
         hasher.combine(pdfProvenance?.contentHash)
+        hasher.combine(pdfMetadata)
     }
 }
 
@@ -67,7 +69,8 @@ struct ActWindowView: View {
             ToolbarItem {
                 Button {
                     ActPDFExporter.save(caseNumber: payload.caseNumber, text: payload.actText,
-                                        paragraphs: payload.paragraphs, originalPDF: pdfData)
+                                        paragraphs: payload.paragraphs, originalPDF: pdfData,
+                                        metadata: payload.pdfMetadata)
                 } label: {
                     Label("Сохранить в PDF", systemImage: "square.and.arrow.down")
                 }
@@ -185,7 +188,106 @@ struct PublishedPDFView: NSViewRepresentable {
 //  PDF всегда набирается шрифтом с засечками (Times New Roman) —
 //  как принято в судебных документах, независимо от экранного вида.
 
+struct ActPDFMetadata: Codable, Hashable {
+    let caseNumber: String
+    var actTitle: String? = nil
+    var date: String? = nil
+    var courtName: String? = nil
+    var judicialUID: String? = nil
+
+    static func selectedAct(caseNumber: String, text: String,
+                            sourceTitle: String? = nil, date: String? = nil,
+                            courtName: String? = nil,
+                            judicialUID: String? = nil) -> ActPDFMetadata {
+        ActPDFMetadata(
+            caseNumber: caseNumber,
+            actTitle: CourtActPresentation.exportTitle(in: text, sourceTitle: sourceTitle),
+            date: date, courtName: courtName, judicialUID: judicialUID)
+    }
+
+    static func selectedSearchAct(caseNumber: String, text: String,
+                                  selectedAct: CaseAct?, fallbackTitle: String?,
+                                  fallbackDate: String?, fallbackCourtName: String?,
+                                  judicialUID: String?) -> ActPDFMetadata {
+        Self.selectedAct(
+            caseNumber: selectedAct?.productionNumber ?? caseNumber,
+            text: text,
+            sourceTitle: selectedAct?.title ?? fallbackTitle,
+            date: selectedAct?.date ?? fallbackDate,
+            courtName: selectedAct?.courtShort ?? fallbackCourtName,
+            judicialUID: judicialUID)
+    }
+
+    var title: String {
+        let caseTitle = nonempty(caseNumber).map { "Дело № \($0)" } ?? "Судебный акт"
+        let details = [nonempty(actTitle), nonempty(date).map { "от \($0)" }]
+            .compactMap { $0 }.joined(separator: " ")
+        return details.isEmpty ? caseTitle : "\(caseTitle) — \(details)"
+    }
+
+    private func nonempty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty, value != "—" else { return nil }
+        return value
+    }
+
+    func apply(to document: PDFDocument) {
+        var attributes = document.documentAttributes ?? [:]
+        attributes[PDFDocumentAttribute.titleAttribute] = title
+        attributes[PDFDocumentAttribute.authorAttribute] = "Sudrf"
+        attributes[PDFDocumentAttribute.creatorAttribute] = "Sudrf"
+        if let courtName = readableCourtName(courtName) {
+            attributes[PDFDocumentAttribute.subjectAttribute] = courtName
+        } else {
+            attributes.removeValue(forKey: PDFDocumentAttribute.subjectAttribute)
+        }
+        if let judicialUID = nonempty(judicialUID) {
+            attributes[PDFDocumentAttribute.keywordsAttribute] = [judicialUID]
+        } else {
+            attributes.removeValue(forKey: PDFDocumentAttribute.keywordsAttribute)
+        }
+        document.documentAttributes = attributes
+    }
+
+    private func readableCourtName(_ value: String?) -> String? {
+        guard let value = nonempty(value),
+              !value.contains("--"),
+              value.range(of: #"^[A-Za-z0-9._-]+$"#,
+                          options: .regularExpression) == nil,
+              !value.localizedCaseInsensitiveContains("инстанция"),
+              value.caseInsensitiveCompare("кассация") != .orderedSame,
+              value.caseInsensitiveCompare("апелляция") != .orderedSame,
+              value.caseInsensitiveCompare("надзор") != .orderedSame,
+              value.caseInsensitiveCompare("материал") != .orderedSame,
+              !value.localizedCaseInsensitiveContains("суд не установлен") else { return nil }
+        return value
+    }
+}
+
+extension ActPDFMetadata {
+    init(document: ActDocument) {
+        self = Self.selectedAct(
+            caseNumber: document.caseNumber, text: document.sourceText,
+            sourceTitle: document.kind, date: document.date,
+            courtName: document.court, judicialUID: document.judicialUID)
+    }
+}
+
 enum ActPDFExporter {
+
+    private enum ExportError: LocalizedError {
+        case printingFailed
+        case invalidPDF
+        case serializationFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .printingFailed: "Не удалось сформировать PDF акта."
+            case .invalidPDF: "Не удалось прочитать PDF для добавления реквизитов."
+            case .serializationFailed: "Не удалось записать PDF с реквизитами акта."
+            }
+        }
+    }
 
     // A4 в типографских пунктах
     private static let paper = NSSize(width: 595.28, height: 841.89)
@@ -196,12 +298,17 @@ enum ActPDFExporter {
 
     @MainActor
     static func save(caseNumber: String, text: String,
-                     paragraphs: [ActParagraph]? = nil, originalPDF: Data? = nil) {
+                     paragraphs: [ActParagraph]? = nil, originalPDF: Data? = nil,
+                     metadata: ActPDFMetadata? = nil) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = filename(caseNumber: caseNumber)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try write(to: url, text: text, paragraphs: paragraphs, originalPDF: originalPDF) }
+        do {
+            try write(to: url, text: text, paragraphs: paragraphs,
+                      originalPDF: originalPDF,
+                      metadata: metadata ?? ActPDFMetadata(caseNumber: caseNumber))
+        }
         catch { NSAlert(error: error).runModal() }
     }
 
@@ -213,19 +320,27 @@ enum ActPDFExporter {
     /// Без UI-панели — для ExportCourtActPDFIntent. Возвращает байты, чтобы
     /// App Intents сам управлял временным файлом и его временем жизни.
     @MainActor
-    static func renderData(text: String, paragraphs: [ActParagraph]? = nil) -> Data? {
+    static func renderData(text: String, paragraphs: [ActParagraph]? = nil,
+                           metadata: ActPDFMetadata? = nil) -> Data? {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Sudrf-\(UUID().uuidString).pdf")
         defer { try? FileManager.default.removeItem(at: url) }
-        try? write(to: url, text: text, paragraphs: paragraphs)
-        return try? Data(contentsOf: url)
+        do {
+            try write(to: url, text: text, paragraphs: paragraphs, metadata: metadata)
+            return try Data(contentsOf: url)
+        } catch {
+            return nil
+        }
     }
 
     @MainActor
     static func write(to url: URL, text: String, paragraphs: [ActParagraph]? = nil,
-                      originalPDF: Data? = nil) throws {
+                      originalPDF: Data? = nil,
+                      metadata: ActPDFMetadata? = nil) throws {
+        let metadata = metadata ?? ActPDFMetadata(caseNumber: "")
         if let originalPDF {
-            try originalPDF.write(to: url, options: .atomic)
+            let copy = try adding(metadata: metadata, to: originalPDF)
+            try copy.write(to: url, options: .atomic)
             return
         }
         let printInfo = NSPrintInfo()
@@ -251,7 +366,22 @@ enum ActPDFExporter {
         let op = NSPrintOperation(view: textView, printInfo: printInfo)
         op.showsPrintPanel = false
         op.showsProgressPanel = false
-        op.run()
+        guard op.run() else { throw ExportError.printingFailed }
+
+        let rendered = try Data(contentsOf: url)
+        let copy = try adding(metadata: metadata, to: rendered)
+        try copy.write(to: url, options: .atomic)
+    }
+
+    private static func adding(metadata: ActPDFMetadata, to data: Data) throws -> Data {
+        guard let document = PDFDocument(data: data), !document.isLocked else {
+            throw ExportError.invalidPDF
+        }
+        metadata.apply(to: document)
+        guard let copy = document.dataRepresentation() else {
+            throw ExportError.serializationFailed
+        }
+        return copy
     }
 
     // MARK: типографика — зеркало ActTextView

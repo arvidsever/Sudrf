@@ -168,7 +168,8 @@ struct ExportCourtActPDFIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<IntentFile> & ProvidesDialog {
         let document = courtAct.document
         guard let data = await ActPDFExporter.renderData(
-            text: document.sourceText, paragraphs: document.paragraphs) else {
+            text: document.sourceText, paragraphs: document.paragraphs,
+            metadata: ActPDFMetadata(document: document)) else {
             throw SudrfIntentError.applicationUnavailable
         }
         let file = IntentFile(data: data,

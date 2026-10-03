@@ -6,7 +6,8 @@ import SudrfKit
 final class PublishedActPresentationTests: XCTestCase {
     private let pdfURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000001")!
 
-    private func movement(_ acts: [CaseAct], bodies: [String: String] = [:]) -> CaseMovement {
+    private func movement(_ acts: [CaseAct], bodies: [String: String] = [:],
+                          uid: String = "") -> CaseMovement {
         let instances = acts.map { act in
             CaseInstance(level: .vsCassation, court: "Верховный Суд РФ",
                          caseNumber: act.productionNumber ?? "3-ИКАД25-3-А2", judge: nil,
@@ -14,7 +15,7 @@ final class PublishedActPresentationTests: XCTestCase {
                          sessions: [], actID: act.id,
                          sourceURL: URL(string: "https://www.vsrf.ru/lk/practice/claims/12-36321243"))
         }
-        return CaseMovement(uid: "", caseNumber: "3а-85/2025", inForce: true,
+        return CaseMovement(uid: uid, caseNumber: "3а-85/2025", inForce: true,
                             instances: instances, complaints: [:], acts: acts, actBodies: bodies)
     }
 
@@ -26,7 +27,7 @@ final class PublishedActPresentationTests: XCTestCase {
 
     func testPublishedFileVisibleBeforeTextAndAfterSavedMovementReopen() throws {
         let saved = try JSONDecoder().decode(CaseMovement.self,
-            from: JSONEncoder().encode(movement([act("published")])) )
+            from: JSONEncoder().encode(movement([act("published")], uid: "test-uid")) )
         let row = try XCTUnwrap(CourtActPresentation.rows(in: saved).first)
         XCTAssertEqual(row.id, "published")
         XCTAssertEqual(row.title, "Кассационное определение")
@@ -35,6 +36,8 @@ final class PublishedActPresentationTests: XCTestCase {
         XCTAssertEqual(row.originalURL, pdfURL)
         XCTAssertEqual(row.productionNumber, "3-ИКАД25-3-А2")
         XCTAssertEqual(row.text, "")
+        XCTAssertEqual(row.courtName, "Верховный Суд РФ")
+        XCTAssertEqual(row.judicialUID, "test-uid")
     }
 
     func testUnloadedFilesNeverMergeBecauseBothHaveEmptyText() {

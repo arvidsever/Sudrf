@@ -373,10 +373,16 @@ enum CourtActProjectionSynchronizer {
                     continue
                 }
                 let court = court(for: act, in: movement.instances)
+                let productionNumber = act.productionNumber?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let caseNumber = productionNumber.flatMap { value in
+                    value.isEmpty ? nil : value
+                }
+                    ?? (movement.caseNumber.isEmpty
+                        ? trackedRecord.caseNumber : movement.caseNumber)
                 let document = ActDocument(
                     caseKey: trackedRecord.key, sourceActID: act.id,
-                    caseNumber: movement.caseNumber.isEmpty
-                        ? trackedRecord.caseNumber : movement.caseNumber,
+                    caseNumber: caseNumber,
                     judicialUID: trackedRecord.judicialUID
                         ?? (movement.uid.isEmpty ? nil : movement.uid),
                     court: court,

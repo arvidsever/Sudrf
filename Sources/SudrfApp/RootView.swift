@@ -1016,6 +1016,13 @@ struct LiveActsPane: View {
         selected?.productionNumber ?? router.liveMovement?.caseNumber ?? ""
     }
 
+    private var pdfMetadata: ActPDFMetadata {
+        ActPDFMetadata.selectedAct(caseNumber: actNumber, text: body0 ?? "",
+                                   sourceTitle: selected?.sourceTitle,
+                                   date: selected?.date, courtName: selected?.courtName,
+                                   judicialUID: selected?.judicialUID)
+    }
+
     private var selectedParagraphs: [ActParagraph]? { router.selectedActParagraphs }
 
     var body: some View {
@@ -1032,13 +1039,15 @@ struct LiveActsPane: View {
                                 caseNumber: actNumber, actText: body0 ?? "",
                                 paragraphs: selectedParagraphs,
                                 pdfFileURL: router.selectedPublishedAct.fileURL,
-                                pdfProvenance: router.selectedPublishedAct.provenance))
+                                pdfProvenance: router.selectedPublishedAct.provenance,
+                                pdfMetadata: pdfMetadata))
                         } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Открыть в отдельном окне").disabled(isPDF ? router.selectedPublishedAct.fileURL == nil : body0 == nil)
                         Button {
                             ActPDFExporter.save(caseNumber: actNumber, text: body0 ?? "",
                                                 paragraphs: selectedParagraphs,
-                                                originalPDF: router.selectedPublishedAct.data)
+                                                originalPDF: router.selectedPublishedAct.data,
+                                                metadata: pdfMetadata)
                         } label: { Image(systemName: "square.and.arrow.down") }
                         .help("Сохранить в PDF").disabled(isPDF ? router.selectedPublishedAct.data == nil : body0 == nil)
                         Button {

@@ -14,6 +14,9 @@ struct CourtActDisplay: Identifiable {
     var sourceFileURL: URL? = nil
     var productionNumber: String? = nil
     var fileProvenance: PublishedActProvenance? = nil
+    var sourceTitle: String? = nil
+    var courtName: String? = nil
+    var judicialUID: String? = nil
 
     func contains(_ sourceID: String) -> Bool { sourceIDs.contains(sourceID) }
 }
@@ -47,8 +50,9 @@ enum CourtActPresentation {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || fileURL != nil else { return nil }
             let instance = movement.instances.first { $0.linkedActIDs.contains(act.id) }
-            let courtName = instance.flatMap { meaningfulCourt($0.court) }
-                ?? meaningfulCourt(act.courtShort)
+            let courtName = instance.flatMap {
+                displayCourtName($0.court, domain: $0.domain).flatMap(meaningfulCourt)
+            } ?? displayCourtName(act.courtShort).flatMap(meaningfulCourt)
             let host = instance.map { SudrfHost.moduleHost($0.domain) }
             let title = heading(in: text) ?? act.title
             return Source(act: act, text: text,
@@ -91,7 +95,13 @@ enum CourtActPresentation {
             let title = heading(in: representative.text)
                 ?? group.compactMap { humanTitle($0.act.title) }.first
                 ?? fallbackTitle(level)
+            let sourceTitle = group.compactMap { humanTitle($0.act.title) }.first
             let sourceIDs = group.map { $0.act.id }
+            let linkedInstances = movement.instances
+                .filter { $0.linkedActIDs.contains(where: sourceIDs.contains) }
+            let courtName = linkedInstances
+                .compactMap { displayCourtName($0.court, domain: $0.domain) }.first
+                ?? group.compactMap { displayCourtName($0.act.courtShort) }.first
             let fileURL = group.compactMap { $0.act.fileProvenance?.sourceURL ?? $0.act.sourceFileURL }
                 .compactMap(PublishedActURLPolicy.safePublishedURL).first
             let cardURL = movement.instances
@@ -107,7 +117,10 @@ enum CourtActPresentation {
                                    originalURL: fileURL ?? cardURL,
                                    instanceLevel: level, sourceFileURL: fileURL,
                                    productionNumber: representative.act.productionNumber,
-                                   fileProvenance: group.compactMap { $0.act.fileProvenance }.first)
+                                   fileProvenance: group.compactMap { $0.act.fileProvenance }.first,
+                                   sourceTitle: sourceTitle,
+                                   courtName: courtName,
+                                   judicialUID: movement.uid.isEmpty ? nil : movement.uid)
         }.sorted { lhs, rhs in
             let left = sources.firstIndex { lhs.contains($0.act.id) } ?? .max
             let right = sources.firstIndex { rhs.contains($0.act.id) } ?? .max
@@ -183,6 +196,20 @@ enum CourtActPresentation {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
 
+    private static func displayCourtName(_ value: String, domain: String? = nil) -> String? {
+        if let domain {
+            let directoryCourt = CourtDirectory.court(forDomain: domain)
+                ?? CourtDirectory.court(forDomain: SudrfHost.moduleHost(domain))
+            if let title = directoryCourt?.title { return title }
+        }
+        guard meaningfulCourt(value) != nil,
+              !value.contains("--"),
+              value.range(of: #"^[A-Za-z0-9._-]+$"#,
+                          options: .regularExpression) == nil else { return nil }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
     private static func normalizedText(_ text: String) -> String {
         ActParagraphizer.normalizedText(text)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
@@ -219,6 +246,16 @@ enum CourtActPresentation {
 
     static func displayTitle(for title: String) -> String {
         humanTitle(title) ?? "Судебный акт"
+    }
+
+    static func exportTitle(in text: String, sourceTitle: String? = nil) -> String? {
+        if let sourceTitle = sourceTitle.flatMap(humanTitle),
+           kind(of: sourceTitle) != nil,
+           !["решение", "определение", "постановление", "приговор"]
+               .contains(sourceTitle.lowercased()) {
+            return sourceTitle
+        }
+        return heading(in: text) ?? sourceTitle.flatMap(humanTitle)
     }
 
     private static func heading(in text: String) -> String? {

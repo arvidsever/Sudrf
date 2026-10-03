@@ -269,6 +269,7 @@ final class SearchResultSelectionTests: XCTestCase {
                                              level: .district,
                                              code: "77RS0001")
         let card = MosGorSudCard(
+            uid: "77RS0001-01-2026-000001-12",
             caseNumber: row.caseNumber,
             court: court.title,
             judge: "Иванова И. И.",
@@ -301,6 +302,10 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertEqual(model.cardActs[1].fileProvenance, second.provenance)
         XCTAssertEqual(model.selectedCardActID, firstURL.absoluteString)
         XCTAssertEqual(model.actText, first.text)
+        XCTAssertEqual(model.cardPDFMetadata?.title,
+                       "Дело № 02-10/2026 — Решение от 01.08.2026")
+        XCTAssertEqual(model.cardPDFMetadata?.courtName, court.title)
+        XCTAssertEqual(model.cardPDFMetadata?.judicialUID, card.uid)
         XCTAssertNil(model.actFileError)
         XCTAssertFalse(model.actMissing)
 
@@ -308,6 +313,9 @@ final class SearchResultSelectionTests: XCTestCase {
 
         XCTAssertEqual(model.selectedCardActID, secondURL.absoluteString)
         XCTAssertEqual(model.actText, second.text)
+
+        model.closeInspector()
+        XCTAssertNil(model.cardPDFMetadata)
     }
 
     @MainActor
@@ -400,6 +408,8 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertTrue(model.loadingCard)
         XCTAssertTrue(model.cardActs.isEmpty)
         XCTAssertTrue(model.cardActBodies.isEmpty)
+        XCTAssertNil(model.cardPDFMetadata,
+                     "карточка другой записи не должна подменять метаданные до завершения загрузки")
         XCTAssertTrue(model.actText.isEmpty)
         XCTAssertEqual(model.actLinks, [secondActURL])
         XCTAssertNil(model.actFileError)
@@ -413,6 +423,9 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertEqual(model.cardActBodies[secondActURL.absoluteString], secondFile.text)
         XCTAssertEqual(model.actText, secondFile.text)
         XCTAssertEqual(model.actLinks, [secondActURL])
+        XCTAssertEqual(model.cardPDFMetadata?.title,
+                       "Дело № 02-13/2026 — Второй акт")
+        XCTAssertNil(model.cardPDFMetadata?.judicialUID)
         XCTAssertNil(model.actFileError)
     }
 

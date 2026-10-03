@@ -904,11 +904,8 @@ final class SearchModel: ObservableObject {
                             instanceLevel: Self.moscowLevel(for: cart),
                             fileProvenance: file.provenance))
                         loadedBodies[id] = file.text
-                    } catch is CancellationError {
-                        return
-                    } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
-                        return
                     } catch {
+                        if Self.isCardLoadCancellation(error) { return }
                         failures += 1
                     }
                 }
@@ -922,12 +919,9 @@ final class SearchModel: ObservableObject {
                         ? "Не удалось прочитать один опубликованный файл. Оригинал можно открыть по ссылке."
                         : "Не удалось прочитать опубликованные файлы: \(failures). Оригиналы можно открыть по ссылкам."
                 }
-            } catch let e as SudrfError {
-                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-                status = e.description
             } catch {
-                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-                status = "Ошибка карточки mos-gorsud: \(error)"
+                reportCardLoadFailure(error, prefix: "Ошибка карточки mos-gorsud:",
+                                      generation: generation, resultID: r.stableID)
             }
             return
         }
@@ -946,12 +940,9 @@ final class SearchModel: ObservableObject {
                 let text = Self.publishedActText(from: card)
                 actMissing = text == nil
                 actText = text ?? ""
-            } catch let e as SudrfError {
-                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-                status = e.description
             } catch {
-                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-                status = "Ошибка карточки мирового участка: \(error)"
+                reportCardLoadFailure(error, prefix: "Ошибка карточки мирового участка:",
+                                      generation: generation, resultID: r.stableID)
             }
             return
         }
@@ -970,12 +961,9 @@ final class SearchModel: ObservableObject {
             let text = Self.publishedActText(from: card)
             actMissing = text == nil
             actText = text ?? ""
-        } catch let e as SudrfError {
-            guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-            status = e.description
         } catch {
-            guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
-            status = "Ошибка карточки: \(error)"
+            reportCardLoadFailure(error, prefix: "Ошибка карточки:",
+                                  generation: generation, resultID: r.stableID)
         }
     }
 
@@ -1062,6 +1050,30 @@ final class SearchModel: ObservableObject {
 
     private func isCurrentCardLoad(_ generation: Int, resultID: String) -> Bool {
         cardLoadGeneration == generation && selectedResultID == resultID
+    }
+
+    private func reportCardLoadFailure(_ error: Error, prefix: String,
+                                       generation: Int, resultID: String) {
+        guard !Self.isCardLoadCancellation(error),
+              isCurrentCardLoad(generation, resultID: resultID) else { return }
+        if let error = error as? SudrfError {
+            status = error.description
+            return
+        }
+        let localized = (error as? LocalizedError)?.errorDescription
+        let message = localized ?? ((error is URLError
+            || (error as NSError).userInfo[NSLocalizedDescriptionKey] != nil)
+            ? error.localizedDescription : "Не удалось загрузить карточку. Попробуйте ещё раз.")
+        status = "\(prefix) \(message)"
+    }
+
+    private static func isCardLoadCancellation(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        let cancellation = CancellationError() as NSError
+        return Task.isCancelled || error is CancellationError
+            || (error as? URLError)?.code == .cancelled
+            // URLSession may bridge a Swift cancellation into NSError.
+            || (nsError.domain == cancellation.domain && nsError.code == cancellation.code)
     }
 
     private func clearActPreview() {

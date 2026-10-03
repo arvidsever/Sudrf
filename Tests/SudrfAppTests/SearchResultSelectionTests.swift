@@ -531,6 +531,7 @@ final class SearchResultSelectionTests: XCTestCase {
         defer { MovementMemoryCache.shared.remove(cacheKey) }
 
         model.selectedResultID = first.stableID
+        model.status = "Найдено: 2 (№ дела)"
         model.actText = "Текст прежней карточки"
         model.actLinks = [firstActURL]
         model.actMissing = true
@@ -543,10 +544,12 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertTrue(model.actText.isEmpty)
         XCTAssertTrue(model.actLinks.isEmpty)
         XCTAssertFalse(model.actMissing)
+        XCTAssertEqual(model.status, "Найдено: 2 (№ дела)")
 
         model.exitMovement()
         XCTAssertNil(model.movement)
         XCTAssertTrue(model.actLinks.isEmpty)
+        XCTAssertEqual(model.status, "Найдено: 2 (№ дела)")
 
         let pendingLoad = Task { @MainActor in await model.openCard(first) }
         await client.waitUntilFetchStarts(for: firstCardURL)
@@ -611,6 +614,182 @@ final class SearchResultSelectionTests: XCTestCase {
         XCTAssertEqual(model.selectedResult?.caseNumber, "5-10/2026")
         XCTAssertTrue(model.status.contains("Источник example.msudrf.ru временно недоступен"))
         XCTAssertTrue(model.actText.isEmpty)
+    }
+
+    @MainActor
+    func testCardCancellationPreservesStatusForEverySource() async throws {
+        for source in SearchCardSource.allCases {
+            for failure in [SearchCardFailure.cancellation, .urlCancellation] {
+                let (model, row) = try await cardLoadModel(source: source, failure: failure)
+                let previousStatus = "Найдено: 1 (№ дела)"
+                model.status = previousStatus
+
+                await model.openCard(row)
+
+                XCTAssertEqual(model.status, previousStatus, "\(source), \(failure)")
+                XCTAssertFalse(model.loadingCard, "\(source), \(failure)")
+            }
+        }
+    }
+
+    @MainActor
+    func testCardFailureUsesLocalizedMessageForEverySource() async throws {
+        let message = "Карточка временно недоступна"
+        for source in SearchCardSource.allCases {
+            let (model, row) = try await cardLoadModel(source: source, failure: .message(message))
+
+            await model.openCard(row)
+
+            XCTAssertTrue(model.status.contains(message), "\(source): \(model.status)")
+            XCTAssertFalse(model.loadingCard, "\(source)")
+        }
+    }
+
+    @MainActor
+    func testUnknownCardFailureNeverDisplaysTechnicalErrorType() async throws {
+        for source in SearchCardSource.allCases {
+            let (model, row) = try await cardLoadModel(source: source, failure: .unknown)
+            await model.openCard(row)
+            XCTAssertTrue(model.status.contains("Не удалось загрузить карточку. Попробуйте ещё раз."))
+            XCTAssertFalse(model.status.contains("UnspecifiedCardFailure"))
+            XCTAssertFalse(model.loadingCard)
+        }
+    }
+
+    @MainActor
+    func testCancelledCardTaskDoesNotReplaceStatusOrFinishNewerLoad() async throws {
+        let firstURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/cancelled"))
+        let secondURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/current"))
+        let first = CaseSearchResult(caseNumber: "02-14/2026", cardURL: firstURL)
+        let second = CaseSearchResult(caseNumber: "02-15/2026", cardURL: secondURL)
+        let client = DelayedSearchMosGorSudStub()
+        let (model, _) = try await cardLoadModel(source: .mosGorSud, mosClient: client)
+        model.results = [first, second]
+        let previousStatus = "Найдено: 2 (портал mos-gorsud.ru)"
+        model.status = previousStatus
+
+        let cancelledLoad = Task { @MainActor in await model.openCard(first) }
+        await client.waitUntilFetchStarts(for: firstURL)
+        let currentLoad = Task { @MainActor in await model.openCard(second) }
+        await client.waitUntilFetchStarts(for: secondURL)
+        cancelledLoad.cancel()
+        await client.resume(firstURL, throwing: .message("Запоздалый сбой"))
+        await cancelledLoad.value
+
+        XCTAssertEqual(model.selectedResultID, second.stableID)
+        XCTAssertEqual(model.status, previousStatus)
+        XCTAssertTrue(model.loadingCard)
+
+        await client.resume(secondURL, with: MosGorSudCard(caseNumber: second.caseNumber))
+        await currentLoad.value
+
+        XCTAssertEqual(model.status, previousStatus)
+        XCTAssertFalse(model.loadingCard)
+    }
+
+    @MainActor
+    func testCancelledCurrentCardTaskKeepsStatusForTransportError() async throws {
+        let url = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/current-cancel"))
+        let row = CaseSearchResult(caseNumber: "02-18/2026", cardURL: url)
+        let client = DelayedSearchMosGorSudStub()
+        let (model, _) = try await cardLoadModel(source: .mosGorSud, mosClient: client)
+        model.results = [row]
+        let previousStatus = "Найдено: 1 (портал mos-gorsud.ru)"
+        model.status = previousStatus
+
+        let load = Task { @MainActor in await model.openCard(row) }
+        await client.waitUntilFetchStarts(for: url)
+        load.cancel()
+        await client.resume(url, throwing: .message("Отмена запроса транспортом"))
+        await load.value
+
+        XCTAssertEqual(model.selectedResultID, row.stableID)
+        XCTAssertEqual(model.status, previousStatus)
+        XCTAssertFalse(model.loadingCard)
+    }
+
+    @MainActor
+    func testLateCardFailureCannotOverwriteNewerSelection() async throws {
+        let firstURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/late-failure"))
+        let secondURL = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/latest"))
+        let first = CaseSearchResult(caseNumber: "02-16/2026", cardURL: firstURL)
+        let second = CaseSearchResult(caseNumber: "02-17/2026", cardURL: secondURL)
+        let client = DelayedSearchMosGorSudStub()
+        let (model, _) = try await cardLoadModel(source: .mosGorSud, mosClient: client)
+        model.results = [first, second]
+        let previousStatus = "Текущий статус поиска"
+        model.status = previousStatus
+
+        let oldLoad = Task { @MainActor in await model.openCard(first) }
+        await client.waitUntilFetchStarts(for: firstURL)
+        let currentLoad = Task { @MainActor in await model.openCard(second) }
+        await client.waitUntilFetchStarts(for: secondURL)
+
+        await client.resume(firstURL, throwing: .message("Ошибка старой карточки"))
+        await oldLoad.value
+
+        XCTAssertEqual(model.selectedResultID, second.stableID)
+        XCTAssertEqual(model.status, previousStatus)
+        XCTAssertTrue(model.loadingCard)
+
+        await client.resume(secondURL, with: MosGorSudCard(caseNumber: second.caseNumber))
+        await currentLoad.value
+        XCTAssertEqual(model.status, previousStatus)
+        XCTAssertFalse(model.loadingCard)
+    }
+
+    @MainActor
+    private func cardLoadModel(source: SearchCardSource,
+                               failure: SearchCardFailure? = nil,
+                               mosClient: (any MosGorSudProviding)? = nil) async throws
+        -> (SearchModel, CaseSearchResult) {
+        let domain: String
+        let tier: CourtTier
+        let url: URL
+        switch source {
+        case .ordinary:
+            domain = "example.sudrf.ru"
+            tier = .district
+            url = try XCTUnwrap(URL(string: "https://example.sudrf.ru/modules.php?name=sud_delo"
+                + "&name_op=case&case_id=1&case_uid=uid-1"))
+        case .magistrate:
+            domain = "example.msudrf.ru"
+            tier = .magistrate
+            url = try XCTUnwrap(URL(string: "https://example.msudrf.ru/modules.php?name=sud_delo"
+                + "&op=cs&case_id=1&delo_id=1500001"))
+        case .mosGorSud:
+            domain = MosGorSudEndpoint.host
+            tier = .district
+            url = try XCTUnwrap(URL(string: "https://mos-gorsud.ru/rs/tverskoj/details/1"))
+        }
+
+        let row = CaseSearchResult(caseNumber: "2-1/2026", cardURL: url)
+        let court = SearchModel.CourtOption(domain: domain, title: "Тестовый суд",
+                                             level: source == .magistrate ? .magistrate : .district,
+                                             code: source == .mosGorSud ? "77RS0001" : nil)
+        let model: SearchModel
+        if source == .mosGorSud {
+            model = SearchModel(mosGorSudClient: mosClient
+                ?? SearchMosGorSudStub(card: nil, failure: failure))
+        } else {
+            CardLoadFailureURLProtocol.failure = failure ?? .message("Ошибка карточки")
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [CardLoadFailureURLProtocol.self]
+            let client = SudrfClient(session: URLSession(configuration: configuration), minInterval: 0)
+            await client.setMaxAttemptsForTesting(1)
+            model = SearchModel(client: client)
+        }
+        if source == .magistrate {
+            model.tier = .magistrate
+            await model.resolveCourts()
+        }
+        model.tier = tier
+        model.cartotekaId = source == .magistrate ? "adm" : "g1"
+        model.courts = [court]
+        model.selectedCourtID = court.id
+        model.results = [row]
+        model.status = "Найдено: 1 (№ дела)"
+        return (model, row)
     }
 
     @MainActor
@@ -760,13 +939,63 @@ final class SearchResultSelectionTests: XCTestCase {
     }
 }
 
+private enum SearchCardSource: CaseIterable, Equatable {
+    case ordinary
+    case magistrate
+    case mosGorSud
+}
+
+private enum SearchCardFailure: Sendable {
+    case cancellation
+    case urlCancellation
+    case unknown
+    case message(String)
+
+    func makeError() -> any Error {
+        switch self {
+        case .cancellation: CancellationError()
+        case .urlCancellation: URLError(.cancelled)
+        case .unknown: NSError(domain: "UnspecifiedCardFailure", code: 99)
+        case .message(let message): SearchCardLocalizedFailure(message: message)
+        }
+    }
+}
+
+private struct SearchCardLocalizedFailure: LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private final class CardLoadFailureURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var failure: SearchCardFailure = .message("Ошибка карточки")
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let error: any Error
+        if case .message(let message) = Self.failure {
+            error = NSError(domain: "CardLoadTest", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: message])
+        } else {
+            error = Self.failure.makeError()
+        }
+        client?.urlProtocol(self, didFailWithError: error)
+    }
+
+    override func stopLoading() {}
+}
+
 private struct SearchMosGorSudStub: MosGorSudProviding {
     let card: MosGorSudCard?
     let publishedActs: [URL: PublishedActFile]
+    let failure: SearchCardFailure?
 
-    init(card: MosGorSudCard?, publishedActs: [URL: PublishedActFile] = [:]) {
+    init(card: MosGorSudCard?, publishedActs: [URL: PublishedActFile] = [:],
+         failure: SearchCardFailure? = nil) {
         self.card = card
         self.publishedActs = publishedActs
+        self.failure = failure
     }
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
@@ -776,6 +1005,7 @@ private struct SearchMosGorSudStub: MosGorSudProviding {
     }
 
     func fetchCard(url: URL) async throws -> MosGorSudCard {
+        if let failure { throw failure.makeError() }
         guard let card else { throw SearchMosGorSudStubError.unavailable }
         return card
     }
@@ -788,12 +1018,21 @@ private struct SearchMosGorSudStub: MosGorSudProviding {
     }
 }
 
-private enum SearchMosGorSudStubError: Error, Sendable {
+private enum SearchMosGorSudStubError: Error, Sendable, LocalizedError {
     case unavailable
+    case message(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "Тестовая карточка недоступна"
+        case .message(let message): message
+        }
+    }
 }
 
 private actor DelayedSearchMosGorSudStub: MosGorSudProviding {
-    private var fetchContinuations: [URL: CheckedContinuation<MosGorSudCard, Never>] = [:]
+    private var fetchContinuations:
+        [URL: CheckedContinuation<Result<MosGorSudCard, SearchMosGorSudStubError>, Never>] = [:]
     private var startWaiters: [URL: [CheckedContinuation<Void, Never>]] = [:]
 
     func search(courtAlias: String?, uid: String?, caseNumber: String?,
@@ -802,11 +1041,12 @@ private actor DelayedSearchMosGorSudStub: MosGorSudProviding {
         []
     }
 
-    func fetchCard(url: URL) async -> MosGorSudCard {
-        await withCheckedContinuation { continuation in
+    func fetchCard(url: URL) async throws -> MosGorSudCard {
+        let result = await withCheckedContinuation { continuation in
             fetchContinuations[url] = continuation
             startWaiters.removeValue(forKey: url)?.forEach { $0.resume() }
         }
+        return try result.get()
     }
 
     func waitUntilFetchStarts(for url: URL) async {
@@ -815,7 +1055,11 @@ private actor DelayedSearchMosGorSudStub: MosGorSudProviding {
     }
 
     func resume(_ url: URL, with card: MosGorSudCard) {
-        fetchContinuations.removeValue(forKey: url)?.resume(returning: card)
+        fetchContinuations.removeValue(forKey: url)?.resume(returning: .success(card))
+    }
+
+    func resume(_ url: URL, throwing error: SearchMosGorSudStubError) {
+        fetchContinuations.removeValue(forKey: url)?.resume(returning: .failure(error))
     }
 }
 

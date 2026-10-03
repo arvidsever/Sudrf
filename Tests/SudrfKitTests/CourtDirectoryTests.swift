@@ -51,6 +51,14 @@ final class CourtDirectoryTests: XCTestCase {
         XCTAssertEqual(c?.domain, "3kas.sudrf.ru")
     }
 
+    func testCourtForDomainResolvesCaseAndDashAliases() {
+        for domain in ["OBLSUD--MO.SUDRF.RU", "oblsud.mo.sudrf.ru",
+                       "https://OBLSUD--MO.SUDRF.RU/modules.php"] {
+            XCTAssertEqual(CourtDirectory.court(forDomain: domain)?.title,
+                           "Московский областной суд")
+        }
+    }
+
     func testMSudrfHostPredicateRequiresExactOrDottedHost() {
         XCTAssertTrue(SudrfHost.isMSudrfHost("msudrf.ru"))
         XCTAssertTrue(SudrfHost.isMSudrfHost("pervomaysky.komi.msudrf.ru"))

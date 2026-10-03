@@ -2531,6 +2531,10 @@ final class AppRouter: ObservableObject {
         let today = DateUtil.today
         let production = productionType(for: rec)
         let ctx = rec.context
+        let recordDomain = ctx?.displayDomain ?? rec.displayDomain
+        let recordCourt = CourtNamePresentation.readableCourtName(
+            domain: recordDomain, savedTitle: rec.courtTitle,
+            fallbackTitle: ctx?.courtTitle)
         let aliases = Self.caseNumberAliases(for: rec)
         if let snap {
             // Даты для сортировок: последнее состоявшееся событие и ближайшее
@@ -2558,8 +2562,8 @@ final class AppRouter: ObservableObject {
                 subject: snap.category ?? "—",
                 // Суд той же инстанции, что и ближайшее событие с номером
                 // производства (#100); фолбэк — суд записи, как раньше.
-                court: presentation?.nextEventCourt ?? rec.courtTitle,
-                recordCourt: rec.courtTitle,
+                court: presentation?.nextEventCourt ?? recordCourt,
+                recordCourt: recordCourt,
                 courtTier: presentation?.currentTier
                     ?? (stage == .done ? nil : ctx.flatMap {
                         MovementDerivation.inferredTier(
@@ -2592,8 +2596,8 @@ final class AppRouter: ObservableObject {
             searchCaseNumbers: aliases.searchable,
             collections: rec.collectionNames,
             stage: .first, stageTag: "—", subject: ctx?.essence ?? "—",
-            court: rec.courtTitle,
-            recordCourt: rec.courtTitle,
+            court: recordCourt,
+            recordCourt: recordCourt,
             courtTier: ctx.map { MovementDerivation.tier(for: $0.courtLevel) },
             production: production,
             isMaterial: MaterialProductionContext.resolve(context: rec.context, movement: rec.movement).isMaterial,

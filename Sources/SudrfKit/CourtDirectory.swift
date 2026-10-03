@@ -172,12 +172,19 @@ public enum CourtDirectory {
 
     /// Любой суд справочника по точному хосту.
     public static func court(forDomain domain: String) -> Court? {
-        let host = domain.replacingOccurrences(of: "https://", with: "")
-            .replacingOccurrences(of: "http://", with: "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        if let s = subjectCourts.first(where: { $0.domain == host }) { return s.court }
-        if let k = cassationCourts.first(where: { $0.domain == host }) { return k.court }
-        if let a = appealCourts.first(where: { $0.domain == host }) { return a.court }
+        var host = domain.lowercased()
+        for prefix in ["https://", "http://"] where host.hasPrefix(prefix) {
+            host.removeFirst(prefix.count)
+            break
+        }
+        host = host.split(separator: "/").first.map(String.init) ?? host
+        let canonicalHost = SudrfHost.moduleHost(host)
+        let matchesHost: (String) -> Bool = {
+            SudrfHost.moduleHost($0.lowercased()) == canonicalHost
+        }
+        if let s = subjectCourts.first(where: { matchesHost($0.domain) }) { return s.court }
+        if let k = cassationCourts.first(where: { matchesHost($0.domain) }) { return k.court }
+        if let a = appealCourts.first(where: { matchesHost($0.domain) }) { return a.court }
         return nil
     }
 

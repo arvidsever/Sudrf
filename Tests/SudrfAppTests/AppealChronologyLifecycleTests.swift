@@ -159,7 +159,7 @@ final class AppealChronologyLifecycleTests: XCTestCase {
             XCTAssertEqual(presentation.statusText, "Назначено заседание")
             XCTAssertEqual(presentation.nextEvent, "заседание 28.09, 12:05")
             XCTAssertEqual(presentation.nextEventCourt,
-                           "Третий кассационный суд общей юрисдикции")
+                           "Третий кассационный суд")
         }
     }
 

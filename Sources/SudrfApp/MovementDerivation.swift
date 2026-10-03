@@ -444,8 +444,12 @@ enum MovementDerivation {
             guard hearing.level != .first, hearing.level != .material else { return nil }
             return hearing
         }
-        let nextEventCourt = courtLabel(reviewHearing?.court)
-            ?? (currentReviewNumber == nil ? nil : courtLabel(resolution.currentInstance?.court))
+        let nextEventCourt = reviewHearing.flatMap { session in
+            let instance = sourceInstance(for: session, movement: mv, context: context)
+            return displayedCourtLabel(session.court, instance: instance, context: context)
+        } ?? (currentReviewNumber == nil ? nil : displayedCourtLabel(
+            resolution.currentInstance?.court,
+            instance: resolution.currentInstance, context: context))
 
         var nextEvent = "—"
         var nextChip: Palette.Chip = .gray
@@ -632,6 +636,55 @@ enum MovementDerivation {
     static func courtLabel(_ court: String?) -> String? {
         let value = (court ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty || ["—", "–", "-"].contains(value) ? nil : value
+    }
+
+    private static func displayedCourtLabel(_ raw: String?, instance: CaseInstance?,
+                                            context: MovementContext?) -> String? {
+        guard let title = courtLabel(raw) else { return nil }
+        let savedTitle = CourtNamePresentation.isTechnicalCourtTitle(title)
+            ? instance.flatMap { savedSourceCardTitle(for: $0, context: context) } ?? title
+            : title
+        return CourtNamePresentation.readableCourtName(
+            domain: instance?.domain, savedTitle: savedTitle, fallbackTitle: title)
+    }
+
+    private static func sourceInstance(for session: StoredSession,
+                                       movement: CaseMovement,
+                                       context: MovementContext?) -> CaseInstance? {
+        let matches = movement.instances.filter { instance in
+            guard instance.level == session.level else { return false }
+            if let sourceCardID = session.sourceCardID {
+                guard let context else { return false }
+                return CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context)
+                    == sourceCardID
+            }
+            if let caseNumber = session.caseNumber,
+               CaseNumberPresentation.primary(caseNumber).lowercased()
+                != CaseNumberPresentation.primary(instance.caseNumber).lowercased() {
+                return false
+            }
+            return CaseLifecycleResolver.courtTitlesAgree(
+                session.court, instance.court, domain: instance.domain)
+        }
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    private static func savedSourceCardTitle(for instance: CaseInstance,
+                                              context: MovementContext?) -> String? {
+        guard let context else { return nil }
+        let cards = [context.sourceKnownCard].compactMap { $0 } + (context.knownCards ?? [])
+        let host = SudrfHost.moduleHost(instance.domain.lowercased())
+        let number = CaseNumberPresentation.primary(instance.caseNumber).lowercased()
+        let matches = cards.filter { card in
+            guard card.level == instance.level,
+                  SudrfHost.moduleHost(card.domain.lowercased()) == host,
+                  let cardNumber = card.caseNumber else { return false }
+            return CaseNumberPresentation.primary(cardNumber).lowercased() == number
+        }
+        let titles = Set(matches.map {
+            $0.courtTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+        return titles.count == 1 ? titles.first : nil
     }
 
     /// Возвращает номер только реальной инстанции пересмотра. Материалы,

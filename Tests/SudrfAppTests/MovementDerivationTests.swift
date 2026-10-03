@@ -824,7 +824,7 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertEqual(presentation.stage, .first)
         XCTAssertTrue(presentation.nextEvent.hasPrefix("срок апелляции:"))
-        XCTAssertEqual(presentation.nextEventDate, daySeven)
+        XCTAssertEqual(presentation.nextEventDate, deadline.date)
 
         let dayEight = DateUtil.addDays(deadline.date, 8)
         XCTAssertEqual(MovementDerivation.lifecyclePresentation(

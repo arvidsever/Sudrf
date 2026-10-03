@@ -474,10 +474,7 @@ enum MovementDerivation {
             }
             nextChip = deadline.isUserControlled
                 ? .confirmed : .proposed
-            // В буфере продолжаем показывать сам истёкший срок, а в сортировке
-            // держим карточку до конца седьмого календарного дня.
-            nextEventDate = deadline == resolution.graceDeadline && deadline.date < today
-                ? DateUtil.addDays(deadline.date, 7) : deadline.date
+            nextEventDate = deadline.date
         } else if nextEventHelp != nil {
             nextEvent = diagnosticShort ?? "Срок не рассчитан"
         } else if resolution.isCompleted {

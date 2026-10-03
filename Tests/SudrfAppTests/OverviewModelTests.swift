@@ -152,12 +152,51 @@ final class OverviewModelTests: XCTestCase {
             actID: nil, isUnread: false, instanceLevel: .material)
 
         XCTAssertNil(known.reviewNumber)
-        XCTAssertEqual(known.secondaryLabel, "Материал № 13а-3091/2026")
-        XCTAssertEqual(known.notificationSubtitle,
-                       "13а-3091/2026 · Материал № 13а-3091/2026")
+        XCTAssertNil(known.secondaryLabel)
+        XCTAssertEqual(known.materialNumber, "13а-3091/2026", "Source number remains available for navigation")
+        XCTAssertEqual(known.notificationSubtitle, "13а-3091/2026")
         XCTAssertEqual(unknown.secondaryLabel, "Материал · номер не опубликован")
         XCTAssertEqual(unknown.notificationSubtitle,
                        "2а-1610/2026 · Материал · номер не опубликован")
+    }
+
+    func testOverviewMaterialNumbersSuppressOnlyDuplicateDisplayLabels() {
+        var hearing = hearing("№ 3/10-16/2026 (3/10-9/2025;)", plus: 1)
+        hearing.instanceLevel = .material
+        var entry = feed("material", kind: .movement, plus: 1, unread: true)
+        entry.caseNumber = hearing.caseNumber
+        entry.instanceLevel = .material
+        let hearingID = hearing.id
+        let feedID = entry.id
+
+        for number in ["3/10-16/2026", " № 3/10-16/2026  ", "№\u{00A0}3/10-16/2026"] {
+            hearing.instanceCaseNumber = number
+            entry.instanceCaseNumber = number
+            XCTAssertNil(hearing.secondaryLabel)
+            XCTAssertNil(entry.secondaryLabel)
+            XCTAssertEqual(hearing.materialNumber, "3/10-16/2026")
+            XCTAssertEqual(entry.materialNumber, "3/10-16/2026")
+            XCTAssertEqual(entry.notificationSubtitle, entry.caseNumber)
+            XCTAssertEqual(hearing.id, hearingID)
+            XCTAssertEqual(entry.id, feedID)
+        }
+
+        hearing.caseNumber = "2-8236/2025"
+        entry.caseNumber = "2-8236/2025"
+        hearing.instanceCaseNumber = "13-4248/2026"
+        entry.instanceCaseNumber = "13-4248/2026"
+        XCTAssertEqual(hearing.secondaryLabel, "Материал № 13-4248/2026")
+        XCTAssertEqual(entry.secondaryLabel, "Материал № 13-4248/2026")
+        XCTAssertEqual(entry.notificationSubtitle, "2-8236/2025 · Материал № 13-4248/2026")
+
+        for missing: String? in [nil, "", "—"] {
+            hearing.instanceCaseNumber = missing
+            entry.instanceCaseNumber = missing
+            XCTAssertEqual(hearing.secondaryLabel, "Материал · номер не опубликован")
+            XCTAssertEqual(entry.secondaryLabel, "Материал · номер не опубликован")
+        }
+        XCTAssertTrue(entry.isUnread)
+        XCTAssertEqual(entry.id, feedID)
     }
 
     func testMaterialFeedReadAndKnownMigrationIsConsumedAfterSplit() {

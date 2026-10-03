@@ -319,8 +319,11 @@ struct TrackedHearing: Identifiable {
             return "Предыдущая регистрация № \(previousRegistrationNumber)"
         }
         guard instanceLevel == .material else { return reviewNumber }
-        return materialNumber.map { "Материал № \($0)" }
-            ?? "Материал · номер не опубликован"
+        guard let materialNumber else { return "Материал · номер не опубликован" }
+        guard CaseNumberPresentation.secondary(materialNumber, distinctFrom: caseNumber) != nil else {
+            return nil
+        }
+        return "Материал № \(materialNumber)"
     }
 }
 
@@ -362,8 +365,11 @@ struct FeedEntry: Identifiable {
             return "Предыдущая регистрация № \(previousRegistrationNumber)"
         }
         guard instanceLevel == .material else { return reviewNumber }
-        return materialNumber.map { "Материал № \($0)" }
-            ?? "Материал · номер не опубликован"
+        guard let materialNumber else { return "Материал · номер не опубликован" }
+        guard CaseNumberPresentation.secondary(materialNumber, distinctFrom: caseNumber) != nil else {
+            return nil
+        }
+        return "Материал № \(materialNumber)"
     }
     var notificationSubtitle: String {
         guard let secondaryLabel,

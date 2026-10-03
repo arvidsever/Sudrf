@@ -118,7 +118,7 @@ final class Issue309RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(tracked.stage, .cassation)
         XCTAssertEqual(tracked.currentReviewNumber, reviewNumber)
         XCTAssertEqual(tracked.courtTier, .cassation)
-        XCTAssertEqual(tracked.court, "Третий кассационный суд общей юрисдикции")
+        XCTAssertEqual(tracked.court, "Третий кассационный суд")
         XCTAssertEqual(tracked.statusText, "Назначено заседание")
         XCTAssertEqual(tracked.next,
                        "заседание \(DateUtil.shortDM(hearingDate)), 12:05")

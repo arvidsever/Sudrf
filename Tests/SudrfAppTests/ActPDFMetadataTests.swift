@@ -37,8 +37,8 @@ final class ActPDFMetadataTests: XCTestCase {
         XCTAssertEqual(attributes[PDFDocumentAttribute.titleAttribute] as? String, metadata.title)
         XCTAssertEqual(attributes[PDFDocumentAttribute.subjectAttribute] as? String,
                        "Московский городской суд")
-        XCTAssertEqual(attributes[PDFDocumentAttribute.keywordsAttribute] as? [String],
-                       ["77RS0001-01-2021-000123-45"])
+        XCTAssertEqual(attributes[PDFDocumentAttribute.keywordsAttribute] as? String,
+                       "77RS0001-01-2021-000123-45")
         XCTAssertEqual(attributes[PDFDocumentAttribute.authorAttribute] as? String, "Sudrf")
         XCTAssertEqual(attributes[PDFDocumentAttribute.creatorAttribute] as? String, "Sudrf")
     }

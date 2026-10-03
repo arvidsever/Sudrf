@@ -44,12 +44,14 @@ The focused metadata test wrote these headless artifacts:
 ```text
 Title:   Дело № 3а-1318/2021 — Мотивированное решение от 21.06.2021
 Subject: Московский городской суд
+Keywords: 77RS0001-01-2021-000123-45
 Author:  Sudrf
 Creator: Sudrf
 ```
 
 The Keywords entry is the source-card UID `77RS0001-01-2021-000123-45`; the
-PDFKit test verifies it after reopening each exported file. `pdfinfo` confirms
+test verifies it both after reopening each exported file with PDFKit and
+as a PDF text string read directly from the PDF Info dictionary by CoreGraphics. `pdfinfo` confirms
 9 pages for the text export and 1 page for the published-file copy.
 
 No app window, working database, or TestFlight build was used.

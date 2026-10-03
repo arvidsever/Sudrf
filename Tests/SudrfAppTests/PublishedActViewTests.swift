@@ -29,10 +29,11 @@ final class PublishedActViewTests: XCTestCase {
         }
         let container = try SudrfModelContainerFactory.make(inMemory: true)
         let store = try TrackedStore(container: container, prepared: true, projectionSynchronizer: { _, _ in })
-        let context = MovementContext(branchRaw: "general", region: "Республика Коми",
+        var context = MovementContext(branchRaw: "general", region: "Республика Коми",
             searchDomain: "vs--komi.sudrf.ru", displayDomain: "vs.komi.sudrf.ru",
             courtTitle: "Проверочный суд субъекта", courtLevelRaw: "subject",
             courtCode: "11OS0000", cartotekaId: "adm1", cartotekaLevelRaw: "subject", caseNumber: "3а-85/2025")
+        context.judicialUID = "11RS0001-01-2025-000085-10"
         let first = CaseAct(id: "lower", title: "Решение", date: "28.07.2025", courtShort: "Суд субъекта", instanceLevel: .first)
         let act = CaseAct(id: "vs-pdf", title: "Кассационное определение", date: "15.10.2025",
             courtShort: "ВС РФ", instanceLevel: .vsCassation, sourceFileURL: source, productionNumber: "3-ИКАД25-3-А2")
@@ -56,8 +57,24 @@ final class PublishedActViewTests: XCTestCase {
         XCTAssertEqual(router.selectedActText, text)
         XCTAssertNotNil(selection.fileURL)
         let exportURL = output.appendingPathComponent("exported-original.pdf")
-        try ActPDFExporter.write(to: exportURL, text: text, originalPDF: data)
-        XCTAssertEqual(try Data(contentsOf: exportURL), data)
+        let exportMetadata = ActPDFMetadata(
+            caseNumber: act.productionNumber ?? context.caseNumber,
+            actTitle: act.title, date: act.date,
+            courtName: "Верховный Суд РФ", judicialUID: context.judicialUID)
+        try ActPDFExporter.write(to: exportURL, text: text, originalPDF: data,
+                                 metadata: exportMetadata)
+        let exportedDocument = try XCTUnwrap(PDFDocument(url: exportURL))
+        let sourceDocument = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertEqual(exportedDocument.pageCount, sourceDocument.pageCount)
+        XCTAssertEqual(exportedDocument.string, sourceDocument.string)
+        XCTAssertEqual(exportedDocument.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String,
+                       "Дело № 3-ИКАД25-3-А2 — Кассационное определение от 15.10.2025")
+        XCTAssertEqual(exportedDocument.documentAttributes?[PDFDocumentAttribute.subjectAttribute] as? String,
+                       "Верховный Суд РФ")
+        XCTAssertEqual(exportedDocument.documentAttributes?[PDFDocumentAttribute.authorAttribute] as? String, "Sudrf")
+        XCTAssertEqual(exportedDocument.documentAttributes?[PDFDocumentAttribute.creatorAttribute] as? String, "Sudrf")
+        XCTAssertEqual(exportedDocument.documentAttributes?[PDFDocumentAttribute.keywordsAttribute] as? [String],
+                       context.judicialUID.map { [$0] })
         await settle()
         try snapshot(window, name: "text", output: output)
         XCTAssertTrue(press("Оригинал PDF", in: window.contentView!))

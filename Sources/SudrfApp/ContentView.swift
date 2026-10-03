@@ -585,6 +585,24 @@ private struct InspectorHeader: View {
          ("В силе с", result.legalForceDate ?? "—")]
     }
 
+    private var pdfMetadata: ActPDFMetadata {
+        let selectedAct = model.cardActs.first { $0.id == model.selectedCardActID }
+        let movementUID = model.movement.flatMap {
+            $0.caseNumber == result.caseNumber && !$0.uid.isEmpty ? $0.uid : nil
+        }
+        return ActPDFMetadata.selectedSearchAct(
+            caseNumber: model.cardPDFMetadata?.caseNumber ?? result.caseNumber,
+            text: model.actText,
+            selectedAct: selectedAct,
+            fallbackTitle: model.cardPDFMetadata?.actTitle
+                ?? result.actTextLinks.first?.kind,
+            fallbackDate: model.cardPDFMetadata?.date ?? result.decisionDate,
+            fallbackCourtName: selectedAct?.courtShort
+                ?? model.cardPDFMetadata?.courtName
+                ?? result.courtTitle ?? model.selectedCourt?.title,
+            judicialUID: movementUID ?? model.cardPDFMetadata?.judicialUID)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
@@ -598,7 +616,8 @@ private struct InspectorHeader: View {
                 HStack(spacing: 5) {
                     Button {
                         openWindow(value: ActWindowPayload(caseNumber: result.caseNumber,
-                                                           actText: model.actText))
+                                                           actText: model.actText,
+                                                           pdfMetadata: pdfMetadata))
                     } label: {
                         Image(systemName: "arrow.up.forward.app")
                     }
@@ -606,7 +625,8 @@ private struct InspectorHeader: View {
                     .disabled(model.loadingCard || model.actText.isEmpty)
 
                     Button {
-                        ActPDFExporter.save(caseNumber: result.caseNumber, text: model.actText)
+                        ActPDFExporter.save(caseNumber: result.caseNumber, text: model.actText,
+                                            metadata: pdfMetadata)
                     } label: {
                         Image(systemName: "square.and.arrow.down")
                     }
@@ -671,6 +691,13 @@ struct ActSwitcherPane: View {
         selected?.productionNumber ?? model.movement?.caseNumber ?? ""
     }
 
+    private var pdfMetadata: ActPDFMetadata {
+        ActPDFMetadata.selectedAct(caseNumber: actNumber, text: body0 ?? "",
+                                   sourceTitle: selected?.sourceTitle,
+                                   date: selected?.date, courtName: selected?.courtName,
+                                   judicialUID: selected?.judicialUID)
+    }
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -686,12 +713,14 @@ struct ActSwitcherPane: View {
                             openWindow(value: ActWindowPayload(
                                 caseNumber: actNumber, actText: body0 ?? "",
                                 pdfFileURL: model.selectedPublishedAct.fileURL,
-                                pdfProvenance: model.selectedPublishedAct.provenance))
+                                pdfProvenance: model.selectedPublishedAct.provenance,
+                                pdfMetadata: pdfMetadata))
                         } label: { Image(systemName: "arrow.up.forward.app") }
                         .help("Открыть в отдельном окне").disabled(isPDF ? model.selectedPublishedAct.fileURL == nil : body0 == nil)
                         Button {
                             ActPDFExporter.save(caseNumber: actNumber, text: body0 ?? "",
-                                                originalPDF: model.selectedPublishedAct.data)
+                                                originalPDF: model.selectedPublishedAct.data,
+                                                metadata: pdfMetadata)
                         } label: { Image(systemName: "square.and.arrow.down") }
                         .help("Сохранить в PDF").disabled(isPDF ? model.selectedPublishedAct.data == nil : body0 == nil)
                         Button { model.closeInspector() } label: { Image(systemName: "xmark") }

@@ -100,15 +100,25 @@ final class ActPresentationTests: XCTestCase {
                           courtShort: "Суд", instanceLevel: .first)
         let other = CaseAct(id: "other", title: "Определение", date: "02.09.2026",
                             courtShort: "Суд", instanceLevel: .appeal)
+        let vsAct = CaseAct(
+            id: "vs-act", title: "Кассационное определение", date: "15.10.2026",
+            courtShort: "Верховный Суд РФ", instanceLevel: .vsCassation,
+            productionNumber: "3-ИКАД25-3-А2")
         let otherText = "ОПРЕДЕЛЕНИЕ определил: отказать."
+        let vsText = "КАССАЦИОННОЕ ОПРЕДЕЛЕНИЕ Оставлено без изменения."
         let movement = CaseMovement(
             uid: "", caseNumber: context.caseNumber, inForce: false,
             instances: [CaseInstance(
                 level: .first, court: "Суд", caseNumber: context.caseNumber,
                 judge: nil, domain: context.displayDomain, foundByUID: false,
-                result: nil, sessions: [], actID: act.id)],
-            complaints: [:], acts: [act, other],
-            actBodies: [act.id: shortSource, other.id: otherText],
+                result: nil, sessions: [], actID: act.id),
+                CaseInstance(
+                    level: .vsCassation, court: "Верховный Суд РФ",
+                    caseNumber: "3-ИКАД25-3-А2", judge: nil,
+                    domain: "vsrf.ru", foundByUID: true, result: nil,
+                    sessions: [], actID: vsAct.id)],
+            complaints: [:], acts: [act, other, vsAct],
+            actBodies: [act.id: shortSource, other.id: otherText, vsAct.id: vsText],
             category: nil, parties: CaseParties())
         let snapshot = MovementDerivation.snapshot(from: movement, context: context)
         let record = try store.upsert(
@@ -137,6 +147,12 @@ final class ActPresentationTests: XCTestCase {
         XCTAssertEqual(storedDocument.paragraphizerVersion, 77)
         XCTAssertEqual(router.selectedActDocument, storedDocument)
         XCTAssertEqual(router.selectedActParagraphs, futureParagraphs)
+        let vsDocument = try XCTUnwrap(store.courtActDocument(
+            caseKey: record.key, sourceActID: vsAct.id))
+        XCTAssertEqual(vsDocument.caseNumber, "3-ИКАД25-3-А2")
+        XCTAssertEqual(ActPDFMetadata(document: vsDocument).title,
+                       "Дело № 3-ИКАД25-3-А2 — Кассационное определение от 15.10.2026")
+        XCTAssertEqual(ActPDFMetadata(document: vsDocument).courtName, "Верховный Суд РФ")
     }
 
     func testStaleSummaryReasonsDisableOnlyUnsafeCitationNavigation() {

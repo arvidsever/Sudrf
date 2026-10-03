@@ -598,6 +598,38 @@ final class MyCasesModelTests: XCTestCase {
         XCTAssertTrue(AppRouter.matches(row, query: "9а-20"))
     }
 
+    func testPreviousCaseNumbersExcludeEveryNumberAlreadyInCompositeTitle() {
+        let currentCard = SourceNativeCardIdentity(
+            sourceFamily: "sudrf", courtKey: "11RS0001",
+            cartotekaKey: "p1", sourceNativeID: "card-current")
+        let provenance = SourceProvenance(
+            operation: .movement, sourceFamily: "sudrf", host: "court.sudrf.ru",
+            observedAt: Date(timeIntervalSince1970: 1_725_000_000))
+        func projection(
+            title: String, history numbers: [String]
+        ) -> (previous: [String], searchable: [String]) {
+            AppRouter.caseNumberAliases(
+                currentNumber: title, currentCard: currentCard,
+                history: numbers.map {
+                    CaseNumberBinding(rawValue: $0, cardIdentity: currentCard,
+                                      provenance: provenance)
+                },
+                knownCards: [])
+        }
+
+        let currentTitle = "2-7212/2025 ~ М-5922/2025"
+        let compositeHistory = "№\u{00a0}2-7212/2025 ∼ м-5922/2025"
+        XCTAssertEqual(projection(title: currentTitle, history: [compositeHistory]).previous, [])
+
+        let withRealPrevious = projection(
+            title: "2-7212/2025 (2-99/2024;) ~ М-5922/2025 [2-11/2024]",
+            history: [compositeHistory, "2-99/2024", "2-11/2024", "3а-100/2024"])
+        XCTAssertEqual(withRealPrevious.previous, ["3а-100/2024"])
+        XCTAssertEqual(Set(withRealPrevious.searchable), Set([
+            compositeHistory, "2-99/2024", "2-11/2024", "3а-100/2024",
+        ]))
+    }
+
     @MainActor
     func testMalformedIdentityFallsBackToKnownCardNumberWithoutMutation() throws {
         var context = projectionContext(

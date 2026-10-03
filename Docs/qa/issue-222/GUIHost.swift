@@ -24,8 +24,7 @@
                     .frame(width: 1440, height: 900))
             }
             if ProcessInfo.processInfo.environment["SUDRF_DEADLINE222_QA_SCREEN"] == "card", let movement = Issue222VisualTests.cardMovement, let context = Issue222VisualTests.cardContext {
-                let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: DateUtil.parse("03.10.2026")!)
-                screen.0.contentView = NSHostingView(rootView: CaseMovementView(movement: movement, expanded: .constant([]), onBack: {}, sourceContext: context, savedDeadlineAssessments: snapshot.deadlineAssessments, savedDeadlines: snapshot.deadlines, savedDeadlineSessions: snapshot.sessions).frame(width: 1440, height: 900))
+                screen.0.contentView = NSHostingView(rootView: CaseMovementView(movement: movement, expanded: .constant([]), onBack: {}, sourceContext: context).frame(width: 1440, height: 900))
             }
             screen.0.makeKeyAndOrderFront(nil)
             let menu = NSMenu()

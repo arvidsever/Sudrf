@@ -395,7 +395,7 @@ final class MovementDerivationTests: XCTestCase {
         ])
 
         XCTAssertEqual(presentation(mv).nextEventCourt,
-                       "Третий кассационный суд общей юрисдикции")
+                       "Третий кассационный суд")
     }
 
     /// Заседания ещё нет, но номер вышестоящего производства уже показывается —
@@ -416,6 +416,89 @@ final class MovementDerivationTests: XCTestCase {
 
         XCTAssertNotNil(out.currentReviewNumber)
         XCTAssertEqual(out.nextEventCourt, "Верховный суд Республики Коми")
+    }
+
+    func testCachedReviewCourtHostIsResolvedFromItsOwnInstance() {
+        let mv = movement(sessions: [
+            CaseSession(date: "10.04.2026", event: "Судебное заседание",
+                        result: "Вынесено решение (определение)")
+        ], instances: [
+            CaseInstance(level: .appeal, court: "OBLSUD--MO",
+                         caseNumber: "33-288/2026", judge: nil,
+                         domain: "OBLSUD--MO.SUDRF.RU", foundByUID: true, result: nil,
+                         sessions: [CaseSession(date: "15.05.2026", time: "10:00",
+                                                event: "Судебное заседание")])
+        ])
+
+        XCTAssertEqual(presentation(mv).nextEventCourt, "Московский областной суд")
+    }
+
+    func testAmbiguousTechnicalReviewCourtDoesNotBorrowRootDirectoryName() {
+        let context = MovementContext(
+            branchRaw: "general", region: "Московская область",
+            searchDomain: "oblsud--mo.sudrf.ru", displayDomain: "oblsud.mo.sudrf.ru",
+            courtTitle: "Московский областной суд", courtLevelRaw: "subject",
+            courtCode: nil, cartotekaId: "g1", cartotekaLevelRaw: "subject",
+            caseNumber: "2-100/2026")
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.displayDomain, foundByUID: false,
+            result: "Иск удовлетворён", sessions: [CaseSession(
+                date: "10.04.2026", event: "Судебное заседание",
+                result: "Вынесено решение (определение)")])
+        func review(domain: String) -> CaseInstance {
+            CaseInstance(level: .appeal, court: "UNKNOWN--COURT",
+                         caseNumber: "33-100/2026", judge: nil, domain: domain,
+                         foundByUID: true, result: nil,
+                         sessions: [CaseSession(date: "15.05.2026", time: "10:00",
+                                                event: "Судебное заседание")])
+        }
+        let movement = CaseMovement(
+            uid: "issue-365-ambiguous", caseNumber: context.caseNumber,
+            inForce: false,
+            instances: [first, review(domain: "one.example"), review(domain: "two.example")],
+            complaints: [:], acts: [])
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+
+        let result = MovementDerivation.lifecyclePresentation(
+            from: movement, snapshot: snapshot, context: context, today: today)
+
+        XCTAssertEqual(result.nextEventCourt, "Суд")
+        XCTAssertNotEqual(result.nextEventCourt, "Московский областной суд")
+    }
+
+    func testTechnicalReviewCourtDoesNotBorrowUnnumberedSameHostCardTitle() {
+        var context = MovementContext(
+            branchRaw: "general", region: "Тверская область",
+            searchDomain: "portal.example", displayDomain: "portal.example",
+            courtTitle: "Тверской районный суд", courtLevelRaw: "district",
+            courtCode: nil, cartotekaId: "g1", cartotekaLevelRaw: "district",
+            caseNumber: "2-200/2026")
+        context.sourceKnownCard = KnownCard(
+            domain: "portal.example", courtTitle: "Московский городской суд",
+            caseID: "other-review-card", caseUID: "other-review-uid",
+            deloID: "1540005", new: "0", levelRaw: CaseInstance.Level.appeal.rawValue)
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.displayDomain, foundByUID: false,
+            result: "Иск удовлетворён", sessions: [CaseSession(
+                date: "10.04.2026", event: "Судебное заседание",
+                result: "Вынесено решение (определение)")])
+        let review = CaseInstance(
+            level: .appeal, court: "SANKT-PETERBURGSKY--SPB",
+            caseNumber: "33-200/2026", judge: nil, domain: "portal.example",
+            foundByUID: true, result: nil, sessions: [CaseSession(
+                date: "15.05.2026", time: "10:00", event: "Судебное заседание")])
+        let movement = CaseMovement(
+            uid: "issue-365-shared-host", caseNumber: context.caseNumber,
+            inForce: false, instances: [first, review], complaints: [:], acts: [])
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+
+        let result = MovementDerivation.lifecyclePresentation(
+            from: movement, snapshot: snapshot, context: context, today: today)
+
+        XCTAssertEqual(result.nextEventCourt, "Суд")
+        XCTAssertNotEqual(result.nextEventCourt, "Московский городской суд")
     }
 
     /// Дело идёт только в первой инстанции — подпись не трогаем совсем, суд
@@ -1768,7 +1851,7 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertEqual(out.nextEvent, "Нет даты окончательной формы")
         XCTAssertEqual(out.nextEventHelp,
                        "срок не рассчитан · GPK-CASSATION-SUPREME-COURT · нет: окончательная форма акта")
-        XCTAssertEqual(out.nextEventCourt, "3 КСОЮ")
+        XCTAssertEqual(out.nextEventCourt, "Третий кассационный суд")
         XCTAssertNotEqual(snap.statusText, "Назначено заседание")
         XCTAssertTrue(MovementDerivation.futureHearings(snap.sessions, today: today).isEmpty)
     }

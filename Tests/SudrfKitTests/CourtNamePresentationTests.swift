@@ -3,6 +3,27 @@ import XCTest
 
 final class CourtNamePresentationTests: XCTestCase {
 
+    func testReadableCourtNamePrefersDirectoryAndHidesTechnicalFallback() {
+        XCTAssertEqual(CourtNamePresentation.readableCourtName(
+            domain: "OBLSUD--MO.SUDRF.RU", savedTitle: "OBLSUD--MO"),
+                       "Московский областной суд")
+        XCTAssertEqual(CourtNamePresentation.readableCourtName(
+            domain: "unknown.example", savedTitle: "Сыктывкарский городской суд"),
+                       "Сыктывкарский городской суд")
+        XCTAssertEqual(CourtNamePresentation.readableCourtName(
+            domain: "unknown.example", savedTitle: "SANKT-PETERBURGSKY--SPB"),
+                       "Суд")
+        XCTAssertEqual(CourtNamePresentation.readableCourtName(
+            domain: "unknown.example", savedTitle: "—",
+            fallbackTitle: "Сыктывкарский городской суд"),
+                       "Сыктывкарский городской суд")
+        XCTAssertFalse(CourtNamePresentation.isTechnicalCourtTitle("ВС РФ"))
+        XCTAssertFalse(CourtNamePresentation.isTechnicalCourtTitle("СГС"))
+        XCTAssertTrue(CourtNamePresentation.isTechnicalCourtTitle("OBLSUD--MO"))
+        XCTAssertTrue(CourtNamePresentation.isTechnicalCourtTitle(
+            "https://unknown.sudrf.ru/modules.php?name=sud_delo"))
+    }
+
     // MARK: - VNKODCourts.json: все 101 суда должны распознаваться
 
     func testAllVNKODCourtsAreRecognisedAndIdempotent() throws {

@@ -25,6 +25,43 @@ public struct CourtNameDisplay: Equatable, Sendable {
 /// цвет.
 public enum CourtNamePresentation {
 
+    /// A name for user-facing court labels. Prefer the known court directory;
+    /// old movement caches may contain only a host-like label, so never show
+    /// that label when no saved source-card title can replace it.
+    public static func readableCourtName(domain: String?, savedTitle: String?,
+                                         fallbackTitle: String? = nil) -> String {
+        if let domain, let name = CourtDirectory.court(forDomain: domain)?.title {
+            return name
+        }
+        for raw in [savedTitle, fallbackTitle].compactMap({ $0 }) {
+            let title = collapse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard !title.isEmpty, !["—", "–", "-"].contains(title),
+                  !isTechnicalCourtTitle(title) else { continue }
+            return title
+        }
+        return "Суд"
+    }
+
+    /// Technical source identifiers are ASCII host/code tokens. Russian court
+    /// abbreviations such as «СГС» and «ВС РФ» remain readable labels.
+    public static func isTechnicalCourtTitle(_ title: String) -> Bool {
+        let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let lowercased = value.lowercased()
+        if lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://")
+            || lowercased.contains(".sudrf.ru") {
+            return true
+        }
+        guard value.unicodeScalars.allSatisfy(\.isASCII) else { return false }
+        if value.contains(where: { "/?:#@".contains($0) }) { return true }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (48...57).contains(scalar.value)
+                || (65...90).contains(scalar.value)
+                || (97...122).contains(scalar.value)
+                || scalar == "." || scalar == "-" || scalar == "_"
+        }
+    }
+
     public static func display(_ raw: String) -> CourtNameDisplay {
         let full = collapse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !full.isEmpty else {

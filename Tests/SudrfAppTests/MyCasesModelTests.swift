@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import CryptoKit
 import SudrfKit
 import SwiftData
 import CaptchaSolver
@@ -86,6 +87,150 @@ final class MyCasesModelTests: XCTestCase {
             contextData: try JSONEncoder().encode(context),
             snapshotData: try JSONEncoder().encode(
                 legacySnapshot(stageRaw: stageRaw, steps: steps)))
+    }
+
+    @MainActor
+    func testTrackedCaseProjectionUsesReadableReviewCourtName() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        var context = projectionContext(number: "2-4461/2026", cartotekaID: "g1", suffix: "365")
+        context.courtTitle = "Сыктывкарский городской суд"
+        context.displayDomain = "syktsud.komi.sudrf.ru"
+        context.searchDomain = "syktsud--komi.sudrf.ru"
+        let first = CaseInstance(
+            level: .first, court: context.courtTitle, caseNumber: context.caseNumber,
+            judge: nil, domain: context.displayDomain, foundByUID: false,
+            result: "Иск принят", sessions: [])
+        let hearingDate = DateUtil.cal.dateComponents(
+            [.day, .month, .year], from: DateUtil.addDays(DateUtil.today, 7))
+        let hearingDateText = String(format: "%02d.%02d.%04d",
+                                     hearingDate.day!, hearingDate.month!, hearingDate.year!)
+        let review = CaseInstance(
+            level: .appeal, court: "OBLSUD--MO", caseNumber: "33-42895/2026",
+            judge: nil, domain: "OBLSUD--MO.SUDRF.RU", foundByUID: true,
+            result: nil, sessions: [CaseSession(
+                date: hearingDateText, time: "10:00", event: "Судебное заседание")])
+        let movement = CaseMovement(
+            uid: "issue-365", caseNumber: context.caseNumber, inForce: false,
+            instances: [first, review], complaints: [:], acts: [])
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context)
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(snapshot))
+        record.movement = movement
+        record.movementFetchedAt = Date()
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+
+        let projected = try XCTUnwrap(router.cases.first)
+        XCTAssertEqual(projected.court, "Московский областной суд")
+        XCTAssertEqual(projected.recordCourt, "Сыктывкарский городской суд")
+        XCTAssertEqual(projected.currentReviewNumber, "33-42895/2026")
+        XCTAssertEqual(projected.nextEventDate, DateUtil.addDays(DateUtil.today, 7))
+        XCTAssertFalse(CourtNamePresentation.isTechnicalCourtTitle(projected.court))
+        XCTAssertFalse(CourtNamePresentation.isTechnicalCourtTitle(projected.recordCourt))
+    }
+
+    @MainActor
+    func testTrackedCaseRootCourtDoesNotBorrowForeignSavedSourceCardTitle() throws {
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        var context = projectionContext(number: "2-365/2026", cartotekaID: "g1", suffix: "root365")
+        context.courtTitle = "Тверской районный суд"
+        context.displayDomain = "mos-gorsud.ru"
+        context.searchDomain = "mos-gorsud.ru"
+        context.sourceKnownCard = KnownCard(
+            domain: "mos-gorsud.ru", courtTitle: "Московский городской суд",
+            caseID: "appeal-card", caseUID: "appeal-uid", deloID: "1540005",
+            new: "0", caseNumber: "33-365/2026",
+            levelRaw: CaseInstance.Level.appeal.rawValue)
+        let record = TrackedCaseRecord(
+            key: context.key, collections: [], caseNumber: context.caseNumber,
+            courtTitle: context.courtTitle, displayDomain: context.displayDomain,
+            contextData: try JSONEncoder().encode(context),
+            snapshotData: try JSONEncoder().encode(legacySnapshot(steps: [])))
+        container.mainContext.insert(record)
+        try container.mainContext.save()
+
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+
+        let projected = try XCTUnwrap(router.cases.first)
+        XCTAssertEqual(projected.court, "Тверской районный суд")
+        XCTAssertEqual(projected.recordCourt, "Тверской районный суд")
+    }
+
+    @MainActor
+    func testIssue365AllIsolatedTrackedCaseCourtProjectionsAreReadable() throws {
+        guard let path = ProcessInfo.processInfo.environment["SUDRF_COURT365_AUDIT_STORE"] else {
+            throw XCTSkip("Set SUDRF_COURT365_AUDIT_STORE to the isolated SQLite snapshot.")
+        }
+        let source = URL(fileURLWithPath: path)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Issue365StoreAudit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let inputHash = try sha256(of: source)
+        let clone = directory.appendingPathComponent("audit.store")
+        try FileManager.default.copyItem(at: source, to: clone)
+
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: clone)
+        let storedCount = try container.mainContext.fetch(
+            FetchDescriptor<TrackedCaseRecord>()).count
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let firstProjection = router.cases.map { ($0.recordKey, $0.court, $0.recordCourt) }
+        router.reload()
+        let projection = router.cases.map { ($0.recordKey, $0.court, $0.recordCourt) }
+        let technicalCount = router.cases.filter {
+            CourtNamePresentation.isTechnicalCourtTitle($0.court)
+                || CourtNamePresentation.isTechnicalCourtTitle($0.recordCourt)
+        }.count
+        let genericFallbackCount = router.cases.filter {
+            $0.court == "Суд" || $0.recordCourt == "Суд"
+        }.count
+
+        let issueRecords = router.cases.filter { $0.caseNumber.contains("2-4461/2026") }
+        XCTAssertEqual(issueRecords.count, 1,
+                       "The isolated audit snapshot should include one reported case.")
+        let issueRecord = try XCTUnwrap(issueRecords.first)
+        let sourceRecords = try container.mainContext.fetch(
+            FetchDescriptor<TrackedCaseRecord>()).filter {
+                $0.caseNumber.contains("2-4461/2026")
+            }
+        XCTAssertEqual(sourceRecords.count, 1)
+        let sourceRecord = try XCTUnwrap(sourceRecords.first)
+        let expectedReviewHearingDate = sourceRecord.movement?.instances.first {
+            $0.level == .appeal
+                && CaseNumberPresentation.primary($0.caseNumber) == "33-42895/2026"
+        }?.sessions.compactMap { session -> Date? in
+            guard session.event.localizedCaseInsensitiveContains("заседание"),
+                  let date = DateUtil.parse(session.date), date >= DateUtil.today else { return nil }
+            return date
+        }.min()
+        if issueRecord.currentReviewNumber == "33-42895/2026",
+           let expectedReviewHearingDate,
+           issueRecord.nextEventDate == expectedReviewHearingDate {
+            XCTAssertEqual(issueRecord.court, "Московский областной суд")
+        }
+
+        XCTAssertEqual(router.cases.count, storedCount)
+        XCTAssertEqual(firstProjection.count, storedCount)
+        XCTAssertEqual(projection.count, storedCount)
+        XCTAssertEqual(technicalCount, 0, "Tracked court projections still contain technical identifiers.")
+        XCTAssertEqual(firstProjection.map(\.0), projection.map(\.0))
+        XCTAssertEqual(firstProjection.map(\.1), projection.map(\.1))
+        XCTAssertEqual(firstProjection.map(\.2), projection.map(\.2))
+        XCTAssertLessThan(genericFallbackCount, storedCount,
+                          "A generic fallback must not replace every tracked court name.")
+        XCTAssertEqual(try sha256(of: source), inputHash,
+                       "The isolated source file must remain unchanged during the audit.")
+        print("ISSUE365_AUDIT records=\(storedCount) projected=\(projection.count) technical=\(technicalCount) genericFallbacks=\(genericFallbackCount)")
+    }
+
+    private func sha256(of url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func stepKindRaw(_ kind: StepState.Kind) -> String {

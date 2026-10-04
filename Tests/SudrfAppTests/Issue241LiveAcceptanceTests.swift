@@ -99,9 +99,11 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                     throw LiveFailure.refresh
                 }
                 let instance = try XCTUnwrap(movement.instances.first { $0.caseNumber == reference.number })
-                guard instance.sourceURL == parsed.sanitizedURL else { throw LiveFailure.sourceURL }
+                guard movement.uid == reference.uid,
+                      instance.sourceURL == parsed.sanitizedURL else { throw LiveFailure.sourceURL }
                 let displayed = CourtActPresentation.rows(in: movement)
-                    .filter { $0.instanceLevel == .cassation && !$0.text.isEmpty }
+                    .filter { $0.instanceLevel == .cassation && !$0.text.isEmpty
+                        && $0.sourceIDs.contains(where: instance.linkedActIDs.contains) }
                 guard !instance.sessions.isEmpty, !reference.requiresAct || !displayed.isEmpty else {
                     throw LiveFailure.cardOrAct
                 }

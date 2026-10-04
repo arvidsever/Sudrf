@@ -182,7 +182,9 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
         for journal in journals {
             try merged.append(journal.events)
         }
-        let baselines = journals.compactMap(\.semanticBaselines)
+        let baselines = journals.filter {
+            $0.derivationVersion == currentDerivationVersion
+        }.compactMap(\.semanticBaselines)
         if !baselines.isEmpty { merged.semanticBaselines = CaseEventBaselines.merged(baselines) }
         return merged
     }

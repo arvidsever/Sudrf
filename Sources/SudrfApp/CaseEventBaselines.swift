@@ -138,11 +138,16 @@ struct CaseEventBaselines: Codable, Equatable, Sendable {
     var global: CaseEventGlobalBaseline?
     var conflictingCourts: Set<String> = []
     var globalConflict = false
+    /// Identities already present in an unprocessed legacy record. No displayed
+    /// facts are promoted here: their first fresh confirmation seeds them quietly.
+    var unprocessedCardIDs: Set<String>?
 
     static func merged(_ values: [Self]) -> Self {
         var result = Self()
         let values = values.filter { $0.derivationVersion == CaseEventJournal.currentDerivationVersion }
         result.conflictingCourts = values.reduce(into: []) { $0.formUnion($1.conflictingCourts) }
+        let unprocessed = values.reduce(into: Set<String>()) { $0.formUnion($1.unprocessedCardIDs ?? []) }
+        if !unprocessed.isEmpty { result.unprocessedCardIDs = unprocessed }
         let keys = Set(values.flatMap { $0.courts.keys })
         for key in keys where !result.conflictingCourts.contains(key) {
             if let baseline = CaseEventCourtBaseline.merged(values.compactMap { $0.courts[key] }) {
@@ -177,6 +182,9 @@ enum CaseEventBaselineTransition {
         // A verified host repair may move the same card between court scopes.
         // Transfer handled facts only; a pending display change must still diff.
         for (priorNative, currentNative) in nativeContinuities.sorted(by: { $0.key < $1.key }) {
+            if state.unprocessedCardIDs?.remove(priorNative) != nil {
+                state.unprocessedCardIDs?.insert(currentNative)
+            }
             let priorScopes = state.courts.keys.filter { state.courts[$0]?.cards[priorNative] != nil }
             let currentScopes = admittedCourts.keys.filter { admittedCourts[$0]?[currentNative] != nil }
             guard priorScopes.count == 1, currentScopes.count == 1,
@@ -199,7 +207,14 @@ enum CaseEventBaselineTransition {
         }
         for scope in admittedCourts.keys.sorted() {
             let fresh = CaseEventCourtBaseline(snapshot: freshSnapshot, cards: admittedCourts[scope] ?? [:], actBodies: actBodies)
-            let old = state.courts[scope]?.reidentified(using: fresh)
+            var old = state.courts[scope]?.reidentified(using: fresh)
+            let unprocessed = fresh.cards.filter {
+                state.unprocessedCardIDs?.contains($0.key) == true && old?.cards[$0.key] == nil
+            }
+            if let prior = old, !unprocessed.isEmpty {
+                let seed = CaseEventCourtBaseline(snapshot: freshSnapshot, cards: unprocessed, actBodies: actBodies)
+                old = prior.replacingLoadedCards(with: seed)
+            }
             let updated = old?.replacingLoadedCards(with: fresh) ?? fresh
             let result = CaseEventDeriver.derive(
                 old: old?.snapshot(using: freshSnapshot),
@@ -209,6 +224,7 @@ enum CaseEventBaselineTransition {
             diagnostics += result.diagnostics
             state.courts[scope] = updated
             state.conflictingCourts.remove(scope)
+            state.unprocessedCardIDs?.subtract(fresh.cards.keys)
         }
         if isComplete, !admittedCourts.isEmpty {
             var new = globalSnapshot
@@ -234,6 +250,7 @@ enum CaseEventBaselineTransition {
             state.globalConflict = false
         }
         if admittedCourts.isEmpty { diagnostics.append(.unusableSnapshot) }
+        if state.unprocessedCardIDs?.isEmpty == true { state.unprocessedCardIDs = nil }
         let savedState = journal.semanticBaselines == nil && state.courts.isEmpty && state.global == nil
             ? nil : state
         return (savedState, .init(events: events,

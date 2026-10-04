@@ -2,6 +2,34 @@ import Foundation
 import SudrfKit
 
 enum CaseEventSourceAdmission {
+    static func nativeCardIdentity(for instance: CaseInstance,
+                                   context: MovementContext) -> SourceNativeCardIdentity? {
+        if let url = instance.sourceURL, let locator = SourceNativeCardLocator.vsrf(url: url) {
+            return locator.identity
+        }
+        if instance.caseNumber == context.caseNumber,
+           instance.level == context.baseInstanceLevel,
+           SudrfHost.moduleHost(instance.domain) == SudrfHost.moduleHost(context.searchDomain),
+           let cart = context.cartoteka {
+            if let url = instance.sourceURL {
+                let locator = MosGorSudRouting.isMosGorSud(domain: instance.domain)
+                    ? SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cart)
+                    : SourceNativeCardLocator.sudrf(url: url, cartoteka: cart)
+                if let identity = locator?.identity { return identity }
+            } else if let caseID = context.caseID {
+                return SourceNativeCardLocator.sudrf(
+                    court: context.searchCourt, cartoteka: cart, caseID: caseID)?.identity
+            }
+        }
+        guard let url = instance.sourceURL else { return nil }
+        let identities = Set(CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }.compactMap { cart in
+            (MosGorSudRouting.isMosGorSud(domain: instance.domain)
+                ? SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cart)
+                : SourceNativeCardLocator.sudrf(url: url, cartoteka: cart))?.identity
+        })
+        return identities.count == 1 ? identities.first : nil
+    }
+
     static func courts(in fresh: CaseMovement, context: MovementContext) -> [String: [String: String]] {
         let groups = Dictionary(grouping: fresh.sourceRefreshCoverage ?? []) {
             $0.sourceFamily + "|" + $0.courtKey

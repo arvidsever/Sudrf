@@ -129,11 +129,12 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
         </body></html>
         """
 
-    private static let cassationCardHTML = """
+    fileprivate static let cassationCardHTML = """
         <html><body>
           <div class="casenumber">ДЕЛО № 8Г-241/2026 [88-241/2026]</div>
           <ul class="tabs">
             <li id="tab1"><a>ДЕЛО</a></li>
+            <li id="tab3"><a>ДВИЖЕНИЕ ДЕЛА</a></li>
             <li id="tab_doc1"><a>Судебный акт #1 (Кассационное определение)</a></li>
           </ul>
           <div id="cont1"><table>
@@ -141,6 +142,11 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
             <tr><td>Дата рассмотрения</td><td>14.05.2026</td></tr>
             <tr><td>Результат рассмотрения</td><td>Оставлено без изменения</td></tr>
           </table></div>
+          <div id="cont3"><table id="tablcont"><tbody>
+            <tr><th colspan="8">ДВИЖЕНИЕ ДЕЛА</th></tr>
+            <tr><td>Наименование события</td><td>Дата</td><td>Время</td><td>Место проведения</td><td>Результат события</td><td>Основание для выбранного результата события</td><td>Примечание</td><td>Дата размещения</td></tr>
+            <tr><td>Судебное заседание</td><td>14.05.2026</td><td>10:00</td><td></td><td>Вынесено решение</td><td>Оставлено без изменения</td><td></td><td>14.05.2026</td></tr>
+          </tbody></table></div>
           <div id="cont_doc1"><p>Синтетический опубликованный акт #241.</p></div>
         </body></html>
         """
@@ -198,14 +204,20 @@ final class Issue241AcceptanceTests: XCTestCase {
             sessions: [], sourceURL: rootURL,
             sourceEvidence: .init(card: rootCard, cartotekaID: "g1",
                                   courtLevel: .district, branch: .general))
+        let cassationCard = try CaseCardParser.parse(
+            html: Issue241FlappingURLProtocol.cassationCardHTML, cardURL: cassationURL)
         let oldCassation = CaseInstance(
             level: .cassation, court: "Третий кассационный суд общей юрисдикции",
             caseNumber: cassationNumber, judge: nil, domain: issue241CassationDomain,
-            foundByUID: true, result: "Оставлено без изменения", sessions: [],
-            actID: cassationActID, actIDs: [cassationActID])
+            foundByUID: true, result: "Оставлено без изменения",
+            sessions: [CaseSession(date: "14.05.2026", time: "10:00",
+                                   event: "Судебное заседание", result: "Вынесено решение")],
+            actID: cassationActID, actIDs: [cassationActID], sourceURL: cassationURL,
+            sourceEvidence: .init(card: cassationCard, cartotekaID: "g3",
+                                  courtLevel: .cassation, branch: .general))
         let oldMovement = CaseMovement(
             uid: judicialUID, caseNumber: rootNumber, inForce: false,
-            instances: [root, oldCassation], complaints: [:],
+            instances: MovementService.registrationOrder([root, oldCassation]), complaints: [:],
             acts: [CaseAct(id: cassationActID,
                            title: MovementService.actTitle(cartotekaID: "g3", level: .cassation),
                            date: "14.05.2026",
@@ -215,6 +227,7 @@ final class Issue241AcceptanceTests: XCTestCase {
 
         var key = ""
         var savedMovement = oldMovement
+        var successfulSessions: [CaseSession] = []
         var savedSnapshot = MovementDerivation.snapshot(from: oldMovement, context: context)
         savedSnapshot.deadlines.append(manualDeadline)
         let savedJournal = CaseEventJournal(events: [seedEvent])
@@ -270,8 +283,8 @@ final class Issue241AcceptanceTests: XCTestCase {
                                 oldSuccessfulRefresh: expectedSuccessfulRefresh, seenAt: seenAt,
                                 journal: savedJournal, manualDeadline: manualDeadline)
 
-            // Card requests have their own exact-URL host fallbacks. Three
-            // maintenance replies must preserve the card, act, snapshot and TTL.
+            // Discovery and the existing known-card fallback each exhaust
+            // three requests to the same published card without losing cache.
             Issue241FlappingURLProtocol.configure(.exhaustedCardMaintenance)
             let failedCardRefresh = await center.refresh(key: key, manually: true)?.value
             XCTAssertEqual(failedCardRefresh?.outcome, .partial(
@@ -279,7 +292,7 @@ final class Issue241AcceptanceTests: XCTestCase {
             let failedCardRequests = Issue241FlappingURLProtocol.requests().filter {
                 $0.0.host == issue241CassationDomain && queryValue("name_op", in: $0.0) == "case"
             }
-            XCTAssertEqual(failedCardRequests.map(\.1), Array(repeating: "maintenance", count: 3))
+            XCTAssertEqual(failedCardRequests.map(\.1), Array(repeating: "maintenance", count: 6))
             XCTAssertEqual(Set(failedCardRequests.map { $0.0.absoluteString }).count, 1,
                            "повторные card-запросы должны использовать одну и ту же ссылку")
             try assertPreserved(store: store, key: key,
@@ -372,10 +385,16 @@ final class Issue241AcceptanceTests: XCTestCase {
             }.count, 1)
             XCTAssertEqual(updated.movement?.acts.filter { $0.id == cassationActID }.count, 1)
             XCTAssertEqual(updated.movement?.actBodies[cassationActID], publishedActText)
+            successfulSessions = try XCTUnwrap(updated.movement?.instances.first {
+                $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
+            }).sessions
+            XCTAssertFalse(successfulSessions.isEmpty, "successful card must contain movement")
             XCTAssertEqual(updated.movement?.instances.first {
                 $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
             }?.sourceURL?.absoluteString, cassationURL.absoluteString)
             XCTAssertTrue(updated.eventJournal?.events.contains(seedEvent) == true)
+            XCTAssertEqual(updated.eventJournal, savedJournal,
+                           "successful refresh must not announce already saved old events")
             XCTAssertEqual(Set(updated.eventJournal?.events.map(\.id) ?? []).count,
                            updated.eventJournal?.events.count,
                            "журнал не должен повторять старые события")
@@ -385,6 +404,9 @@ final class Issue241AcceptanceTests: XCTestCase {
         // further refresh from that reopened store must not duplicate either.
         let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+        XCTAssertEqual(reopened.record(forKey: key)?.movement?.instances.first {
+            $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
+        }?.sessions, successfulSessions, "movement must survive a fresh disk container")
         try assertRecoveredState(store: reopened, key: key,
                                  cassationURL: cassationURL,
                                  cassationNumber: cassationNumber,
@@ -392,7 +414,6 @@ final class Issue241AcceptanceTests: XCTestCase {
                                  actText: publishedActText,
                                  seedEventID: seedEvent.id,
                                  manualDeadline: manualDeadline)
-
         do {
             let sessionConfiguration = URLSessionConfiguration.ephemeral
             sessionConfiguration.protocolClasses = [Issue241FlappingURLProtocol.self]
@@ -427,6 +448,9 @@ final class Issue241AcceptanceTests: XCTestCase {
                                  actText: publishedActText,
                                  seedEventID: seedEvent.id,
                                  manualDeadline: manualDeadline)
+        XCTAssertEqual(reopened.record(forKey: key)?.movement?.instances.first {
+            $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
+        }?.sessions, successfulSessions, "repeat must preserve movement")
     }
 
     private func makeContext(rootURL: URL) -> MovementContext {

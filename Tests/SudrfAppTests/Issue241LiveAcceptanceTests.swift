@@ -118,7 +118,8 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                 let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(
                     inMemory: false, storeURL: storeURL), prepared: true)
                 let persisted = try XCTUnwrap(reopened.record(forKey: record.key)?.movement)
-                guard persisted.instances.first(where: { $0.caseNumber == reference.number })?.sourceURL == parsed.sanitizedURL,
+                guard persisted == movement,
+                      persisted.instances.first(where: { $0.caseNumber == reference.number })?.sourceURL == parsed.sanitizedURL,
                       persisted.acts == savedActs, persisted.actBodies == savedBodies,
                       CourtActPresentation.rows(in: persisted).map(\.id) == CourtActPresentation.rows(in: movement).map(\.id)
                 else { throw LiveFailure.persistence }

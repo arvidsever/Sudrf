@@ -1677,8 +1677,17 @@ final class RefreshCenter: ObservableObject {
             // The legacy refresh outcome treats a recognized empty listing as
             // partial. Fresh per-court proof can still confirm the whole journal
             // comparison, without changing that outcome or its cache TTL policy.
+            let zeroDomains = Set((mv.honestZeroDomains ?? []).map(SudrfHost.moduleHost))
+            let confirmedCardIDs = Set(admittedCourts.values.flatMap { $0.values })
+            let hasUnconfirmedZeroHistory = publishedMovement.instances.contains { instance in
+                guard instance.captchaFormURL == nil, instance.transientError != true,
+                      zeroDomains.contains(SudrfHost.moduleHost(instance.domain)) else { return false }
+                guard let id = CaseSnapshotSourceIdentity.sourceCardID(
+                    for: instance, context: projectionContext) else { return true }
+                return !confirmedCardIDs.contains(id)
+            }
             let onlyRecognizedEmptySources = (mv.incompleteHigherCourtDomains ?? []).isEmpty
-                && !(mv.honestZeroDomains ?? []).isEmpty
+                && !zeroDomains.isEmpty && !hasUnconfirmedZeroHistory
             let transition = CaseEventBaselineTransition.refresh(
                 journal: journal, freshSnapshot: freshSnapshot, globalSnapshot: finalSnapshot,
                 admittedCourts: admittedCourts,

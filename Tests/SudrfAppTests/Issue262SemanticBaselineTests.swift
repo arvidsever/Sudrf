@@ -431,12 +431,15 @@ final class Issue262SemanticBaselineTests: XCTestCase {
             tverskoyJudge: "Судья T1", hamovnikiJudge: "Судья H1"))
         let record = try seed(store: store, context: context, movement: initial)
         let key = record.key
+        let successTime = try XCTUnwrap(DateUtil.parse("01.09.2026"))
+        record.movementFetchedAt = successTime
+        try store.save()
         let initialResult = await center(store: store, movements: [initial]).refresh(key: key)?.value
         guard let initialResult, case .partial = initialResult.outcome else {
             return XCTFail("legacy empty-listing outcome remains partial")
         }
         XCTAssertNotNil(store.record(forKey: key)?.eventJournal?.semanticBaselines?.global)
-        let successTime = store.record(forKey: key)?.movementFetchedAt
+        XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, successTime)
 
         let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
@@ -451,6 +454,31 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         XCTAssertEqual(reopened.record(forKey: key)?.movementFetchedAt, successTime)
         _ = await refreshCenter.refresh(key: key)?.value
         XCTAssertEqual(reopened.record(forKey: key)?.eventJournal?.events, once)
+    }
+
+    func testEmptySearchConflictingWithUnloadedSavedCardWithholdsGlobalFacts() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        let initial = try movement(rootJudge: "Судья A", higherJudge: "Судья X")
+        let record = try seed(store: store, context: context, movement: initial)
+        _ = await center(store: store, movements: [initial]).refresh(key: record.key)?.value
+        let oldGlobal = store.record(forKey: record.key)?.eventJournal?.semanticBaselines?.global
+        var empty = try movement(rootJudge: "Судья B")
+        empty.inForce = true
+        empty.honestZeroDomains = ["2kas.sudrf.ru"]
+        empty.sourceRefreshCoverage?.append(MovementCourtCoverage(
+            sourceFamily: "sudrf", courtKey: "2kas.sudrf.ru", kind: .honestZero))
+        _ = await center(store: store, movements: [empty]).refresh(key: record.key)?.value
+        XCTAssertEqual(store.record(forKey: record.key)?.eventJournal?.events.map(\.kind), [.judgeChanged])
+        XCTAssertEqual(store.record(forKey: record.key)?.eventJournal?.semanticBaselines?.global, oldGlobal)
+        XCTAssertTrue(store.record(forKey: record.key)?.movement?.instances.contains {
+            $0.caseNumber == "88-262/2026" && $0.judge == "Судья X"
+        } == true)
+        var complete = try movement(rootJudge: "Судья B", higherJudge: "Судья X")
+        complete.inForce = true
+        _ = await center(store: store, movements: [complete]).refresh(key: record.key)?.value
+        XCTAssertEqual(Set(store.record(forKey: record.key)?.eventJournal?.events.map(\.kind) ?? []),
+                       [.judgeChanged, .entryIntoForceRecorded])
     }
 
     func testAtomicMergePreservesPendingCourtBaselinesAcrossDiskReopen() async throws {

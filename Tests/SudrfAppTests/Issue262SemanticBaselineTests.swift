@@ -411,6 +411,48 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         XCTAssertEqual(events.filter { $0.kind == .deadlineProposed }.count, 1)
     }
 
+    func testConfirmedEmptyHigherCourtAllowsGlobalChangesAcrossDiskReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("issue-262-empty-higher-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("test.store")
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let store = try TrackedStore(container: container, prepared: true)
+        let context = makeMoscowContext()
+        func withEmptyHigherCourt(_ movement: CaseMovement) -> CaseMovement {
+            var result = movement
+            result.honestZeroDomains = ["vs.komi.sudrf.ru"]
+            result.sourceRefreshCoverage?.append(MovementCourtCoverage(
+                sourceFamily: "sudrf", courtKey: "vs.komi.sudrf.ru", kind: .honestZero))
+            return result
+        }
+        let initial = withEmptyHigherCourt(try moscowMovement(
+            tverskoyJudge: "Судья T1", hamovnikiJudge: "Судья H1"))
+        let record = try seed(store: store, context: context, movement: initial)
+        let key = record.key
+        let initialResult = await center(store: store, movements: [initial]).refresh(key: key)?.value
+        guard let initialResult, case .partial = initialResult.outcome else {
+            return XCTFail("legacy empty-listing outcome remains partial")
+        }
+        XCTAssertNotNil(store.record(forKey: key)?.eventJournal?.semanticBaselines?.global)
+        let successTime = store.record(forKey: key)?.movementFetchedAt
+
+        let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+        let complete = withEmptyHigherCourt(try moscowMovement(
+            tverskoyJudge: "Судья T1", hamovnikiJudge: "Судья H1", inForce: true,
+            decisionDate: "01.10.2026"))
+        let refreshCenter = center(store: reopened, movements: [complete, complete])
+        _ = await refreshCenter.refresh(key: key)?.value
+        let once = try XCTUnwrap(reopened.record(forKey: key)?.eventJournal?.events)
+        XCTAssertEqual(Set(once.map(\.kind)), [.entryIntoForceRecorded, .deadlineProposed])
+        XCTAssertEqual(once.count, 2)
+        XCTAssertEqual(reopened.record(forKey: key)?.movementFetchedAt, successTime)
+        _ = await refreshCenter.refresh(key: key)?.value
+        XCTAssertEqual(reopened.record(forKey: key)?.eventJournal?.events, once)
+    }
+
     func testAtomicMergePreservesPendingCourtBaselinesAcrossDiskReopen() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("issue-262-merge-pending-\(UUID().uuidString)")

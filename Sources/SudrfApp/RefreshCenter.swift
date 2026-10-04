@@ -1674,10 +1674,16 @@ final class RefreshCenter: ObservableObject {
             let finalSnapshot = persisted.snapshot ?? newSnap
             let freshSnapshot = MovementDerivation.snapshot(from: mv, context: projectionContext)
             let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)
+            // The legacy refresh outcome treats a recognized empty listing as
+            // partial. Fresh per-court proof can still confirm the whole journal
+            // comparison, without changing that outcome or its cache TTL policy.
+            let onlyRecognizedEmptySources = (mv.incompleteHigherCourtDomains ?? []).isEmpty
+                && !(mv.honestZeroDomains ?? []).isEmpty
             let transition = CaseEventBaselineTransition.refresh(
                 journal: journal, freshSnapshot: freshSnapshot, globalSnapshot: finalSnapshot,
                 admittedCourts: admittedCourts,
-                attempt: attempt, isComplete: isComplete && CaseEventSourceAdmission.chainIsConfirmed(
+                attempt: attempt, isComplete: (isComplete || onlyRecognizedEmptySources)
+                    && CaseEventSourceAdmission.chainIsConfirmed(
                     in: mv, context: projectionContext, admitted: admittedCourts),
                 actBodies: mv.actBodies,
                 nativeContinuities: verifiedContext == nil ? [:] : Self.verifiedMirrorContinuities(

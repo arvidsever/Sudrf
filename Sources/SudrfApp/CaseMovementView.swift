@@ -701,6 +701,10 @@ struct InstanceBlock: View {
     /// CaseMovementView.onRefresh → RootView (router.refreshOpenCase()).
     var onRefresh: (() -> Void)? = nil
 
+    var courtName: String {
+        CourtNamePresentation.readableCourtName(domain: instance.domain, savedTitle: instance.court)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerRow
@@ -804,7 +808,7 @@ struct InstanceBlock: View {
     private var transientPrompt: some View {
         HStack(spacing: 10) {
             Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
-            Text("Нет связи с \(instance.court) — обновите страницу или повторите позже.")
+            Text("Нет связи с \(courtName) — обновите страницу или повторите позже.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             if let onRefresh {
@@ -843,7 +847,7 @@ struct InstanceBlock: View {
             HStack(spacing: 8) {
                 Circle().fill(instance.level.tint).frame(width: 8, height: 8)
                     .shadow(color: instance.level.tint.opacity(0.55), radius: 3)
-                Text(instance.court).font(.system(size: 12.5, weight: .bold)).lineLimit(1)
+                Text(courtName).font(.system(size: 12.5, weight: .bold)).lineLimit(1)
                 let number = CaseNumberPresentation.displayedNumber(for: instance)
                 Text("№ \(number)").font(.caption).foregroundStyle(.secondary)
                 if let sourceURL = instance.sourceURL {

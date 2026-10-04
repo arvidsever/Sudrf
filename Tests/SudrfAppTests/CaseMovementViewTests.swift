@@ -48,6 +48,70 @@ final class CaseMovementViewTests: XCTestCase {
     }
 
     @MainActor
+    func testCachedAppealBlocksDisplayDirectoryCourtAfterJSONRoundTrip() throws {
+        let sessions = [CaseSession(
+            date: "15.05.2026", time: "10:00", room: "Зал № 1",
+            event: "Судебное заседание", result: nil)]
+        let base = CaseInstance(
+            level: .first, court: "Химкинский городской суд",
+            caseNumber: "2-4461/2026", judge: nil,
+            domain: "himki--mo.sudrf.ru", foundByUID: false,
+            result: nil, sessions: sessions,
+            sourceURL: URL(string:
+                "https://himki--mo.sudrf.ru/modules.php?name=sud_delo&case_id=1&delo_id=1540005"))
+        let dashedAppeal = CaseInstance(
+            level: .appeal, court: "OBLSUD--MO", caseNumber: "33-9548/2026",
+            judge: nil, domain: "OBLSUD--MO.SUDRF.RU", foundByUID: true,
+            result: nil, sessions: sessions,
+            sourceURL: URL(string:
+                "https://oblsud--mo.sudrf.ru/modules.php?name=sud_delo&case_id=9548&delo_id=5"))
+        let dottedAppeal = CaseInstance(
+            level: .appeal, court: "OBLSUD--MO", caseNumber: "33-42895/2026",
+            judge: nil, domain: "Oblsud.Mo.Sudrf.Ru", foundByUID: true,
+            result: nil, sessions: sessions,
+            sourceURL: URL(string:
+                "https://oblsud.mo.sudrf.ru/modules.php?name=sud_delo&case_id=42895&delo_id=5"))
+        let oldMovement = CaseMovement(
+            uid: "issue365-synthetic-uid", caseNumber: base.caseNumber,
+            inForce: false, instances: [base, dashedAppeal, dottedAppeal],
+            complaints: [:], acts: [])
+
+        let cachedMovement = try JSONDecoder().decode(
+            CaseMovement.self, from: JSONEncoder().encode(oldMovement))
+        let cachedAppeals = cachedMovement.instances.filter { $0.level == .appeal }
+        let blocks = cachedAppeals.map { InstanceBlock(instance: $0) }
+
+        XCTAssertEqual(cachedMovement, oldMovement)
+        XCTAssertEqual(cachedAppeals.map(\.caseNumber), ["33-9548/2026", "33-42895/2026"])
+        XCTAssertEqual(cachedAppeals.map(\.court), ["OBLSUD--MO", "OBLSUD--MO"])
+        XCTAssertEqual(cachedAppeals.map(\.domain), [
+            "OBLSUD--MO.SUDRF.RU", "Oblsud.Mo.Sudrf.Ru"])
+        XCTAssertEqual(cachedAppeals.map(\.id), oldMovement.instances.dropFirst().map(\.id))
+        XCTAssertEqual(cachedAppeals.map(\.sourceURL), oldMovement.instances.dropFirst().map(\.sourceURL))
+        XCTAssertEqual(cachedAppeals.map(\.sessions), [sessions, sessions])
+        XCTAssertEqual(blocks.map(\.courtName), [
+            "Московский областной суд", "Московский областной суд"])
+
+        let view = VStack(spacing: 10) {
+            ForEach(cachedAppeals) { InstanceBlock(instance: $0) }
+        }
+            .padding(16)
+            .frame(width: 1000)
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.nsImage)
+        let png = try XCTUnwrap(image.tiffRepresentation
+            .flatMap(NSBitmapImageRep.init(data:))?
+            .representation(using: .png, properties: [:]))
+        XCTAssertFalse(png.isEmpty)
+        if let output = ProcessInfo.processInfo.environment["SUDRF_MOVEMENT_VISUAL_OUTPUT"] {
+            try png.write(to: URL(fileURLWithPath: output))
+        }
+    }
+
+    @MainActor
     func testUndatedPublishedFactHasExplicitDateLabel() {
         XCTAssertEqual(CaseMovementView.sessionDateLabel(""), "Дата не опубликована")
         XCTAssertEqual(CaseMovementView.sessionDateLabel("  \n"), "Дата не опубликована")

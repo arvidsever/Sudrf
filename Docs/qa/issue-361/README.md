@@ -66,3 +66,9 @@ as a PDF text string read directly from the PDF Info dictionary by CoreGraphics.
 9 pages for the text export and 1 page for the published-file copy.
 
 No app window, working database, or TestFlight build was used.
+
+## User follow-up — 4 октября 2026 года
+
+After trying the delivered build, the user reported that #361 looked fine
+(«По 361 всё ок вроде»). The message did not list individual export entry points;
+the automated checks above remain the evidence for those separate paths.

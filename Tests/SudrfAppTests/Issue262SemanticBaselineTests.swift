@@ -373,7 +373,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let pendingDeadlineSnapshot = MovementDerivation.snapshot(
             from: unknownSharedFailure, context: context)
         XCTAssertFalse(pendingDeadlineSnapshot.deadlines.isEmpty,
-                       "a covered 2026 final-form date should produce a pending global deadline")
+                       "a dated decision and its final form should produce a pending global deadline; assessments: \(String(describing: pendingDeadlineSnapshot.deadlineAssessments))")
         let partial = await center(store: store, movements: [unknownSharedFailure])
             .refresh(key: key)?.value
         guard let partial, case .partial = partial.outcome else {
@@ -805,7 +805,9 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let hamovnikiID = try XCTUnwrap(SourceNativeCardLocator.mosgorsud(
             url: hamovnikiURL, cartoteka: cart)).identity
         let rootSessions = decisionDate.map { date in
-            [CaseSession(date: date,
+            [CaseSession(date: "30.09.2026", event: "Судебное заседание",
+                         result: "Вынесено решение по делу"),
+             CaseSession(date: date,
                          event: "Изготовлено мотивированное решение в окончательной форме")]
         } ?? []
         var tverskoy = CaseInstance(level: .first, court: "Тверской районный суд",

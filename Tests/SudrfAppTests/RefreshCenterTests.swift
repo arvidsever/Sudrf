@@ -683,6 +683,10 @@ final class RefreshCenterTests: XCTestCase {
         context.caseID = "source-card-1"
         var oldMovement = makeSuccessMovement(court: context.searchCourt)
         oldMovement.instances[0].result = nil
+        let native = try XCTUnwrap(SourceNativeCardLocator.sudrf(
+            court: context.searchCourt, cartoteka: try XCTUnwrap(context.cartoteka), caseID: "source-card-1"))
+        oldMovement.sourceRefreshCoverage = [.init(sourceFamily: native.sourceFamily, courtKey: native.courtKey,
+                                                  kind: .usableSnapshot, loadedCardIdentities: [native.identity])]
         let baseline = MovementDerivation.snapshot(from: oldMovement, context: context)
         let record = try localStore.upsert(
             context: context, snapshot: baseline, movement: oldMovement, collections: [])
@@ -690,10 +694,13 @@ final class RefreshCenterTests: XCTestCase {
         refreshed.instances[0].sessions = [CaseSession(
             date: "10.03.2027", time: "10:00", room: "1",
             event: "Судебное заседание", result: nil)]
-        let service = FixedMovement(refreshed)
+        let service = SequencedCaptchaMovement([oldMovement, refreshed, refreshed])
         let center = RefreshCenter(store: localStore, client: SudrfClient(),
                                    serviceBuilder: { _ in service })
 
+        // Existing cache is not proof of prior handling. Establish the first
+        // confirmed baseline, then exercise the transition and its replay.
+        _ = await center.refresh(key: record.key)?.value
         _ = await center.refresh(key: record.key)?.value
         _ = await center.refresh(key: record.key)?.value
 
@@ -717,11 +724,18 @@ final class RefreshCenterTests: XCTestCase {
         var movement = makeSuccessMovement(court: context.searchCourt)
         movement.instances[0].judge = "Иванов"
         movement.instances[0].result = "Оставлено без изменения"
+        let native = try XCTUnwrap(SourceNativeCardLocator.sudrf(
+            court: context.searchCourt, cartoteka: try XCTUnwrap(context.cartoteka), caseID: "source-card-261"))
+        movement.sourceRefreshCoverage = [.init(sourceFamily: native.sourceFamily, courtKey: native.courtKey,
+                                               kind: .usableSnapshot, loadedCardIdentities: [native.identity])]
         let record = try localStore.upsert(
             context: context,
             snapshot: MovementDerivation.snapshot(from: movement, context: context),
             movement: movement, collections: ["Регрессия"])
         let key = record.key
+        let initialCenter = RefreshCenter(store: localStore, client: SudrfClient(),
+                                          serviceBuilder: { _ in FixedMovement(movement) })
+        _ = await initialCenter.refresh(key: key)?.value
         for (judge, result) in [("Петров", "Решение изменено"),
                                 ("Иванов", "Оставлено без изменения"),
                                 ("Петров", "Решение изменено")] {
@@ -2336,6 +2350,21 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNotNil(center.lastErrors[context.key])
     }
 
+    private func initializeHandledBaseline(_ record: TrackedCaseRecord, movement: CaseMovement,
+                                           context: MovementContext, store: TrackedStore) throws {
+        let snapshot = MovementDerivation.snapshot(from: movement, context: context)
+        let attempt = SourceOutcomeClassifier.attempt(for: movement, sourceFamily: "sudrf",
+                                                       host: context.searchDomain)
+        let transition = CaseEventBaselineTransition.refresh(
+            journal: try store.requiredEventJournal(for: record), freshSnapshot: snapshot,
+            globalSnapshot: snapshot,
+            admittedCourts: CaseEventSourceAdmission.courts(in: movement, context: context),
+            attempt: attempt, isComplete: attempt.kind == .usableSnapshot)
+        try store.commit {
+            try store.appendCaseEvents([], to: record, semanticBaselines: transition.baselines)
+        }
+    }
+
     func testKoAPComplaintTimelineFixtureFlowsThroughRefreshSnapshotFeedAndLifecycle() async throws {
         var context = koapCassationContext(
             caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
@@ -2347,6 +2376,7 @@ final class RefreshCenterTests: XCTestCase {
             context: context,
             snapshot: MovementDerivation.snapshot(from: baseline, context: context),
             movement: baseline, collections: [])
+        try initializeHandledBaseline(record, movement: baseline, context: context, store: store)
         try store.save()
         let service = try fixtureService(
             "ksoyu_koap_complaint_timeline_3kas", context: context,
@@ -2452,7 +2482,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertFalse(router.calendarHearings.contains { $0.recordKey == record.key })
     }
 
-    func testKoAPComplaintTimelinePartialRefreshPreservesFactsWithoutJournalPublication() async throws {
+    func testKoAPComplaintTimelineQualifiedCourtPublishesDuringOtherCourtFailure() async throws {
         let context = koapCassationContext(
             caseNumber: "16-2038/2023", domain: "3kas.sudrf.ru")
         var full = try await koapComplaintTimelineMovement(context: context)
@@ -2462,8 +2492,9 @@ final class RefreshCenterTests: XCTestCase {
             context: context,
             snapshot: MovementDerivation.snapshot(from: baseline, context: context),
             movement: baseline, collections: [])
+        try initializeHandledBaseline(record, movement: baseline, context: context, store: localStore)
         try localStore.save()
-        let journalBefore = record.eventJournal
+        let ttlBefore = record.movementFetchedAt
         full.incompleteHigherCourtDomains = ["unrelated.sudrf.ru"]
         let center = RefreshCenter(
             store: localStore, client: SudrfClient(),
@@ -2477,9 +2508,13 @@ final class RefreshCenterTests: XCTestCase {
         let refreshed = try XCTUnwrap(localStore.record(forKey: record.key))
         XCTAssertEqual(refreshed.movement?.instances.first?.sessions.count, 4)
         XCTAssertEqual(refreshed.snapshot?.sessions.count, 4)
-        XCTAssertEqual(refreshed.eventJournal, journalBefore,
-                       "partial refresh не публикует семантические события")
+        XCTAssertEqual(Set(refreshed.eventJournal?.events.map(\.kind) ?? []),
+                       [.caseFileRequested, .requestedCaseReceived, .complaintReviewResult])
         XCTAssertEqual(refreshed.sourceRefreshAttempt?.kind, .partial)
+        XCTAssertEqual(refreshed.movementFetchedAt, ttlBefore)
+        let journal = refreshed.eventJournal
+        _ = await center.refresh(key: record.key)?.value
+        XCTAssertEqual(localStore.record(forKey: record.key)?.eventJournal, journal)
     }
 
     func testDeletingTrackedCaseCancelsLateKoAPComplaintTimelineRefresh() async throws {

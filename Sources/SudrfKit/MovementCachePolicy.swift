@@ -377,6 +377,7 @@ public enum MovementCachePolicy {
         out.instances = mv.instances.filter { $0.captchaFormURL == nil }
         out.incompleteHigherCourtDomains = nil
         out.honestZeroDomains = nil
+        out.sourceRefreshCoverage = nil
         return out
     }
 }

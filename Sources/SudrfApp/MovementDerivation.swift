@@ -12,7 +12,7 @@ import SudrfKit
 
 // MARK: - Персистентные значимые структуры (внутри снимка)
 
-struct StoredSession: Codable, Equatable {
+struct StoredSession: Codable, Equatable, Sendable {
     var dateRaw: String        // «дд.мм.гггг»
     var time: String?
     var room: String?
@@ -46,7 +46,7 @@ struct StoredSession: Codable, Equatable {
     }
 }
 
-struct StoredDeadline: Codable, Equatable {
+struct StoredDeadline: Codable, Equatable, Sendable {
     var kind: String           // «appeal» | «cassation»
     var what: String           // «Апелляционная жалоба»
     var basis: String          // основание расчёта

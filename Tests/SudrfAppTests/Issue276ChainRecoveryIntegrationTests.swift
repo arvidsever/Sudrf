@@ -104,7 +104,7 @@ private actor Issue276Provider: CaseProviding {
                          result: "Заявление разрешено", caseID: "material-id",
                          caseUID: "material-guid", cardURL: cardURL(
                             host: "frn--spb.sudrf.ru", caseID: "material-id",
-                            caseUID: "material-guid", deloID: "1500001", new: "0"))
+                            caseUID: "material-guid", deloID: "1610001", new: "0"))
     }
 
     private var materialCard: CaseCard {

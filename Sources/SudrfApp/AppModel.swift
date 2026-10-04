@@ -1954,18 +1954,9 @@ final class AppRouter: ObservableObject {
                         MovementDerivation.snapshot(from: updated, context: mctx), old: oldSnapshot,
                         movement: updated, context: mctx)
                     rec.snapshot = newSnapshot
-                    let observedAt = Date()
-                    let attempt = SourceAttempt(
-                        kind: .usableSnapshot,
-                        provenance: SourceProvenance(
-                            operation: .movement,
-                            sourceFamily: domain.lowercased().contains("msudrf")
-                                ? "msudrf" : "sudrf",
-                            host: domain, observedAt: observedAt))
-                    let derived = CaseEventDeriver.derive(
-                        old: oldSnapshot, new: newSnapshot,
-                        attempt: attempt, observedAt: observedAt)
-                    try store.appendCaseEvents(derived.events, to: rec, originKey: rec.key)
+                    // The captured HTML confirms one card, not completeness of
+                    // this court's discovery/other cards. The normal refresh below
+                    // will qualify journal changes; never consume its baseline here.
                 }
             } catch {
                 reportPersistenceFailure(error)
@@ -2031,9 +2022,12 @@ final class AppRouter: ObservableObject {
                 change(&snap.deadlines[idx])
                 rec.snapshot = snap
                 let observedAt = Date()
-                let derived = CaseEventDeriver.derive(
-                    old: oldSnapshot, new: snap, attempt: nil, observedAt: observedAt)
-                try store.appendCaseEvents(derived.events, to: rec, originKey: rec.key)
+                let transition = CaseEventBaselineTransition.manualDeadline(
+                    journal: try store.requiredEventJournal(for: rec), before: oldSnapshot,
+                    after: snap, index: idx, observedAt: observedAt)
+                try store.appendCaseEvents(transition.derivation.events, to: rec,
+                                           originKey: rec.key,
+                                           semanticBaselines: transition.baselines)
             }
             reload()
             return true

@@ -888,10 +888,12 @@ final class TrackedStore {
 
     func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord,
                           derivationVersion: Int? = nil,
-                          originKey: String? = nil) throws {
-        guard !events.isEmpty || derivationVersion != nil else { return }
+                          originKey: String? = nil,
+                          semanticBaselines: CaseEventBaselines? = nil) throws {
+        guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil else { return }
         var journal = try requiredEventJournal(for: record)
         if let derivationVersion { journal.derivationVersion = derivationVersion }
+        if let semanticBaselines { journal.semanticBaselines = semanticBaselines }
         do {
             if failNextJournalAppendForTesting {
                 failNextJournalAppendForTesting = false

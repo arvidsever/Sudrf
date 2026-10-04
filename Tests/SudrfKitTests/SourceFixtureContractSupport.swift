@@ -624,12 +624,25 @@ struct SourceFixtureRunnerSupport {
             .movement(for: base, court: court, cartoteka: cartoteka)
         if forceCardFetch {
             // The expected artifact intentionally carries no fabricated URL.
-            // Keep the parser/service output while removing the inert URL.
+            // Keep the parser/service output while removing the inert URL and
+            // the matching synthetic card identity from refresh coverage.
+            // This identity exists only to route the fixture provider through
+            // the card-fetch path; it is not source-native evidence.
+            XCTAssertEqual(value.sourceRefreshCoverage, [MovementCourtCoverage(
+                sourceFamily: "sudrf",
+                courtKey: SudrfHost.moduleHost(court.domain),
+                kind: .usableSnapshot,
+                loadedCardIdentities: [SourceNativeCardIdentity(
+                    sourceFamily: "sudrf",
+                    courtKey: SudrfHost.moduleHost(court.domain),
+                    cartotekaKey: cartoteka.id,
+                    sourceNativeID: "fixture-card")])], fixture.id)
             value.instances = value.instances.map { instance in
                 var instance = instance
                 instance.sourceURL = nil
                 return instance
             }
+            value.sourceRefreshCoverage = nil
         }
         return value
     }

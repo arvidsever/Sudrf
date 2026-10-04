@@ -1772,7 +1772,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
     func testIssue125RefreshTransfersOverrideAndRepeatedExactKeyKeepsCurrentDeadline() async throws {
         let store = TrackedStore(inMemory: true)
         let value = context(number: "2-12501/2026", cardID: "issue125-refresh")
-        let movement = issue125Movement(for: value)
+        var movement = issue125Movement(for: value)
         let oldSnapshot = try issue125OldSnapshot(
             movement: movement, context: value, oldRuleID: "GPK-APPEAL-GENERAL",
             status: .overridden, manualDate: "20.10.2026")
@@ -1780,6 +1780,22 @@ final class TrackedStoreIdentityTests: XCTestCase {
             context: value, snapshot: oldSnapshot, movement: movement,
             collections: ["Issue 125"],
             movementFetchedAt: Date(timeIntervalSince1970: 1_700_000_126))
+        let native = try XCTUnwrap(SourceNativeCardLocator.sudrf(
+            court: value.searchCourt, cartoteka: try XCTUnwrap(value.cartoteka),
+            caseID: try XCTUnwrap(value.caseID)))
+        let sourceID = try XCTUnwrap(CaseSnapshotSourceIdentity.sourceCardID(
+            for: try XCTUnwrap(movement.instances.first), context: value))
+        movement.sourceRefreshCoverage = [MovementCourtCoverage(
+            sourceFamily: native.sourceFamily, courtKey: native.courtKey, kind: .usableSnapshot,
+            loadedCardIdentities: [native.identity])]
+        let prior = CaseEventBaselineTransition.refresh(
+            journal: try store.requiredEventJournal(for: record), freshSnapshot: oldSnapshot,
+            globalSnapshot: oldSnapshot,
+            admittedCourts: [native.sourceFamily + "|" + native.courtKey: [native.id: sourceID]],
+            attempt: .init(kind: .usableSnapshot, provenance: .init(
+                operation: .movement, sourceFamily: "sudrf", host: value.searchDomain)),
+            isComplete: true)
+        try store.commit { try store.appendCaseEvents([], to: record, semanticBaselines: prior.baselines) }
         let initialJournal = record.eventJournal
         let source = FixedDeadlineMovement(movement)
         let center = RefreshCenter(

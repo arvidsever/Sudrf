@@ -67,10 +67,14 @@
 `AppRouter.track` → `TrackedStore.upsert` → SwiftData. Затем `RefreshCenter`
 восстанавливает `MovementContext`, вызывает `MovementService`, объединяет ответ
 с последним успешным движением через `MovementCachePolicy`, строит снимок через
-`MovementDerivation` и только после этого сохраняет запись. Полный пригодный
-snapshot проходит чистый `CaseEventDeriver`; доказанные события добавляются в
-`CaseEventJournal` в той же транзакции. Partial/error outcomes не создают событий,
-а первый refresh после новой derivation-version только устанавливает baseline.
+`MovementDerivation` и только после этого сохраняет запись. Свежая загрузка несёт
+`sourceRefreshCoverage` с проверенными native ID карточек и полнотой каждого суда.
+`CaseEventSourceAdmission` допускает только полностью подтверждённые суды;
+`CaseEventBaselineTransition` сравнивает их с отдельными обработанными базами
+`CaseEventJournal`, независимо от отображаемого partial-кэша. События и новые базы
+сохраняются в той же транзакции. Неподтверждённые суды сохраняют прежние базы;
+общие факты ждут полного подтверждения цепочки. Первый подтверждённый refresh
+старого журнала или новой derivation-version устанавливает базу без старых событий.
 
 Ошибка домашнего суда, после которой нельзя собрать пригодный `CaseMovement`,
 идёт в failure/pending-путь и не вызывает `applyMovement`. Последний успешный

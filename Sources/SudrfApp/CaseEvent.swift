@@ -103,6 +103,7 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
     var schemaVersion: Int
     var derivationVersion: Int
     var events: [CaseEvent]
+    var semanticBaselines: CaseEventBaselines? = nil
 
     init(schemaVersion: Int = Self.currentSchemaVersion,
          derivationVersion: Int = Self.currentDerivationVersion,
@@ -181,6 +182,10 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
         for journal in journals {
             try merged.append(journal.events)
         }
+        let baselines = journals.filter {
+            $0.derivationVersion == currentDerivationVersion
+        }.compactMap(\.semanticBaselines)
+        if !baselines.isEmpty { merged.semanticBaselines = CaseEventBaselines.merged(baselines) }
         return merged
     }
 }
@@ -843,10 +848,29 @@ enum CaseEventDeriver {
 enum CaseSnapshotSourceIdentity {
     static func sourceCardID(for instance: CaseInstance,
                              context: MovementContext) -> String? {
+        if let url = instance.sourceURL,
+           let native = SourceNativeCardLocator.vsrf(url: url) {
+            return native.identity.id
+        }
+        if MosGorSudRouting.isMosGorSud(domain: instance.domain), let url = instance.sourceURL {
+            let carts = CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }
+            let identities = Set(carts.compactMap {
+                SourceNativeCardLocator.mosgorsud(url: url, cartoteka: $0)?.identity
+            })
+            // Prefer the saved register when it agrees with the exact path.
+            if let cart = context.cartoteka,
+               let native = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cart) {
+                return native.identity.id
+            }
+            if identities.count == 1 { return identities.first?.id }
+            return nil
+        }
         let candidates = [context.sourceKnownCard].compactMap { $0 }
             + (context.knownCards ?? [])
+        let nativeURLID = instance.sourceURL.flatMap { query(["case_id", "_id"], $0) }
         let matchingKnownCards = candidates.filter { value in
-            sameHost(value.domain, instance.domain)
+            (nativeURLID == nil || value.caseID == nativeURLID)
+                && sameHost(value.domain, instance.domain)
                 && (value.caseNumber == nil || sameNumber(value.caseNumber, instance.caseNumber))
                 && value.level == instance.level
         }
@@ -858,7 +882,9 @@ enum CaseSnapshotSourceIdentity {
         }
         if sameHost(context.searchDomain, instance.domain),
            instance.level == context.baseInstanceLevel,
-           let id = context.caseID {
+           sameNumber(context.caseNumber, instance.caseNumber),
+           let id = context.caseID,
+           nativeURLID == nil || nativeURLID == id {
             return SourceNativeCardIdentity(
                 sourceFamily: family(context.searchDomain),
                 courtKey: context.courtCode ?? SudrfHost.moduleHost(context.searchDomain),

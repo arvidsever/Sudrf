@@ -1453,74 +1453,34 @@ final class RefreshCenter: ObservableObject {
             && (lhs.srvNum == nil || rhs.srvNum == nil || lhs.srvNum == rhs.srvNum)
     }
 
-    /// Correct an earlier mirror's source identity in the comparison baseline.
-    /// The old host served the same source-native card under its own heading;
-    /// replacing that heading must not look like a newly published case event.
-    private static func correctedMirrorBaseline(
-        oldSnapshot: CaseSnapshot?, oldMovement: CaseMovement?,
-        oldContext: MovementContext, fresh: CaseMovement,
-        newSnapshot: CaseSnapshot, newContext: MovementContext
-    ) -> CaseSnapshot? {
-        guard var baseline = oldSnapshot, let oldMovement else { return nil }
-        var corrected = false
-        for current in fresh.instances {
-            guard let currentURL = current.sourceURL,
-                  let currentLink = try? SudrfCaseCardLink(url: currentURL),
-                  let currentID = CaseSnapshotSourceIdentity.sourceCardID(
-                    for: current, context: newContext) else { continue }
-            let matches = oldMovement.instances.filter { previous in
-                guard previous.caseNumber == current.caseNumber,
-                      let previousURL = previous.sourceURL,
-                      let previousLink = try? SudrfCaseCardLink(url: previousURL) else {
-                    return false
-                }
-                return sameNativeCard(previousLink, currentLink)
+    private static func verifiedMirrorContinuities(
+        fresh: CaseMovement, cached: CaseMovement?, admitted: [String: [String: String]]
+    ) -> [String: String] {
+        guard let cached else { return [:] }
+        let loadedIDs = Set(admitted.values.flatMap { $0.keys })
+        var pairs: [(old: String, new: String)] = []
+        for current in fresh.instances where current.foundByUID {
+            guard let url = current.sourceURL, let link = try? SudrfCaseCardLink(url: url),
+                  let cart = CartotekaRegistry.resolve(
+                    level: current.sourceEvidence?.sourceCourtLevel ?? .district,
+                    deloID: link.deloID, new: link.new, caseNumber: current.caseNumber),
+                  let native = SourceNativeCardLocator.sudrf(url: url, cartoteka: cart),
+                  loadedIDs.contains(native.id) else { continue }
+            let prior = cached.instances.compactMap { old -> SourceNativeCardLocator? in
+                guard old.caseNumber == current.caseNumber, let oldURL = old.sourceURL,
+                      let oldLink = try? SudrfCaseCardLink(url: oldURL),
+                      oldLink.moduleHost != link.moduleHost, sameNativeCard(oldLink, link) else { return nil }
+                return SourceNativeCardLocator.sudrf(url: oldURL, cartoteka: cart)
             }
-            guard matches.count == 1, let previous = matches.first else { continue }
-            let priorID = CaseSnapshotSourceIdentity.sourceCardID(
-                for: previous, context: oldContext)
-            guard priorID != currentID || previous.court != current.court else { continue }
-
-            // An old anchor may have used a court code for its source ID, and
-            // its mirrors may all have inherited that anchor's ID. Map each
-            // proven card individually; rewriting every observation sharing
-            // the old ID would erase genuinely different historical cards.
-            var observations = baseline.instanceObservations ?? []
-            observations.append(StoredInstanceObservation(
-                sourceCardID: currentID, levelRaw: previous.level.rawValue,
-                court: current.court, caseNumber: previous.caseNumber,
-                judge: previous.judge, result: previous.result))
-            baseline.instanceObservations = observations
-
-            for session in newSnapshot.sessions where session.sourceCardID == currentID {
-                guard previous.sessions.contains(where: {
-                    $0.date == session.dateRaw && $0.time == session.time
-                        && $0.room == session.room && $0.event == session.event
-                        && $0.result == session.result
-                }) else { continue }
-                baseline.sessions.append(session)
-            }
-            // Act IDs contain the host. Suppress a new-act event only when
-            // both published bodies are exactly the same after trimming.
-            for newActID in current.linkedActIDs {
-                guard let newBody = fresh.actBodies[newActID]?.trimmingCharacters(
-                    in: .whitespacesAndNewlines), !newBody.isEmpty,
-                      previous.linkedActIDs.contains(where: {
-                        oldMovement.actBodies[$0]?.trimmingCharacters(
-                            in: .whitespacesAndNewlines) == newBody
-                      }),
-                      let act = newSnapshot.actObservations?.first(where: {
-                        $0.sourceActID == newActID
-                      }) else { continue }
-                var observations = baseline.actObservations ?? []
-                if !observations.contains(where: { $0.sourceActID == newActID }) {
-                    observations.append(act)
-                    baseline.actObservations = observations
-                }
-            }
-            corrected = true
+            guard prior.count == 1, let old = prior.first else { continue }
+            pairs.append((old.id, native.id))
         }
-        return corrected ? baseline : nil
+        // Ambiguous continuity in either direction must not manufacture history.
+        let unique = pairs.filter { pair in
+            pairs.filter { $0.old == pair.old }.count == 1
+                && pairs.filter { $0.new == pair.new }.count == 1
+        }
+        return Dictionary(uniqueKeysWithValues: unique.map { ($0.old, $0.new) })
     }
 
     /// A recognized empty auxiliary register can restore a cached mirror even
@@ -1626,12 +1586,6 @@ final class RefreshCenter: ObservableObject {
             MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot,
             preserveActiveProposedWhenMissing: !isComplete,
             movement: merged, context: projectionContext)
-        let correctedBaseline = verifiedContext.flatMap { _ in
-            Self.correctedMirrorBaseline(
-                oldSnapshot: oldSnapshot, oldMovement: oldMovement,
-                oldContext: ctx, fresh: mv, newSnapshot: newSnap,
-                newContext: projectionContext)
-        }
         let persistedMovement = MovementCachePolicy.stripped(forPersist: merged)
         let snapshotSourceChanged = oldSnapshot.map {
             !$0.hasSameRefreshSource(as: newSnap)
@@ -1653,7 +1607,6 @@ final class RefreshCenter: ObservableObject {
                            projectionKeys: Set<String>,
                            keyRemaps: [String: String],
                            publishedMovement: CaseMovement) in
-            var semanticOldSnapshots = oldSnapshot.map { [$0] } ?? []
             let persisted: TrackedCaseRecord
             let projectionKeys: Set<String>
             let keyRemaps: [String: String]
@@ -1664,9 +1617,6 @@ final class RefreshCenter: ObservableObject {
                 // fetched in this attempt; its number, UID and success TTL do not.
                 let beforeRecords = try store.allForMutation()
                 let before = Set(beforeRecords.map(\.key))
-                let beforeSnapshots = Dictionary(uniqueKeysWithValues: beforeRecords.compactMap {
-                    record in record.snapshot.map { (record.key, $0) }
-                })
                 if let verifiedContext {
                     // The published UID listing and card have already confirmed
                     // this registration. Keep the technical key and historical
@@ -1699,7 +1649,6 @@ final class RefreshCenter: ObservableObject {
                 let removed = before.subtracting(Set(try store.allForMutation().map(\.key)))
                 let remaps = Dictionary(uniqueKeysWithValues: removed.map { ($0, reconciled.key) })
                 let scope = removed.union([reconciled.key])
-                semanticOldSnapshots = scope.compactMap { beforeSnapshots[$0] }
                 // Reconciliation may have merged this refreshed card into a
                 // dossier whose survivor already contained other instances and
                 // acts. Publish the full persisted projection in that case.
@@ -1723,22 +1672,36 @@ final class RefreshCenter: ObservableObject {
             persisted.sourceRefreshAttempt = attempt
             let journal = try store.requiredEventJournal(for: persisted)
             let finalSnapshot = persisted.snapshot ?? newSnap
-            if let correctedBaseline { semanticOldSnapshots.append(correctedBaseline) }
-            let derivation: CaseEventDerivationResult
-            if journal.derivationVersion != CaseEventJournal.currentDerivationVersion {
-                derivation = .init(events: [], diagnostics: [.derivationVersionChanged])
-            } else {
-                let baseline = CaseEventDeriver.conservativeBaseline(
-                    semanticOldSnapshots, comparedTo: finalSnapshot)
-                derivation = CaseEventDeriver.derive(
-                    old: baseline, new: finalSnapshot,
-                    attempt: isComplete ? attempt : SourceAttempt(
-                        kind: .partial, provenance: attempt.provenance),
-                    observedAt: attempt.provenance.observedAt)
+            let freshSnapshot = MovementDerivation.snapshot(from: mv, context: projectionContext)
+            let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)
+            // The legacy refresh outcome treats a recognized empty listing as
+            // partial. Fresh per-court proof can still confirm the whole journal
+            // comparison, without changing that outcome or its cache TTL policy.
+            let zeroDomains = Set((mv.honestZeroDomains ?? []).map(SudrfHost.moduleHost))
+            let confirmedCardIDs = Set(admittedCourts.values.flatMap { $0.values })
+            let hasUnconfirmedZeroHistory = publishedMovement.instances.contains { instance in
+                guard instance.captchaFormURL == nil, instance.transientError != true,
+                      zeroDomains.contains(SudrfHost.moduleHost(instance.domain)) else { return false }
+                guard let id = CaseSnapshotSourceIdentity.sourceCardID(
+                    for: instance, context: projectionContext) else { return true }
+                return !confirmedCardIDs.contains(id)
             }
+            let onlyRecognizedEmptySources = (mv.incompleteHigherCourtDomains ?? []).isEmpty
+                && !zeroDomains.isEmpty && !hasUnconfirmedZeroHistory
+            let transition = CaseEventBaselineTransition.refresh(
+                journal: journal, freshSnapshot: freshSnapshot, globalSnapshot: finalSnapshot,
+                admittedCourts: admittedCourts,
+                attempt: attempt, isComplete: (isComplete || onlyRecognizedEmptySources)
+                    && CaseEventSourceAdmission.chainIsConfirmed(
+                    in: mv, context: projectionContext, admitted: admittedCourts),
+                actBodies: mv.actBodies,
+                nativeContinuities: verifiedContext == nil ? [:] : Self.verifiedMirrorContinuities(
+                    fresh: mv, cached: oldMovement, admitted: admittedCourts))
+            let derivation = transition.derivation
             try store.appendCaseEvents(derivation.events, to: persisted,
                                        derivationVersion: CaseEventJournal.currentDerivationVersion,
-                                       originKey: persisted.key)
+                                       originKey: persisted.key,
+                                       semanticBaselines: transition.baselines)
             // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
             // кроме дела, открытого прямо сейчас (пользователь его и так видит).
             if changed && openedKey?() != persisted.key { persisted.seenAt = nil }

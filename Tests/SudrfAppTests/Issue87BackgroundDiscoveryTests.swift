@@ -66,6 +66,22 @@ final class Issue87BackgroundDiscoveryTests: XCTestCase {
             context: context,
             snapshot: MovementDerivation.snapshot(from: cached, context: context),
             movement: cached, collections: ["КоАП"])
+        // This regression begins after an earlier, confirmed empty KSOYu
+        // search. A display-only legacy cache is not an event baseline (#262).
+        let native = try XCTUnwrap(SourceNativeCardLocator.sudrf(
+            court: context.searchCourt, cartoteka: try XCTUnwrap(context.cartoteka),
+            caseID: try XCTUnwrap(context.caseID)))
+        let sourceID = try XCTUnwrap(CaseSnapshotSourceIdentity.sourceCardID(
+            for: try XCTUnwrap(cached.instances.first), context: context))
+        let prior = CaseEventBaselineTransition.refresh(
+            journal: CaseEventJournal(), freshSnapshot: try XCTUnwrap(record.snapshot),
+            globalSnapshot: try XCTUnwrap(record.snapshot),
+            admittedCourts: [native.sourceFamily + "|" + native.courtKey: [native.id: sourceID],
+                             "sudrf|3kas.sudrf.ru": [:]],
+            attempt: .init(kind: .usableSnapshot, provenance: .init(
+                operation: .movement, sourceFamily: "sudrf", host: context.searchDomain)),
+            isComplete: true)
+        try store.appendCaseEvents([], to: record, semanticBaselines: prior.baselines)
         record.movementFetchedAt = .distantPast
         try store.save()
 

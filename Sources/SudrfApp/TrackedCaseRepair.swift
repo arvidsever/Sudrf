@@ -1233,6 +1233,37 @@ final class TrackedCaseRepairCoordinator {
                let source = Self.knownCard(from: old) { known.append(source) }
         }
         context.knownCards = Self.dedupKnown(known)
+        let journals = try all.map { try store.requiredEventJournal(for: $0) }
+        var legacyCardIDs = Set<String>()
+        var ambiguousLegacyCards = false
+        var hasLegacyFacts = false
+        for (record, journal) in zip(all, journals)
+            where journal.semanticBaselines == nil
+                || journal.derivationVersion != CaseEventJournal.currentDerivationVersion
+                || journal.semanticBaselines?.derivationVersion != CaseEventJournal.currentDerivationVersion {
+            hasLegacyFacts = hasLegacyFacts || record.snapshot != nil || record.movement != nil
+            guard let legacy = Self.normalizedMovement(record.movement, context: record.context),
+                  legacy.instances.contains(where: { $0.captchaFormURL == nil && $0.transientError != true }) else {
+                if let snapshot = record.snapshot,
+                   snapshot.instanceObservations?.isEmpty == false || !snapshot.sessions.isEmpty
+                    || snapshot.actObservations?.isEmpty == false
+                    || snapshot.actsFingerprint?.isEmpty == false
+                    || snapshot.complaintObservations?.isEmpty == false {
+                    ambiguousLegacyCards = true
+                }
+                continue
+            }
+            for instance in legacy.instances where instance.captchaFormURL == nil && instance.transientError != true {
+                guard instance.sourceURL != nil || record.context != nil else {
+                    ambiguousLegacyCards = true
+                    continue
+                }
+                if let identity = CaseEventSourceAdmission.nativeCardIdentity(
+                    for: instance, context: record.context ?? context) {
+                    legacyCardIDs.insert(identity.id)
+                } else { ambiguousLegacyCards = true }
+            }
+        }
 
         // Каноническая карточка участвует в merge всегда. Иначе после
         // переякоривания старый кэш апелляции продолжает задавать заголовок и
@@ -1293,8 +1324,18 @@ final class TrackedCaseRepairCoordinator {
         // Identity repair is not itself a case event. Preserve every existing
         // append-only journal and fail the whole transaction on corruption or
         // an event-ID collision with a different payload.
-        let mergedJournal = try CaseEventJournal.merged(
-            try all.map { try store.requiredEventJournal(for: $0) })
+        var mergedJournal = try CaseEventJournal.merged(journals)
+        if hasLegacyFacts || ambiguousLegacyCards {
+            var baselines = mergedJournal.semanticBaselines ?? CaseEventBaselines()
+            baselines.unprocessedCardIDs = (baselines.unprocessedCardIDs ?? []).union(legacyCardIDs)
+            baselines.global = nil
+            baselines.globalConflict = true
+            if ambiguousLegacyCards {
+                baselines.conflictingCourts.formUnion(baselines.courts.keys)
+                baselines.courts.removeAll()
+            }
+            mergedJournal.semanticBaselines = baselines
+        }
         survivor.eventJournalData = try JSONEncoder().encode(mergedJournal)
         survivor.movementFetchedAt = nil
         if let movement {

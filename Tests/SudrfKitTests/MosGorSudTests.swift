@@ -275,6 +275,73 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(mv.instances.firstIndex(of: first)),
                           try XCTUnwrap(mv.instances.firstIndex(of: appeal)))
         XCTAssertEqual(mv.category, "Споры ЗПП")
+
+        let baseCoverage = try XCTUnwrap(mv.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "tverskoj"
+        })
+        XCTAssertTrue(baseCoverage.loadedCardIdentities.contains {
+            $0.cartotekaKey == "g1" && $0.sourceNativeID == "first1"
+        })
+        let appealCoverage = try XCTUnwrap(mv.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "mgs"
+        })
+        XCTAssertTrue(appealCoverage.loadedCardIdentities.contains {
+            $0.cartotekaKey == "g2" && $0.sourceNativeID == "app1"
+        }, "appeal card uses its own canonical registry section")
+    }
+
+    func testMoscowFailedAppealCardBlocksOnlyItsNativeCourtAlias() async throws {
+        let baseCard = MosGorSudCard(uid: uid, caseNumber: "02-1234/2024",
+                                     court: "Тверской районный суд")
+        let loadedCard = MosGorSudCard(uid: uid, caseNumber: "33-2/2024",
+                                       court: "Басманный районный суд")
+        let brokenRow = MosGorSudResult(
+            caseNumber: "33-1/2024", uid: uid,
+            cardURL: URL(string:
+                "https://mos-gorsud.ru/rs/tverskoj/services/cases/appeal-civil/details/broken"))
+        let loadedRow = MosGorSudResult(
+            caseNumber: "33-2/2024", uid: uid,
+            cardURL: URL(string:
+                "https://mos-gorsud.ru/rs/basmannyj/services/cases/appeal-civil/details/loaded"))
+        let provider = MockMosGorSud(
+            searchByInstance: [MosGorSudInstance.appeal: [brokenRow, loadedRow]],
+            cards: ["first1": baseCard, "loaded": loadedCard])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                      mosgorsud: provider)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let movement = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+
+        let tverskoy = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "tverskoj"
+        })
+        XCTAssertEqual(tverskoy.kind, .partial)
+        XCTAssertTrue(tverskoy.loadedCardIdentities.contains {
+            $0.cartotekaKey == "g1" && $0.sourceNativeID == "first1"
+        })
+        let basmanny = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "basmannyj"
+        })
+        XCTAssertTrue(basmanny.isFull)
+        XCTAssertTrue(basmanny.loadedCardIdentities.contains {
+            $0.cartotekaKey == "g2" && $0.sourceNativeID == "loaded"
+        })
+    }
+
+    func testMoscowConfirmedEmptyUpperSearchNamesItsKnownTarget() async throws {
+        let baseCard = MosGorSudCard(uid: uid, caseNumber: "02-1234/2024",
+                                     court: "Тверской районный суд")
+        let provider = MockMosGorSud(searchByInstance: [:], cards: ["first1": baseCard])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                      mosgorsud: provider)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.moscowMovement(for: firstRow(), cartoteka: cart)
+
+        let mgsCoverage = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "mgs"
+        })
+        XCTAssertEqual(mgsCoverage.kind, .honestZero)
+        XCTAssertTrue(mgsCoverage.loadedCardIdentities.isEmpty)
     }
 
     func testMoscowMovementPublishesEveryVerifiedAttachment() async throws {
@@ -387,7 +454,8 @@ final class MosGorSudTests: XCTestCase {
                        "Петров П.П.")
         let directFetchCalls = await client.recordedDirectURLs()
         XCTAssertEqual(directFetchCalls, [firstURL, secondURL])
-        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["mos-gorsud.ru"])
+        XCTAssertEqual(Set(movement.incompleteHigherCourtDomains ?? []),
+                       Set(["mos-gorsud.ru", "1ap.sudrf.ru", "2ap.sudrf.ru"]))
     }
 
     func testFailedKnownFirstAppellateRefreshStaysPartialAndPreservesCache() async throws {

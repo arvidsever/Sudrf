@@ -34,15 +34,30 @@ extension MovementService {
             throw SudrfError.parsing("клиент mos-gorsud не подключён — движение по делу Москвы не собрать")
         }
         let route = MosGorSudRouting.map(cartoteka: cartoteka)
-
-        // 1. Карточка базовой инстанции (сессии, УИД, судья, вложения актов).
-        let baseCard: MosGorSudCard?
-        if let url = base.cardURL {
-            baseCard = try await mosgorsud.fetchCard(url: url)
-        } else {
-            baseCard = nil
+        var coverage = MovementCoverageAccumulator()
+        func markSharedMoscowCoverage(_ kind: SourceOutcomeKind) {
+            coverage.mark(kind, sourceFamily: "mosgorsud", courtKey: MosGorSudEndpoint.host)
         }
-        let uid = base.uid ?? baseCard?.uid
+        func markMoscowCoveragePartial(for url: URL?, cartoteka expectedCartoteka: Cartoteka? = nil) {
+            if let url, let expectedCartoteka,
+               let locator = SourceNativeCardLocator.mosgorsud(
+                url: url, cartoteka: expectedCartoteka) {
+                coverage.markPartial(sourceFamily: locator.sourceFamily,
+                                     courtKey: locator.courtKey)
+            } else if let url, let courtKey = SourceNativeCardLocator.mosgorsudCourtKey(url: url) {
+                coverage.markPartial(sourceFamily: "mosgorsud", courtKey: courtKey)
+            } else {
+                markSharedMoscowCoverage(.partial)
+            }
+        }
+
+        func coverageCartoteka(for instance: Int) -> Cartoteka? {
+            CartotekaRegistry.sets(for: .subject).first {
+                let candidate = MosGorSudRouting.map(cartoteka: $0)
+                return candidate.processType == route.processType
+                    && candidate.instance == instance
+            }
+        }
 
         var incompleteDomains: [String] = []
         var honestZeroDomains: [String] = []
@@ -53,11 +68,55 @@ extension MovementService {
         }
         func markIncomplete(_ domain: String) { appendUnique(domain, to: &incompleteDomains) }
         func markHonestZero(_ domain: String) { appendUnique(domain, to: &honestZeroDomains) }
+        func reflectCoverageInAggregateMasks() {
+            for item in coverage.values {
+                let domain = item.sourceFamily == "mosgorsud"
+                    ? MosGorSudEndpoint.host : item.courtKey
+                switch item.kind {
+                case .usableSnapshot: break
+                case .honestZero: markHonestZero(domain)
+                default: markIncomplete(domain)
+                }
+            }
+        }
+
+        // 1. Карточка базовой инстанции (сессии, УИД, судья, вложения актов).
+        let baseCard: MosGorSudCard?
+        if let url = base.cardURL {
+            baseCard = try await mosgorsud.fetchCard(url: url)
+            if let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka) {
+                coverage.recordLoaded(locator)
+            } else {
+                markMoscowCoveragePartial(for: url, cartoteka: cartoteka)
+                markIncomplete(MosGorSudEndpoint.host)
+            }
+        } else {
+            baseCard = nil
+            markSharedMoscowCoverage(.partial)
+            markIncomplete(MosGorSudEndpoint.host)
+        }
+        let uid = base.uid ?? baseCard?.uid
 
         func nonempty(_ value: String?) -> String? {
             guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !value.isEmpty else { return nil }
             return value
+        }
+
+        func knownCardLocator(_ known: KnownCard, url: URL?) -> SourceNativeCardLocator? {
+            let level = Self.courtLevel(forDomain: known.domain)
+            let cart = known.cartotekaID.flatMap {
+                CartotekaRegistry.find(level: level, id: $0)
+            } ?? CartotekaRegistry.resolve(level: level, deloID: known.deloID,
+                                           new: known.new,
+                                           caseNumber: known.caseNumber ?? "")
+            guard let cart else { return nil }
+            if let url {
+                return SourceNativeCardLocator.sudrf(url: url, cartoteka: cart)
+            }
+            return SourceNativeCardLocator.sudrf(
+                court: Court(domain: known.domain, title: known.courtTitle, level: level),
+                cartoteka: cart, caseID: known.caseID)
         }
 
         func publishedActs(from card: MosGorSudCard?, caseNumber: String,
@@ -147,19 +206,28 @@ extension MovementService {
                 [(MosGorSudInstance.appeal, .appeal),
                  (MosGorSudInstance.cassation, .cassation)].filter { $0.instance > route.instance }
             for up in ups {
+                let upCartoteka = coverageCartoteka(for: up.instance)
                 let rows: [MosGorSudResult]
                 do {
                     rows = try await mosgorsud.search(courtAlias: nil, uid: uid,
                                                       caseNumber: nil, participant: nil,
                                                       instance: up.instance,
                                                       processType: route.processType)
-                    if rows.isEmpty { markHonestZero(MosGorSudEndpoint.host) }
+                    if rows.isEmpty {
+                        markHonestZero(MosGorSudEndpoint.host)
+                        markSharedMoscowCoverage(.honestZero)
+                        if coverageCartoteka(for: up.instance) != nil {
+                            coverage.mark(.honestZero, sourceFamily: "mosgorsud",
+                                          courtKey: MosGorSudCourtDirectory.mgsAlias)
+                        }
+                    }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
                     throw error
                 } catch {
                     markIncomplete(MosGorSudEndpoint.host)
+                    markSharedMoscowCoverage(.partial)
                     continue
                 }
                 for r in rows {
@@ -167,25 +235,36 @@ extension MovementService {
                         $0.domain == MosGorSudEndpoint.host
                             && Self.sameCaseNumber($0.caseNumber, r.caseNumber)
                     }) { continue }
-                    let card: MosGorSudCard?
+                    guard let rowURL = r.cardURL else {
+                        markSharedMoscowCoverage(.partial)
+                        markIncomplete(MosGorSudEndpoint.host)
+                        continue
+                    }
+                    let rowLocator = upCartoteka.flatMap {
+                        SourceNativeCardLocator.mosgorsud(url: rowURL, cartoteka: $0)
+                    }
+                    let card: MosGorSudCard
                     do {
-                        if let url = r.cardURL {
-                            card = try await mosgorsud.fetchCard(url: url)
-                        } else {
-                            card = nil
-                        }
+                        card = try await mosgorsud.fetchCard(url: rowURL)
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
                         throw error
                     } catch {
                         markIncomplete(MosGorSudEndpoint.host)
+                        markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
                         continue
                     }
-                    let court = r.court ?? card?.court ?? "Московский городской суд"
-                    let actURLs = card?.actFiles.compactMap {
+                    if let rowLocator {
+                        coverage.recordLoaded(rowLocator)
+                    } else {
+                        markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
+                        markIncomplete(MosGorSudEndpoint.host)
+                    }
+                    let court = r.court ?? card.court ?? "Московский городской суд"
+                    let actURLs = card.actFiles.compactMap {
                         PublishedActURLPolicy.safeMosGorSudURL($0.url)
-                    } ?? []
+                    }
                     let published = try await publishedActs(from: card,
                                                              caseNumber: r.caseNumber,
                                                              level: up.level,
@@ -197,11 +276,11 @@ extension MovementService {
                         level: up.level,
                         court: court,
                         caseNumber: r.caseNumber,
-                        judge: r.judge ?? card?.judge,
+                        judge: r.judge ?? card.judge,
                         domain: MosGorSudEndpoint.host,
                         foundByUID: true,
-                        result: r.result ?? card?.result,
-                        sessions: card?.sessions ?? [],
+                        result: r.result ?? card.result,
+                        sessions: card.sessions,
                         actID: published.ids.first,
                         actIDs: published.ids.isEmpty ? nil : published.ids,
                         actURL: actURLs.first,
@@ -223,6 +302,7 @@ extension MovementService {
             actBodies.merge(result.bodies) { a, _ in a }
             result.incompleteDomains.forEach(markIncomplete)
             result.honestZeroDomains.forEach(markHonestZero)
+            coverage.merge(result.sourceRefreshCoverage)
         }
 
         // 4. Вторая кассация — ВС РФ (по УИД; тройка без фамилий не собирается —
@@ -235,8 +315,15 @@ extension MovementService {
                 partySurnames: [])
             instances.append(contentsOf: result.instances)
             acts.append(contentsOf: result.acts)
-            if result.incomplete { markIncomplete("vsrf.ru") }
-            if result.instances.isEmpty, !result.incomplete { markHonestZero("vsrf.ru") }
+            for identity in result.loadedCardIdentities { coverage.recordLoaded(identity) }
+            if result.incomplete {
+                markIncomplete("vsrf.ru")
+                coverage.markPartial(sourceFamily: "vsrf", courtKey: "vsrf.ru")
+            }
+            if result.instances.isEmpty, !result.incomplete {
+                markHonestZero("vsrf.ru")
+                coverage.mark(.honestZero, sourceFamily: "vsrf", courtKey: "vsrf.ru")
+            }
         }
 
         // Some old Moscow cases link to an appellate court only through a
@@ -256,8 +343,9 @@ extension MovementService {
                                      usingCanonicalHost: true) {
                 continue
             }
+            let entry: (inst: CaseInstance, act: CaseAct?, body: String?)
             do {
-                let entry = try await instanceFromKnownCard(knownCard)
+                entry = try await instanceFromKnownCard(knownCard)
                 _ = Self.appendIfNew(entry.inst, act: entry.act, body: entry.body,
                                      preferSourceIdentity: knownCard.sourceURL != nil,
                                      to: &instances, acts: &acts,
@@ -268,9 +356,19 @@ extension MovementService {
                 throw error
             } catch {
                 markIncomplete(knownCard.domain)
+                coverage.markPartial(sourceFamily: "sudrf",
+                                     courtKey: SudrfHost.moduleHost(knownCard.domain))
+                continue
+            }
+            if let locator = knownCardLocator(knownCard, url: entry.inst.sourceURL) {
+                coverage.recordLoaded(locator)
+            } else {
+                coverage.markPartial(sourceFamily: "sudrf",
+                                     courtKey: SudrfHost.moduleHost(knownCard.domain))
             }
         }
 
+        reflectCoverageInAggregateMasks()
         let sortedInst = instances.sorted { Self.instanceOrderKey($0) < Self.instanceOrderKey($1) }
         let sortedActs = acts.sorted { Self.actOrderKey($0) < Self.actOrderKey($1) }
 
@@ -288,7 +386,8 @@ extension MovementService {
                             parties: parties,
                             incompleteHigherCourtDomains: incompleteDomains.isEmpty
                                 ? nil : incompleteDomains,
-                            honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains)
+                            honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains,
+                            sourceRefreshCoverage: coverage.values.isEmpty ? nil : coverage.values)
     }
 
     private static func moscowPublishedActID(url: URL, caseNumber: String) -> String {
@@ -306,12 +405,14 @@ extension MovementService {
     private func sudrfCassationInstances(uid: String,
                                          baseCartotekaID: String) async throws
         -> (instances: [CaseInstance], acts: [CaseAct], bodies: [String: String],
-            incompleteDomains: [String], honestZeroDomains: [String]) {
+            incompleteDomains: [String], honestZeroDomains: [String],
+            sourceRefreshCoverage: [MovementCourtCoverage]) {
         var instances: [CaseInstance] = []
         var acts: [CaseAct] = []
         var bodies: [String: String] = [:]
         var incompleteDomains: [String] = []
         var honestZeroDomains: [String] = []
+        var coverage = MovementCoverageAccumulator()
 
         for domain in higherCourtDomains {
             let level = Self.courtLevel(forDomain: domain)
@@ -327,12 +428,41 @@ extension MovementService {
 
             for cart in toTry {
                 do {
-                    let rows = try await discoveryRows(court: court, cartoteka: cart,
-                                                       field: .uid, value: uid)
-                        .filter { Self.hasCardAccess($0) }
+                    let outcome = try await discoveryRowsOutcome(court: court, cartoteka: cart,
+                                                                 field: .uid, value: uid)
+                    if outcome.kind == .partial {
+                        domainIncomplete = true
+                        coverage.markPartial(sourceFamily: "sudrf",
+                                             courtKey: SudrfHost.moduleHost(domain))
+                    } else if outcome.kind == .honestZero {
+                        coverage.mark(.honestZero, sourceFamily: "sudrf",
+                                      courtKey: SudrfHost.moduleHost(domain))
+                    }
+                    let rows = outcome.rows.filter { Self.hasCardAccess($0) }
+                    if rows.count != outcome.rows.count {
+                        domainIncomplete = true
+                        coverage.markPartial(sourceFamily: "sudrf",
+                                             courtKey: SudrfHost.moduleHost(domain))
+                    }
                     guard !rows.isEmpty else { continue }
                     for r in rows {
                         let card = try await fetchCard(row: r, court: court, cartoteka: cart)
+                        let locator: SourceNativeCardLocator?
+                        if let url = r.cardURL {
+                            locator = SourceNativeCardLocator.sudrf(url: url, cartoteka: cart)
+                        } else if let caseID = r.caseID {
+                            locator = SourceNativeCardLocator.sudrf(
+                                court: court, cartoteka: cart, caseID: caseID)
+                        } else {
+                            locator = nil
+                        }
+                        if let locator {
+                            coverage.recordLoaded(locator)
+                        } else {
+                            domainIncomplete = true
+                            coverage.markPartial(sourceFamily: "sudrf",
+                                                 courtKey: SudrfHost.moduleHost(domain))
+                        }
                         let actID = "act_\(domain)#\(r.caseNumber)"
                         if let text = card.actText {
                             acts.append(CaseAct(
@@ -359,6 +489,8 @@ extension MovementService {
                     break   // найдено в этой картотеке — к следующему суду
                 } catch SudrfError.captchaRequired(let formURL) {
                     domainIncomplete = true
+                    coverage.markPartial(sourceFamily: "sudrf",
+                                         courtKey: SudrfHost.moduleHost(domain))
                     if !instances.contains(where: { $0.domain == domain }) {
                         instances.append(CaseInstance(
                             level: .cassation, court: court.title, caseNumber: "—",
@@ -373,12 +505,18 @@ extension MovementService {
                     throw error
                 } catch {
                     domainIncomplete = true
+                    coverage.markPartial(sourceFamily: "sudrf",
+                                         courtKey: SudrfHost.moduleHost(domain))
                     continue
                 }
             }
             if domainIncomplete { incompleteDomains.append(domain) }
-            if instances.count == countBefore, !domainIncomplete { honestZeroDomains.append(domain) }
+            if instances.count == countBefore, !domainIncomplete {
+                honestZeroDomains.append(domain)
+                coverage.mark(.honestZero, sourceFamily: "sudrf",
+                              courtKey: SudrfHost.moduleHost(domain))
+            }
         }
-        return (instances, acts, bodies, incompleteDomains, honestZeroDomains)
+        return (instances, acts, bodies, incompleteDomains, honestZeroDomains, coverage.values)
     }
 }

@@ -25,7 +25,7 @@ typealias DeadlineAssessmentStatus = DeadlineRuleSupport
 
 /// Точная строка движения, на которой основан trigger. Это не новый event ID:
 /// identity намеренно остаётся локальной provenance срока до #155.
-struct DeadlineTriggerProvenance: Codable, Equatable {
+struct DeadlineTriggerProvenance: Codable, Equatable, Sendable {
     var event: String
     var result: String?
     var dateRaw: String
@@ -37,7 +37,7 @@ struct DeadlineTriggerProvenance: Codable, Equatable {
 /// Данные, которые были использованы для рассчитанной даты. Все текстовые
 /// нормативные поля сюда копируются из runtime registry при расчёте, а не из
 /// typed binding.
-struct DeadlineProvenance: Codable, Equatable {
+struct DeadlineProvenance: Codable, Equatable, Sendable {
     var ruleID: String
     var registryRevision: Int
     /// Hash of the Docs source represented by this registry revision. Optional

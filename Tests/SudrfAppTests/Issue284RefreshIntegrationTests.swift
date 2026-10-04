@@ -48,6 +48,9 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
         let record = try store.upsert(context: old,
                                       snapshot: MovementDerivation.snapshot(from: cached, context: old),
                                       movement: cached, collections: [])
+        let existingEvent = CaseEvent.make(kind: .judicialActPublished, occurrence: [oldAct],
+            observedAt: Date(timeIntervalSince1970: 1_700_000_000), evidence: .init())
+        record.eventJournal = CaseEventJournal(events: [existingEvent])
         try store.save(projection: .cases([record.key]))
 
         let accepted = CaseCard(rawText: "", actText: nil, sessions: [],
@@ -111,7 +114,8 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
                        try XCTUnwrap(old.cardURLString.flatMap(URL.init(string:))))
         XCTAssertTrue(firstMovement.acts.contains { $0.id == oldAct })
         XCTAssertEqual(firstMovement.actBodies[oldAct], "Отказано в принятии")
-        XCTAssertFalse(journalIDs.isEmpty, "accepted court event must be recorded")
+        XCTAssertEqual(journalIDs, Set([existingEvent.id]),
+                       "legacy refresh retains the journal without inventing historical events")
         let firstFetchedAt = promoted.movementFetchedAt
 
         let secondResult = await center.refresh(key: record.key)?.value

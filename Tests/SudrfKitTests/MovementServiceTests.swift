@@ -136,6 +136,58 @@ final class MovementServiceTests: XCTestCase {
                        asoyURL)
     }
 
+    func testPartialDiscoveryKeepsLoadedCardButNeverMarksCourtFull() async throws {
+        let uid = Self.uid
+        let baseCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: "2-1/2026")
+        let row = CaseSearchResult(caseNumber: "33-1/2026", caseID: "appeal-1",
+                                   caseUID: "appeal-guid")
+        let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                            caseNumber: "33-1/2026")
+        let domain = "vs--komi.sudrf.ru"
+        let mock = MockClient(firstCardID: "base", firstCard: baseCard,
+                              higherResults: [row], higherCards: ["appeal-1": card],
+                              partialDiscoveryDomains: [domain])
+        let service = MovementService(client: mock, higherCourtDomains: [domain])
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-1/2026", caseID: "base",
+                                  caseUID: Self.linkGUID),
+            court: districtCourt(),
+            cartoteka: XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")))
+
+        let coverage = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "sudrf" && $0.courtKey == SudrfHost.moduleHost(domain)
+        })
+        XCTAssertEqual(coverage.kind, .partial)
+        XCTAssertTrue(coverage.loadedCardIdentities.contains {
+            $0.cartotekaKey == "g2" && $0.sourceNativeID == "appeal-1"
+        })
+        XCTAssertTrue(movement.incompleteHigherCourtDomains?.contains(domain) == true)
+    }
+
+    func testFailedHigherCourtCardBlocksOnlyThatCourtCoverage() async throws {
+        let baseCard = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                                caseNumber: "2-1/2026")
+        let row = CaseSearchResult(caseNumber: "33-1/2026", caseID: "broken-card",
+                                   caseUID: "appeal-guid")
+        let domain = "vs--komi.sudrf.ru"
+        let mock = MockClient(firstCardID: "base", firstCard: baseCard,
+                              higherResults: [row], higherCards: [:],
+                              failedCardIDs: ["broken-card"])
+        let service = MovementService(client: mock, higherCourtDomains: [domain])
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-1/2026", caseID: "base",
+                                  caseUID: Self.linkGUID),
+            court: districtCourt(),
+            cartoteka: XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1")))
+
+        let coverage = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "sudrf" && $0.courtKey == SudrfHost.moduleHost(domain)
+        })
+        XCTAssertEqual(coverage.kind, .partial)
+        XCTAssertTrue(coverage.loadedCardIdentities.isEmpty)
+    }
+
     func testSubjectFirstAppealCartotekaMappingRequiresExplicitFirstLevel() throws {
         XCTAssertEqual(MovementService.higherCartotekaIDs(
             baseID: "u1", level: .appeal, isFirstInstanceAnchor: true), ["u2"])
@@ -929,6 +981,8 @@ private actor MockClient: CaseProviding {
     private let higherResultsByLocator: [String: [CaseSearchResult]]
     private let higherCards: [String: CaseCard]
     private let sameCourtResults: [CaseSearchResult]
+    private let partialDiscoveryDomains: Set<String>
+    private let failedCardIDs: Set<String>
     private let homeDomain: String
     private let expectedUID: String
     private(set) var searchedValues: [String] = []
@@ -940,6 +994,8 @@ private actor MockClient: CaseProviding {
          higherResults: [CaseSearchResult], higherCards: [String: CaseCard],
          higherResultsByLocator: [String: [CaseSearchResult]] = [:],
          sameCourtResults: [CaseSearchResult] = [],
+         partialDiscoveryDomains: Set<String> = [],
+         failedCardIDs: Set<String> = [],
          homeDomain: String = "syktsud--komi.sudrf.ru",
          expectedUID: String = "11RS0001-01-2025-011255-03") {
         self.firstCardID = firstCardID
@@ -948,6 +1004,8 @@ private actor MockClient: CaseProviding {
         self.higherResultsByLocator = higherResultsByLocator
         self.higherCards = higherCards
         self.sameCourtResults = sameCourtResults
+        self.partialDiscoveryDomains = partialDiscoveryDomains
+        self.failedCardIDs = failedCardIDs
         self.homeDomain = homeDomain
         self.expectedUID = expectedUID
     }
@@ -962,12 +1020,36 @@ private actor MockClient: CaseProviding {
         return higherResultsByLocator[locator] ?? higherResults
     }
 
+    func searchOutcome(court: Court, cartoteka: Cartoteka,
+                       field: SearchField, value: String,
+                       operation: SourceOperation) async throws
+        -> SourceOutcome<[CaseSearchResult]> {
+        let rows = try await search(court: court, cartoteka: cartoteka,
+                                    field: field, value: value)
+        let family = court.level == .magistrate ? "msudrf" : "sudrf"
+        let kind: SourceOutcomeKind
+        if partialDiscoveryDomains.contains(SudrfHost.moduleHost(court.domain))
+            || partialDiscoveryDomains.contains(court.domain) {
+            kind = .partial
+        } else {
+            kind = rows.isEmpty ? .honestZero : .usableSnapshot
+        }
+        let attempt = SourceAttempt(
+            kind: kind,
+            provenance: SourceProvenance(operation: operation, sourceFamily: family,
+                                         host: court.domain))
+        if kind == .partial { return .partial(rows, attempt) }
+        if kind == .honestZero { return .honestZero(attempt) }
+        return .usableSnapshot(rows, attempt)
+    }
+
     func fetchCard(url: URL) async throws -> CaseCard {
         fetchedURLs.append(url)
         let rows = higherResults + sameCourtResults
             + higherResultsByLocator.values.flatMap { $0 }
         guard let row = rows.first(where: { $0.cardURL == url }),
               let caseID = row.caseID,
+              !failedCardIDs.contains(caseID),
               let card = higherCards[caseID] else {
             throw SudrfError.http(status: 404)
         }
@@ -979,6 +1061,7 @@ private actor MockClient: CaseProviding {
         fetchedLocators.append(court.domain + "/" + caseID + "/" + caseUID
                                + "/" + deloID + "/" + new)
         if caseID == firstCardID { return firstCard }
+        if failedCardIDs.contains(caseID) { throw SudrfError.http(status: 404) }
         return higherCards[caseID] ?? firstCard
     }
 }

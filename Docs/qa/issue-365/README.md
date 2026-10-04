@@ -98,9 +98,9 @@ SUDRF_COURT365_AUDIT_STORE=/path/to/isolated/audit.store \
 названию инстанции. Исправление применяется сразу к старому кэшу; запрос к суду
 не нужен. Исходная модель, её ID, ссылки, события и сырые названия не меняются.
 
-Проверка проводится на синтетическом JSON-кэше и собственном представлении
-`InstanceBlock`; рабочая база и TestFlight не используются. Итоговые проверки
-и версия доводки фиксируются перед слиянием.
+Проверка выполнена на синтетическом JSON-кэше и собственном представлении
+`InstanceBlock`; рабочая база и TestFlight не использовались. Выпуск доводки:
+**0.61.7 (233)**, PR [#401](https://github.com/arvidsever/Sudrf/pull/401).
 
 Регрессия `CaseMovementViewTests.testCachedAppealBlocksDisplayDirectoryCourtAfterJSONRoundTrip`
 создаёт общие блоки для `33-9548/2026` и `33-42895/2026` после загрузки старого
@@ -112,3 +112,17 @@ mixed-case доменах. Исходные `court`, `domain`, ID, ссылки 
 [Собственное проверочное представление](movement-court-names.png) получено
 через `ImageRenderer` того же `InstanceBlock`, на синтетических данных, без
 запуска приложения. Оно не является снимком рабочей базы пользователя.
+
+### Полный набор и сборка доводки
+
+- 702 SudrfKit, 1 071 SudrfApp (12 ожидаемых opt-in пропусков),
+  10 FSSPCaptchaLab и 75 CaptchaSolver: **1 858 тестов, без ошибок**.
+- Пересоздан Xcode-проект; Debug-сборка через Xcode прошла без запуска приложения.
+- Проверка генератора registry и независимый review финального SHA входят в
+  обязательные проверки PR; слияние допускается после успешного CI.
+- Пример воспроизведения собственного представления:
+
+```sh
+SUDRF_MOVEMENT_VISUAL_OUTPUT=/private/tmp/sudrf365-movement-court.png \
+  swift test --filter CaseMovementViewTests.testCachedAppealBlocksDisplayDirectoryCourtAfterJSONRoundTrip
+```

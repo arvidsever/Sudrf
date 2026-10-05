@@ -54,7 +54,7 @@
 | Синтетический замер | `SUDRF_FILTER403_BENCHMARK=1 swift test --filter LocalCaseFilterAcceptanceTests.testThousandSavedCasesTypingBenchmark` | 1000 дел × 200 участников, 32 запроса; медиана 36,06 мс, p95 39,17 мс ([замеры](benchmark.txt)). Время фильтра + 20 пояснений, без отрисовки кадра. |
 | Нативные снимки | `SUDRF_FILTER403_QA_OUTPUT=/private/tmp/filter403-screens swift test --filter LocalCaseFilterAcceptanceTests.testNativeScreens` | Пять снимков синтетического экрана; светлая/тёмная темы и узкое окно. Одобрение автора отложено. |
 | Accessibility / клики | `LocalCaseFilterAccessibilityTests` с тем же opt-in | Пропущено: NSHostingView не предоставил дерево AX. Проверка подсказок, VoiceOver и кликов остаётся в отложенной приёмке; успешной не объявляется. |
-| CI и ревью | Независимый read-only review Astra High | Замечания исправлены; блокеров нет. CI ожидает PR. |
+| CI и ревью | Независимый read-only review Astra High | Замечания исправлены; блокеров нет. CI: [проверки PR #409](https://github.com/arvidsever/Sudrf/pull/409/checks), окончательный статус проверяется перед приёмкой. |
 
 Снимки экрана, логи и числа добавлять сюда только после проверки их происхождения
 и отсутствия персональных данных. Живой просмотр автором остаётся обязательным

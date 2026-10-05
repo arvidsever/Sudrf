@@ -146,17 +146,39 @@ struct MyCasesView: View {
     // MARK: Вид карточками (стадии / производства / подборки)
 
     private var groupedMode: some View {
-        ScrollView {
+        let rows = router.filteredCases()
+        return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                ForEach(groups, id: \.0) { group in
+                if !router.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(spacing: 10) {
+                        Text("Фильтр: \(router.query)")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Button { router.query = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Очистить фильтр")
+                        .help("Очистить фильтр")
+                        Button("Изменить в списке") { router.myView = .list }
+                            .buttonStyle(.plain)
+                    }
+                }
+                if rows.isEmpty {
+                    Text("Ничего не найдено в загруженных данных по выбранным фильтрам")
+                        .font(.system(size: 12)).foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 30)
+                }
+                ForEach(Self.caseGroups(rows: rows, mode: router.myView,
+                                        collections: router.collections.dropFirst().map(\.0)), id: \.id) { group in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack(alignment: .firstTextBaseline, spacing: 9) {
-                            Text(group.0).font(.system(size: 14, weight: .bold))
-                            Text(countLabel(group.1.count)).font(.system(size: 11.5)).foregroundStyle(.tertiary)
+                            Text(group.title).font(.system(size: 14, weight: .bold))
+                            Text(countLabel(group.rows.count)).font(.system(size: 11.5)).foregroundStyle(.tertiary)
                         }
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
                                   spacing: 10) {
-                            ForEach(group.1) { c in caseCard(c) }
+                            ForEach(group.rows) { c in caseCard(c) }
                         }
                     }
                 }
@@ -165,23 +187,33 @@ struct MyCasesView: View {
         }
     }
 
-    private var groups: [(String, [TrackedCase])] {
-        switch router.myView {
+    /// Projects the same filtered, sorted rows into the selected card view.
+    /// A case may appear in several collection groups by design.
+    static func caseGroups(rows: [TrackedCase], mode: MyCasesMode,
+                           collections: [String]) -> [(id: String, title: String, rows: [TrackedCase])] {
+        switch mode {
         case .stages:
-            return router.stageCounts.compactMap { (st, _) in
-                let cs = sortedGroup(router.casesIn(stage: st))
-                return cs.isEmpty ? nil : (st.label, cs)
+            let stages: [CaseStageKind] = [.first, .appeal, .cassation, .supervisory, .done]
+            return stages.compactMap { st in
+                let cs = rows.filter { $0.stage == st }
+                return cs.isEmpty ? nil : ("stage:\(st.rawValue)", st.label, cs)
             }
         case .prods:
-            return ProductionType.allCases.compactMap { p in
-                let cs = sortedGroup(router.cases.filter { $0.production == p })
-                return cs.isEmpty ? nil : (p.side, cs)
+            let known = ProductionType.allCases.compactMap { p -> (id: String, title: String, rows: [TrackedCase])? in
+                let cs = rows.filter { $0.production == p }
+                return cs.isEmpty ? nil : ("production:\(p.rawValue)", p.side, cs)
             }
-        default: // .clients → «По подборкам»
-            return router.collections.dropFirst().compactMap { (name, _) in
-                let cs = sortedGroup(router.casesIn(collection: name))
-                return cs.isEmpty ? nil : (name, cs)
+            let unknown = rows.filter { $0.production == nil }
+            return unknown.isEmpty ? known : known + [("production:unknown", "Вид производства не определён", unknown)]
+        case .clients:
+            let assigned = collections.compactMap { name -> (id: String, title: String, rows: [TrackedCase])? in
+                let cs = rows.filter { $0.collections.contains(name) }
+                return cs.isEmpty ? nil : ("collection:\(name)", name, cs)
             }
+            let unassigned = rows.filter { $0.collections.isEmpty }
+            return unassigned.isEmpty ? assigned : assigned + [("unassigned", "Без подборки", unassigned)]
+        case .list:
+            return []
         }
     }
 
@@ -196,15 +228,9 @@ struct MyCasesView: View {
         return lead
     }
 
-    /// Сортировка внутри группы. Контрол переехал в тулбар и виден во всех
-    /// четырёх режимах — значит и действовать должен во всех, а не только в
-    /// «Списком», где он стоял раньше.
-    private func sortedGroup(_ rows: [TrackedCase]) -> [TrackedCase] {
-        AppRouter.sorted(rows, by: router.sortBy)
-    }
-
     private func caseCard(_ c: TrackedCase) -> some View {
-        Button { router.openCase(key: c.recordKey) } label: {
+        let explanation = LocalCaseFilter.explanation(for: c, query: router.query)
+        return Button { router.openCase(key: c.recordKey) } label: {
             CardBox {
                 VStack(alignment: .leading, spacing: 6) {
                     // Корешок: номер мелким третьестепенным текстом — он
@@ -256,6 +282,8 @@ struct MyCasesView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(explanation ?? c.nextEventHelp ?? c.next)
+        .accessibilityHint(explanation ?? "Открыть карточку дела")
         .contextMenu {
             Button("Убрать из отслеживания…", role: .destructive) { requestUntrack(c) }
         }
@@ -275,15 +303,18 @@ struct MyCasesView: View {
         VStack(alignment: .leading, spacing: 0) {
             sidebarTitle("ПОДБОРКИ").padding(.top, 14)
 
-            // Живой фильтр: сужает таблицу по номеру, сторонам, подборкам, суду.
+            // Живой фильтр по локальным реквизитам загруженных дел.
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.tertiary)
-                TextField("Фильтр по номеру, ФИО…", text: $router.query)
+                TextField("Фильтр по реквизитам…", text: $router.query)
                     .textFieldStyle(.plain).font(.system(size: 12.5))
+                    .help("Номер, УИД, стороны, судьи, суды, категории, статьи и подборки")
+                    .accessibilityHint("Номер, УИД, стороны, судьи, суды, категории, статьи и подборки")
                 if !router.query.isEmpty {
                     Button { router.query = "" } label: {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.tertiary)
                     }.buttonStyle(.plain)
+                        .accessibilityLabel("Очистить фильтр")
                 }
             }
             .padding(.horizontal, 12).frame(height: 27)
@@ -465,7 +496,7 @@ struct MyCasesView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(rows) { c in tableRow(c) }
                             if rows.isEmpty {
-                                Text("Ничего не найдено — измените запрос или снимите фильтры")
+                                Text("Ничего не найдено в загруженных данных по выбранным фильтрам")
                                     .font(.system(size: 12)).foregroundStyle(.tertiary)
                                     .frame(maxWidth: .infinity).padding(.vertical, 30)
                                     .overlay(Divider(), alignment: .top)
@@ -534,6 +565,7 @@ struct MyCasesView: View {
 
     private func tableRow(_ c: TrackedCase) -> some View {
         let prod = c.production
+        let explanation = LocalCaseFilter.explanation(for: c, query: router.query)
         return Button { router.openCase(key: c.recordKey) } label: {
             HStack(alignment: .top, spacing: 8) {
                 Circle().fill(c.newDot ? Color.accentColor : .clear).frame(width: 7, height: 7)
@@ -602,6 +634,8 @@ struct MyCasesView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(explanation ?? c.nextEventHelp ?? c.next)
+        .accessibilityHint(explanation ?? "Открыть карточку дела")
         // Разделитель — на Button, не на label: внутри label кнопки Divider
         // раскладывается вертикально (полоса по центру, уже чинили в v18).
         .overlay(Divider(), alignment: .top)

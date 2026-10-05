@@ -2546,7 +2546,7 @@ final class AppRouter: ObservableObject {
                     .map(\.date).filter { $0 >= today }.min()
                 next = [nextHearing, nextDeadline].compactMap { $0 }.min()
             }
-            return TrackedCase(
+            var row = TrackedCase(
                 recordKey: rec.key, caseNumber: rec.caseNumber,
                 previousCaseNumbers: aliases.previous,
                 searchCaseNumbers: aliases.searchable,
@@ -2579,12 +2579,17 @@ final class AppRouter: ObservableObject {
                                  production: production), newDot: isNew,
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next,
                 nextEventHelp: presentation?.nextEventHelp)
+            row.searchFields = LocalCaseFilter.fields(
+                for: row, record: rec, context: ctx, movement: rec.movement,
+                snapshot: snap)
+            row.searchText = LocalCaseFilter.searchText(for: row.searchFields)
+            return row
         }
         // Снимок ещё не собран. Показываем сохранённый исход последней
         // попытки, если он был: холодная импортированная запись не должна
         // маскировать временную ошибку приглашением «Откройте».
         let sourceStatus = Self.coldSourceStatus(rec.sourceRefreshAttempt)
-        return TrackedCase(
+        var row = TrackedCase(
             recordKey: rec.key, caseNumber: rec.caseNumber,
             previousCaseNumbers: aliases.previous,
             searchCaseNumbers: aliases.searchable,
@@ -2607,6 +2612,11 @@ final class AppRouter: ObservableObject {
             steps: makeSteps(["active", "todo", "todo", "todo"],
                              production: production), newDot: false,
             lastEventDate: rec.addedAt, nextEventDate: nil)
+        row.searchFields = LocalCaseFilter.fields(
+            for: row, record: rec, context: ctx, movement: rec.movement,
+            snapshot: snap)
+        row.searchText = LocalCaseFilter.searchText(for: row.searchFields)
+        return row
     }
 
     private static func coldSourceStatus(_ attempt: SourceAttempt?)
@@ -3020,14 +3030,14 @@ final class AppRouter: ObservableObject {
     /// Таблица «Списком»: подборка ∧ вид производства ∧ стадия ∧ звено ∧ живой запрос,
     /// затем выбранная сортировка. Фильтры комбинируются (И).
     func filteredCases() -> [TrackedCase] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = LocalCaseFilter.Query(query)
         let rows = cases.filter { c in
             (folder == "Все дела" || c.collections.contains(folder))
             && (prodFilter == nil || c.production == prodFilter)
             && (stageFilter == nil || c.stage == stageFilter)
             && (!noActiveProductionFilter || c.courtTier == nil)
             && (tierFilter == nil || c.courtTier == tierFilter)
-            && (q.isEmpty || Self.matches(c, query: q))
+            && (q.isEmpty || LocalCaseFilter.matches(c, query: q))
         }
         return Self.sorted(rows, by: sortBy)
     }
@@ -3038,11 +3048,7 @@ final class AppRouter: ObservableObject {
     /// записи. Дело, ушедшее в апелляцию, обязано находиться и по названию
     /// своего суда первой инстанции — номер дела у него по-прежнему её.
     nonisolated static func matches(_ c: TrackedCase, query q: String) -> Bool {
-        (c.caseNumber + " " + c.searchCaseNumbers.joined(separator: " ")
-         + " " + c.partiesShort + " "
-         + c.collections.joined(separator: " ") + " " + c.court
-         + " " + c.recordCourt)
-            .lowercased().contains(q)
+        LocalCaseFilter.matches(c, query: LocalCaseFilter.Query(q))
     }
 
     nonisolated static func sorted(_ rows: [TrackedCase], by sort: CaseSort) -> [TrackedCase] {

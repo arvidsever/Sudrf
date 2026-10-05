@@ -97,8 +97,15 @@ enum LocalCaseFilter {
                     parsed.append(.fullName(normalize(tokens[index...index + 2].joined(separator: " "))))
                     index += 3
                 } else if let (letters, count) = initials(at: index) {
-                    parsed.append(.initials(letters))
-                    index += count
+                    if index + count < tokens.count,
+                       tokens[index + count].count > 2,
+                       tokens[index + count].allSatisfy({ $0.isLetter || $0 == "-" }) {
+                        parsed.append(.surnameInitials(normalize(tokens[index + count]), letters))
+                        index += count + 1
+                    } else {
+                        parsed.append(.initials(letters))
+                        index += count
+                    }
                 } else {
                     if token.contains(where: { $0.isLetter || $0.isNumber }) {
                         let uidValidity = JudicialUIDObservation.validity(of: token)
@@ -106,7 +113,8 @@ enum LocalCaseFilter {
                         let completeNumber = token.range(of: #"^[\p{L}\d]+[-/][\p{L}\d./-]*/\d{4}$"#,
                             options: .regularExpression) != nil
                         parsed.append(.token(isUID ? JudicialUIDObservation.normalize(token).lowercased() : token,
-                            exactReference: uidValidity == .valid || completeNumber))
+                            exactReference: uidValidity == .valid || completeNumber
+                                || token.range(of: #"^\d+-[\p{L}]{1,5}\d{2}-\d+(?:-[\p{L}]\d+)?$"#, options: .regularExpression) != nil))
                     }
                     index += 1
                 }
@@ -238,7 +246,7 @@ enum LocalCaseFilter {
         add(row.production?.side, .production)
         add(row.stage.label, .stage)
         add(row.stageTag, .stage)
-        add(row.statusText, .status)
+        if snapshot != nil { add(row.statusText, .status) }
 
         addNumber(record.caseNumber, court: row.recordCourt)
         addCourt(row.recordCourt, domain: record.displayDomain, number: record.caseNumber)
@@ -341,9 +349,9 @@ enum LocalCaseFilter {
             }
             return field.normalizedValue.range(of: value, options: .literal) != nil
         case .initials(let letters):
-            return field.nameInitials == letters
+            return field.nameInitials?.hasPrefix(letters) == true
         case .surnameInitials(let surname, let letters):
-            return field.nameSurname == surname && field.nameInitials == letters
+            return field.nameSurname == surname && field.nameInitials?.hasPrefix(letters) == true
         case .candidateName:
             return false // Resolved against the dossier before matching.
         case .fullName(let value):
@@ -424,6 +432,9 @@ enum LocalCaseFilter {
         if kind == .court && CourtNamePresentation.isTechnicalCourtTitle(clean) { return false }
         if kind == .status {
             let lower = clean.lowercased()
+            let technicalPrefixes = ["источник", "не удалось", "восстановление ссылки", "нужен код",
+                                     "карточка загружена", "движение"]
+            guard !technicalPrefixes.contains(where: lower.hasPrefix) else { return false }
             return !lower.contains("captcha") && !lower.contains("капч")
                 && !lower.contains("введите код")
                 && lower != "откройте, чтобы загрузить"

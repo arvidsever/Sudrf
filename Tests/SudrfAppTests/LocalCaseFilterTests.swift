@@ -16,6 +16,15 @@ final class LocalCaseFilterTests: XCTestCase {
         XCTAssertTrue(matches(row, "еж"))
     }
 
+    func testCompleteSupremeCourtNumbersKeepBothPrefixAndSuffix() {
+        let row = makeRow(fields: [.init(kind: .number, value: "13-КГ23-1-К3"),
+                                  .init(kind: .number, value: "3-КГ26-123")])
+        XCTAssertFalse(matches(row, "3-КГ23-1-К3"))
+        XCTAssertFalse(matches(row, "3-КГ26-12"))
+        XCTAssertTrue(matches(row, "13-КГ23-1-К3"))
+        XCTAssertTrue(matches(row, "3-КГ26-123"))
+    }
+
     func testOrdinaryWordsCanMatchAcrossFieldsOfOneDossier() {
         let row = makeRow(fields: [
             .init(kind: .collection, value: "Жешарт"),
@@ -42,6 +51,9 @@ final class LocalCaseFilterTests: XCTestCase {
         }
         XCTAssertFalse(matches(row, "А.А."))
         XCTAssertFalse(matches(row, "Ермаков А.П."))
+        XCTAssertFalse(matches(row, "А.П. Ермаков"))
+        XCTAssertTrue(matches(row, "А.Е. Ермаков"))
+        XCTAssertTrue(matches(row, "Ермаков А."))
         XCTAssertFalse(matches(row, "ермаков а п"))
         XCTAssertTrue(matches(makeRow(fields: [.init(kind: .judge, value: "ермаков алексей евгеньевич")]), "Ермаков А.Е."))
     }

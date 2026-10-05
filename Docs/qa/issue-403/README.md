@@ -48,7 +48,7 @@
 
 | Проверка | Команда или метод | Результат / артефакт |
 | --- | --- | --- |
-| Профильные тесты | `swift test --filter LocalCaseFilter` + прежние модельные тесты | 65 тестов, 1 opt-in skip, 0 ошибок. |
+| Профильные тесты | `swift test --filter LocalCaseFilter` + прежние модельные тесты | 66 тестов, 1 opt-in skip, 0 ошибок. |
 | Полный набор тестов | `swift test -Xswiftc -strict-concurrency=complete` | 1907 XCTest (15 opt-in skip) + 28 Swift Testing, 0 ошибок. Последние замечания review дополнительно проверены профилем; CI проверяет финальный SHA. |
 | SwiftPM и Xcode Debug-сборки | `xcodegen generate`, `xcodebuild ... build` | BUILD SUCCEEDED, Xcode 27 Debug. Registry и diff-check проходят. |
 | Синтетический замер | `SUDRF_FILTER403_BENCHMARK=1 swift test --filter LocalCaseFilterAcceptanceTests.testThousandSavedCasesTypingBenchmark` | 1000 дел × 200 участников, 32 запроса; медиана 36,06 мс, p95 39,17 мс ([замеры](benchmark.txt)). Время фильтра + 20 пояснений, без отрисовки кадра. |

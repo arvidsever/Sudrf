@@ -347,9 +347,15 @@ enum MovementDerivation {
             }
             return matches.count == 1 ? matches.first : nil
         }
+        func isJoinedSource(_ session: StoredSession) -> Bool {
+            sourceInstance(for: session, movement: mv, context: context).map {
+                CaseLifecycleResolver.isJoinedRegistration($0, production: production)
+            } == true
+        }
         let mainHearing = resolution.isCompleted ? nil
-            : futureHearings(lifecycleSessions.filter { materialOwner(of: $0) == nil }, today: today).first
+            : futureHearings(lifecycleSessions.filter { materialOwner(of: $0) == nil && !isJoinedSource($0) }, today: today).first
         let upcomingSessions = sessions.filter { session in
+            if isJoinedSource(session) { return false }
             if let (_, instance) = materialOwner(of: session) {
                 guard !CaseLifecycleResolver.isMaterialAdjudication(event: session.event, result: session.result),
                       !CaseLifecycleResolver.isMaterialAdjudication(event: "", result: instance.result)
@@ -426,6 +432,12 @@ enum MovementDerivation {
             diagnosticLines.append("\(subject): показан последний сохранённый срок; текущих данных недостаточно для повторного расчёта")
         }
         var seenDiagnostics = Set<String>()
+        let joined = resolution.currentInstance.map {
+            CaseLifecycleResolver.isJoinedRegistration($0, production: production)
+        } == true
+        if joined {
+            diagnosticLines.append("Принимающее дело не установлено по сохранённым сведениям")
+        }
         let nextEventHelp = diagnosticLines.isEmpty ? nil
             : diagnosticLines.filter { seenDiagnostics.insert($0).inserted }.joined(separator: "\n")
 
@@ -479,6 +491,8 @@ enum MovementDerivation {
             nextChip = deadline.isUserControlled
                 ? .confirmed : .proposed
             nextEventDate = deadline.date
+        } else if joined {
+            nextEvent = "Присоединено к другому делу"
         } else if nextEventHelp != nil {
             nextEvent = diagnosticShort ?? "Срок не рассчитан"
         } else if resolution.isCompleted {

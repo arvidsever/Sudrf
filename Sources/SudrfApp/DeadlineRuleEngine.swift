@@ -233,7 +233,16 @@ enum DeadlineRuleEngine {
             let result = evaluate(binding: binding, rule: rule, registry: registry,
                                   movement: movement, context: context, timeline: timeline,
                                   today: today, calendar: calendar, materialSourceCardID: materialSourceCardID)
-            assessments.append(result.assessment)
+            var ruleAssessment = result.assessment
+            if result.deadline == nil, ruleAssessment.isIndeterminate,
+               let first = timeline.deadlineFirst,
+               CaseLifecycleResolver.isJoinedRegistration(first, production: production),
+               case .missing = currentFirstInstanceAct(in: first),
+               legalForce(in: first) == nil,
+               !timeline.hasAppealInCurrentRound, !timeline.hasCassationInCurrentRound {
+                ruleAssessment = assessment(ruleID: binding.ruleID, kind: binding.kind, status: .notApplicable)
+            }
+            assessments.append(ruleAssessment)
             if let deadline = result.deadline { deadlines.append(deadline) }
         }
         return Evaluation(deadlines: deadlines, assessments: assessments)

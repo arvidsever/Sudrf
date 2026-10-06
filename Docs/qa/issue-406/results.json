@@ -1,0 +1,35 @@
+{
+  "checkedAt": "6 October 2026",
+  "profile": {
+    "xctest": 217,
+    "optInSkipped": 1,
+    "failures": 0,
+    "includesSavedActProjection": true
+  },
+  "full": {
+    "xctest": 1922,
+    "optInSkipped": 20,
+    "swiftTesting": 28,
+    "failures": 0
+  },
+  "registry": "up-to-date",
+  "xcode": "regular app and isolated QA build succeeded",
+  "ui": {
+    "total": 6,
+    "joinedCompleted": 5,
+    "activeControl": 1
+  },
+  "sha256": {
+    "cases-all.png": "3febfd87a8cb5ebb92785bcd167a08cdd4948cdd169a28e457afe007c11466b0",
+    "cases-done.png": "6e5b9b2826aa89aee24a3cb4c6c488b1d7568ecfdec216f3aa8fd0c57df46d59",
+    "cases-first.png": "e8faafda23fd8e5c07d3235eef77647b0d3b71636ed608f6236cada644284cde"
+  },
+  "ci": "https://github.com/arvidsever/Sudrf/pull/412/checks",
+  "release": "0.62.2 (239)",
+  "testSHA256": {
+    "Issue406LifecycleTests.swift": "65eaa9cff8b39852f8e34f1b0a9a9d47a37e04cc3be80fd0242233b7115ff371",
+    "Issue406RefreshIntegrationTests.swift": "ad79eae35b393880dfdc70bb8be31ba34b16142e4ef63c4cedde5836fb4e4a62"
+  },
+  "baselineCommit": "b27a845dcdf5acb625fe10dcfb2d7043bb260f99",
+  "scope": "Joining chronology enabled only for positively recognized joined chains; previous first-instance selection preserved elsewhere"
+}

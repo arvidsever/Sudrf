@@ -289,6 +289,20 @@ final class Issue406LifecycleTests: XCTestCase {
             XCTAssertFalse(resolution.isCompleted, event)
             XCTAssertEqual(resolution.stage, .first, event)
         }
+
+        var reopened = original
+        reopened.sessions.append(CaseSession(
+            date: "16.07.2020",
+            event: "Решение вопроса о принятии иска (заявления, жалобы) к рассмотрению",
+            result: "Иск (заявление, жалоба) принят к производству"))
+        var movement = entry.movement
+        movement.instances = [reopened]
+        let resolution = CaseLifecycleResolver.resolve(
+            movement: movement, production: .kas, deadlines: [], today: today)
+        XCTAssertFalse(CaseLifecycleResolver.isJoinedRegistration(reopened, production: .kas))
+        XCTAssertFalse(resolution.isCompleted)
+        XCTAssertEqual(resolution.stage, .first)
+        XCTAssertEqual(resolution.currentInstance?.caseNumber, reopened.caseNumber)
     }
 
     func testLaterMotionToSeparateDoesNotReopenAbsorbedRegistration() throws {

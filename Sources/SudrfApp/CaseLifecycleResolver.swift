@@ -175,6 +175,8 @@ enum CaseLifecycleResolver {
         func wording(_ source: String) -> String {
             normalized(source).replacingOccurrences(of: #"иск\s*\(заявление,\s*жалоба\)"#,
                 with: "иск", options: .regularExpression)
+                .replacingOccurrences(of: #"иска\s*\(заявления,\s*жалобы\)"#,
+                    with: "иска", options: .regularExpression)
         }
         let combined = wording(session.event + " " + (session.result ?? ""))
         guard !isDenied(combined), !combined.contains("ходатайств"), !combined.contains("жалоб") else { return false }

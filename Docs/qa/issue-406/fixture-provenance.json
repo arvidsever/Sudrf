@@ -1,0 +1,40 @@
+{
+  "source": "User-provided SQLite copy, read-only query; not the running application store",
+  "copyTimestamp": "2 October 2026, 17:16",
+  "checkedAt": "6 October 2026",
+  "recordCount": 469,
+  "sanitization": "Removed participants, judges, acts and act bodies; retained own public requisites, exact URLs, chronology and category",
+  "fixtureSHA256": "44299125d8f3c8e72416614e46eb34b188f8e4d1f0d42a37a9f9b3d37d1e5943",
+  "entries": [
+    {
+      "caseNumber": "2а-3073/2020",
+      "sourceMovementSHA256": "e0935edb64f6afb6307202997aba3e09d704d35e7890046b9d24b340c9bebebd",
+      "savedStage": "first",
+      "receivingReferencePresent": false
+    },
+    {
+      "caseNumber": "2а-4193/2021",
+      "sourceMovementSHA256": "02f2bd6a793c3ebf4f3d4c8224792a304d55c3c6b7b283d7619a23b1e0e8610f",
+      "savedStage": "first",
+      "receivingReferencePresent": false
+    },
+    {
+      "caseNumber": "2а-4199/2019",
+      "sourceMovementSHA256": "c30144bc06530bdd8b5992bc2995ba2666945346884b8df92ec16004dbbba5db",
+      "savedStage": "first",
+      "receivingReferencePresent": false
+    },
+    {
+      "caseNumber": "2а-4141/2019",
+      "sourceMovementSHA256": "1c6a972e2714fa5bdc89c23095809ab0d424f72a19530a072e27bd96f6f3883d",
+      "savedStage": "first",
+      "receivingReferencePresent": false
+    },
+    {
+      "caseNumber": "2-5550/2017",
+      "sourceMovementSHA256": "c1defd7bfa704d5a17752e37b86243c7ee9a67814733707ec4e098c02cc19027",
+      "savedStage": "first",
+      "receivingReferencePresent": false
+    }
+  ]
+}

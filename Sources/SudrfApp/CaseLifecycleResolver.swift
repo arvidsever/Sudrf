@@ -36,6 +36,7 @@ enum CaseLifecycleResolver {
     /// Недатированная карточка с итогом остаётся надёжным fallback, пока нет
     /// доказательства, что после её пересмотра начался новый круг.
     struct Timeline {
+        var production: ProductionType?
         var sourceOrdered: [IndexedInstance]
         var lifecycleOrdered: [IndexedInstance]
         var hasAmbiguousAppealEffect: Bool
@@ -50,8 +51,10 @@ enum CaseLifecycleResolver {
         var instances: [CaseInstance] { chronological.map(\.instance) }
 
         var latestFirst: IndexedInstance? {
-            dated.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
-                ?? chronological.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
+            let eligible = Set(lifecycleOrdered.map(\.index))
+            return dated.filter { eligible.contains($0.index) && CaseLifecycleResolver.isFirstLike($0.instance) }
+                .max { CaseLifecycleResolver.lifecyclePrecedes($0.instance, $1.instance, production: production) }
+                ?? chronological.last(where: { eligible.contains($0.index) && CaseLifecycleResolver.isFirstLike($0.instance) })
         }
 
         /// Trigger extraction must not reuse a refusal from before a later
@@ -144,6 +147,80 @@ enum CaseLifecycleResolver {
                 && $0.captchaFormURL == nil
                 && $0.transientError != true
         }.sorted(by: MovementService.precedesInChronology)
+    }
+
+    private static func isJoinedWording(_ text: String?) -> Bool {
+        guard let text else { return false }
+        return normalized(text).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            == "дело присоединено к другому делу"
+    }
+
+    private static func isJoinedRow(_ session: CaseSession) -> Bool {
+        let text = normalized(session.event + " " + (session.result ?? ""))
+        return (isJoinedWording(session.event) || isJoinedWording(session.result))
+            && !isDenied(text) && !text.contains("ходатайств") && !text.contains("жалоб")
+    }
+
+    private static func joinedEvidenceDate(in instance: CaseInstance) -> Date? {
+        let rows = instance.sessions.filter(isJoinedRow)
+        guard !rows.contains(where: { DateUtil.parse($0.date) == nil }) else { return nil }
+        let dates = rows.compactMap { DateUtil.parse($0.date) }
+        if isJoinedWording(instance.result), let date = instance.sourceEvidence?.decisionDate.flatMap(DateUtil.parse) {
+            return (dates + [date]).max()
+        }
+        return dates.max()
+    }
+
+    private static func isIndependentContinuation(_ session: CaseSession) -> Bool {
+        func wording(_ source: String) -> String {
+            normalized(source).replacingOccurrences(of: #"иск\s*\(заявление,\s*жалоба\)"#,
+                with: "иск", options: .regularExpression)
+        }
+        let combined = wording(session.event + " " + (session.result ?? ""))
+        guard !isDenied(combined), !combined.contains("ходатайств"), !combined.contains("жалоб") else { return false }
+        return [session.event, session.result ?? ""].contains { source in
+            let value = wording(source).trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.range(of: #"^(?:иск\s+принят\s+к\s+производству|(?:административное\s+)?исковое\s+заявление\s+принято\s+к\s+производству|(?:дело\s+)?принято\s+к\s+производству|(?:производство\s+(?:по\s+делу\s+)?возобновлено|возобновление\s+производства(?:\s+по\s+делу)?|дело\s+возобновлено)|(?:дело\s+)?выделено\s+в\s+отдельное\s+производство|выделение\s+дела\s+в\s+отдельное\s+производство)"#,
+                               options: .regularExpression) != nil
+        }
+    }
+
+    /// Outgoing absorption is distinct from receiving a case or deciding a motion.
+    static func isJoinedRegistration(_ instance: CaseInstance, production: ProductionType?) -> Bool {
+        guard production == .civil || production == .kas, instance.level == .first,
+              isJoinedWording(instance.result) || instance.sessions.contains(where: isJoinedRow) else { return false }
+        let evidenceDate = joinedEvidenceDate(in: instance)
+        let contradicted = instance.sessions.contains { session in
+            let text = normalized(session.event + " " + (session.result ?? ""))
+            guard text.contains("присоедин"), isDenied(text) || text.contains("ходатайств") else { return false }
+            return evidenceDate == nil || DateUtil.parse(session.date) == evidenceDate
+                || isJoinedWording(session.event) || isJoinedWording(session.result)
+        }
+        guard !contradicted else { return false }
+        guard let joinedDate = joinedEvidenceDate(in: instance) else { return true }
+        return !instance.sessions.contains { session in
+            DateUtil.parse(session.date).map { $0 > joinedDate } == true
+                && isIndependentContinuation(session)
+        }
+    }
+
+    private static func provesContinuation(_ instance: CaseInstance, after date: Date) -> Bool {
+        if terminalEvidenceDate(in: instance).map({ $0 > date }) == true { return true }
+        guard latestSignal(for: instance).map({ signal in
+            switch signal {
+            case .terminal, .legalForce: return false
+            case .active, .remand: return true
+            }
+        }) != false else { return false }
+        return instance.sessions.contains { session in
+            guard let sessionDate = DateUtil.parse(session.date), sessionDate >= date else { return false }
+            let text = normalized(session.event + " " + (session.result ?? ""))
+            let receiving = !isDenied(text) && !text.contains("ходатайств")
+                && text.range(of: #"(?:к\s+делу\s+присоединено|присоединено\s+(?:другое\s+)?дело)"#,
+                              options: .regularExpression) != nil
+            return receiving || sessionDate > date
+                && (isIndependentContinuation(session) || isHearing(event: session.event, result: session.result))
+        }
     }
 
     /// A material participates only when it is the tracked root card itself.
@@ -280,8 +357,18 @@ enum CaseLifecycleResolver {
         }
         let dated = chronological.filter { hasDatedSession($0.instance) }
         let ancillaryReviews = ancillaryReviewIndices(in: movement, among: sourceOrdered)
-        let relevant = sourceOrdered.filter { !ancillaryReviews.contains($0.index) }
-        let relevantDated = dated.filter { !ancillaryReviews.contains($0.index) }
+        let nonAncillary = sourceOrdered.filter { !ancillaryReviews.contains($0.index) }
+        let relevant = nonAncillary.filter { candidate in
+            guard isJoinedRegistration(candidate.instance, production: production),
+                  let date = joinedEvidenceDate(in: candidate.instance) else { return true }
+            return !nonAncillary.contains { other in
+                other.index != candidate.index
+                    && !isJoinedRegistration(other.instance, production: production)
+                    && provesContinuation(other.instance, after: date)
+            }
+        }
+        let relevantIndices = Set(relevant.map(\.index))
+        let relevantDated = dated.filter { relevantIndices.contains($0.index) }
         // Возврат создаёт новый процессуальный круг только когда есть отдельная
         // датированная карточка целевой инстанции. У недатированного возврата
         // порядок источника предпочтителен; однако merge кэша кладёт такие
@@ -346,7 +433,9 @@ enum CaseLifecycleResolver {
             continuationDate(in: first.instance, acceptanceOnly: true)
                 ?? earliestDatedSessionDate(in: first.instance)
         }
-        let latestFirst = dated.last(where: { isFirstLike($0.instance) })
+        let latestFirst = relevantDated.filter { isFirstLike($0.instance) }.max {
+            lifecyclePrecedes($0.instance, $1.instance, production: production)
+        }
         var excludedAppeals = Set<Int>()
         var ambiguousAppeal = false
         // A verified UPK 22К complaint is not an appeal of the main verdict.
@@ -404,13 +493,13 @@ enum CaseLifecycleResolver {
             currentDated = lifecycleDated.filter {
                 guard let date = earliestDatedSessionDate(in: $0.instance) else { return false }
                 return date >= startDate
-            }.max(by: { lifecyclePrecedes($0.instance, $1.instance) }) ?? currentRoundStart
+            }.max(by: { lifecyclePrecedes($0.instance, $1.instance, production: production) }) ?? currentRoundStart
         } else {
             currentDated = lifecycleDated.max(by: {
-                lifecyclePrecedes($0.instance, $1.instance)
+                lifecyclePrecedes($0.instance, $1.instance, production: production)
             })
         }
-        return Timeline(sourceOrdered: sourceOrdered, lifecycleOrdered: lifecycleOrdered,
+        return Timeline(production: production, sourceOrdered: sourceOrdered, lifecycleOrdered: lifecycleOrdered,
                         hasAmbiguousAppealEffect: ambiguousAppeal, chronological: chronological, dated: dated,
                         currentRoundStart: currentRoundStart, currentRoundDate: currentRoundDate, currentDated: currentDated)
     }
@@ -464,6 +553,7 @@ enum CaseLifecycleResolver {
         // Будущее заседание — наиболее сильный сигнал активного производства.
         // Берём ближайшее; при одинаковой дате более поздний круг выигрывает.
         let hearingInstances = instances.filter { instance in
+            if isJoinedRegistration(instance, production: production) { return false }
             if let round = timeline.currentRoundDate,
                instance.id != timeline.currentRoundStart?.instance.id,
                (earliestDatedSessionDate(in: instance) ?? .distantPast) < round { return false }
@@ -477,6 +567,11 @@ enum CaseLifecycleResolver {
             return Resolution(stage: active, currentInstance: hearingInstance,
                               steps: steps(visited: visited, active: active, production: production),
                               completionReason: nil, graceDeadline: nil)
+        }
+
+        if let latest, isJoinedRegistration(latest, production: production) {
+            return completed(current: latest, visited: visited,
+                             reason: .terminalFirst("Присоединено к другому делу"), production: production)
         }
 
         if timeline.hasAmbiguousAppealEffect, let first = timeline.latestFirst?.instance {
@@ -878,13 +973,14 @@ enum CaseLifecycleResolver {
 
     /// A review registered earlier can be decided after another review.
     /// Administrative rows after a first-instance decision do not reopen it.
-    private static func lifecyclePrecedes(_ lhs: CaseInstance, _ rhs: CaseInstance) -> Bool {
+    private static func lifecyclePrecedes(_ lhs: CaseInstance, _ rhs: CaseInstance, production: ProductionType?) -> Bool {
         func date(_ instance: CaseInstance) -> Date {
             if isReview(instance.level) {
                 return reviewEventDate(in: instance)
                     ?? earliestDatedSessionDate(in: instance) ?? .distantPast
             }
             return [terminalEvidenceDate(in: instance), continuationDate(in: instance),
+                    isJoinedRegistration(instance, production: production) ? joinedEvidenceDate(in: instance) : nil,
                     earliestDatedSessionDate(in: instance)]
                 .compactMap { $0 }.max() ?? .distantPast
         }

@@ -275,7 +275,7 @@ struct AIPrivacyPane: View {
                 Section("Ключ доступа") {
                     SecureField("API/authorization key", text: $settings.draftKey)
                     Button("Сохранить ключ в Keychain") { settings.saveKey() }
-                    Text("Ключ хранится в Keychain и не покидает устройство.")
+                    Text("Ключ хранится в Keychain и передаётся Groq только для авторизации запросов.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -302,6 +302,7 @@ struct AIPrivacyPane: View {
                 if let message = settings.statusMessage {
                     Text(message).font(.caption)
                 }
+                Link("Политика конфиденциальности", destination: URL(string: "https://arvidsever.github.io/Sudrf/")!)
             }
         }
         .formStyle(.grouped)

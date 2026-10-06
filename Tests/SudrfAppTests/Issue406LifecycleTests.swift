@@ -342,4 +342,41 @@ final class Issue406LifecycleTests: XCTestCase {
         XCTAssertEqual(resolution.currentInstance?.caseNumber, latest.caseNumber)
         XCTAssertEqual(resolution.completionReason, .terminalFirst(joinedStatus))
     }
+
+    func testUnjoinedFirstInstancesKeepNewerRegistrationDespiteLaterOlderDecision() {
+        let earlierRegistration = CaseInstance(
+            level: .first, court: "Синтетический районный суд",
+            caseNumber: "2-406-100/2025", judge: nil,
+            domain: "fixture.example.invalid", foundByUID: false,
+            result: "Иск удовлетворён", sessions: [
+                CaseSession(date: "10.01.2025", event: "Иск принят к производству"),
+                CaseSession(date: "10.10.2026", event: "Решение по делу",
+                            result: "Иск удовлетворён"),
+            ], sourceEvidence: .init(receiptDate: "10.01.2025", decisionDate: "10.10.2026"))
+        let newerRegistration = CaseInstance(
+            level: .first, court: "Синтетический районный суд",
+            caseNumber: "2-406-200/2026", judge: nil,
+            domain: "fixture.example.invalid", foundByUID: false,
+            result: "В удовлетворении иска отказано", sessions: [
+                CaseSession(date: "20.08.2026", event: "Иск принят к производству"),
+                CaseSession(date: "15.09.2026", event: "Решение по делу",
+                            result: "В удовлетворении иска отказано"),
+            ], sourceEvidence: .init(receiptDate: "20.08.2026", decisionDate: "15.09.2026"))
+        let movement = CaseMovement(
+            uid: "issue406-unjoined", caseNumber: newerRegistration.caseNumber,
+            inForce: false, instances: [earlierRegistration, newerRegistration],
+            complaints: [:], acts: [])
+
+        XCTAssertFalse(CaseLifecycleResolver.isJoinedRegistration(
+            earlierRegistration, production: .civil))
+        XCTAssertFalse(CaseLifecycleResolver.isJoinedRegistration(
+            newerRegistration, production: .civil))
+        for production in [ProductionType.civil, .kas, .crim, .koap] {
+            let timeline = CaseLifecycleResolver.timeline(in: movement, production: production)
+            XCTAssertEqual(timeline.latestFirst?.instance.caseNumber,
+                           newerRegistration.caseNumber, production.rawValue)
+            XCTAssertEqual(timeline.deadlineFirst?.caseNumber,
+                           newerRegistration.caseNumber, production.rawValue)
+        }
+    }
 }

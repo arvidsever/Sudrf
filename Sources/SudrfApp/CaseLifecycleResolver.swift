@@ -51,6 +51,12 @@ enum CaseLifecycleResolver {
         var instances: [CaseInstance] { chronological.map(\.instance) }
 
         var latestFirst: IndexedInstance? {
+            guard sourceOrdered.contains(where: {
+                CaseLifecycleResolver.isJoinedRegistration($0.instance, production: production)
+            }) else {
+                return dated.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
+                    ?? chronological.last(where: { CaseLifecycleResolver.isFirstLike($0.instance) })
+            }
             let eligible = Set(lifecycleOrdered.map(\.index))
             return dated.filter { eligible.contains($0.index) && CaseLifecycleResolver.isFirstLike($0.instance) }
                 .max { CaseLifecycleResolver.lifecyclePrecedes($0.instance, $1.instance, production: production) }
@@ -435,9 +441,14 @@ enum CaseLifecycleResolver {
             continuationDate(in: first.instance, acceptanceOnly: true)
                 ?? earliestDatedSessionDate(in: first.instance)
         }
-        let latestFirst = relevantDated.filter { isFirstLike($0.instance) }.max {
-            lifecyclePrecedes($0.instance, $1.instance, production: production)
+        let hasJoinedRegistration = nonAncillary.contains {
+            isJoinedRegistration($0.instance, production: production)
         }
+        let latestFirst = hasJoinedRegistration
+            ? relevantDated.filter { isFirstLike($0.instance) }.max {
+                lifecyclePrecedes($0.instance, $1.instance, production: production)
+            }
+            : dated.last(where: { isFirstLike($0.instance) })
         var excludedAppeals = Set<Int>()
         var ambiguousAppeal = false
         // A verified UPK 22К complaint is not an appeal of the main verdict.

@@ -1,13 +1,13 @@
 {
   "checkedAt": "6 October 2026",
   "profile": {
-    "xctest": 216,
+    "xctest": 217,
     "optInSkipped": 1,
     "failures": 0,
     "includesSavedActProjection": true
   },
   "full": {
-    "xctest": 1921,
+    "xctest": 1922,
     "optInSkipped": 20,
     "swiftTesting": 28,
     "failures": 0
@@ -27,8 +27,9 @@
   "ci": "https://github.com/arvidsever/Sudrf/pull/412/checks",
   "release": "0.62.2 (239)",
   "testSHA256": {
-    "Issue406LifecycleTests.swift": "912278de22ff8a1eb5c5fac18ab79ea73b60b9c0856b6c5ec0b9af93ff5970f5",
+    "Issue406LifecycleTests.swift": "65eaa9cff8b39852f8e34f1b0a9a9d47a37e04cc3be80fd0242233b7115ff371",
     "Issue406RefreshIntegrationTests.swift": "ad79eae35b393880dfdc70bb8be31ba34b16142e4ef63c4cedde5836fb4e4a62"
   },
-  "baselineCommit": "b27a845dcdf5acb625fe10dcfb2d7043bb260f99"
+  "baselineCommit": "b27a845dcdf5acb625fe10dcfb2d7043bb260f99",
+  "scope": "Joining chronology enabled only for positively recognized joined chains; previous first-instance selection preserved elsewhere"
 }

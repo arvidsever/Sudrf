@@ -74,13 +74,13 @@ struct CaseMovementView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 10) {
-                    // Инстанции пересмотра — как раньше; материалы (13-…, 3/…, 15-…) —
-                    // отдельной секцией в конце: они идут в рамках дела, но инстанциями
-                    // не являются.
+                    // Корневой материал участвует в основной хронологии; вложенные
+                    // материалы сохраняют отдельную секцию после неё.
                     ForEach(Self.activeInstances(in: movement)) { inst in
                         InstanceBlock(instance: inst, classification: MaterialProductionContext.resolve(instance: inst, movement: movement, baseContext: sourceContext), onSolveCaptcha: onSolveCaptcha,
                                       isRefreshing: isRefreshing,
                                       onRefresh: onRefresh)
+                            .id(inst.id)
                     }
                     let materials = Self.materialInstances(in: movement)
                     if !materials.isEmpty {
@@ -128,7 +128,8 @@ struct CaseMovementView: View {
             }
             .onChange(of: focusInstanceID, initial: true) { _, target in
                 guard let target,
-                      Self.materialInstances(in: movement).contains(where: { $0.id == target }) else { return }
+                      (Self.activeInstances(in: movement) + Self.materialInstances(in: movement))
+                        .contains(where: { $0.id == target }) else { return }
                 proxy.scrollTo(target, anchor: .top)
             }
         }
@@ -140,6 +141,7 @@ struct CaseMovementView: View {
     static func materialInstances(in movement: CaseMovement) -> [CaseInstance] {
         movement.instances.filter {
             $0.level == .material && $0.note != "Предыдущая регистрация"
+                && !CaseLifecycleResolver.isRootMaterial($0, in: movement)
         }
     }
 
@@ -148,9 +150,18 @@ struct CaseMovementView: View {
     }
 
     static func activeInstances(in movement: CaseMovement) -> [CaseInstance] {
-        movement.instances.filter {
+        let instances = movement.instances.filter {
             $0.level != .material || $0.note == "Предыдущая регистрация"
-        }.sorted(by: MovementService.precedesInChronology)
+                || CaseLifecycleResolver.isRootMaterial($0, in: movement)
+        }
+        guard let undatedRoot = instances.first(where: {
+            CaseLifecycleResolver.isRootMaterial($0, in: movement)
+                && MovementService.instanceOrderKey($0).0 == Int.max
+        }) else { return instances.sorted(by: MovementService.precedesInChronology) }
+        // The confirmed root role places an undated origin before its reviews;
+        // dated registrations retain the existing chronology, including remands.
+        return [undatedRoot] + instances.filter { $0.id != undatedRoot.id }
+            .sorted(by: MovementService.precedesInChronology)
     }
 
     static func sessionDateLabel(_ date: String) -> String {

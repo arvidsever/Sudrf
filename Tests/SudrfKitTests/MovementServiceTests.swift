@@ -208,6 +208,25 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertEqual(direct.act, published, "Search and direct refresh must keep stable act metadata")
     }
 
+    func testKnownDistrictCardPreservesCivilSourceLevel() async throws {
+        let court = districtCourt()
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let card = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                            caseNumber: "2-7212/2025", processKind: .civil)
+        let mock = MockClient(firstCardID: "district", firstCard: card,
+                              higherResults: [], higherCards: [:])
+        let entry = try await MovementService(client: mock).instanceFromKnownCard(KnownCard(
+            domain: court.domain, courtTitle: court.title, caseID: "district", caseUID: "district-guid",
+            deloID: cart.deloID, new: cart.new, caseNumber: card.caseNumber,
+            levelRaw: CaseInstance.Level.first.rawValue))
+        XCTAssertEqual(entry.inst.sourceEvidence?.sourceCourtLevel, .district)
+        XCTAssertEqual(entry.inst.sourceEvidence?.cartotekaID, "g1")
+        XCTAssertEqual(entry.inst.sourceEvidence?.ownProcessKind, .civil)
+        XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .district, branch: .general, cartotekaID: "g1",
+            caseNumber: entry.inst.caseNumber, sourceProcessKind: .civil))
+    }
+
     func testPrimaryCriminalCassationSourceFailuresKeepOnlyMaterialRetryStub() async throws {
         let uid = "63RS0001-01-2025-011255-03"
         let samara = Court(domain: "oblsud.sam.sudrf.ru",

@@ -611,7 +611,7 @@ public actor MovementService: MovementProviding {
         }
         func knownCardLocator(_ known: KnownCard,
                               fetchedURL: URL? = nil) -> SourceNativeCardLocator? {
-            let level = Self.courtLevel(forDomain: known.domain)
+            let level = Self.knownCardCourtLevel(forDomain: known.domain)
             let cartoteka = known.cartotekaID.flatMap {
                 CartotekaRegistry.find(level: level, id: $0)
             } ?? CartotekaRegistry.resolve(level: level, deloID: known.deloID,
@@ -1749,7 +1749,7 @@ public actor MovementService: MovementProviding {
         async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
         let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle,
-                               level: Self.courtLevel(forDomain: kc.domain))
+                               level: Self.knownCardCourtLevel(forDomain: kc.domain))
         let fetched: (card: CaseCard, sourceURL: URL?)
         if let sourceURL = kc.sourceURL {
             let link = try SudrfCaseCardLink(url: sourceURL)
@@ -2215,7 +2215,16 @@ extension MovementService {
         return try await client.fetchCard(url: url)
     }
 
-    /// Определяет звено суда по домену (эвристика по структуре имени).
+    /// Сохранённая ссылка может вести в районный суд, а не только в вышестоящий.
+    private static func knownCardCourtLevel(forDomain domain: String) -> CourtLevel {
+        if let court = CourtDirectory.court(forDomain: domain) { return court.level }
+        let host = SudrfHost.moduleHost(domain)
+        let militaryCourts = CourtDirectory.okrugMilitaryCourts
+            + [CourtDirectory.appellateMilitaryCourt, CourtDirectory.cassationMilitaryCourt]
+        return militaryCourts.first { SudrfHost.moduleHost($0.domain) == host }?.level ?? .district
+    }
+
+    /// Определяет звено вышестоящего суда по домену (эвристика по структуре имени).
     static func courtLevel(forDomain domain: String) -> CourtLevel {
         if domain == "vkas.sudrf.ru" { return .cassation }   // Кассационный военный суд
         if domain == "vap.sudrf.ru"  { return .appeal }      // Апелляционный военный суд

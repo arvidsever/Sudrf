@@ -64,7 +64,7 @@
 | [#354](https://github.com/arvidsever/Sudrf/issues/354) | Развести капсулу навигации и правую панель в узком окне, показать полный номер. |
 | [#363](https://github.com/arvidsever/Sudrf/issues/363) | Удержать движение под закреплённой шапкой с системным scroll edge. |
 | [#337](https://github.com/arvidsever/Sudrf/issues/337) | Размещать накладки недели по фактической высоте карточек. |
-| [#368](https://github.com/arvidsever/Sudrf/issues/368) | Закрепить координаты навигационных кнопок месяца и недели при смене периода. |
+| [#368](https://github.com/arvidsever/Sudrf/issues/368) | Реализовано в ветке #368: координаты кнопок закреплены; автоматическая проверка геометрии пройдена. [Ручная визуальная приёмка](qa/issue-368/README.md) ожидается до merge. |
 | [#388](https://github.com/arvidsever/Sudrf/issues/388) | Сдвигать месячную сетку по одной неделе колесом и трекпадом; сохранять события и независимую прокрутку панели дня после #368. |
 | [#352](https://github.com/arvidsever/Sudrf/issues/352) | Короткие имена суда и картотеки в пикерах; полные — в списке, tooltip и VoiceOver. |
 | [#353](https://github.com/arvidsever/Sudrf/issues/353) | Скрыть пустой пикер «Суд» в поиске ВС РФ. |

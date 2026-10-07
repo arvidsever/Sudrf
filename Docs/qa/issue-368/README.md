@@ -54,3 +54,15 @@ Final year-label verification:
 - Full suite: 1932 tests, 20 expected skips, zero failures; `/private/tmp/sudrf-368-year-full.log`.
 - Calendar profile: 89 tests, 6 expected skips, zero failures; `/private/tmp/sudrf-368-year-calendar.log`.
 - XcodeGen and canonical Sudrf Debug build: `BUILD SUCCEEDED`; `/private/tmp/sudrf-368-year-xcodebuild.log`.
+
+## Итоговая приёмка и выпуск — 7 октября 2026 года
+
+Пользователь подтвердил повторные переходы, переключение режимов и поведение при изменении ширины окна.
+Пользователь написал: «Да, всё ок. Можно обновлять main в гитхабе».
+Прежние указания об отложенной приёмке выше относятся к этапу до этого подтверждения.
+Полная ручная матрица VoiceOver/клавиатуры, всех ОС и тем отдельно пользователем
+не подтверждалась; её прохождение не приписывается этому ответу.
+
+Выпуск: **0.62.7 (244)**, [PR #419](https://github.com/arvidsever/Sudrf/pull/419).
+Финальные проверки CI доступны на [коммите выпуска](https://github.com/arvidsever/Sudrf/pull/419/checks);
+слияние выполняется только после их успеха. TestFlight и рабочая база агентом не открывались.

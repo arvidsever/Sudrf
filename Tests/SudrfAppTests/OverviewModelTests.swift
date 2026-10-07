@@ -321,7 +321,7 @@ final class OverviewModelTests: XCTestCase {
                        [fresh.id])
         XCTAssertEqual(AppRouter.pendingDeadlines([stale, fresh], today: today).map(\.id),
                        [fresh.id])
-        XCTAssertNil(AppRouter.pinnedDeadline([stale], today: today))
+        XCTAssertTrue(AppRouter.pinnedDeadline([stale], today: today).isEmpty)
     }
 
     func testOverviewShowsRecentOverdueDeadlinesOfEveryStatusForFourteenDays() {
@@ -353,7 +353,7 @@ final class OverviewModelTests: XCTestCase {
         let stale = deadline("26", plus: -200)
         let recent = deadline("27", plus: -1)
 
-        XCTAssertNil(AppRouter.pinnedDeadline([stale, recent], today: today))
+        XCTAssertTrue(AppRouter.pinnedDeadline([stale, recent], today: today).isEmpty)
         XCTAssertEqual(AppRouter.overdueDeadlines([stale, recent], today: today).map(\.id),
                        [recent.id])
     }
@@ -363,7 +363,7 @@ final class OverviewModelTests: XCTestCase {
         let next = deadline("11", plus: 4)
         let confirmed = deadline("12", plus: 1, status: .confirmed)
 
-        XCTAssertEqual(AppRouter.pinnedDeadline([old, next, confirmed], today: today)?.id, confirmed.id)
+        XCTAssertEqual(AppRouter.pinnedDeadline([old, next, confirmed], today: today).map(\.id), [confirmed.id])
         XCTAssertEqual(AppRouter.overdueDeadlines([old, next, confirmed], today: today).map(\.id), [old.id])
     }
 
@@ -374,9 +374,84 @@ final class OverviewModelTests: XCTestCase {
         let deadlines = [proposed, overridden, confirmed]
 
         let pinned = AppRouter.pinnedDeadline(deadlines, today: today)
-        XCTAssertEqual(pinned?.id, confirmed.id)
+        XCTAssertEqual(pinned.map(\.id), [confirmed.id])
         XCTAssertEqual(AppRouter.remainingDeadlines(deadlines, pinned: pinned, today: today)
             .map(\.id), [overridden.id, proposed.id])
+    }
+
+    func testNearestDayGroupKeepsAllPeersAndStableOrder() {
+        let peers = [deadline("684", plus: 0), deadline("683", plus: 0), deadline("682", plus: 0)]
+        let overdue = deadline("old", plus: -1)
+        let later = deadline("later", plus: 4)
+        var inactive = deadline("inactive", plus: 0)
+        inactive.lifecycle = .superseded
+        let input = [overdue, later, inactive] + peers
+        let expected = peers.reversed().map(\.id)
+        for rows in [input, Array(input.reversed())] {
+            let pinned = AppRouter.pinnedDeadline(rows, today: today.addingTimeInterval(12 * 3600))
+            XCTAssertEqual(pinned.map(\.id), expected)
+            XCTAssertEqual(AppRouter.remainingDeadlines(rows, pinned: pinned, today: today).map(\.id), [later.id])
+            XCTAssertEqual(AppRouter.overdueDeadlines(rows, today: today).map(\.id), [overdue.id])
+        }
+        let future = peers.map { value in
+            var value = value
+            value.date = DateUtil.addDays(today, 2)
+            return value
+        }
+        XCTAssertEqual(AppRouter.pinnedDeadline([later] + future, today: today).map(\.id), expected)
+        XCTAssertTrue(AppRouter.pinnedDeadline([], today: today).isEmpty)
+    }
+
+    func testNearestDaySortResolvesSameNumberAndComplaintWithIdentity() {
+        var a = deadline("a", plus: 0)
+        var b = deadline("b", plus: 0)
+        a.caseNumber = "2-1/2026"
+        b.caseNumber = a.caseNumber
+        XCTAssertEqual(AppRouter.pinnedDeadline([b, a], today: today).map(\.id), [a.id, b.id])
+        a.what = "Частная жалоба"
+        XCTAssertEqual(AppRouter.pinnedDeadline([a, b], today: today).map(\.id), [b.id, a.id])
+    }
+
+    @MainActor
+    func testConfirmAndEditPreserveSameDayPeersAfterReload() throws {
+        let movement = try Issue372CassationFixtures.movement("main-cassation-vs-material-cost")
+        let context = MovementContext(branchRaw: "general", region: "QA",
+            searchDomain: "qa.sudrf.ru", displayDomain: "qa.sudrf.ru",
+            courtTitle: "Проверочный суд", courtLevelRaw: "district", courtCode: "00RS0001",
+            cartotekaId: "g1", cartotekaLevelRaw: "district", caseNumber: movement.caseNumber)
+        let container = try SudrfModelContainerFactory.make(inMemory: true)
+        let store = try TrackedStore(container: container, prepared: true)
+        var snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
+        snapshot.deadlines = ["first", "second", "third"].map { key in
+            var value = StoredDeadline(kind: "appeal", what: "Апелляционная жалоба", basis: "QA",
+                calLabel: "апелл.", dateRef: today.timeIntervalSinceReferenceDate,
+                statusRaw: DeadlineStatus.proposed.rawValue)
+            value.occurrenceKey = key
+            return value
+        }
+        let record = try store.reconcileAndUpsert(context: context, snapshot: snapshot,
+            movement: movement, collections: [], movementFetchedAt: today)
+        record.snapshot = snapshot
+        try store.save()
+        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        router.reload(today: today)
+        let peers = AppRouter.pinnedDeadline(router.deadlines, today: today)
+        XCTAssertEqual(peers.count, 3)
+        let first = try XCTUnwrap(peers.first)
+        router.confirm(first.id)
+        router.reload(today: today)
+        XCTAssertEqual(AppRouter.pinnedDeadline(router.deadlines, today: today).map(\.id), peers.map(\.id))
+        XCTAssertEqual(router.deadline(first.id)?.status, .confirmed)
+        let edited = peers[1]
+        router.beginEdit(edited.id)
+        router.draftDate = DateUtil.addDays(today, 2)
+        router.save(edited.id)
+        router.reload(today: today)
+        XCTAssertEqual(AppRouter.pinnedDeadline(router.deadlines, today: today).map(\.id),
+                       peers.filter { $0.id != edited.id }.map(\.id))
+        XCTAssertEqual(router.deadline(edited.id)?.date, DateUtil.addDays(today, 2))
+        XCTAssertEqual(router.deadline(edited.id)?.status, .overridden)
+        XCTAssertEqual(Set(router.deadlines.map(\.id)).count, 3)
     }
 
     func testFeedFilteringByKindUnreadAndQuery() {

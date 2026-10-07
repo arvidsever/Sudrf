@@ -53,6 +53,8 @@ final class MovementServiceTests: XCTestCase {
         let materialURL = try cardURL("4ap.sudrf.ru", "control-material", "material-link", appealCart)
         // The KSOYU URL publishes only case_id; it is still an exact source-native locator.
         let cassationURL = try cardURL("6kas.sudrf.ru", "complaint", nil, cassationCart)
+        let redirectedURL = try cardURL("6kas.sudrf.ru", "redirected", "redirected-link", cassationCart)
+        let foreignResponseURL = try cardURL("6kas.sudrf.ru", "other-card", "redirected-link", cassationCart)
         let unrelatedURL = try cardURL("6kas.sudrf.ru", "unrelated", "unrelated-link", cassationCart)
         let foreignUIDURL = try cardURL("6kas.sudrf.ru", "foreign-uid", "foreign-link", cassationCart)
         let conflictingURL = try cardURL("6kas.sudrf.ru", "conflicting", "conflicting-link", cassationCart)
@@ -64,6 +66,8 @@ final class MovementServiceTests: XCTestCase {
                                             cardURL: cassationURL)
         let unrelatedRow = CaseSearchResult(caseNumber: "7У-2/2025", caseID: "unrelated",
                                              caseUID: "unrelated-link", cardURL: unrelatedURL)
+        let redirectedRow = CaseSearchResult(caseNumber: "7У-5/2025", caseID: "redirected",
+                                             caseUID: "redirected-link", cardURL: redirectedURL)
         let foreignUIDRow = CaseSearchResult(caseNumber: "7У-3/2025", caseID: "foreign-uid",
                                               caseUID: "foreign-link", cardURL: foreignUIDURL)
         let conflictingRow = CaseSearchResult(caseNumber: "7У-4/2025", caseID: "conflicting",
@@ -104,17 +108,22 @@ final class MovementServiceTests: XCTestCase {
                                         courtTitle: "Четвертый апелляционный суд",
                                         caseNumber: "55к-6/2025", decisionDate: materialDecision),
                                        processKind: .upk, processKindConflict: true)
+        let redirectedCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                      caseNumber: "7У-5/2025",
+                                      lowerCourt: complaintCard.lowerCourt, processKind: .upk)
         let mock = MockClient(
             firstCardID: "base", firstCard: subjectCard, higherResults: [],
             higherCards: ["appeal": appealCard, "control-material": materialCard,
                           "complaint": complaintCard, "unrelated": unrelatedCard,
-                          "foreign-uid": foreignUIDCard, "conflicting": conflictingCard],
+                          "foreign-uid": foreignUIDCard, "conflicting": conflictingCard,
+                          "redirected": redirectedCard],
             higherResultsByLocator: [
                 "4ap.sudrf.ru/u2": [appealRow, materialRow],
                 "6kas.sudrf.ru/u3": [complaintRow, unrelatedRow,
-                                      foreignUIDRow, conflictingRow]
+                                      foreignUIDRow, conflictingRow, redirectedRow]
             ],
-            homeDomain: samara.domain, expectedUID: uid)
+            homeDomain: samara.domain, expectedUID: uid,
+            redirects: ["redirected": foreignResponseURL])
         let service = MovementService(client: mock,
                                       higherCourtDomains: ["4ap.sudrf.ru", "6kas.sudrf.ru"])
 
@@ -126,6 +135,7 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-2/2025" })
         XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-3/2025" })
         XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-4/2025" })
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-5/2025" })
         XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
         XCTAssertTrue(movement.incompleteHigherCourtDomains?.contains("6kas.sudrf.ru") == true)
         let searchedLocators = await mock.searchLocators
@@ -162,7 +172,7 @@ final class MovementServiceTests: XCTestCase {
                 "known-material": CaseCard(rawText: "", actText: nil, uid: uid,
                                             caseNumber: "55к-6/2025", decisionDate: materialDate,
                                             processKind: .upk),
-                "complaint": CaseCard(rawText: "", actText: nil, uid: uid,
+                "complaint": CaseCard(rawText: "", actText: "Синтетический опубликованный акт", uid: uid,
                                       caseNumber: "7У-1/2025", decisionDate: "15.03.2025",
                                       lowerCourt: LowerCourtReference(
                                         courtTitle: "Четвертый апелляционный суд",
@@ -190,6 +200,12 @@ final class MovementServiceTests: XCTestCase {
             $0.caseNumber == "7У-1/2025" && $0.level == .material
         })
         XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        let published = try XCTUnwrap(movement.acts.first { $0.id.contains("7У-1/2025") })
+        let direct = try await service.instanceFromKnownCard(KnownCard(
+            domain: "6kas.sudrf.ru", courtTitle: "Шестой КСОЮ", caseID: "complaint", caseUID: "",
+            deloID: cassationCart.deloID, new: cassationCart.new, caseNumber: "7У-1/2025",
+            levelRaw: "material", sourceURL: complaintURL))
+        XCTAssertEqual(direct.act, published, "Search and direct refresh must keep stable act metadata")
     }
 
     func testPrimaryCriminalCassationSourceFailuresKeepOnlyMaterialRetryStub() async throws {
@@ -1203,6 +1219,7 @@ final class MovementServiceTests: XCTestCase {
 /// Различает домашний суд (по домену) и вышестоящие: по УИД домашний суд отдаёт
 /// `sameCourtResults` (другие круги той же инстанции), вышестоящие — `higherResults`.
 private actor MockClient: CaseProviding {
+    private let redirects: [String: URL]
     private let firstCardID: String
     private let firstCard: CaseCard
     private let higherResults: [CaseSearchResult]
@@ -1225,7 +1242,9 @@ private actor MockClient: CaseProviding {
          partialDiscoveryDomains: Set<String> = [],
          failedCardIDs: Set<String> = [],
          homeDomain: String = "syktsud--komi.sudrf.ru",
-         expectedUID: String = "11RS0001-01-2025-011255-03") {
+         expectedUID: String = "11RS0001-01-2025-011255-03",
+         redirects: [String: URL] = [:]) {
+        self.redirects = redirects
         self.firstCardID = firstCardID
         self.firstCard = firstCard
         self.higherResults = higherResults
@@ -1282,6 +1301,12 @@ private actor MockClient: CaseProviding {
             throw SudrfError.http(status: 404)
         }
         return card
+    }
+
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        let card = try await fetchCard(url: url)
+        let id = (try? SudrfCaseCardLink(url: url))?.caseID ?? ""
+        return SudrfCaseCardFetchResult(card: card, responseURL: redirects[id] ?? url)
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,

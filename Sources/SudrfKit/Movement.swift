@@ -1231,8 +1231,22 @@ public actor MovementService: MovementProviding {
                         }
                         let higherCard: CaseCard
                         do {
-                            higherCard = try await fetchCard(row: r, court: higherCourt,
-                                                             cartoteka: higherCart)
+                            if materialOnly {
+                                guard Self.isCompatibleAppealSourceURL(r, court: higherCourt, cartoteka: higherCart),
+                                      let url = Self.sourceURL(for: r, court: higherCourt, cartoteka: higherCart),
+                                      let requested = try? SudrfCaseCardLink(url: url)
+                                else { throw SudrfError.parsing("неподтверждённая ссылка кассационного материала") }
+                                let response = try await client.fetchCardWithResponseURL(url: url)
+                                let effective = try SudrfCaseCardLink(url: response.responseURL)
+                                guard Self.sameSourceCard(url, response.responseURL) == true,
+                                      requested.caseID == nil || effective.caseID == nil
+                                        || requested.caseID == effective.caseID
+                                else { throw SudrfError.parsing("ответ относится к другой кассационной карточке") }
+                                higherCard = response.card
+                            } else {
+                                higherCard = try await fetchCard(row: r, court: higherCourt,
+                                                                 cartoteka: higherCart)
+                            }
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
@@ -1288,10 +1302,14 @@ public actor MovementService: MovementProviding {
                         var act: CaseAct? = nil
                         var body: String? = nil
                         if let actText = higherCard.actText {
-                            let date = r.decisionDate ?? r.receiptDate ?? "—"
+                            let date = materialOnly
+                                ? higherCard.decisionDate ?? r.decisionDate ?? higherCard.receiptDate ?? r.receiptDate ?? "—"
+                                : r.decisionDate ?? r.receiptDate ?? "—"
                             act = CaseAct(
                                 id: actID,
-                                title: resolvedLevel == .material
+                                title: materialOnly
+                                    ? Self.actTitle(cartotekaID: higherCart.id, level: .cassation)
+                                    : resolvedLevel == .material
                                     ? Self.materialActTitle(caseNumber: r.caseNumber)
                                     : Self.actTitle(cartotekaID: higherCart.id, level: resolvedLevel),
                                 date: date,
@@ -1755,16 +1773,20 @@ public actor MovementService: MovementProviding {
         let sourceCartotekaID = kc.cartotekaID ?? fetched.sourceURL.flatMap {
             Self.cartoteka(from: $0, court: fetchCourt, caseNumber: number)?.id
         }
+        let isCriminalReviewMaterial = kc.level == .material
+            && fetchCourt.level == .cassation && sourceCartotekaID == "u3"
         var act: CaseAct? = nil
         var body: String? = nil
         if let actText = card.actText {
             let actID = "act_\(kc.domain)#\(number)"
-            let title = kc.level == .material
+            let title = isCriminalReviewMaterial
+                ? Self.actTitle(cartotekaID: "u3", level: .cassation)
+                : kc.level == .material
                 ? Self.materialActTitle(caseNumber: number)
                 : Self.actTitle(cartotekaID: kc.cartotekaID ?? "", level: kc.level)
             act = CaseAct(id: actID, title: title,
                           date: card.decisionDate ?? card.receiptDate ?? "—",
-                          courtShort: kc.level == .material ? "Материал"
+                          courtShort: kc.level == .material && !isCriminalReviewMaterial ? "Материал"
                                                             : Self.shortCourtName(forDomain: kc.domain),
                           instanceLevel: kc.level)
             body = actText

@@ -31,10 +31,11 @@
     "firstInstanceRows": 1,
     "checkedBy": "agent on 7 October 2026",
     "screenshotSHA256": {
-      "cases-all.png": "d1c3939c9d29a69ebb93a6254acdfea5b4c10175c235e4a548ca48b0ffd487f2",
-      "cases-done.png": "e4676ed141320e105acf6957bfc6900b2dfb56a9f341b2817c314159a75c881b",
-      "cases-first.png": "1b2449aaf9c36f7d1773c353ee939c4fa949f1649dbe63300f8da8348ab7eb82"
-    }
+      "cases-all.png": "43c825f52d375c967a1a5916d9ecc1931da0629b40fb8f66745ad6e71ad0ecac",
+      "cases-done.png": "2061a2f4e0072a6f39258b4c5ac735c204da0cf36102849eb6a9b6472afdb080",
+      "cases-first.png": "3de959f2d376e230fcfda8facb4f5660fb65c2618480db26d7cef08bf9b2f084"
+    },
+    "captureNote": "NSView bitmap; transparent background composited onto white; native window frame and vibrancy are absent"
   },
   "logSHA256": {
     "profile.log": "0aa732a32b080c7a8cf18188b0391bc3a758999054d334aa96e84324855a941d",

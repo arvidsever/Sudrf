@@ -13,10 +13,16 @@ args.output_dir.mkdir(parents=True, exist_ok=True)
 source = (Path(__file__).resolve().parents[3] / 'Sources/SudrfApp/SettingsHub.swift').read_text()
 shell = source[source.index('struct SettingsHub: View {'):source.index('// MARK: - Обновление')]
 # Substitute only pane bodies: real AI panes can load credentials or translation.
-panes = '\n'.join(
-    f'struct {name}: View {{ var body: some View {{ Form {{ Section("Фоновая проверка") {{ Text("Synthetic content") }} }}.formStyle(.grouped) }} }}'
-    for name in ['RefreshSettingsPane', 'SpotlightSettingsPane', 'CaptchaSettingsPane',
-                 'AIPrivacyPane', 'ExperimentalPane']
+refresh = source[source.index('private struct RefreshSettingsPane: View {'):source.index('// MARK: - Поиск и Spotlight')]
+refresh = refresh.replace('@AppStorage(RefreshSettings.ttlKey)', '@State')
+refresh = refresh.replace('RefreshSettings.ttlOptions', '[1, 3, 6, 12, 24]')
+panes = refresh + '\n' + '\n'.join(
+    f'struct {name}: View {{ var body: some View {{ Form {{ Section("{heading}") {{ Text("Synthetic content") }} }}.formStyle(.grouped).navigationTitle("{title}") }} }}'
+    for name, heading, title in [
+        ('SpotlightSettingsPane', 'Системный поиск', 'Поиск'),
+        ('CaptchaSettingsPane', 'Распознавание', 'CAPTCHA'),
+        ('AIPrivacyPane', 'Провайдер', 'AI и приватность'),
+        ('ExperimentalPane', 'Перевод через английский', 'Экспериментальные')]
 )
 with tempfile.TemporaryDirectory(prefix='sudrf-366-') as temporary:
     for variant in ['before', 'after']:

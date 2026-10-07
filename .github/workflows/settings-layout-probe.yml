@@ -1,0 +1,22 @@
+name: Settings layout probe
+on:
+  pull_request:
+    paths:
+      - Docs/qa/issue-366/render-sidebar.py
+      - .github/workflows/settings-layout-probe.yml
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture isolated settings shell on macOS 26
+        run: |
+          sw_vers
+          xcodebuild -version
+          python3 Docs/qa/issue-366/render-sidebar.py --output-dir "$RUNNER_TEMP/settings-layout"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: settings-layout-macos26
+          path: ${{ runner.temp }}/settings-layout/*.png

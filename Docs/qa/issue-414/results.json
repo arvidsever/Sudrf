@@ -1,0 +1,52 @@
+{
+  "checkedAt": "7 October 2026",
+  "focused": {
+    "tests": 8,
+    "failures": 0
+  },
+  "profile": {
+    "tests": 239,
+    "failures": 0,
+    "strictConcurrency": "complete"
+  },
+  "full": {
+    "XCTest": 1930,
+    "skipped": 20,
+    "failures": 0,
+    "SwiftTesting": 28
+  },
+  "registry": "up to date",
+  "xcode": {
+    "branch": "BUILD SUCCEEDED",
+    "qaBundle": "BUILD SUCCEEDED",
+    "version": "Xcode 27.0 (27A266a)"
+  },
+  "review": "Astra High: approved production/data and QA capture correction at e7e7449a68043c45caa64c11a43d2ce347d5951d; release-only changes receive final review in PR",
+  "gui": {
+    "status": "passed",
+    "bundle": "ru.sudrf.qa.issue414",
+    "storage": "in-memory synthetic/reduced fixtures",
+    "allRows": 4,
+    "doneRows": 3,
+    "firstInstanceRows": 1,
+    "checkedBy": "agent on 7 October 2026",
+    "screenshotSHA256": {
+      "cases-all.png": "43c825f52d375c967a1a5916d9ecc1931da0629b40fb8f66745ad6e71ad0ecac",
+      "cases-done.png": "2061a2f4e0072a6f39258b4c5ac735c204da0cf36102849eb6a9b6472afdb080",
+      "cases-first.png": "3de959f2d376e230fcfda8facb4f5660fb65c2618480db26d7cef08bf9b2f084"
+    },
+    "captureNote": "NSView bitmap; transparent background composited onto white; native window frame and vibrancy are absent"
+  },
+  "logSHA256": {
+    "profile.log": "0aa732a32b080c7a8cf18188b0391bc3a758999054d334aa96e84324855a941d",
+    "full.log": "aaec7e8abd013f2b76d3cd567894acf98ee4837ef9a12aff04e07b71a1c05fad",
+    "branch-xcode.log": "ab3762ae12ba6ccc72bda43e4bcabeae3f69a5f20689c111837e7e4209f2ff93",
+    "xcode-qa-build.log": "161b71621b89de0291fdae2b887930e32d023a4d297cefa34e5885e131de033b"
+  },
+  "ci": {
+    "codeHead": "e7e7449a68043c45caa64c11a43d2ce347d5951d",
+    "run": 37561970632,
+    "result": "passed; hosted Xcode 27 explicitly skipped because unavailable; local Xcode 27 build passed",
+    "releaseHead": "Final review and CI are recorded on the PR at its final SHA"
+  }
+}

@@ -1,0 +1,372 @@
+{
+  "metadata": {
+    "source": "Reduced typed observations from explicit read-only Xcode diagnosis, 6 October 2026, Sudrf 0.62.2 (239). Not a full export or raw HTML.",
+    "synthetic": "Movement uid values are synthetic test identifiers. No observed caseIDs or URLs were available. Local preservation act is added only by tests.",
+    "unknown": "First decision date for 2а-1145/2020 confirmed as 10.12.2020 by an explicitly authorized SQLITE_OPEN_READONLY Xcode query on 7 October 2026. The read-only connection was closed and the app resumed.",
+    "eventModeling": "Receipt and decision dates and sourceEvidence dates are observed. Minimal first-instance sessions are modeled from those dates; their event labels are synthetic reduced controls, not verbatim source rows."
+  },
+  "entries": [
+    {
+      "context": {
+        "branchRaw": "general",
+        "region": "Республика Коми",
+        "searchDomain": "ejvasud--komi.sudrf.ru",
+        "displayDomain": "ejvasud--komi.sudrf.ru",
+        "courtTitle": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+        "courtLevelRaw": "district",
+        "cartotekaId": "p1",
+        "cartotekaLevelRaw": "district",
+        "baseInstanceLevelRaw": "first",
+        "caseNumber": "2а-1139/2020 ~ М-1009/2020",
+        "receiptDate": "25.09.2020",
+        "resultText": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+        "decisionDate": "09.12.2020"
+      },
+      "movement": {
+        "uid": "issue414-synthetic-0",
+        "caseNumber": "2а-1139/2020 ~ М-1009/2020",
+        "inForce": false,
+        "instances": [
+          {
+            "level": "first",
+            "court": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+            "caseNumber": "2а-1139/2020 ~ М-1009/2020",
+            "domain": "ejvasud--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+            "sessions": [
+              {
+                "date": "25.09.2020",
+                "event": "Регистрация административного искового заявления"
+              },
+              {
+                "date": "09.12.2020",
+                "event": "Судебное заседание",
+                "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)"
+              }
+            ],
+            "sourceEvidence": {
+              "receiptDate": "25.09.2020",
+              "appealKinds": [
+                "Частная жалоба",
+                "Апелляционная жалоба (на не вступивший в силу судебный акт)"
+              ],
+              "reviewProcedure": "Рассмотрено единолично судьей",
+              "cartotekaID": "p1",
+              "sourceCourtLevel": "district",
+              "sourceBranch": "general",
+              "decisionDate": "09.12.2020"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-5121/2020",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "определение отменено полностью с разрешением вопроса по существу",
+            "sessions": [
+              {
+                "date": "19.10.2020",
+                "event": "Судебное заседание",
+                "result": "определение отменено полностью с разрешением вопроса по существу"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "М-1009/2020"
+              },
+              "decisionDate": "19.10.2020"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-668/2021",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "административный истец отказался от административного иска и отказ принят судом",
+            "sessions": [
+              {
+                "date": "08.02.2021",
+                "event": "Судебное заседание",
+                "result": "Отложено"
+              },
+              {
+                "date": "11.03.2021",
+                "event": "Судебное заседание",
+                "result": "Производство по делу прекращено"
+              },
+              {
+                "date": "15.03.2021",
+                "event": "Дело сдано в отдел судебного делопроизводства"
+              },
+              {
+                "date": "15.03.2021",
+                "event": "Дело передано в экспедицию"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "2а-1139/2020 ~ М-1009/2020"
+              },
+              "decisionDate": "11.03.2021",
+              "receiptDate": "28.01.2021"
+            }
+          }
+        ],
+        "complaints": {},
+        "acts": [],
+        "actBodies": {},
+        "parties": {
+          "plaintiffs": [],
+          "defendants": [],
+          "thirdParties": [],
+          "kind": "civil",
+          "columns": [],
+          "roleItems": []
+        }
+      }
+    },
+    {
+      "context": {
+        "branchRaw": "general",
+        "region": "Республика Коми",
+        "searchDomain": "ejvasud--komi.sudrf.ru",
+        "displayDomain": "ejvasud--komi.sudrf.ru",
+        "courtTitle": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+        "courtLevelRaw": "district",
+        "cartotekaId": "p1",
+        "cartotekaLevelRaw": "district",
+        "baseInstanceLevelRaw": "first",
+        "caseNumber": "2а-1145/2020 ~ М-1010/2020",
+        "receiptDate": "25.09.2020",
+        "resultText": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+        "decisionDate": "10.12.2020"
+      },
+      "movement": {
+        "uid": "issue414-synthetic-1",
+        "caseNumber": "2а-1145/2020 ~ М-1010/2020",
+        "inForce": false,
+        "instances": [
+          {
+            "level": "first",
+            "court": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+            "caseNumber": "2а-1145/2020 ~ М-1010/2020",
+            "domain": "ejvasud--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+            "sessions": [
+              {
+                "date": "25.09.2020",
+                "event": "Регистрация административного искового заявления"
+              },
+              {
+                "date": "10.12.2020",
+                "event": "Судебное заседание",
+                "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)"
+              }
+            ],
+            "sourceEvidence": {
+              "receiptDate": "25.09.2020",
+              "appealKinds": [
+                "Частная жалоба",
+                "Апелляционная жалоба (на не вступивший в силу судебный акт)"
+              ],
+              "reviewProcedure": "Рассмотрено единолично судьей",
+              "cartotekaID": "p1",
+              "sourceCourtLevel": "district",
+              "sourceBranch": "general",
+              "decisionDate": "10.12.2020"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-5120/2020",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "определение отменено полностью с разрешением вопроса по существу",
+            "sessions": [
+              {
+                "date": "19.10.2020",
+                "event": "Судебное заседание",
+                "result": "определение отменено полностью с разрешением вопроса по существу"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "М-1010/2020"
+              },
+              "decisionDate": "19.10.2020"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-1048/2021",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+            "sessions": [
+              {
+                "date": "01.03.2021",
+                "event": "Судебное заседание",
+                "result": "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ"
+              },
+              {
+                "date": "15.03.2021",
+                "event": "Дело сдано в отдел судебного делопроизводства"
+              },
+              {
+                "date": "15.03.2021",
+                "event": "Дело передано в экспедицию"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "2а-1145/2020 ~ М-1010/2020"
+              },
+              "decisionDate": "01.03.2021",
+              "receiptDate": "17.02.2021"
+            }
+          }
+        ],
+        "complaints": {},
+        "acts": [],
+        "actBodies": {},
+        "parties": {
+          "plaintiffs": [],
+          "defendants": [],
+          "thirdParties": [],
+          "kind": "civil",
+          "columns": [],
+          "roleItems": []
+        }
+      }
+    },
+    {
+      "context": {
+        "branchRaw": "general",
+        "region": "Республика Коми",
+        "searchDomain": "ejvasud--komi.sudrf.ru",
+        "displayDomain": "ejvasud--komi.sudrf.ru",
+        "courtTitle": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+        "courtLevelRaw": "district",
+        "cartotekaId": "p1",
+        "cartotekaLevelRaw": "district",
+        "baseInstanceLevelRaw": "first",
+        "caseNumber": "2а-53/2021 (2а-1142/2020;) ~ М-1007/2020",
+        "receiptDate": "25.09.2020",
+        "resultText": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+        "decisionDate": "28.05.2021"
+      },
+      "movement": {
+        "uid": "issue414-synthetic-2",
+        "caseNumber": "2а-53/2021 (2а-1142/2020;) ~ М-1007/2020",
+        "inForce": false,
+        "instances": [
+          {
+            "level": "first",
+            "court": "Эжвинский районный суд г. Сыктывкара Республики Коми",
+            "caseNumber": "2а-53/2021 (2а-1142/2020;) ~ М-1007/2020",
+            "domain": "ejvasud--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)",
+            "sessions": [
+              {
+                "date": "25.09.2020",
+                "event": "Регистрация административного искового заявления"
+              },
+              {
+                "date": "28.05.2021",
+                "event": "Судебное заседание",
+                "result": "ОТКАЗАНО в удовлетворении иска (заявлении, жалобы)"
+              }
+            ],
+            "sourceEvidence": {
+              "receiptDate": "25.09.2020",
+              "appealKinds": [
+                "Частная жалоба",
+                "Апелляционная жалоба (на не вступивший в силу судебный акт)"
+              ],
+              "reviewProcedure": "Рассмотрено единолично судьей",
+              "cartotekaID": "p1",
+              "sourceCourtLevel": "district",
+              "sourceBranch": "general",
+              "decisionDate": "28.05.2021"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-5122/2020",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "определение отменено полностью с разрешением вопроса по существу",
+            "sessions": [
+              {
+                "date": "19.10.2020",
+                "event": "Судебное заседание",
+                "result": "определение отменено полностью с разрешением вопроса по существу"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "М-1007/2020"
+              },
+              "decisionDate": "19.10.2020"
+            }
+          },
+          {
+            "level": "appeal",
+            "court": "Верховный суд Республики Коми",
+            "caseNumber": "33а-4017/2021",
+            "domain": "vs--komi.sudrf.ru",
+            "foundByUID": false,
+            "result": "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ",
+            "sessions": [
+              {
+                "date": "19.07.2021",
+                "event": "Судебное заседание",
+                "result": "РЕШЕНИЕ оставлено БЕЗ ИЗМЕНЕНИЯ"
+              },
+              {
+                "date": "03.08.2021",
+                "event": "Дело сдано в отдел судебного делопроизводства"
+              },
+              {
+                "date": "03.08.2021",
+                "event": "Дело передано в экспедицию"
+              }
+            ],
+            "sourceEvidence": {
+              "lowerCourt": {
+                "courtTitle": "Эжвинский районный суд",
+                "caseNumber": "2а-53/2021 (2а-1142/2020;) ~ М-1007/2020"
+              },
+              "decisionDate": "19.07.2021",
+              "receiptDate": "08.07.2021"
+            }
+          }
+        ],
+        "complaints": {},
+        "acts": [],
+        "actBodies": {},
+        "parties": {
+          "plaintiffs": [],
+          "defendants": [],
+          "thirdParties": [],
+          "kind": "civil",
+          "columns": [],
+          "roleItems": []
+        }
+      }
+    }
+  ]
+}

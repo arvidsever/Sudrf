@@ -1,0 +1,15 @@
+{
+  "source": "Typed observations read through the existing Xcode debugger; explicitly authorized read-only access limited to these three records. Not raw HTML or a full database export.",
+  "diagnosedAt": "6 October 2026",
+  "verified1145DecisionAt": "7 October 2026",
+  "appVersion": "0.62.2 (239)",
+  "sourceRevision": "ed213b9ae20edfbf714167cab8a5a78c64803ac4",
+  "fixtureSHA256": "5722736a2af42a1d71749b41dcec706707edf6b700f22ec268c90e4c61d46cc9",
+  "sanitization": "Omitted participants, judges, act texts, user fields and unobserved caseIDs/URLs. Test UIDs and reduced first-instance event labels are synthetic and identified in fixture metadata.",
+  "cases": [
+    "2а-1139/2020",
+    "2а-1145/2020",
+    "2а-53/2021"
+  ],
+  "limitations": "Live HTML was not obtained; parser loss is not established. No source blob hash is claimed because only projected fields were read."
+}

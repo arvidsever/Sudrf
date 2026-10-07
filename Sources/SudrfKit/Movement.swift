@@ -660,6 +660,16 @@ public actor MovementService: MovementProviding {
             && CaseIndexClassifier.classify(
                 caseNumber: publishedBaseNumber ?? "",
                 courtLevel: court.level)?.cardRole == .firstInstanceCase
+        let usesSupremeCriminalRoute = baseUIDMatchesSaved
+            && publishedBaseNumber.map {
+                Self.samePublishedCaseNumber($0, base.caseNumber)
+                    && CartotekaRegistry.prefixMatches(cartoteka, caseNumber: $0)
+            } == true
+            && MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+                courtLevel: court.level, branch: branch, cartotekaID: cartoteka.id,
+                caseNumber: publishedBaseNumber, lowerCourt: baseCard.lowerCourt,
+                sourceProcessKind: baseCard.processKind,
+                sourceProcessKindConflict: baseCard.processKindConflict)
         func isPreliminaryAlias(_ knownCard: KnownCard) -> Bool {
             guard baseIsMainCase,
                   SudrfHost.moduleHost(knownCard.domain) == SudrfHost.moduleHost(court.domain),
@@ -1138,7 +1148,9 @@ public actor MovementService: MovementProviding {
                     level: .material, court: court.title, caseNumber: r.caseNumber,
                     judge: r.judge ?? card.judge, domain: court.domain, foundByUID: true,
                     result: r.result ?? card.result, sessions: card.sessions, actID: matActID,
-                    sourceURL: Self.sourceURL(for: r, court: court, cartoteka: mCart)))
+                    sourceURL: Self.sourceURL(for: r, court: court, cartoteka: mCart),
+                    sourceEvidence: .init(card: card, cartotekaID: mCart.id,
+                                          courtLevel: court.level, branch: branch)))
             }
         }
 
@@ -1148,6 +1160,10 @@ public actor MovementService: MovementProviding {
         //    тот же moduleHost-ключ для дедупа, не сырой domain — иначе dash+dot формы
         //    одного вышестоящего суда породят лишнюю заглушку. Шаблон проверки —
         //    см. captcha-stub-path ниже.
+        // Validate related reviews after direct known materials have loaded too.
+        var relatedCandidates: [(row: CaseSearchResult, card: CaseCard, court: Court,
+                                 cartoteka: Cartoteka, inst: CaseInstance,
+                                 act: CaseAct?, body: String?)] = []
         let legalForceDate = baseCard.legalForceDate ?? base.legalForceDate
         for target in higherCourtTargets where target.dateRule.matches(legalForceDate: legalForceDate) {
             guard let uid else { break }
@@ -1156,6 +1172,11 @@ public actor MovementService: MovementProviding {
             let higherCourt = Court(domain: domain,
                                     title: target.courtTitle ?? Self.shortCourtName(forDomain: domain),
                                     level: level)
+            // The UID search remains useful for intermediate criminal acts,
+            // even when the principal case's cassation belongs in the VS RF.
+            let materialOnly = usesSupremeCriminalRoute && level == .cassation
+            let targetInstanceLevel: CaseInstance.Level = materialOnly
+                ? .material : target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
             let cartotekaIDs = target.cartotekaIDs ?? Self.higherCartotekaIDs(
                 baseID: cartoteka.id, level: level, judicialUID: uid,
                 isFirstInstanceAnchor: isSubjectFirstAnchor)
@@ -1169,6 +1190,7 @@ public actor MovementService: MovementProviding {
                 && ["u1", "g1", "p1"].contains(cartoteka.id.lowercased())
 
             let instanceCountBeforeTarget = instances.count
+            let candidateCountBeforeTarget = relatedCandidates.count
             var targetIncomplete = false
             for higherCart in toTry {
                 do {
@@ -1189,7 +1211,7 @@ public actor MovementService: MovementProviding {
                     }
                     guard !usable.isEmpty else { continue }   // картотека пуста — пробуем следующую
 
-                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
+                    let instLevel = targetInstanceLevel
 
                     // По одному УИД суд может вернуть НЕСКОЛЬКО записей: например, два
                     // круга апелляции — исходный и новый, после возврата из кассации на
@@ -1293,6 +1315,10 @@ public actor MovementService: MovementProviding {
                                                       cartoteka: higherCart),
                             previousRegistration: higherCard.previousRegistration,
                             sourceEvidence: .init(card: higherCard, cartotekaID: higherCart.id, courtLevel: higherCourt.level, branch: branch))
+                        if materialOnly {
+                            relatedCandidates.append((r, higherCard, higherCourt, higherCart, inst, act, body))
+                            continue
+                        }
                         if let locator = nativeLocator(
                             row: r, court: higherCourt, cartoteka: higherCart,
                             sourceURL: inst.sourceURL) {
@@ -1342,7 +1368,7 @@ public actor MovementService: MovementProviding {
                     // импорта известны прямые ссылки на карточки этого суда — берём
                     // их (карточки капчой не закрыты); иначе заглушка: пользователь
                     // введёт код во всплывающем окне (см. UI).
-                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
+                    let instLevel = targetInstanceLevel
                     var rescued = false
                     for kc in knownCards
                         where SudrfHost.moduleHost(kc.domain) == SudrfHost.moduleHost(domain)
@@ -1410,7 +1436,7 @@ public actor MovementService: MovementProviding {
                     // L395-398 уже отсылает сюда. Если кэша нет — stub остаётся
                     // в instances, идёт в персист, UI показывает плашку «нет
                     // связи» + retry (если onRefresh != nil).
-                    let instLevel = target.instanceLevel ?? Self.instanceLevel(forCourtLevel: level)
+                    let instLevel = targetInstanceLevel
                     Self.appendHigherCourtStub(to: &instances, level: instLevel,
                                                courtTitle: higherCourt.title, domain: domain,
                                                transientError: true)
@@ -1426,7 +1452,8 @@ public actor MovementService: MovementProviding {
                     continue
                 }
             }
-            if instances.count == instanceCountBeforeTarget, !targetIncomplete {
+            if instances.count == instanceCountBeforeTarget,
+               relatedCandidates.count == candidateCountBeforeTarget, !targetIncomplete {
                 markHonestZero(domain)
             }
         }
@@ -1490,6 +1517,27 @@ public actor MovementService: MovementProviding {
                                    preferSourceIdentity: kc.sourceURL != nil,
                                    to: &instances, acts: &acts, actBodies: &actBodies)
             else { continue }
+        }
+
+        for candidate in relatedCandidates {
+            guard let uid, let sourceURL = candidate.inst.sourceURL,
+                  MovementTargetBuilder.isVerifiedRelatedCriminalMaterial(
+                    row: candidate.row, card: candidate.card, sourceURL: sourceURL,
+                    court: candidate.court, cartoteka: candidate.cartoteka, branch: branch,
+                    expectedUID: uid, instances: instances, acts: acts)
+            else {
+                markHigherCourtIncomplete(candidate.court.domain)
+                markCoveragePartial(candidate.court.domain)
+                continue
+            }
+            if let locator = nativeLocator(row: candidate.row, court: candidate.court,
+                                           cartoteka: candidate.cartoteka, sourceURL: sourceURL) {
+                coverage.recordLoaded(locator)
+            } else {
+                markCoveragePartial(candidate.court.domain)
+            }
+            _ = Self.appendIfNew(candidate.inst, act: candidate.act, body: candidate.body,
+                                 to: &instances, acts: &acts, actBodies: &actBodies)
         }
 
         // A working direct KnownCard must get a chance to rescue the same
@@ -1599,9 +1647,7 @@ public actor MovementService: MovementProviding {
             parties = p
         }
         parties.inferKindIfNeeded(caseNumber: base.caseNumber)
-        reflectCoverageInAggregateMasks()
-
-        return CaseMovement(uid: uid ?? "", caseNumber: base.caseNumber,
+        var movement = CaseMovement(uid: uid ?? "", caseNumber: base.caseNumber,
                             inForce: base.legalForceDate != nil || baseCard.legalForceDate != nil,
                             instances: sortedInst, complaints: [:],
                             acts: sortedActs, actBodies: actBodies,
@@ -1612,6 +1658,22 @@ public actor MovementService: MovementProviding {
                             executionDocuments: baseCard.executionDocuments.isEmpty
                                 ? nil : baseCard.executionDocuments,
                             sourceRefreshCoverage: coverage.values.isEmpty ? nil : coverage.values)
+        movement = MovementTargetBuilder.normalizeCriminalCassationRoute(
+            in: movement, courtLevel: court.level, branch: branch,
+            cartotekaID: cartoteka.id, caseNumber: base.caseNumber,
+            lowerCourt: baseCard.lowerCourt)
+        if usesSupremeCriminalRoute {
+            for instance in movement.instances where MovementTargetBuilder.isRelatedCriminalReview(instance) {
+                markHigherCourtIncomplete(instance.domain)
+                markCoveragePartial(instance.domain)
+            }
+        }
+        reflectCoverageInAggregateMasks()
+        movement.incompleteHigherCourtDomains = incompleteHigherCourtDomains.isEmpty
+            ? nil : incompleteHigherCourtDomains
+        movement.honestZeroDomains = honestZeroDomains.isEmpty ? nil : honestZeroDomains
+        movement.sourceRefreshCoverage = coverage.values.isEmpty ? nil : coverage.values
+        return movement
     }
 
     /// The court column in an r_juid row is authoritative only together with
@@ -1668,7 +1730,8 @@ public actor MovementService: MovementProviding {
     func instanceFromKnownCard(_ kc: KnownCard)
         async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
-        let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle, level: .district)
+        let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle,
+                               level: Self.courtLevel(forDomain: kc.domain))
         let fetched: (card: CaseCard, sourceURL: URL?)
         if let sourceURL = kc.sourceURL {
             let link = try SudrfCaseCardLink(url: sourceURL)
@@ -1689,6 +1752,9 @@ public actor MovementService: MovementProviding {
         }
         let card = fetched.card
         let number = card.caseNumber ?? kc.caseNumber ?? "—"
+        let sourceCartotekaID = kc.cartotekaID ?? fetched.sourceURL.flatMap {
+            Self.cartoteka(from: $0, court: fetchCourt, caseNumber: number)?.id
+        }
         var act: CaseAct? = nil
         var body: String? = nil
         if let actText = card.actText {
@@ -1709,7 +1775,7 @@ public actor MovementService: MovementProviding {
                                 actID: act?.id,
                                 sourceURL: fetched.sourceURL,
                                 previousRegistration: card.previousRegistration,
-                                sourceEvidence: .init(card: card, cartotekaID: kc.cartotekaID, courtLevel: fetchCourt.level, branch: branch))
+                                sourceEvidence: .init(card: card, cartotekaID: sourceCartotekaID, courtLevel: fetchCourt.level, branch: branch))
         return (inst, act, body)
     }
 

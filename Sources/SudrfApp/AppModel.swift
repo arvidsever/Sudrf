@@ -653,6 +653,7 @@ final class AppRouter: ObservableObject {
         movementError = nil; refreshNote = nil
         if let cached = rec.movement {
             // Сохранённое движение показываем без сетевого запроса при открытии.
+            let cached = MovementDerivation.normalizedMovement(cached, context: rec.context)
             liveMovement = cached
             movementFetchedAt = rec.movementFetchedAt
             let presented = CourtActPresentation.rows(in: cached)
@@ -2561,7 +2562,8 @@ final class AppRouter: ObservableObject {
                 courtTier: presentation?.currentTier
                     ?? (stage == .done ? nil : ctx.flatMap {
                         MovementDerivation.inferredTier(
-                            stage: stage, production: production, context: $0) }),
+                            stage: stage, production: production, context: $0,
+                            movement: rec.movement) }),
                 production: production,
                 isMaterial: MaterialProductionContext.resolve(context: rec.context, movement: rec.movement).isMaterial,
                 // Снимки до v20 хранят стороны через «→» и пересчитаются не сразу.

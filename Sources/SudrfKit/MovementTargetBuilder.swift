@@ -4,6 +4,256 @@ import Foundation
 /// Уровень якоря важнее уровня суда: апелляционная карточка суда субъекта не
 /// должна повторно рассматриваться как первая инстанция этого суда.
 public enum MovementTargetBuilder {
+    /// Whether the principal criminal case's first cassation is routed to the
+    /// Supreme Court under the current UPK route. The index and role must agree;
+    /// an appeal anchor also needs a published link back to a subject/circuit
+    /// first-instance case.
+    public static func usesSupremeCriminalCassationRoute(
+        courtLevel: CourtLevel, branch: CourtBranch, cartotekaID: String?,
+        caseNumber: String?, lowerCourt: LowerCourtReference? = nil,
+        sourceProcessKind: ProcessKind? = nil,
+        sourceProcessKindConflict: Bool? = nil
+    ) -> Bool {
+        guard sourceProcessKindConflict != true,
+              let cartotekaID = cartotekaID?.lowercased(),
+              let caseNumber,
+              let ownInfo = CaseIndexClassifier.classify(
+                caseNumber: caseNumber, courtLevel: courtLevel, branch: branch),
+              ownInfo.processKind == .upk,
+              ownInfo.processKind == (sourceProcessKind ?? ownInfo.processKind)
+        else { return false }
+
+        if courtLevel == .subject, cartotekaID == "u1" {
+            return ownInfo.cardRole == .firstInstanceCase
+        }
+
+        guard courtLevel == .appeal, cartotekaID == "u2",
+              ownInfo.cardRole == .appellateCase,
+            let lowerCourt,
+              let lowerNumber = lowerCourt.caseNumber,
+              let lowerTitle = lowerCourt.courtTitle,
+              hasSubjectCourtTitle(lowerTitle, branch: branch),
+              let lowerInfo = CaseIndexClassifier.classify(
+                caseNumber: lowerNumber, courtLevel: .subject, branch: branch)
+        else { return false }
+        return lowerInfo.processKind == .upk && lowerInfo.cardRole == .firstInstanceCase
+    }
+
+    /// Moves only retry stubs and positively linked KSOYU/VKAS cards out of the
+    /// primary stage. Ambiguous real cards remain untouched for data safety.
+    public static func normalizeCriminalCassationRoute(
+        in movement: CaseMovement,
+        courtLevel: CourtLevel? = nil, branch: CourtBranch? = nil,
+        cartotekaID: String? = nil, caseNumber: String? = nil,
+        lowerCourt: LowerCourtReference? = nil
+    ) -> CaseMovement {
+        let anchorNumber = caseNumber ?? movement.caseNumber
+        let anchors = movement.instances.filter {
+            ($0.level == .first || $0.level == .appeal)
+                && MovementService.samePublishedCaseNumber($0.caseNumber, anchorNumber)
+        }
+        guard anchors.count == 1, let anchor = anchors.first else { return movement }
+        let evidence = anchor.sourceEvidence
+        guard usesSupremeCriminalCassationRoute(
+            courtLevel: courtLevel ?? evidence?.sourceCourtLevel ?? .district,
+            branch: branch ?? evidence?.sourceBranch ?? .general,
+            cartotekaID: cartotekaID ?? evidence?.cartotekaID,
+            caseNumber: caseNumber ?? anchor.caseNumber,
+            lowerCourt: lowerCourt ?? evidence?.lowerCourt,
+            sourceProcessKind: evidence?.ownProcessKind,
+            sourceProcessKindConflict: evidence?.ownProcessKindConflict
+        ) else { return movement }
+
+        var normalized = movement
+        var materialActIDs = Set<String>()
+        for index in normalized.instances.indices {
+            let instance = normalized.instances[index]
+            guard isRelatedCriminalReview(instance) else { continue }
+            if instance.captchaFormURL != nil || instance.transientError == true {
+                normalized.instances[index].level = .material
+                materialActIDs.formUnion(instance.linkedActIDs)
+            } else if let lower = instance.sourceEvidence?.lowerCourt,
+                      isVerifiedCriminalReview(
+                        instance, branch: branch ?? evidence?.sourceBranch ?? .general,
+                        expectedUID: movement.uid),
+                      movement.instances.contains(where: { material in
+                          material.level == .material
+                              && isVerifiedCriminalMaterial(
+                                  material, branch: branch ?? evidence?.sourceBranch ?? .general,
+                                  expectedUID: movement.uid, acts: movement.acts)
+                              && MovementService.samePublishedCaseNumber(material.caseNumber, lower.caseNumber)
+                              && lowerCourtTitleMatches(lower.courtTitle, material)
+                              && lowerCourtDateMatches(lower.decisionDate, material, acts: movement.acts)
+                      }) {
+                normalized.instances[index].level = .material
+                materialActIDs.formUnion(instance.linkedActIDs)
+            }
+        }
+        for index in normalized.acts.indices where materialActIDs.contains(normalized.acts[index].id) {
+            normalized.acts[index].instanceLevel = .material
+        }
+        return normalized
+    }
+
+    /// True for an actual KSOYU/VKAS card that must not be used as the primary
+    /// cassation stage after the source anchor proves the direct UPK route.
+    public static func isRelatedCriminalReview(_ instance: CaseInstance) -> Bool {
+        guard instance.level == .cassation else { return false }
+        let host = SudrfHost.moduleHost(instance.domain)
+        return CourtDirectory.cassationCourts.contains {
+            SudrfHost.moduleHost($0.domain) == host
+        } || host == SudrfHost.moduleHost(CourtDirectory.cassationMilitaryCourt.domain)
+    }
+
+    static func isVerifiedRelatedCriminalMaterial(
+        row: CaseSearchResult, card: CaseCard, sourceURL: URL,
+        court: Court, cartoteka: Cartoteka, branch: CourtBranch,
+        expectedUID: String, instances: [CaseInstance], acts: [CaseAct]
+    ) -> Bool {
+        guard let sourceLink = try? SudrfCaseCardLink(url: sourceURL) else { return false }
+        if let publishedURL = row.cardURL {
+            guard let publishedLink = try? SudrfCaseCardLink(url: publishedURL),
+                  publishedLink == sourceLink else { return false }
+        }
+        guard sourceLink.moduleHost == SudrfHost.moduleHost(court.domain),
+              sourceLink.deloID == cartoteka.deloID,
+              sourceLink.resolvedNew == cartoteka.new,
+              row.caseID == nil || sourceLink.caseID == row.caseID,
+              row.caseUID == nil || sourceLink.caseUID == row.caseUID,
+              (row.caseID != nil && sourceLink.caseID == row.caseID)
+                || (row.caseUID != nil && sourceLink.caseUID == row.caseUID),
+              let number = card.caseNumber,
+              MovementService.sameDisplayedCaseNumber(row.caseNumber, number),
+              CartotekaRegistry.prefixMatches(cartoteka, caseNumber: number),
+              JudicialUIDObservation.validity(of: expectedUID) == .valid,
+              MovementService.normalizedJudicialUID(card.uid)
+                == MovementService.normalizedJudicialUID(expectedUID),
+              JudicialUIDObservation.validity(of: card.uid) == .valid,
+              card.processKindConflict != true,
+              card.processKind == nil || card.processKind == .upk,
+              let info = CaseIndexClassifier.classify(
+                caseNumber: number, courtLevel: .cassation, branch: branch),
+              info.processKind == .upk,
+              info.cardRole == .cassationComplaint || info.cardRole == .cassationCase,
+              let lower = card.lowerCourt,
+              let lowerNumber = lower.caseNumber
+        else { return false }
+        return instances.contains { material in
+            material.level == .material
+                && isVerifiedCriminalMaterial(material, branch: branch,
+                                              expectedUID: expectedUID, acts: acts)
+                && MovementService.samePublishedCaseNumber(material.caseNumber, lowerNumber)
+                && lowerCourtTitleMatches(lower.courtTitle, material)
+                && lowerCourtDateMatches(lower.decisionDate, material, acts: acts)
+        }
+    }
+
+    private static func isVerifiedCriminalReview(_ instance: CaseInstance,
+                                                  branch: CourtBranch,
+                                                  expectedUID: String) -> Bool {
+        guard let evidence = instance.sourceEvidence,
+              evidence.ownProcessKindConflict != true,
+              evidence.sourceCourtLevel == .cassation,
+              evidence.sourceBranch == branch,
+              evidence.ownProcessKind == nil || evidence.ownProcessKind == .upk,
+              JudicialUIDObservation.validity(of: expectedUID) == .valid,
+              JudicialUIDObservation.validity(of: evidence.judicialUID) == .valid,
+              MovementService.normalizedJudicialUID(evidence.judicialUID)
+                == MovementService.normalizedJudicialUID(expectedUID),
+              let cartotekaID = evidence.cartotekaID,
+              let cartoteka = CartotekaRegistry.find(level: .cassation, id: cartotekaID),
+              let info = CaseIndexClassifier.classify(
+                caseNumber: instance.caseNumber, courtLevel: .cassation, branch: branch),
+              info.processKind == .upk,
+              info.cardRole == .cassationComplaint || info.cardRole == .cassationCase,
+              CartotekaRegistry.prefixMatches(cartoteka, caseNumber: instance.caseNumber),
+              let url = instance.sourceURL,
+              let link = try? SudrfCaseCardLink(url: url),
+              link.moduleHost == SudrfHost.moduleHost(instance.domain),
+              link.deloID == cartoteka.deloID,
+              link.resolvedNew == cartoteka.new,
+              link.caseID != nil || link.caseUID != nil
+        else { return false }
+        if branch == .general {
+            return CourtDirectory.cassationCourts.contains {
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(instance.domain)
+            }
+        }
+        return SudrfHost.moduleHost(CourtDirectory.cassationMilitaryCourt.domain)
+            == SudrfHost.moduleHost(instance.domain)
+    }
+
+    private static func isVerifiedCriminalMaterial(_ instance: CaseInstance,
+                                                    branch: CourtBranch,
+                                                    expectedUID: String,
+                                                    acts: [CaseAct]) -> Bool {
+        guard let evidence = instance.sourceEvidence,
+              evidence.ownProcessKindConflict != true,
+              let observedUID = evidence.judicialUID,
+              JudicialUIDObservation.validity(of: observedUID) == .valid,
+              MovementService.normalizedJudicialUID(evidence.judicialUID)
+                == MovementService.normalizedJudicialUID(expectedUID),
+              let level = evidence.sourceCourtLevel,
+              let cartotekaID = evidence.cartotekaID,
+              let cartoteka = CartotekaRegistry.find(level: level, id: cartotekaID),
+              let info = CaseIndexClassifier.classify(
+                caseNumber: instance.caseNumber, courtLevel: level, branch: branch),
+              info.processKind == .upk, info.cardRole.isMaterial,
+              CartotekaRegistry.prefixMatches(cartoteka, caseNumber: instance.caseNumber),
+              evidence.ownProcessKind == nil || evidence.ownProcessKind == .upk,
+              evidence.sourceBranch == branch,
+              let url = instance.sourceURL,
+              let link = try? SudrfCaseCardLink(url: url),
+              SudrfHost.moduleHost(link.host) == SudrfHost.moduleHost(instance.domain),
+              link.caseID != nil || link.caseUID != nil,
+              link.deloID == cartoteka.deloID,
+              link.resolvedNew == cartoteka.new
+        else { return false }
+        return true
+    }
+
+    private static func lowerCourtTitleMatches(_ title: String?, _ material: CaseInstance) -> Bool {
+        guard let title else { return false }
+        func normalized(_ value: String) -> String {
+            value.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .filter { $0.isLetter || $0.isNumber }
+        }
+        let candidate = normalized(title)
+        guard candidate.count >= 12 else { return false }
+        var authoritativeTitles = [material.court]
+        let host = SudrfHost.moduleHost(material.domain)
+        authoritativeTitles += CourtDirectory.subjectCourts
+            .filter { SudrfHost.moduleHost($0.domain) == host }.map(\.title)
+        authoritativeTitles += CourtDirectory.appealCourts
+            .filter { SudrfHost.moduleHost($0.domain) == host }.map(\.title)
+        authoritativeTitles += CourtDirectory.cassationCourts
+            .filter { SudrfHost.moduleHost($0.domain) == host }.map(\.title)
+        authoritativeTitles += CourtDirectory.okrugMilitaryCourts
+            .filter { SudrfHost.moduleHost($0.domain) == host }.map(\.title)
+        authoritativeTitles += [CourtDirectory.appellateMilitaryCourt,
+                                CourtDirectory.cassationMilitaryCourt]
+            .filter { SudrfHost.moduleHost($0.domain) == host }.map(\.title)
+        return authoritativeTitles.contains { normalized($0) == candidate }
+    }
+
+    private static func lowerCourtDateMatches(_ date: String?, _ material: CaseInstance,
+                                              acts: [CaseAct]) -> Bool {
+        guard let date else { return true }
+        let expected = MovementService.dateSortKey(date)
+        guard expected != Int.max else { return false }
+        let finalActTitles: Set<String> = [
+            "определение", "постановление", "решение", "приговор",
+            "апелляционное определение", "апелляционное постановление",
+            "кассационное определение", "определение суда кассационной инстанции"
+        ]
+        let actualDates = [material.sourceEvidence?.decisionDate].compactMap { $0 }
+            + acts.filter {
+                material.linkedActIDs.contains($0.id)
+                    && finalActTitles.contains($0.title.lowercased())
+            }.map(\.date)
+        return actualDates.contains { MovementService.dateSortKey($0) == expected }
+    }
+
     /// Точные цели, когда одной пары «звено + суффикс картотеки» недостаточно.
     /// Для КоАП учитываются три картотеки суда субъекта и происхождение УИД.
     public static func targets(branch: CourtBranch, courtLevel: CourtLevel,
@@ -91,6 +341,18 @@ public enum MovementTargetBuilder {
             break
         }
         return domains
+    }
+
+    private static func hasSubjectCourtTitle(_ title: String, branch: CourtBranch) -> Bool {
+        let normalized = title.lowercased().filter { $0.isLetter }
+        guard !normalized.isEmpty else { return false }
+        let titles = branch == .general
+            ? CourtDirectory.subjectCourts.map(\.title)
+            : CourtDirectory.okrugMilitaryCourts.map(\.title)
+        return titles.contains { candidate in
+            let candidate = candidate.lowercased().filter { $0.isLetter }
+            return normalized == candidate
+        }
     }
 
     /// Не-КоАП цели мирового участка: районная апелляция, КСОЮ до 2026 и

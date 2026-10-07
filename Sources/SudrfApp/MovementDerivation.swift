@@ -174,8 +174,9 @@ enum MovementDerivation {
         return parties
     }
 
-    static func snapshot(from mv: CaseMovement, context: MovementContext,
+    static func snapshot(from sourceMovement: CaseMovement, context: MovementContext,
                          today: Date = DateUtil.today) -> CaseSnapshot {
+        let mv = normalizedMovement(sourceMovement, context: context)
 
         let production = MaterialProductionContext.resolve(context: context, movement: mv).production
 
@@ -286,21 +287,64 @@ enum MovementDerivation {
     /// Пересчёт представляемой стадии по сохранённому движению и снимку. Поля
     /// `CaseSnapshot` остаются обратно совместимыми и служат fallback, если
     /// полного движения у старой записи нет.
-    static func lifecyclePresentation(from mv: CaseMovement, snapshot: CaseSnapshot,
+    static func lifecyclePresentation(from sourceMovement: CaseMovement, snapshot: CaseSnapshot,
                                       context: MovementContext?,
                                       today: Date = DateUtil.today) -> CaseLifecyclePresentation {
-        lifecyclePresentation(from: mv, sessions: snapshot.sessions,
+        let mv = normalizedMovement(sourceMovement, context: context)
+        let sessions = normalizedSessions(snapshot.sessions, source: sourceMovement,
+                                          normalized: mv, context: context)
+        return lifecyclePresentation(from: mv, sessions: sessions,
                               deadlines: snapshot.deadlines,
                               assessments: snapshot.deadlineAssessments ?? [],
                               context: context, today: today)
     }
 
-    private static func lifecyclePresentation(from mv: CaseMovement,
-                                              sessions: [StoredSession],
+    static func normalizedMovement(_ movement: CaseMovement,
+                                   context: MovementContext?) -> CaseMovement {
+        MovementTargetBuilder.normalizeCriminalCassationRoute(
+            in: movement, courtLevel: context?.courtLevel, branch: context?.branch,
+            cartotekaID: context?.cartotekaId, caseNumber: context?.caseNumber)
+    }
+
+    /// Old snapshots may still label a cached related-court card's sessions
+    /// as cassation. Reclassify only sessions tied to one exact source card.
+    static func normalizedSessions(_ sessions: [StoredSession],
+                                   source: CaseMovement, normalized: CaseMovement,
+                                   context: MovementContext?) -> [StoredSession] {
+        let changed = Set(zip(source.instances, normalized.instances).enumerated().compactMap {
+            $0.element.0.level == .cassation && $0.element.1.level == .material
+                ? $0.offset : nil
+        })
+        guard !changed.isEmpty else { return sessions }
+        return sessions.map { session in
+            guard session.level == .cassation else { return session }
+            let matches = source.instances.indices.filter { index in
+                let instance = source.instances[index]
+                if let id = session.sourceCardID, let context {
+                    return CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context) == id
+                }
+                guard let number = session.caseNumber else { return false }
+                return CaseNumberPresentation.primary(number).lowercased()
+                    == CaseNumberPresentation.primary(instance.caseNumber).lowercased()
+                    && CaseLifecycleResolver.courtTitlesAgree(
+                        session.court, instance.court, domain: instance.domain)
+            }
+            guard matches.count == 1, changed.contains(matches[0])
+            else { return session }
+            var result = session
+            result.levelRaw = CaseInstance.Level.material.rawValue
+            return result
+        }
+    }
+
+    private static func lifecyclePresentation(from sourceMovement: CaseMovement,
+                                              sessions sourceSessions: [StoredSession],
                                               deadlines: [StoredDeadline],
                                               assessments: [DeadlineRuleAssessment],
                                               context: MovementContext?,
                                               today: Date) -> CaseLifecyclePresentation {
+        let (mv, sessions) = lifecycleMovementAndSessions(
+            sourceMovement, sessions: sourceSessions, context: context)
         let mainDeadlines = deadlines.filter { deadlineScopeKey($0) == nil }
         let production = MaterialProductionContext.resolve(context: context, movement: mv).production
         let inForce = CaseLifecycleResolver.effectiveLegalForce(
@@ -534,6 +578,18 @@ enum MovementDerivation {
             }
         }
 
+        let inferred = inferredTier(stage: resolution.stage, production: production,
+                                    context: context, movement: mv)
+        let currentTier: CourtTier? = if resolution.isCompleted {
+            nil
+        } else if resolution.stage == .cassation,
+                  resolution.currentInstance?.level != .cassation,
+                  resolution.currentInstance?.level != .vsCassation,
+                  inferred == .supreme {
+            .supreme
+        } else {
+            courtTier(for: resolution.currentInstance, context: context) ?? inferred
+        }
         return CaseLifecyclePresentation(
             inForce: inForce,
             stage: resolution.stage,
@@ -544,9 +600,7 @@ enum MovementDerivation {
             nextChip: nextChip,
             nextEventDate: nextEventDate,
             steps: resolution.steps,
-            currentTier: resolution.isCompleted ? nil : courtTier(
-                for: resolution.currentInstance, context: context)
-                ?? inferredTier(stage: resolution.stage, production: production, context: context),
+            currentTier: currentTier,
             currentReviewNumber: currentReviewNumber,
             nextEventCourt: nextEventCourt,
             nextEventHelp: nextEventHelp)
@@ -554,10 +608,43 @@ enum MovementDerivation {
 
     static func effectiveLegalForce(from movement: CaseMovement,
                                     context: MovementContext?) -> Bool {
+        let normalized = normalizedMovement(movement, context: context)
+        let (relevant, _) = lifecycleMovementAndSessions(
+            normalized, sessions: [], context: context)
         let production = MaterialProductionContext.resolve(
-            context: context, movement: movement).production
+            context: context, movement: relevant).production
         return CaseLifecycleResolver.effectiveLegalForce(
-            in: movement, production: production)
+            in: relevant, production: production)
+    }
+
+    /// Keep an unverified KSOYU/VKAS card in the cached movement, while
+    /// excluding it from the principal case's stage and event selection.
+    private static func lifecycleMovementAndSessions(
+        _ movement: CaseMovement, sessions: [StoredSession],
+        context: MovementContext?
+    ) -> (CaseMovement, [StoredSession]) {
+        guard let context,
+              usesSupremeCriminalCassationRoute(
+                production: MaterialProductionContext.resolve(
+                    context: context, movement: movement).production,
+                context: context, movement: movement)
+        else { return (movement, sessions) }
+        let excluded = movement.instances.filter {
+            MovementTargetBuilder.isRelatedCriminalReview($0)
+        }
+        guard !excluded.isEmpty else { return (movement, sessions) }
+        var filtered = movement
+        filtered.instances.removeAll(where: MovementTargetBuilder.isRelatedCriminalReview)
+        let usedActIDs = Set(filtered.instances.flatMap(\.linkedActIDs))
+        let excludedActIDs = Set(excluded.flatMap(\.linkedActIDs))
+        filtered.acts.removeAll {
+            excludedActIDs.contains($0.id) && !usedActIDs.contains($0.id)
+        }
+        let relevantSessions = sessions.filter { session in
+            let sources = sourceInstances(for: session, movement: movement, context: context)
+            return sources.isEmpty || !sources.allSatisfy(MovementTargetBuilder.isRelatedCriminalReview)
+        }
+        return (filtered, relevantSessions)
     }
 
     /// Короткое, локализованное объяснение fail-closed результата. Здесь нет
@@ -665,7 +752,14 @@ enum MovementDerivation {
     private static func sourceInstance(for session: StoredSession,
                                        movement: CaseMovement,
                                        context: MovementContext?) -> CaseInstance? {
-        let matches = movement.instances.filter { instance in
+        let matches = sourceInstances(for: session, movement: movement, context: context)
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    private static func sourceInstances(for session: StoredSession,
+                                        movement: CaseMovement,
+                                        context: MovementContext?) -> [CaseInstance] {
+        movement.instances.filter { instance in
             guard instance.level == session.level else { return false }
             if let sourceCardID = session.sourceCardID {
                 guard let context else { return false }
@@ -680,7 +774,6 @@ enum MovementDerivation {
             return CaseLifecycleResolver.courtTitlesAgree(
                 session.court, instance.court, domain: instance.domain)
         }
-        return matches.count == 1 ? matches.first : nil
     }
 
     private static func savedSourceCardTitle(for instance: CaseInstance,
@@ -780,7 +873,8 @@ enum MovementDerivation {
     /// Когда портал сообщил возврат, но карточка целевого суда ещё не найдена,
     /// дело остаётся активным и получает ожидаемое звено по процессуальному пути.
     static func inferredTier(stage: CaseStageKind, production: ProductionType?,
-                             context: MovementContext?) -> CourtTier? {
+                             context: MovementContext?,
+                             movement: CaseMovement? = nil) -> CourtTier? {
         guard let context else { return nil }
         switch stage {
         case .done: return nil
@@ -795,6 +889,10 @@ enum MovementDerivation {
             case .cassation: return .supreme
             }
         case .cassation:
+            if usesSupremeCriminalCassationRoute(
+                production: production, context: context, movement: movement) {
+                return .supreme
+            }
             switch context.courtLevel {
             case .cassation: return .supreme
             default: return .cassation
@@ -802,6 +900,26 @@ enum MovementDerivation {
         case .supervisory:
             return production == .koap ? .cassation : .supreme
         }
+    }
+
+    private static func usesSupremeCriminalCassationRoute(
+        production: ProductionType?, context: MovementContext,
+        movement: CaseMovement?) -> Bool {
+        guard production == .crim else { return false }
+        let baseCandidates = movement?.instances.filter { instance in
+            instance.level == context.baseInstanceLevel
+                && SudrfHost.moduleHost(instance.domain)
+                    == SudrfHost.moduleHost(context.displayDomain)
+                && CaseNumberPresentation.primary(instance.caseNumber).lowercased()
+                    == CaseNumberPresentation.primary(context.caseNumber).lowercased()
+        } ?? []
+        let evidence = baseCandidates.count == 1 ? baseCandidates[0].sourceEvidence : nil
+        return MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: context.courtLevel, branch: context.branch,
+            cartotekaID: evidence?.cartotekaID ?? context.cartotekaId,
+            caseNumber: context.caseNumber, lowerCourt: evidence?.lowerCourt,
+            sourceProcessKind: evidence?.ownProcessKind,
+            sourceProcessKindConflict: evidence?.ownProcessKindConflict == true)
     }
 
     /// Совместимый вход для legacy fallback без рассчитанного вида производства.

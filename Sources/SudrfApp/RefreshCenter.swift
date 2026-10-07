@@ -1580,8 +1580,52 @@ final class RefreshCenter: ObservableObject {
                 from: merged, cached: rec.movement, fresh: mv)
             merged.caseNumber = projectionContext.caseNumber
         }
-        let oldMovement = rec.movement
-        let oldSnapshot = rec.snapshot
+        var oldMovement = rec.movement.map {
+            MovementDerivation.normalizedMovement($0, context: projectionContext)
+        }
+        let correctsCriminalRoute = projectionContext.courtLevel != .cassation
+            && MovementDerivation.inferredTier(
+                stage: .cassation, production: .crim,
+                context: projectionContext, movement: oldMovement) == .supreme
+        if correctsCriminalRoute, var baseline = oldMovement {
+            // Fresh proof can clarify a saved card's role without changing any
+            // court facts. Align only that role in the comparison baseline.
+            var materialActIDs = Set<String>()
+            for index in baseline.instances.indices {
+                let previous = baseline.instances[index]
+                guard MovementTargetBuilder.isRelatedCriminalReview(previous),
+                      previous.sourceURL != nil,
+                      merged.instances.contains(where: {
+                          $0.level == .material && $0.sourceURL == previous.sourceURL
+                              && CaseNumberPresentation.primary($0.caseNumber).lowercased()
+                                == CaseNumberPresentation.primary(previous.caseNumber).lowercased()
+                      }) else { continue }
+                baseline.instances[index].level = .material
+                materialActIDs.formUnion(previous.linkedActIDs)
+            }
+            for index in baseline.acts.indices where materialActIDs.contains(baseline.acts[index].id) {
+                baseline.acts[index].instanceLevel = .material
+            }
+            oldMovement = baseline
+        }
+        let priorInForce = rec.snapshot?.inForce
+        var oldSnapshot = rec.snapshot
+        if let source = rec.movement, let oldMovement, var baseline = oldSnapshot {
+            // A corrected route is a local interpretation, not a new court fact.
+            // Normalize only the affected source levels in the badge baseline.
+            if source != oldMovement {
+                baseline.sessions = MovementDerivation.normalizedSessions(
+                    baseline.sessions, source: source, normalized: oldMovement,
+                    context: projectionContext)
+                baseline.actsFingerprint = MovementDerivation.snapshot(
+                    from: oldMovement, context: projectionContext).actsFingerprint
+            }
+            if correctsCriminalRoute {
+                baseline.inForce = MovementDerivation.effectiveLegalForce(
+                    from: oldMovement, context: projectionContext)
+            }
+            oldSnapshot = baseline
+        }
         let newSnap = MovementDerivation.preservingConfirmedDeadlines(
             MovementDerivation.snapshot(from: merged, context: projectionContext), old: oldSnapshot,
             preserveActiveProposedWhenMissing: !isComplete,
@@ -1670,7 +1714,12 @@ final class RefreshCenter: ObservableObject {
                 publishedMovement = merged
             }
             persisted.sourceRefreshAttempt = attempt
-            let journal = try store.requiredEventJournal(for: persisted)
+            var journal = try store.requiredEventJournal(for: persisted)
+            if correctsCriminalRoute, let oldMovement,
+               journal.semanticBaselines?.global?.inForce == priorInForce {
+                journal.semanticBaselines?.global?.inForce = MovementDerivation.effectiveLegalForce(
+                    from: oldMovement, context: projectionContext)
+            }
             let finalSnapshot = persisted.snapshot ?? newSnap
             let freshSnapshot = MovementDerivation.snapshot(from: mv, context: projectionContext)
             let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)

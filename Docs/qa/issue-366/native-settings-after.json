@@ -1,0 +1,44 @@
+[
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "Обновление",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  },
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "Поиск",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  },
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "CAPTCHA",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  },
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "AI и приватность",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  },
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "Экспериментальные",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  },
+  {
+    "contentHeight" : 470,
+    "height" : 510,
+    "title" : "Экспериментальные",
+    "toolbarStyle" : 4,
+    "topInset" : 40
+  }
+]

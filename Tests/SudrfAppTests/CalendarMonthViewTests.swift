@@ -58,6 +58,7 @@ final class CalendarMonthViewTests: XCTestCase {
                         }
                     }
                     await renderNavigation(hosted.view)
+                    try frames.assertPeriodFits(DateUtil.monthTitle(fixture.router.calMonth))
                     assertFrames(try frames.ordered(), equal: monthFrames,
                                  context: "month=\(month), count=\(count), width=\(width)")
                 }
@@ -70,6 +71,7 @@ final class CalendarMonthViewTests: XCTestCase {
             for date in ["27.07.2026", "03.08.2026", "28.12.2026", "04.01.2027"] {
                 fixture.router.calWeekStart = try XCTUnwrap(DateUtil.parse(date))
                 await renderNavigation(hosted.view)
+                try frames.assertPeriodFits(DateUtil.weekTitle(starting: fixture.router.calWeekStart))
                 assertFrames(try frames.ordered(), equal: weekFrames,
                              context: "week=\(date), width=\(width)")
             }
@@ -82,16 +84,26 @@ final class CalendarMonthViewTests: XCTestCase {
 
         func expectChangedBounds() -> XCTestExpectation {
             let expectation = XCTestExpectation(description: "New mode's actual navigation bounds")
-            pendingChange = (values, expectation)
+            pendingChange = (values.filter { $0.key != "period" }, expectation)
             return expectation
         }
 
         func update(_ bounds: [String: CGRect]) {
             values = bounds
-            if let pendingChange, !bounds.isEmpty, bounds != pendingChange.previous {
+            let navigation = bounds.filter { $0.key != "period" }
+            if let pendingChange, !navigation.isEmpty, navigation != pendingChange.previous {
                 self.pendingChange = nil
                 pendingChange.expectation.fulfill()
             }
+        }
+
+        func assertPeriodFits(_ title: String) throws {
+            let frame = try XCTUnwrap(values["period"])
+            let fullWidth = (title as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 22, weight: .bold)
+            ]).width
+            XCTAssertLessThanOrEqual(fullWidth * 0.75, frame.width + 0.5,
+                                     "Full period, including its year, must fit: \(title)")
         }
 
         func ordered() throws -> [CGRect] {

@@ -40,3 +40,17 @@ CI на macOS 26 выявил гонку в тесте: после смены р
 Повторная целевая проверка: пройдена без пропуска, 3,418 с; `/private/tmp/sudrf-368-ci-fix-focused.log`. Изменён только тест; production-код и результат канонической Debug-сборки сохранены.
 
 Полный повторный набор после исправления синхронизации: 1931 тест, 20 предусмотренных пропусков, 0 ошибок; `/private/tmp/sudrf-368-ci-fix-full.log`.
+
+## Full period year and minimum width
+
+Week titles now include their own year within a single year and retain both years across December/January. Month and week titles allow a minimum scale of 75%, with explicit full help and VoiceOver labels.
+
+The geometry regression also measures the actual title allocation through an anchor preference. The full title at 22 pt bold, scaled no lower than 75%, must fit the allocation at every tested width, including 760 pt. All 12 months, overlap counter lengths and month/year boundary weeks are covered. The mode-switch barrier still observes only navigation button bounds.
+
+Focused verification: 20 tests, zero failures or skips; `/private/tmp/sudrf-368-year-focused.log`. Font appearance remains subject to the existing manual visual acceptance gate.
+
+Final year-label verification:
+
+- Full suite: 1932 tests, 20 expected skips, zero failures; `/private/tmp/sudrf-368-year-full.log`.
+- Calendar profile: 89 tests, 6 expected skips, zero failures; `/private/tmp/sudrf-368-year-calendar.log`.
+- XcodeGen and canonical Sudrf Debug build: `BUILD SUCCEEDED`; `/private/tmp/sudrf-368-year-xcodebuild.log`.

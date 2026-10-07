@@ -129,7 +129,7 @@ struct ProductionCalendarDayPresentation: Equatable {
     var isConfirmed: Bool { kind != nil }
 }
 
-// Bounds of the actual controls, also consumed by the offscreen geometry regression.
+// Actual header bounds, also consumed by the offscreen geometry regression.
 struct CalendarNavigationBounds: PreferenceKey {
     static var defaultValue: [String: Anchor<CGRect>] { [:] }
     static func reduce(value: inout [String: Anchor<CGRect>],
@@ -300,9 +300,11 @@ struct CalendarScreen: View {
                            onNext: { router.calStep(1) })
                     .fixedSize()
                 Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
-                    .lineLimit(1)
+                    .lineLimit(1).minimumScaleFactor(0.75)
                     .help(DateUtil.monthTitle(router.calMonth))
+                    .accessibilityLabel(DateUtil.monthTitle(router.calMonth))
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["period": $0] }
                 if !model.overlapDayList.isEmpty {
                     overlapCounterButton(model).fixedSize()
                 }
@@ -1253,9 +1255,11 @@ struct CalendarScreen: View {
                         .fixedSize()
                     Text(DateUtil.weekTitle(starting: router.calWeekStart))
                         .font(.system(size: 22, weight: .bold))
-                        .lineLimit(1)
+                        .lineLimit(1).minimumScaleFactor(0.75)
                         .help(DateUtil.weekTitle(starting: router.calWeekStart))
+                        .accessibilityLabel(DateUtil.weekTitle(starting: router.calWeekStart))
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["period": $0] }
                     ViewThatFits(in: .horizontal) {
                         legend.fixedSize()
                         Color.clear.frame(width: 0, height: 0)

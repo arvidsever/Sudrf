@@ -126,17 +126,19 @@ private struct FilterPane: View {
                         .labelsHidden()
                     }
                 }
-                GridRow {
-                    FormLabel("Суд")
-                    Picker("", selection: Binding(get: { model.selectedCourtID },
-                                                  set: { model.selectFromPicker(.court($0)) })) {
-                        Text("— выберите —").tag("")
-                        ForEach(model.courts, id: \.id) { court in
-                            Text(court.title).tag(court.id)
+                if model.tier != .supreme {
+                    GridRow {
+                        FormLabel("Суд")
+                        Picker("", selection: Binding(get: { model.selectedCourtID },
+                                                      set: { model.selectFromPicker(.court($0)) })) {
+                            Text("— выберите —").tag("")
+                            ForEach(model.courts, id: \.id) { court in
+                                Text(court.title).tag(court.id)
+                            }
                         }
+                        .labelsHidden()
+                        .disabled(model.courts.isEmpty)
                     }
-                    .labelsHidden()
-                    .disabled(model.courts.isEmpty)
                 }
                 GridRow {
                     FormLabel("Картотека")

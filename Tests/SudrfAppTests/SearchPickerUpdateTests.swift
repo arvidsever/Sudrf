@@ -77,6 +77,31 @@ final class SearchPickerUpdateTests: XCTestCase {
         XCTAssertEqual(model.results.count, 1)
     }
 
+    func testSupremeRoundTripClearsCourtAndRestoresRegionalScope() async {
+        let model = SearchModel()
+        model.selectFromPicker(.tier(.subject))
+        model.selectFromPicker(.region("77"))
+        await drainPicker()
+        await model.resolveCourts()
+        XCTAssertFalse(model.selectedCourtID.isEmpty)
+        XCTAssertEqual(model.region, "77")
+
+        model.selectFromPicker(.tier(.supreme))
+        await drainPicker()
+        await model.resolveCourts()
+        XCTAssertTrue(model.courts.isEmpty)
+        XCTAssertTrue(model.selectedCourtID.isEmpty)
+        XCTAssertTrue(model.region.isEmpty)
+        XCTAssertFalse(model.usesRegion)
+
+        model.selectFromPicker(.tier(.subject))
+        await drainPicker()
+        await model.resolveCourts()
+        XCTAssertEqual(model.region, "11")
+        XCTAssertEqual(model.selectedCourt?.seatRegionCode, "11")
+        XCTAssertTrue(model.usesRegion)
+    }
+
     private func drainPicker() async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }

@@ -1221,6 +1221,7 @@ final class SearchModel: ObservableObject {
         generation: Int,
         resultID: String
     ) async -> CaseMovement? {
+        let initial = MovementDerivation.normalizedMovement(initial, context: currentContext())
         guard initial.instances.contains(where: { $0.captchaFormURL != nil }),
               let solver = captchaSolver, let settings = captchaSettings,
               settings.isEffectivelyEnabled else { return initial }

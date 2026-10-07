@@ -27,6 +27,7 @@ public enum MovementCachePolicy {
     /// обратном порядке (A14 follow-up: `instances.remove(at:)` внутри
     /// `enumerated()` инвалидирует индексы).
     public static func merge(fresh: CaseMovement, cached: CaseMovement?) -> CaseMovement {
+        let fresh = MovementTargetBuilder.normalizeCriminalCassationRoute(in: fresh)
         guard let cached else { return fresh }
         var instances = fresh.instances
         var acts = fresh.acts
@@ -363,7 +364,7 @@ public enum MovementCachePolicy {
         out.executionDocuments = executionDocuments
         out.incompleteHigherCourtDomains = nil
         out.honestZeroDomains = nil
-        return out
+        return MovementTargetBuilder.normalizeCriminalCassationRoute(in: out)
     }
 
     /// Версия для персиста: оставшиеся заглушки капчи вырезаются — transient
@@ -373,8 +374,8 @@ public enum MovementCachePolicy {
     /// UI увидит «дело исчезло», а не «нет связи»). Акты не трогаются
     /// (у заглушек actID == nil).
     public static func stripped(forPersist mv: CaseMovement) -> CaseMovement {
-        var out = mv
-        out.instances = mv.instances.filter { $0.captchaFormURL == nil }
+        var out = MovementTargetBuilder.normalizeCriminalCassationRoute(in: mv)
+        out.instances.removeAll { $0.captchaFormURL != nil }
         out.incompleteHigherCourtDomains = nil
         out.honestZeroDomains = nil
         out.sourceRefreshCoverage = nil

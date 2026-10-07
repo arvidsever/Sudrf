@@ -1295,6 +1295,110 @@ final class MovementDerivationTests: XCTestCase {
         }
     }
 
+    func testSubjectCriminalCassationRouteDoesNotPromoteUnverifiedKSOYUCard() {
+        let context = MovementContext(
+            branchRaw: "general", region: "Самарская область",
+            searchDomain: "oblsud--sam.sudrf.ru", displayDomain: "oblsud.sam.sudrf.ru",
+            courtTitle: "Самарский областной суд", courtLevelRaw: "subject",
+            courtCode: "63OS0000", cartotekaId: "u1", cartotekaLevelRaw: "subject",
+            caseNumber: "2-12/2025")
+        let first = CaseInstance(
+            level: .first, court: "Самарский областной суд", caseNumber: "2-12/2025",
+            judge: nil, domain: context.displayDomain, foundByUID: false, result: nil,
+            sessions: [CaseSession(date: "01.03.2026", event: "Судебное заседание")])
+        let appeal = CaseInstance(
+            level: .appeal, court: "Четвёртый апелляционный суд общей юрисдикции",
+            caseNumber: "55-584/2025", judge: nil, domain: "4ap.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "10.04.2026", event: "Регистрация производства")])
+        let unverified = CaseInstance(
+            level: .cassation, court: "Шестой кассационный суд общей юрисдикции",
+            caseNumber: "7У-101/2026", judge: nil, domain: "6kas.sudrf.ru",
+            foundByUID: true, result: nil,
+            sessions: [CaseSession(date: "10.05.2026", time: "10:00",
+                                   event: "Судебное заседание")])
+        let source = CaseMovement(
+            uid: "63OS0000-01-2024-002224-56", caseNumber: "2-12/2025",
+            inForce: false, instances: [first, appeal, unverified],
+            complaints: [:], acts: [])
+        let snap = MovementDerivation.snapshot(from: source, context: context, today: today)
+        let presentation = MovementDerivation.lifecyclePresentation(
+            from: source, snapshot: snap, context: context, today: today)
+        XCTAssertEqual(snap.stageRaw, CaseStageKind.appeal.rawValue)
+        XCTAssertEqual(presentation.currentReviewNumber, "55-584/2025")
+        XCTAssertEqual(presentation.currentTier, .appeal)
+        XCTAssertNotEqual(presentation.nextEvent, "заседание 10.05, 10:00")
+        XCTAssertEqual(snap.sessions.count, 3) // source facts remain in the snapshot
+
+        var oldSnapshot = snap
+        oldSnapshot.sessions[2].levelRaw = CaseInstance.Level.cassation.rawValue
+        let reopened = MovementDerivation.lifecyclePresentation(
+            from: source, snapshot: oldSnapshot, context: context, today: today)
+        XCTAssertEqual(reopened.stage, .appeal)
+        XCTAssertEqual(reopened.currentReviewNumber, "55-584/2025")
+
+        var ambiguous = source
+        var otherRound = unverified
+        otherRound.caseNumber = "77-102/2026"
+        ambiguous.instances.append(otherRound)
+        oldSnapshot.sessions[2].caseNumber = nil
+        oldSnapshot.sessions[2].sourceCardID = nil
+        let legacy = MovementDerivation.lifecyclePresentation(
+            from: ambiguous, snapshot: oldSnapshot, context: context, today: today)
+        XCTAssertEqual(legacy.stage, .appeal)
+        XCTAssertNotEqual(legacy.nextEventCourt, unverified.court)
+        XCTAssertNotEqual(legacy.nextEventDate, DateUtil.parse("10.05.2026"))
+    }
+
+    func testExpectedSupremeTierRequiresProvenPrimaryCriminalRoute() {
+        func context(branch: CourtBranch, cartoteka: String, number: String) -> MovementContext {
+            MovementContext(
+                branchRaw: branch.rawValue, region: "Самарская область",
+                searchDomain: "oblsud--sam.sudrf.ru", displayDomain: "oblsud.sam.sudrf.ru",
+                courtTitle: "Самарский областной суд", courtLevelRaw: "subject",
+                courtCode: "63OS0000", cartotekaId: cartoteka,
+                cartotekaLevelRaw: "subject", caseNumber: number)
+        }
+        XCTAssertEqual(MovementDerivation.inferredTier(
+            stage: .cassation, production: .crim,
+            context: context(branch: .general, cartoteka: "u1", number: "2-12/2025")), .supreme)
+        XCTAssertEqual(MovementDerivation.inferredTier(
+            stage: .cassation, production: .crim,
+            context: context(branch: .military, cartoteka: "u1", number: "2-475/2025")), .supreme)
+        XCTAssertEqual(MovementDerivation.inferredTier(
+            stage: .cassation, production: .civil,
+            context: context(branch: .general, cartoteka: "g1", number: "2-12/2025")), .cassation)
+        XCTAssertEqual(MovementDerivation.inferredTier(
+            stage: .cassation, production: .crim,
+            context: context(branch: .general, cartoteka: "u2", number: "55К-241/2025")), .cassation)
+    }
+
+    func testAppealAnchorRequiresPublishedSubjectOriginForSupremeTier() {
+        for (branch, lowerTitle, domain) in [
+            ("general", "Самарский областной суд", "4ap.sudrf.ru"),
+            ("military", "2-й Западный окружной военный суд", "vap.sudrf.ru")
+        ] {
+            let context = MovementContext(
+                branchRaw: branch, region: "", searchDomain: domain, displayDomain: domain,
+                courtTitle: "Апелляционный суд", courtLevelRaw: "appeal", courtCode: "",
+                cartotekaId: "u2", cartotekaLevelRaw: "appeal", caseNumber: "55-584/2025")
+            var appeal = CaseInstance(
+                level: .appeal, court: context.courtTitle, caseNumber: context.caseNumber,
+                judge: nil, domain: domain, foundByUID: false, result: nil, sessions: [],
+                sourceEvidence: .init(
+                    lowerCourt: .init(courtTitle: lowerTitle, caseNumber: "2-12/2025"),
+                    cartotekaID: "u2", sourceCourtLevel: .appeal, sourceBranch: context.branch))
+            var movement = CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
+                                        instances: [appeal], complaints: [:], acts: [])
+            XCTAssertEqual(MovementDerivation.inferredTier(
+                stage: .cassation, production: .crim, context: context, movement: movement), .supreme)
+            appeal.sourceEvidence?.lowerCourt = nil
+            movement.instances = [appeal]
+            XCTAssertEqual(MovementDerivation.inferredTier(
+                stage: .cassation, production: .crim, context: context, movement: movement), .cassation)
+        }
+    }
+
     func testKoAPEffectiveLegalForceUsesExactIssue86Appeals() {
         func dossier(caseNumber: String, appealNumber: String,
                      firstSessions: [CaseSession]) -> CaseMovement {

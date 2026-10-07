@@ -31,6 +31,269 @@ final class MovementServiceTests: XCTestCase {
                          caseID: "30636693", caseUID: Self.linkGUID)
     }
 
+    func testPrimarySubjectCriminalCassationRouteKeepsKSOYUCandidateOnlyWhenLinkedToLoadedMaterial() async throws {
+        let uid = "63RS0001-01-2025-011255-03"
+        let samara = Court(domain: "oblsud.sam.sudrf.ru",
+                           title: "Самарский областной суд", level: .subject)
+        let mainCart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "u1"))
+        let appealCart = try XCTUnwrap(CartotekaRegistry.find(level: .appeal, id: "u2"))
+        let cassationCart = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "u3"))
+        func cardURL(_ domain: String, _ id: String, _ linkUID: String?, _ cart: Cartoteka) throws -> URL {
+            var parts = ["name=sud_delo", "name_op=case", "case_id=\(id)"]
+            if let linkUID { parts.append("case_uid=\(linkUID)") }
+            parts += ["delo_id=\(cart.deloID)", "new=\(cart.new)"]
+            return try XCTUnwrap(URL(string: "https://\(domain)/modules.php?" + parts.joined(separator: "&")))
+        }
+
+        let subjectRow = CaseSearchResult(caseNumber: "2-12/2025", caseID: "base",
+                                          caseUID: "base-link")
+        let subjectCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                   caseNumber: "2-12/2025", processKind: .upk)
+        let appealURL = try cardURL("4ap.sudrf.ru", "appeal", "appeal-link", appealCart)
+        let materialURL = try cardURL("4ap.sudrf.ru", "control-material", "material-link", appealCart)
+        // The KSOYU URL publishes only case_id; it is still an exact source-native locator.
+        let cassationURL = try cardURL("6kas.sudrf.ru", "complaint", nil, cassationCart)
+        let redirectedURL = try cardURL("6kas.sudrf.ru", "redirected", "redirected-link", cassationCart)
+        let foreignResponseURL = try cardURL("6kas.sudrf.ru", "other-card", "redirected-link", cassationCart)
+        let unrelatedURL = try cardURL("6kas.sudrf.ru", "unrelated", "unrelated-link", cassationCart)
+        let foreignUIDURL = try cardURL("6kas.sudrf.ru", "foreign-uid", "foreign-link", cassationCart)
+        let conflictingURL = try cardURL("6kas.sudrf.ru", "conflicting", "conflicting-link", cassationCart)
+        let appealRow = CaseSearchResult(caseNumber: "55-584/2025", caseID: "appeal",
+                                         caseUID: "appeal-link", cardURL: appealURL)
+        let materialRow = CaseSearchResult(caseNumber: "55к-6/2025", caseID: "control-material",
+                                           caseUID: "material-link", cardURL: materialURL)
+        let complaintRow = CaseSearchResult(caseNumber: "7У-1/2025", caseID: "complaint",
+                                            cardURL: cassationURL)
+        let unrelatedRow = CaseSearchResult(caseNumber: "7У-2/2025", caseID: "unrelated",
+                                             caseUID: "unrelated-link", cardURL: unrelatedURL)
+        let redirectedRow = CaseSearchResult(caseNumber: "7У-5/2025", caseID: "redirected",
+                                             caseUID: "redirected-link", cardURL: redirectedURL)
+        let foreignUIDRow = CaseSearchResult(caseNumber: "7У-3/2025", caseID: "foreign-uid",
+                                              caseUID: "foreign-link", cardURL: foreignUIDURL)
+        let conflictingRow = CaseSearchResult(caseNumber: "7У-4/2025", caseID: "conflicting",
+                                               caseUID: "conflicting-link", cardURL: conflictingURL)
+        let subjectDecision = "10.01.2025"
+        let materialDecision = "11.02.2025"
+        let appealCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                  caseNumber: "55-584/2025", decisionDate: subjectDecision,
+                                  lowerCourt: LowerCourtReference(
+                                    courtTitle: "Самарский областной суд",
+                                    caseNumber: "2-12/2025", decisionDate: subjectDecision),
+                                  processKind: .upk)
+        let materialCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                    caseNumber: "55к-6/2025", decisionDate: materialDecision,
+                                    processKind: .upk)
+        let complaintCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                     caseNumber: "7У-1/2025", decisionDate: "15.03.2025",
+                                     lowerCourt: LowerCourtReference(
+                                        courtTitle: "Четвёртый апелляционный суд",
+                                        caseNumber: "55к-6/2025", decisionDate: materialDecision),
+                                     processKind: .upk)
+        let unrelatedCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                     caseNumber: "7У-2/2025", decisionDate: "16.03.2025",
+                                     lowerCourt: LowerCourtReference(
+                                        courtTitle: "Четвертый апелляционный суд",
+                                        caseNumber: "55к-6/2025", decisionDate: "12.02.2025"),
+                                     processKind: .upk)
+        let foreignUIDCard = CaseCard(rawText: "", actText: nil,
+                                      uid: "64RS0001-01-2025-011255-03",
+                                      caseNumber: "7У-3/2025", decisionDate: "17.03.2025",
+                                      lowerCourt: LowerCourtReference(
+                                        courtTitle: "Четвертый апелляционный суд",
+                                        caseNumber: "55к-6/2025", decisionDate: materialDecision),
+                                      processKind: .upk)
+        let conflictingCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                       caseNumber: "7У-4/2025", decisionDate: "18.03.2025",
+                                       lowerCourt: LowerCourtReference(
+                                        courtTitle: "Четвертый апелляционный суд",
+                                        caseNumber: "55к-6/2025", decisionDate: materialDecision),
+                                       processKind: .upk, processKindConflict: true)
+        let redirectedCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                      caseNumber: "7У-5/2025",
+                                      lowerCourt: complaintCard.lowerCourt, processKind: .upk)
+        let mock = MockClient(
+            firstCardID: "base", firstCard: subjectCard, higherResults: [],
+            higherCards: ["appeal": appealCard, "control-material": materialCard,
+                          "complaint": complaintCard, "unrelated": unrelatedCard,
+                          "foreign-uid": foreignUIDCard, "conflicting": conflictingCard,
+                          "redirected": redirectedCard],
+            higherResultsByLocator: [
+                "4ap.sudrf.ru/u2": [appealRow, materialRow],
+                "6kas.sudrf.ru/u3": [complaintRow, unrelatedRow,
+                                      foreignUIDRow, conflictingRow, redirectedRow]
+            ],
+            homeDomain: samara.domain, expectedUID: uid,
+            redirects: ["redirected": foreignResponseURL])
+        let service = MovementService(client: mock,
+                                      higherCourtDomains: ["4ap.sudrf.ru", "6kas.sudrf.ru"])
+
+        let movement = try await service.movement(for: subjectRow, court: samara, cartoteka: mainCart)
+
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == "55-584/2025" && $0.level == .appeal })
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == "55к-6/2025" && $0.level == .material })
+        XCTAssertTrue(movement.instances.contains { $0.caseNumber == "7У-1/2025" && $0.level == .material })
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-2/2025" })
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-3/2025" })
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-4/2025" })
+        XCTAssertFalse(movement.instances.contains { $0.caseNumber == "7У-5/2025" })
+        XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        XCTAssertTrue(movement.incompleteHigherCourtDomains?.contains("6kas.sudrf.ru") == true)
+        let searchedLocators = await mock.searchLocators
+        XCTAssertTrue(searchedLocators.contains("6kas.sudrf.ru/u3"))
+    }
+
+    func testPrimaryCriminalCassationLinksFreshReviewToKnownMaterialWithoutSearchRow() async throws {
+        let uid = "63RS0001-01-2025-011255-03"
+        let samara = Court(domain: "oblsud.sam.sudrf.ru",
+                           title: "Самарский областной суд", level: .subject)
+        let subjectCart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "u1"))
+        let appealCart = try XCTUnwrap(CartotekaRegistry.find(level: .appeal, id: "u2"))
+        let cassationCart = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "u3"))
+        func cardURL(_ domain: String, _ id: String, _ cart: Cartoteka) throws -> URL {
+            try XCTUnwrap(URL(string:
+                "https://\(domain)/modules.php?name=sud_delo&name_op=case"
+                    + "&case_id=\(id)&delo_id=\(cart.deloID)&new=\(cart.new)"))
+        }
+        let knownMaterial = KnownCard(
+            domain: "4ap.sudrf.ru", courtTitle: "Четвертый апелляционный суд",
+            caseID: "known-material", caseUID: "known-link-guid",
+            deloID: appealCart.deloID, new: appealCart.new,
+            caseNumber: "55к-6/2025", levelRaw: CaseInstance.Level.material.rawValue)
+        let complaintURL = try cardURL("6kas.sudrf.ru", "complaint", cassationCart)
+        let complaintRow = CaseSearchResult(caseNumber: "7У-1/2025", caseID: "complaint",
+                                            cardURL: complaintURL)
+        let materialDate = "11.02.2025"
+        let mock = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: "2-12/2025", processKind: .upk),
+            higherResults: [],
+            higherCards: [
+                "known-material": CaseCard(rawText: "", actText: nil, uid: uid,
+                                            caseNumber: "55к-6/2025", decisionDate: materialDate,
+                                            processKind: .upk),
+                "complaint": CaseCard(rawText: "", actText: "Синтетический опубликованный акт", uid: uid,
+                                      caseNumber: "7У-1/2025", decisionDate: "15.03.2025",
+                                      lowerCourt: LowerCourtReference(
+                                        courtTitle: "Четвертый апелляционный суд",
+                                        caseNumber: "55к-6/2025", decisionDate: materialDate),
+                                      processKind: .upk)
+            ],
+            higherResultsByLocator: [
+                "4ap.sudrf.ru/u2": [],
+                "6kas.sudrf.ru/u3": [complaintRow]
+            ],
+            homeDomain: samara.domain, expectedUID: uid)
+        let service = MovementService(client: mock,
+                                      higherCourtDomains: ["4ap.sudrf.ru", "6kas.sudrf.ru"],
+                                      knownCards: [knownMaterial])
+
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-12/2025", caseID: "base", caseUID: "base-guid"),
+            court: samara, cartoteka: subjectCart)
+
+        XCTAssertTrue(movement.instances.contains {
+            $0.caseNumber == "55к-6/2025" && $0.level == .material
+                && $0.sourceURL?.host == "4ap.sudrf.ru"
+        })
+        XCTAssertTrue(movement.instances.contains {
+            $0.caseNumber == "7У-1/2025" && $0.level == .material
+        })
+        XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        let published = try XCTUnwrap(movement.acts.first { $0.id.contains("7У-1/2025") })
+        let direct = try await service.instanceFromKnownCard(KnownCard(
+            domain: "6kas.sudrf.ru", courtTitle: "Шестой КСОЮ", caseID: "complaint", caseUID: "",
+            deloID: cassationCart.deloID, new: cassationCart.new, caseNumber: "7У-1/2025",
+            levelRaw: "material", sourceURL: complaintURL))
+        XCTAssertEqual(direct.act, published, "Search and direct refresh must keep stable act metadata")
+    }
+
+    func testKnownDistrictCardPreservesCivilSourceLevel() async throws {
+        let court = districtCourt()
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let card = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                            caseNumber: "2-7212/2025", processKind: .civil)
+        let mock = MockClient(firstCardID: "district", firstCard: card,
+                              higherResults: [], higherCards: [:])
+        let entry = try await MovementService(client: mock).instanceFromKnownCard(KnownCard(
+            domain: court.domain, courtTitle: court.title, caseID: "district", caseUID: "district-guid",
+            deloID: cart.deloID, new: cart.new, caseNumber: card.caseNumber,
+            levelRaw: CaseInstance.Level.first.rawValue))
+        XCTAssertEqual(entry.inst.sourceEvidence?.sourceCourtLevel, .district)
+        XCTAssertEqual(entry.inst.sourceEvidence?.cartotekaID, "g1")
+        XCTAssertEqual(entry.inst.sourceEvidence?.ownProcessKind, .civil)
+        XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .district, branch: .general, cartotekaID: "g1",
+            caseNumber: entry.inst.caseNumber, sourceProcessKind: .civil))
+    }
+
+    func testPrimaryCriminalCassationSourceFailuresKeepOnlyMaterialRetryStub() async throws {
+        let uid = "63RS0001-01-2025-011255-03"
+        let samara = Court(domain: "oblsud.sam.sudrf.ru",
+                           title: "Самарский областной суд", level: .subject)
+        let subjectCart = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "u1"))
+        let formURL = try XCTUnwrap(URL(string: "https://6kas.sudrf.ru/modules.php?captcha=1"))
+        let failures: [Error] = [
+            SudrfError.captchaRequired(formURL: formURL),
+            SudrfError.transientNetworkError(domain: "6kas.sudrf.ru", code: .timedOut, attempt: 3)
+        ]
+        for failure in failures {
+            let client = FailingMockClient(
+                firstCardID: "base",
+                firstCard: CaseCard(rawText: "", actText: nil, uid: uid,
+                                    caseNumber: "2-12/2025", processKind: .upk),
+                homeDomain: samara.domain, expectedUID: uid, higherError: failure)
+            let service = MovementService(client: client,
+                                          higherCourtDomains: ["6kas.sudrf.ru"])
+            let movement = try await service.movement(
+                for: CaseSearchResult(caseNumber: "2-12/2025", caseID: "base", caseUID: "base-guid"),
+                court: samara, cartoteka: subjectCart)
+            let retryStubs = movement.instances.filter {
+                $0.captchaFormURL != nil || $0.transientError == true
+            }
+
+            XCTAssertEqual(retryStubs.count, 1)
+            XCTAssertEqual(retryStubs.first?.level, .material)
+            XCTAssertFalse(movement.instances.contains { $0.level == .cassation })
+        }
+    }
+
+    func testSupremeCriminalCassationRouteRequiresUPKPrimaryAnchorAndPublishedLowerCourt() throws {
+        let lowerCourt = LowerCourtReference(courtTitle: "Самарский областной суд",
+                                            caseNumber: "2-12/2025")
+        XCTAssertTrue(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .subject, branch: .general, cartotekaID: "u1",
+            caseNumber: "2-12/2025", sourceProcessKind: .upk))
+        XCTAssertTrue(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .appeal, branch: .general, cartotekaID: "u2",
+            caseNumber: "55-584/2025", lowerCourt: lowerCourt,
+            sourceProcessKind: .upk))
+        XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .appeal, branch: .general, cartotekaID: "u2",
+            caseNumber: "55-584/2025",
+            lowerCourt: LowerCourtReference(courtTitle: "Самарский районный суд",
+                                            caseNumber: "2-12/2025"),
+            sourceProcessKind: .upk))
+        XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .subject, branch: .general, cartotekaID: "p1",
+            caseNumber: "2а-12/2025", sourceProcessKind: .administrative))
+        XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .subject, branch: .general, cartotekaID: "u1",
+            caseNumber: "2-12/2025", sourceProcessKind: .upk,
+            sourceProcessKindConflict: true))
+
+        let militaryCourt = try XCTUnwrap(CourtDirectory.okrugMilitaryCourts.first)
+        XCTAssertTrue(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .subject, branch: .military, cartotekaID: "u1",
+            caseNumber: "2-12/2025", sourceProcessKind: .upk))
+        XCTAssertTrue(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
+            courtLevel: .appeal, branch: .military, cartotekaID: "u2",
+            caseNumber: "55-584/2025",
+            lowerCourt: LowerCourtReference(courtTitle: militaryCourt.title,
+                                            caseNumber: "2-12/2025"),
+            sourceProcessKind: .upk))
+    }
+
     func testHigherInstancesSearchedByCardUIDNotLinkGUID() async throws {
         let firstCard = try CaseCardParser.parse(html: try fixture("sgs_1inst"))
         let appealCard = try CaseCardParser.parse(html: try fixture("vsrk_appeal"))
@@ -975,6 +1238,7 @@ final class MovementServiceTests: XCTestCase {
 /// Различает домашний суд (по домену) и вышестоящие: по УИД домашний суд отдаёт
 /// `sameCourtResults` (другие круги той же инстанции), вышестоящие — `higherResults`.
 private actor MockClient: CaseProviding {
+    private let redirects: [String: URL]
     private let firstCardID: String
     private let firstCard: CaseCard
     private let higherResults: [CaseSearchResult]
@@ -997,7 +1261,9 @@ private actor MockClient: CaseProviding {
          partialDiscoveryDomains: Set<String> = [],
          failedCardIDs: Set<String> = [],
          homeDomain: String = "syktsud--komi.sudrf.ru",
-         expectedUID: String = "11RS0001-01-2025-011255-03") {
+         expectedUID: String = "11RS0001-01-2025-011255-03",
+         redirects: [String: URL] = [:]) {
+        self.redirects = redirects
         self.firstCardID = firstCardID
         self.firstCard = firstCard
         self.higherResults = higherResults
@@ -1054,6 +1320,12 @@ private actor MockClient: CaseProviding {
             throw SudrfError.http(status: 404)
         }
         return card
+    }
+
+    func fetchCardWithResponseURL(url: URL) async throws -> SudrfCaseCardFetchResult {
+        let card = try await fetchCard(url: url)
+        let id = (try? SudrfCaseCardLink(url: url))?.caseID ?? ""
+        return SudrfCaseCardFetchResult(card: card, responseURL: redirects[id] ?? url)
     }
 
     func fetchCard(court: Court, caseID: String, caseUID: String,

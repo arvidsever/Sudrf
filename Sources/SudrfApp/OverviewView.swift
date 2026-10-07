@@ -213,9 +213,7 @@ struct OverviewView: View {
                             ? "\(router.overdueDeadlineCount) просрочено"
                             : "\(router.waitingCount) ждут",
                          tone: router.overdueDeadlineCount > 0 ? .red : .neutral)
-            if let pinned {
-                pinnedDeadlineRow(pinned)
-            } else if overdue.isEmpty {
+            if pinned.isEmpty && overdue.isEmpty {
                 Text("Актуальных сроков нет")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.secondary)
@@ -225,39 +223,25 @@ struct OverviewView: View {
                     .overlay(Divider(), alignment: .top)
             }
             scrollBody {
+                if let first = pinned.first {
+                    sectionLabel("\(DateUtil.daysBetween(today, first.date) == 0 ? "СЕГОДНЯ" : "БЛИЖАЙШИЕ") · \(pinned.count)", tone: .blue)
+                    ForEach(pinned) { deadlineRow($0, tone: .blue) }
+                }
                 if !overdue.isEmpty {
                     sectionLabel("ПРОСРОЧЕННЫЕ · \(overdue.count)", tone: .red)
                     ForEach(overdue) { deadlineRow($0, tone: .red) }
                 }
                 if !remaining.isEmpty {
-                    sectionLabel("БЛИЖАЙШИЕ", tone: .neutral)
+                    sectionLabel("ПОЗЖЕ", tone: .neutral)
                     ForEach(remaining) { deadlineRow($0, tone: .neutral) }
                 }
             }
-            footer(left: footerMore(max(0, overdue.count + remaining.count - 5)),
+            footer(left: footerMore(max(0, pinned.count + overdue.count + remaining.count - 5)),
                    right: "Все сроки") {
-                router.openCalendar(date: pinned?.date)
+                router.openCalendar(date: pinned.first?.date)
                 router.setCalMode(.agenda)
             }
         }
-    }
-
-    private func pinnedDeadlineRow(_ d: TrackedDeadline) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("БЛИЖАЙШИЙ")
-                .font(.system(size: 10.5, weight: .bold))
-                .kerning(0.4)
-                .foregroundStyle(.tertiary)
-            HStack(alignment: .top, spacing: 12) {
-                dateChip(d, tone: .blue)
-                deadlineBody(d)
-            }
-        }
-        .padding(.horizontal, 15)
-        .padding(.top, 11)
-        .padding(.bottom, 12)
-        .overlay(Divider(), alignment: .top)
-        .overlay(Divider(), alignment: .bottom)
     }
 
     private func deadlineRow(_ d: TrackedDeadline, tone: OverviewTone) -> some View {

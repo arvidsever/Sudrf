@@ -2926,29 +2926,38 @@ final class AppRouter: ObservableObject {
             && DateUtil.daysBetween(deadline.date, today) <= deadlineGraceDays
     }
 
+    nonisolated private static func deadlineOrder(_ lhs: TrackedDeadline,
+                                                  _ rhs: TrackedDeadline) -> Bool {
+        (DateUtil.startOfDay(lhs.date), lhs.displayNumber, lhs.what, lhs.id)
+            < (DateUtil.startOfDay(rhs.date), rhs.displayNumber, rhs.what, rhs.id)
+    }
+
     nonisolated static func pinnedDeadline(_ deadlines: [TrackedDeadline],
-                                           today: Date) -> TrackedDeadline? {
-        let pending = deadlines
-            .filter { isVisibleDeadline($0, today: today) && $0.date >= today }
-            .sorted { $0.date < $1.date }
-        return pending.first
+                                           today: Date) -> [TrackedDeadline] {
+        let pending = deadlines.filter {
+            isVisibleDeadline($0, today: today) && DateUtil.daysBetween(today, $0.date) >= 0
+        }.sorted(by: deadlineOrder)
+        guard let first = pending.first else { return [] }
+        return pending.filter { DateUtil.daysBetween(first.date, $0.date) == 0 }
     }
 
     nonisolated static func overdueDeadlines(_ deadlines: [TrackedDeadline],
                                              today: Date) -> [TrackedDeadline] {
         deadlines.filter {
-            $0.date < today && isVisibleDeadline($0, today: today)
+            DateUtil.daysBetween(today, $0.date) < 0 && isVisibleDeadline($0, today: today)
         }
-        .sorted { $0.date < $1.date }
+        .sorted(by: deadlineOrder)
     }
 
     nonisolated static func remainingDeadlines(_ deadlines: [TrackedDeadline],
-                                               pinned: TrackedDeadline?,
+                                               pinned: [TrackedDeadline],
                                                today: Date) -> [TrackedDeadline] {
-        deadlines.filter {
-            $0.id != pinned?.id && $0.date >= today && isVisibleDeadline($0, today: today)
+        let pinnedIDs = Set(pinned.map(\.id))
+        return deadlines.filter {
+            !pinnedIDs.contains($0.id) && DateUtil.daysBetween(today, $0.date) >= 0
+                && isVisibleDeadline($0, today: today)
         }
-        .sorted { $0.date < $1.date }
+        .sorted(by: deadlineOrder)
     }
 
     /// Расчётные сроки, ждущие подтверждения. Общий источник для счётчика

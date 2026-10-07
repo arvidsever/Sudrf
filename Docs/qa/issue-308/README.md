@@ -12,7 +12,7 @@
 
 - `swift build --scratch-path /private/tmp/sudrf-308`: успешно; `/private/tmp/sudrf-308-build.log`.
 - `swift test --scratch-path /private/tmp/sudrf-308 --filter OverviewModelTests`: 29 тестов, 0 ошибок; `/private/tmp/sudrf-308-overview.log`.
-- Полный `swift test --scratch-path /private/tmp/sudrf-308`: успешно (все XCTest targets), 0 ошибок; `/private/tmp/sudrf-308-tests.log`.
+- Полный `swift test --scratch-path /private/tmp/sudrf-308`: 1933 теста, 25 пропусков, 0 ошибок; `/private/tmp/sudrf-308-tests.log`.
 - Регрессии: три сегодняшних срока одновременно с просроченным/будущим, ближайший будущий день, полдень текущего дня, пустой список, только просроченные, обратный порядок входа, совпадение номера/вида с разрешением по id. Существующие проверки покрывают активные статусы и границу 14 дней.
 - Проверка настоящих `AppRouter.confirm` / `save` в in-memory хранилище: подтверждение не скрывает соседей, изменение даты переносит только одну запись, после reload сохранены дата/статус и уникальность записей.
 
@@ -20,4 +20,8 @@
 
 Автоматические тесты не подтверждают визуальную композицию. Пользовательская визуальная приёмка отложена: проверить группу выше доступной высоты, видимость количества, прокрутку до каждой строки, сохранность кнопок, переход «Все сроки», состояния «Сегодня», ближайшая будущая дата, только просроченные и пустой список. Сопоставление реального снимка «Обзор»/«Мои дела»/календарь и сценарий relaunch также остаются ручными.
 
-Приложение не запускалось, production-база и TestFlight не использовались. `xcodegen generate` и `Scripts/make-app.sh --ci` здесь не запускались; сборка SwiftPM не заменяет упаковку приложения.
+- `xcodegen generate`: успешно; `/private/tmp/sudrf-308-xcodegen.log`.
+- `xcodebuild -project Sudrf.xcodeproj -scheme Sudrf -configuration Debug -destination 'platform=macOS' -derivedDataPath /private/tmp/sudrf-308-xcode CODE_SIGNING_ALLOWED=NO build`: `BUILD SUCCEEDED`; `/private/tmp/sudrf-308-xcode-build.log`.
+- Независимый adversarial review Astra: замечаний нет; повторно подтверждены 29 тестов OverviewModelTests.
+
+Приложение не запускалось, production-база и TestFlight не использовались. `Scripts/make-app.sh --ci` не запускался; проверена Debug-сборка app bundle через Xcode без подписи. Пользовательская визуальная приёмка остаётся отложенной.

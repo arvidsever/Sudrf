@@ -1146,7 +1146,36 @@ enum CaseLifecycleResolver {
         guard let region = CourtDirectory.regionSuffix(ofDomain: domain)
             .flatMap(CourtDirectory.subjectCode(forRegionSuffix:))
             .flatMap(CourtDirectory.subjectName(forSubjectCode:)) else { return false }
-        return CaseOriginResolver.sameCourtTitle(lhs, rhs, region: region)
+        if CaseOriginResolver.sameCourtTitle(lhs, rhs, region: region) { return true }
+
+        // A review card may omit the city of its lower court. Only accept that
+        // omission for a complete district-court name with a proved regional
+        // suffix; presentation keys alone discard regions and are not identity.
+        let left = CourtNamePresentation.display(lhs)
+        let right = CourtNamePresentation.display(rhs)
+        guard left.tier == .district, right.tier == .district,
+              (left.locality == nil) != (right.locality == nil) else { return false }
+        let bare = left.locality == nil ? left.full : right.full
+        let full = left.locality == nil ? right.full : left.full
+        guard let cityStart = full.range(of: #"\s+(?:г\.|города)\s+"#,
+                                         options: [.regularExpression, .caseInsensitive]),
+              CaseOriginResolver.normalizedTitle(String(full[..<cityStart.lowerBound]))
+                == CaseOriginResolver.normalizedTitle(bare) else { return false }
+        let words = full[cityStart.upperBound...].split(whereSeparator: \.isWhitespace)
+        guard words.count >= 3 else { return false }
+        for boundary in 1..<words.count {
+            let suffix = "Суд " + words[boundary...].joined(separator: " ")
+            guard CaseOriginResolver.sameCourtTitle(suffix, "Суд", region: region),
+                  !CaseOriginResolver.sameCourtTitle(suffix, "Суд", region: "") else { continue }
+            let city = words[..<boundary].joined(separator: " ")
+            // Do not swallow a conflicting region or an unrecognized tail as
+            // part of the city while searching for the matching suffix.
+            return city.range(of: #"^(?:[\p{L}-]+\s+)*[\p{L}-]+$"#,
+                              options: .regularExpression) != nil
+                && city.range(of: #"\b(?:республик\p{L}*|област\p{L}*|край|края|автономн\p{L}*|округ\p{L}*)\b"#,
+                              options: [.regularExpression, .caseInsensitive]) == nil
+        }
+        return false
     }
 
     private static func reviewBelongsToRoot(

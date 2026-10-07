@@ -18,7 +18,7 @@ final class CalendarMonthViewTests: XCTestCase {
         let march1: Date
     }
 
-    func testNavigationButtonFramesStayFixedAcrossPeriodsAndOverlapCounts() throws {
+    func testNavigationButtonFramesStayFixedAcrossPeriodsAndOverlapCounts() async throws {
         let fixture = try makeFixture()
         let originalHearings = fixture.router.calendarHearings
         // One host per width: period and overlap changes must update the same tree.
@@ -34,7 +34,7 @@ final class CalendarMonthViewTests: XCTestCase {
                     }
                 }
                 .onPreferenceChange(NavigationFramePreference.self) { bounds in
-                    Task { @MainActor in frames.values = bounds }
+                    Task { @MainActor in frames.update(bounds) }
                 }
                 .frame(width: width, height: 760))
             let view = NSHostingView(rootView: root)
@@ -43,11 +43,7 @@ final class CalendarMonthViewTests: XCTestCase {
             window.isReleasedWhenClosed = false
             window.contentView = view
             let hosted = (window: window, view: view)
-            settle(view)
-            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-            }
-            settle(view)
+            await renderNavigation(view, forceDisplay: true)
             defer { hosted.window.close() }
             let monthFrames = try frames.ordered()
             for month in 1...12 {
@@ -61,17 +57,19 @@ final class CalendarMonthViewTests: XCTestCase {
                             return event
                         }
                     }
-                    settle(hosted.view)
+                    await renderNavigation(hosted.view)
                     assertFrames(try frames.ordered(), equal: monthFrames,
                                  context: "month=\(month), count=\(count), width=\(width)")
                 }
             }
+            let weekUpdate = frames.expectChangedBounds()
             fixture.router.calMode = .week
-            settle(hosted.view)
+            await renderNavigation(hosted.view, forceDisplay: true)
+            await fulfillment(of: [weekUpdate], timeout: 5)
             let weekFrames = try frames.ordered()
             for date in ["27.07.2026", "03.08.2026", "28.12.2026", "04.01.2027"] {
                 fixture.router.calWeekStart = try XCTUnwrap(DateUtil.parse(date))
-                settle(hosted.view)
+                await renderNavigation(hosted.view)
                 assertFrames(try frames.ordered(), equal: weekFrames,
                              context: "week=\(date), width=\(width)")
             }
@@ -79,7 +77,23 @@ final class CalendarMonthViewTests: XCTestCase {
     }
 
     private final class NavigationFrames {
-        var values: [String: CGRect] = [:]
+        private var values: [String: CGRect] = [:]
+        private var pendingChange: (previous: [String: CGRect], expectation: XCTestExpectation)?
+
+        func expectChangedBounds() -> XCTestExpectation {
+            let expectation = XCTestExpectation(description: "New mode's actual navigation bounds")
+            pendingChange = (values, expectation)
+            return expectation
+        }
+
+        func update(_ bounds: [String: CGRect]) {
+            values = bounds
+            if let pendingChange, !bounds.isEmpty, bounds != pendingChange.previous {
+                self.pendingChange = nil
+                pendingChange.expectation.fulfill()
+            }
+        }
+
         func ordered() throws -> [CGRect] {
             try ["previous", "current", "next"].map { name in
                 let frame = try XCTUnwrap(values[name], "Missing actual button geometry: \(name)")
@@ -87,6 +101,18 @@ final class CalendarMonthViewTests: XCTestCase {
                 XCTAssertGreaterThan(frame.height, 0)
                 return frame
             }
+        }
+    }
+
+    private func renderNavigation(_ view: NSView, forceDisplay: Bool = false) async {
+        view.layoutSubtreeIfNeeded()
+        if forceDisplay, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+        }
+        // Preference delivery schedules a MainActor task. Yield through the main
+        // queue after the forced render before reading its captured geometry.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
         }
     }
 

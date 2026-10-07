@@ -21,7 +21,7 @@
     "qaBundle": "BUILD SUCCEEDED",
     "version": "Xcode 27.0 (27A266a)"
   },
-  "review": "Astra High: no blocking findings",
+  "review": "Astra High: production/data approved at 3b5ebacab7ca51d7e02d7fefa52d46f2156752ec; QA capture-directory finding corrected and bundle rebuilt; final re-review pending",
   "gui": {
     "status": "pending",
     "reason": "Computer-use tool reported that the Mac is locked; no screenshot or successful launch is claimed."
@@ -30,6 +30,6 @@
     "profile.log": "0aa732a32b080c7a8cf18188b0391bc3a758999054d334aa96e84324855a941d",
     "full.log": "aaec7e8abd013f2b76d3cd567894acf98ee4837ef9a12aff04e07b71a1c05fad",
     "branch-xcode.log": "ab3762ae12ba6ccc72bda43e4bcabeae3f69a5f20689c111837e7e4209f2ff93",
-    "xcode-qa-build.log": "258536cec5324f08e2a6acad3833a0be63936a2a84e953900f0d391fb70867a9"
+    "xcode-qa-build.log": "161b71621b89de0291fdae2b887930e32d023a4d297cefa34e5885e131de033b"
   }
 }

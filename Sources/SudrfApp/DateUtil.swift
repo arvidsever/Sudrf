@@ -100,7 +100,7 @@ enum DateUtil {
         let month = d.formatted(.dateTime.locale(ruLocale).month(.wide)).capitalized(with: ruLocale)
         return "\(month) \(cal.component(.year, from: d))"
     }
-    /// «8 – 14 июня» / «29 июня – 5 июля».
+    /// «8 – 14 июня 2026» / «29 июня – 5 июля 2026».
     static func weekTitle(starting start: Date) -> String {
         let s = startOfWeek(start)
         let e = addDays(s, 6)
@@ -110,10 +110,10 @@ enum DateUtil {
         let sy = cal.component(.year, from: s)
         let ey = cal.component(.year, from: e)
         if sm == em && sy == ey {
-            return "\(sd) – \(fmt(e))"
+            return "\(sd) – \(fmt(e)) \(ey)"
         }
         if sy == ey {
-            return "\(fmt(s)) – \(fmt(e))"
+            return "\(fmt(s)) – \(fmt(e)) \(ey)"
         }
         return "\(fmt(s)) \(sy) – \(fmt(e)) \(ey)"
     }

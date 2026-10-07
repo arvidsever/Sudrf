@@ -12,6 +12,7 @@
 //  уже единичные источники правды — окно только показывает их.
 
 import SwiftUI
+import AppKit
 import CaptchaSolver
 
 struct SettingsHub: View {
@@ -44,9 +45,12 @@ struct SettingsHub: View {
     var body: some View {
         NavigationSplitView {
             List(Pane.allCases, selection: $selection) { pane in
-                Label(pane.title, systemImage: pane.symbol).tag(pane)
+                Label(pane.title, systemImage: pane.symbol)
+                    .help(pane.title)
+                    .accessibilityLabel(pane.title)
+                    .tag(pane)
             }
-            .navigationSplitViewColumnWidth(184)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 220)
         } detail: {
             switch selection ?? .refresh {
             case .refresh:      RefreshSettingsPane()
@@ -57,6 +61,27 @@ struct SettingsHub: View {
             }
         }
         .frame(width: 720, height: 470)
+        .background(SettingsWindowToolbar())
+    }
+}
+
+// Settings assigns the two-row preference toolbar even with sidebar navigation.
+// Configure only this hosting window; the main window keeps its own chrome.
+private struct SettingsWindowToolbar: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) { configure(view) }
+
+    private func configure(_ view: NSView) {
+        DispatchQueue.main.async {
+            guard let window = view.window,
+                  window.toolbarStyle != .unifiedCompact else { return }
+            window.toolbarStyle = .unifiedCompact
+        }
     }
 }
 

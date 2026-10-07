@@ -207,9 +207,14 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertLessThan(blocks[1].top + blocks[1].height, gridHeight)
     }
 
+    func testWeekTitleWithinMonthIncludesItsOwnYear() {
+        let start = DateUtil.parse("03.08.2026")!
+        XCTAssertEqual(DateUtil.weekTitle(starting: start), "3 – 9 августа 2026")
+    }
+
     func testWeekTitleAcrossMonthBoundary() {
         let start = DateUtil.parse("29.06.2026")!
-        XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 июня – 5 июля")
+        XCTAssertEqual(DateUtil.weekTitle(starting: start), "29 июня – 5 июля 2026")
     }
 
     func testWeekTitleAcrossYearBoundary() {

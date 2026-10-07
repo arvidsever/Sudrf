@@ -129,8 +129,20 @@ struct ProductionCalendarDayPresentation: Equatable {
     var isConfirmed: Bool { kind != nil }
 }
 
+// Actual header bounds, also consumed by the offscreen geometry regression.
+struct CalendarNavigationBounds: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] { [:] }
+    static func reduce(value: inout [String: Anchor<CGRect>],
+                       nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct CalendarScreen: View {
     @EnvironmentObject var router: AppRouter
+    // Keep room for the capsule, period title, overlap counter and mode picker.
+    // Only the remaining width participates in legend adaptation.
+    private static let headerControlsReservedWidth: CGFloat = 800
     /// Встроенный архив неизменен до перезапуска приложения; его декодирование
     /// не должно повторяться для каждой ячейки и каждого досье.
     private static let legalCalendar: LegalCalendar? = try? LegalCalendar.load()
@@ -258,15 +270,8 @@ struct CalendarScreen: View {
     private var monthMode: some View {
         let model = Self.buildMonthModel(month: router.calMonth, events: events)
         return VStack(alignment: .leading, spacing: 10) {
-            // Варианты всей строки, а не одной легенды: внутри общего HStack со
-            // Spacer легенда не получает честного предложения ширины и выталкивает
-            // шапку (а с ней всё окно) за края. Легенда уступает первой.
-            ViewThatFits(in: .horizontal) {
-                monthHeader(model) { monthLegendFull }
-                monthHeader(model) { monthLegendTiersOnly }
-                monthHeader(model) { EmptyView() }
-            }
-            .padding(.horizontal, 2)
+            monthHeader(model)
+                .padding(.horizontal, 2)
             productionCalendarNotice
 
             HStack(alignment: .top, spacing: 12) {
@@ -280,28 +285,41 @@ struct CalendarScreen: View {
         }
     }
 
-    private func monthHeader<Legend: View>(_ model: MonthModel,
-                                           @ViewBuilder legend: () -> Legend) -> some View {
-        HStack(spacing: 10) {
-            Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
-                .lineLimit(1).fixedSize()
-            navCapsule(title: "Сегодня",
-                       previous: "Предыдущий месяц",
-                       next: "Следующий месяц",
-                       onPrevious: { router.calStep(-1) },
-                       onTitle: {
-                           router.calMonth = DateUtil.startOfMonth(DateUtil.today)
-                           router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
-                           router.calSelectedDate = DateUtil.today
-                       },
-                       onNext: { router.calStep(1) })
-            if !model.overlapDayList.isEmpty {
-                overlapCounterButton(model).fixedSize()
+    private func monthHeader(_ model: MonthModel) -> some View {
+        GeometryReader { geometry in
+            HStack(spacing: 10) {
+                navCapsule(title: "Сегодня",
+                           previous: "Предыдущий месяц",
+                           next: "Следующий месяц",
+                           onPrevious: { router.calStep(-1) },
+                           onTitle: {
+                               router.calMonth = DateUtil.startOfMonth(DateUtil.today)
+                               router.calWeekStart = DateUtil.startOfWeek(DateUtil.today)
+                               router.calSelectedDate = DateUtil.today
+                           },
+                           onNext: { router.calStep(1) })
+                    .fixedSize()
+                Text(DateUtil.monthTitle(router.calMonth)).font(.system(size: 22, weight: .bold))
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .help(DateUtil.monthTitle(router.calMonth))
+                    .accessibilityLabel(DateUtil.monthTitle(router.calMonth))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["period": $0] }
+                if !model.overlapDayList.isEmpty {
+                    overlapCounterButton(model).fixedSize()
+                }
+                // Only the legend adapts, within a width independent of the period
+                // and overlap count. Navigation keeps one stable view identity.
+                ViewThatFits(in: .horizontal) {
+                    monthLegendFull.fixedSize()
+                    monthLegendTiersOnly.fixedSize()
+                    Color.clear.frame(width: 0, height: 0)
+                }
+                .frame(width: max(0, geometry.size.width - Self.headerControlsReservedWidth), alignment: .trailing)
+                calendarModePicker.fixedSize()
             }
-            Spacer(minLength: 10)
-            legend().fixedSize()
-            calendarModePicker.fixedSize()
         }
+        .frame(height: 32)
     }
 
     // MARK: Модель месяца (issue #332) — считается ОДИН РАЗ на вычисление тела
@@ -515,6 +533,8 @@ struct CalendarScreen: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(previous)
+            .accessibilityIdentifier("calendar-navigation-previous")
+            .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["previous": $0] }
             Divider().frame(height: 12)
             Button(action: onTitle) {
                 Text(title)
@@ -525,6 +545,8 @@ struct CalendarScreen: View {
                     .contentShape(Rectangle())
             }
             .disabled(!titleEnabled)
+            .accessibilityIdentifier("calendar-navigation-current")
+            .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["current": $0] }
             Divider().frame(height: 12)
             Button(action: onNext) {
                 Image(systemName: "chevron.right")
@@ -533,6 +555,8 @@ struct CalendarScreen: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(next)
+            .accessibilityIdentifier("calendar-navigation-next")
+            .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["next": $0] }
         }
         .buttonStyle(.plain)
         .padding(3)
@@ -1219,21 +1243,32 @@ struct CalendarScreen: View {
 
     private var weekMode: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Text(DateUtil.weekTitle(starting: router.calWeekStart))
-                    .font(.system(size: 22, weight: .bold))
-                    .frame(minWidth: 150, alignment: .leading)
-                navCapsule(title: "Эта неделя",
-                           titleEnabled: !DateUtil.sameWeek(router.calWeekStart, DateUtil.today),
-                           previous: "Предыдущая неделя",
-                           next: "Следующая неделя",
-                           onPrevious: { router.calStepWeek(-1) },
-                           onTitle: { router.calThisWeek() },
-                           onNext: { router.calStepWeek(1) })
-                Spacer()
-                legend
-                calendarModePicker
+            GeometryReader { geometry in
+                HStack(spacing: 10) {
+                    navCapsule(title: "Эта неделя",
+                               titleEnabled: !DateUtil.sameWeek(router.calWeekStart, DateUtil.today),
+                               previous: "Предыдущая неделя",
+                               next: "Следующая неделя",
+                               onPrevious: { router.calStepWeek(-1) },
+                               onTitle: { router.calThisWeek() },
+                               onNext: { router.calStepWeek(1) })
+                        .fixedSize()
+                    Text(DateUtil.weekTitle(starting: router.calWeekStart))
+                        .font(.system(size: 22, weight: .bold))
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                        .help(DateUtil.weekTitle(starting: router.calWeekStart))
+                        .accessibilityLabel(DateUtil.weekTitle(starting: router.calWeekStart))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .anchorPreference(key: CalendarNavigationBounds.self, value: .bounds) { ["period": $0] }
+                    ViewThatFits(in: .horizontal) {
+                        legend.fixedSize()
+                        Color.clear.frame(width: 0, height: 0)
+                    }
+                    .frame(width: max(0, geometry.size.width - Self.headerControlsReservedWidth), alignment: .trailing)
+                    calendarModePicker.fixedSize()
+                }
             }
+            .frame(height: 32)
             .padding(.horizontal, 2)
             productionCalendarNotice
 

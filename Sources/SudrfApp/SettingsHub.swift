@@ -44,9 +44,12 @@ struct SettingsHub: View {
     var body: some View {
         NavigationSplitView {
             List(Pane.allCases, selection: $selection) { pane in
-                Label(pane.title, systemImage: pane.symbol).tag(pane)
+                Label(pane.title, systemImage: pane.symbol)
+                    .help(pane.title)
+                    .accessibilityLabel(pane.title)
+                    .tag(pane)
             }
-            .navigationSplitViewColumnWidth(184)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 220)
         } detail: {
             switch selection ?? .refresh {
             case .refresh:      RefreshSettingsPane()

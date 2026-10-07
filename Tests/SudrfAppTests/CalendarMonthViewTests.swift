@@ -18,6 +18,132 @@ final class CalendarMonthViewTests: XCTestCase {
         let march1: Date
     }
 
+    func testNavigationButtonFramesStayFixedAcrossPeriodsAndOverlapCounts() async throws {
+        let fixture = try makeFixture()
+        let originalHearings = fixture.router.calendarHearings
+        // One host per width: period and overlap changes must update the same tree.
+        for width: CGFloat in [760, 1180, 1920] {
+            fixture.router.calMode = .month
+            fixture.router.calSelectedDate = nil
+            let frames = NavigationFrames()
+            let root = AnyView(CalendarScreen().environmentObject(fixture.router)
+                .overlayPreferenceValue(CalendarNavigationBounds.self) { anchors in
+                    GeometryReader { geometry in
+                        let bounds = anchors.mapValues { geometry[$0] }
+                        Color.clear.preference(key: NavigationFramePreference.self, value: bounds)
+                    }
+                }
+                .onPreferenceChange(NavigationFramePreference.self) { bounds in
+                    Task { @MainActor in frames.update(bounds) }
+                }
+                .frame(width: width, height: 760))
+            let view = NSHostingView(rootView: root)
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: 760),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = view
+            let hosted = (window: window, view: view)
+            await renderNavigation(view, forceDisplay: true)
+            defer { hosted.window.close() }
+            let monthFrames = try frames.ordered()
+            for month in 1...12 {
+                fixture.router.calMonth = try XCTUnwrap(DateUtil.parse("01.\(month).2026"))
+                for count in [0, 2, 12] {
+                    let day = DateUtil.addDays(fixture.router.calMonth, 1)
+                    fixture.router.calendarHearings = (0..<count).flatMap { offset in
+                        originalHearings.prefix(2).map { event in
+                            var event = event
+                            event.date = DateUtil.addDays(day, offset)
+                            return event
+                        }
+                    }
+                    await renderNavigation(hosted.view)
+                    try frames.assertPeriodFits(DateUtil.monthTitle(fixture.router.calMonth))
+                    assertFrames(try frames.ordered(), equal: monthFrames,
+                                 context: "month=\(month), count=\(count), width=\(width)")
+                }
+            }
+            let weekUpdate = frames.expectChangedBounds()
+            fixture.router.calMode = .week
+            await renderNavigation(hosted.view, forceDisplay: true)
+            await fulfillment(of: [weekUpdate], timeout: 5)
+            let weekFrames = try frames.ordered()
+            for date in ["27.07.2026", "03.08.2026", "28.12.2026", "04.01.2027"] {
+                fixture.router.calWeekStart = try XCTUnwrap(DateUtil.parse(date))
+                await renderNavigation(hosted.view)
+                try frames.assertPeriodFits(DateUtil.weekTitle(starting: fixture.router.calWeekStart))
+                assertFrames(try frames.ordered(), equal: weekFrames,
+                             context: "week=\(date), width=\(width)")
+            }
+        }
+    }
+
+    private final class NavigationFrames {
+        private var values: [String: CGRect] = [:]
+        private var pendingChange: (previous: [String: CGRect], expectation: XCTestExpectation)?
+
+        func expectChangedBounds() -> XCTestExpectation {
+            let expectation = XCTestExpectation(description: "New mode's actual navigation bounds")
+            pendingChange = (values.filter { $0.key != "period" }, expectation)
+            return expectation
+        }
+
+        func update(_ bounds: [String: CGRect]) {
+            values = bounds
+            let navigation = bounds.filter { $0.key != "period" }
+            if let pendingChange, !navigation.isEmpty, navigation != pendingChange.previous {
+                self.pendingChange = nil
+                pendingChange.expectation.fulfill()
+            }
+        }
+
+        func assertPeriodFits(_ title: String) throws {
+            let frame = try XCTUnwrap(values["period"])
+            let fullWidth = (title as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 22, weight: .bold)
+            ]).width
+            XCTAssertLessThanOrEqual(fullWidth * 0.75, frame.width + 0.5,
+                                     "Full period, including its year, must fit: \(title)")
+        }
+
+        func ordered() throws -> [CGRect] {
+            try ["previous", "current", "next"].map { name in
+                let frame = try XCTUnwrap(values[name], "Missing actual button geometry: \(name)")
+                XCTAssertGreaterThan(frame.width, 0)
+                XCTAssertGreaterThan(frame.height, 0)
+                return frame
+            }
+        }
+    }
+
+    private func renderNavigation(_ view: NSView, forceDisplay: Bool = false) async {
+        view.layoutSubtreeIfNeeded()
+        if forceDisplay, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+        }
+        // Preference delivery schedules a MainActor task. Yield through the main
+        // queue after the forced render before reading its captured geometry.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    private struct NavigationFramePreference: PreferenceKey {
+        static var defaultValue: [String: CGRect] { [:] }
+        static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+            value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+        }
+    }
+
+    private func assertFrames(_ actual: [CGRect], equal expected: [CGRect], context: String) {
+        for (actual, expected) in zip(actual, expected) {
+            XCTAssertEqual(actual.minX, expected.minX, accuracy: 0.5, context)
+            XCTAssertEqual(actual.minY, expected.minY, accuracy: 0.5, context)
+            XCTAssertEqual(actual.width, expected.width, accuracy: 0.5, context)
+            XCTAssertEqual(actual.height, expected.height, accuracy: 0.5, context)
+        }
+    }
+
     func testNeighborDaysExposeFullYearAndRemainSelectableInBothMonths() throws {
         let fixture = try makeFixture()
         let hosted = host(fixture.router, size: CGSize(width: 1180, height: 720))

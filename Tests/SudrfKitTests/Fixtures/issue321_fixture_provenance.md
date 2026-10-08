@@ -36,3 +36,14 @@ bytes, not original responses.
   the judicial UID begins `11RS0020`.
   Fixture: `issue321_card_syktyvkar.html`
   SHA-256: `f12b429768b30478e6e5c461897694920ff8b4d68d82214971cea96ea295c53da`
+
+## Synthetic cross-region regression
+
+`Issue321CrossCourtMovementTests.testUIDListingUsesPublishedCardRegionForCrossRegionTransfer`
+mutates the sanitized Komi `12-879/2026` row in memory so its card URL and
+published court title point to the Kirovsky District Court entry above. This
+checks that directory validation follows the destination URL region (`spb` →
+`78`); it is not a captured listing and makes no claim about current live
+availability. The accepted evidence remains the `r_juid` row, matching fetched
+card UID and number, and the official district-court directory/title check; no
+additional transfer-outcome requirement was added.

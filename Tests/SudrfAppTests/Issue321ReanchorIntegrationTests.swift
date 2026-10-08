@@ -26,7 +26,7 @@ final class Issue321ReanchorIntegrationTests: XCTestCase {
     private let oldHost = "uwsud.komi.sudrf.ru"
     private let newHost = "syktsud.komi.sudrf.ru"
 
-    func testCompleteUIDWalkReanchorsOneDiskRecordAndPartialRefreshCannotUndoIt()
+    func testCompleteUIDWalkReanchorsOneDiskRecordAndPartialEmptyOrErrorRefreshesCannotUndoIt()
         async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("issue-321-\(UUID().uuidString)")
@@ -40,6 +40,18 @@ final class Issue321ReanchorIntegrationTests: XCTestCase {
         partial.incompleteHigherCourtDomains = [
             context.searchDomain, "syktsud--komi.sudrf.ru",
         ]
+        var empty = full
+        empty.instances = full.instances.filter {
+            SudrfHost.moduleHost($0.domain) != "syktsud--komi.sudrf.ru"
+        }
+        empty.honestZeroDomains = ["syktsud--komi.sudrf.ru"]
+        var error = empty
+        error.instances.append(CaseInstance(
+            level: .first, court: newCourt, caseNumber: "—", judge: nil,
+            domain: "syktsud--komi.sudrf.ru", foundByUID: false,
+            result: nil, sessions: [], transientError: true))
+        error.honestZeroDomains = nil
+        error.incompleteHigherCourtDomains = ["syktsud--komi.sudrf.ru"]
 
         let storeURL = directory.appendingPathComponent("test.store")
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
@@ -63,7 +75,7 @@ final class Issue321ReanchorIntegrationTests: XCTestCase {
         record.seenAt = Date(timeIntervalSinceReferenceDate: 10)
         try store.save()
 
-        let source = Issue321MovementSequence([full, partial])
+        let source = Issue321MovementSequence([full, partial, empty, error])
         let center = RefreshCenter(
             store: store, client: SudrfClient(), serviceBuilder: { _ in source })
 
@@ -75,6 +87,18 @@ final class Issue321ReanchorIntegrationTests: XCTestCase {
         let second = await center.refresh(key: key)?.value
         guard case .partial = second?.outcome else {
             return XCTFail("Неполное обновление не должно считаться подтверждённым обходом")
+        }
+        XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, successfulFetch)
+        try assertReanchored(store: store, key: key, seed: seed)
+
+        guard case .partial = await center.refresh(key: key)?.value.outcome else {
+            return XCTFail("Подтверждённая пустая выдача не должна удалять регистрацию")
+        }
+        XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, successfulFetch)
+        try assertReanchored(store: store, key: key, seed: seed)
+
+        guard case .partial = await center.refresh(key: key)?.value.outcome else {
+            return XCTFail("Ошибка целевого суда не должна удалять регистрацию")
         }
         XCTAssertEqual(store.record(forKey: key)?.movementFetchedAt, successfulFetch)
         try assertReanchored(store: store, key: key, seed: seed)

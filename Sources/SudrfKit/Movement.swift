@@ -1702,19 +1702,21 @@ public actor MovementService: MovementProviding {
         guard let title = row.courtTitle else { return searchCourt }
         guard let url = row.cardURL,
               let link = try? SudrfCaseCardLink(url: url),
-              let searchRegion = CourtDirectory.regionCode(forDomain: searchCourt.domain),
-              let linkedRegion = CourtDirectory.regionCode(forDomain: link.host),
               link.deloID == cartoteka.deloID,
               link.resolvedNew == cartoteka.new,
               link.caseID == row.caseID,
-              link.caseUID == row.caseUID,
-              linkedRegion == searchRegion
+              link.caseUID == row.caseUID
         else { throw SudrfError.parsing("несогласованная ссылка в выдаче по УИД") }
         if link.moduleHost == SudrfHost.moduleHost(searchCourt.domain) {
             guard Self.sameCourtName(title, searchCourt.title) else {
                 throw SudrfError.parsing("название суда не соответствует домену выдачи")
             }
             return searchCourt
+        }
+        guard let searchRegion = CourtDirectory.regionCode(forDomain: searchCourt.domain),
+              let linkedRegion = CourtDirectory.regionCode(forDomain: link.host),
+              linkedRegion == searchRegion else {
+            throw SudrfError.parsing("несогласованная ссылка в выдаче по УИД")
         }
         guard JudicialUIDObservation.validity(of: judicialUID) == .valid else {
             throw SudrfError.parsing("нельзя подтвердить регион судебного УИД")

@@ -153,13 +153,15 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(router.stageCounts.first { $0.0 == .done }?.1, 2)
         XCTAssertEqual(router.tierCounts.first { $0.0 == .district }?.1, 1)
         XCTAssertEqual(router.tierCounts.first { $0.0 == nil }?.1, 2)
-        router.stageFilter = .appeal
+        router.stageFilters = [.appeal]
         XCTAssertTrue(router.filteredCases().isEmpty)
-        router.stageFilter = .first
+        router.stageFilters = [.first]
         XCTAssertEqual(router.filteredCases().map(\.caseNumber), ["10-25/2026"])
-        router.stageFilter = .done
+        router.stageFilters = []
+        router.showCompleted = true
         XCTAssertEqual(Set(router.filteredCases().map(\.caseNumber)),
-                       Set(["5-619/2021", "22-227/2020"]))
+                       Set(["10-25/2026", "5-619/2021", "22-227/2020"]))
+        XCTAssertEqual(router.cases.filter { $0.stage == .done }.count, 2)
     }
 
     private func makeContexts() throws -> [MovementContext] {

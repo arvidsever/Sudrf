@@ -87,7 +87,7 @@ extension Notification.Name {
             }
             let data = bitmap.representation(using: .png, properties: [:])!
             let output = FileManager.default.temporaryDirectory.appendingPathComponent("sudrf-414-screenshots", isDirectory: true)
-            let name = router?.stageFilter?.rawValue ?? "all"
+            let name = router?.stageFilters.map(\.rawValue).sorted().joined(separator: "_") ?? "all"
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             try data.write(to: output.appendingPathComponent("cases-" + name + ".png"), options: .atomic)
             print("ISSUE414_QA_CAPTURE: " + output.appendingPathComponent("cases-" + name + ".png").path)

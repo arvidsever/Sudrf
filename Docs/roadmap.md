@@ -65,7 +65,7 @@
 | [#352](https://github.com/arvidsever/Sudrf/issues/352) | Короткие имена суда и картотеки в пикерах; полные — в списке, tooltip и VoiceOver. |
 | [#357](https://github.com/arvidsever/Sudrf/issues/357) | Убрать внутренние ID правил из колонки «Дальше» и перенос посреди слов. |
 | [#364](https://github.com/arvidsever/Sudrf/issues/364) | Выровнять карточки «Моих дел», показать вид производства и однозначную метку стадии. |
-| [#324](https://github.com/arvidsever/Sudrf/issues/324) | Мультивыбор фильтров «Моих дел», включая «всё, кроме завершённых». |
+| [#324](https://github.com/arvidsever/Sudrf/issues/324) | Согласованный мультивыбор вида, стадии и звена; «Показывать завершённые» открывает подтверждённую историю, включая связанные производства. |
 | [#333](https://github.com/arvidsever/Sudrf/issues/333) | Gate исторических форматов #264 пройден в 0.62.12; далее — необязательное короткое название дела для календаря с согласованием интерфейса. |
 | [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. |
 | [#186](https://github.com/arvidsever/Sudrf/issues/186) | Проверить Spotlight identity Debug/Developer ID при общем bundle ID. |

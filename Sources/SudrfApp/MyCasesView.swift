@@ -324,8 +324,9 @@ struct MyCasesView: View {
 
             // Подборки — одновременно drop-цели: строку таблицы можно перетащить
             // на подборку, дело добавится в неё (кроме «Все дела»).
+            let collectionCounts = router.collectionFilterCounts
             VStack(spacing: 1) {
-                ForEach(router.collections, id: \.0) { name, n in
+                ForEach(collectionCounts, id: \.0) { name, n in
                     CollectionRow(name: name, count: n)
                 }
             }
@@ -333,10 +334,14 @@ struct MyCasesView: View {
 
             Divider().padding(.horizontal, 16).padding(.vertical, 12)
             sidebarTitle("ВИД ПРОИЗВОДСТВА")
+            let productionCounts = router.productionFilterCounts
             VStack(spacing: 1) {
                 ForEach(ProductionType.allCases, id: \.self) { p in
-                    let active = router.prodFilter == p
-                    Button { router.prodFilter = active ? nil : p } label: {
+                    let active = router.productionFilters.contains(p)
+                    Button {
+                        if active { router.productionFilters.remove(p) }
+                        else { router.productionFilters.insert(p) }
+                    } label: {
                         HStack(spacing: 9) {
                             Text(p.abbr)
                                 .font(.system(size: 8.5, weight: .bold))
@@ -346,7 +351,8 @@ struct MyCasesView: View {
                             Text(p.side).font(.system(size: 12.5, weight: active ? .semibold : .regular))
                                 .foregroundStyle(active ? Color.accentColor : .primary).lineLimit(1)
                             Spacer(minLength: 4)
-                            Text("\(router.count(prod: p))").font(.system(size: 11)).foregroundStyle(.tertiary)
+                            Text("\(productionCounts.first { $0.0 == p }?.1 ?? 0)")
+                                .font(.system(size: 11)).foregroundStyle(.tertiary)
                         }
                         .padding(.horizontal, 9).padding(.vertical, 4.5)
                         .background(RoundedRectangle(cornerRadius: 9)
@@ -354,16 +360,22 @@ struct MyCasesView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityValue(active ? "Выбрано" : "Не выбрано")
+                    .accessibilityHint(active ? "Нажмите, чтобы убрать этот вид из выбора" : "Нажмите, чтобы добавить вид к выбору")
                 }
             }
             .padding(.horizontal, 10).padding(.top, 2)
 
             Divider().padding(.horizontal, 16).padding(.vertical, 12)
             sidebarTitle("СТАДИЯ")
+            let stageCounts = router.stageFilterCounts
             VStack(spacing: 1) {
-                ForEach(router.stageCounts, id: \.0) { st, n in
-                    let active = router.stageFilter == st
-                    Button { router.stageFilter = (router.stageFilter == st ? nil : st) } label: {
+                ForEach(stageCounts, id: \.0) { st, n in
+                    let active = router.stageFilters.contains(st)
+                    Button {
+                        if active { router.stageFilters.remove(st) }
+                        else { router.stageFilters.insert(st) }
+                    } label: {
                         HStack(spacing: 9) {
                             Circle().fill(st.dot).frame(width: 8, height: 8)
                             Text(st.label).font(.system(size: 12.5, weight: active ? .semibold : .regular))
@@ -377,30 +389,26 @@ struct MyCasesView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityValue(active ? "Выбрано" : "Не выбрано")
+                    .accessibilityHint(active ? "Нажмите, чтобы убрать стадию из выбора" : "Нажмите, чтобы добавить стадию к выбору")
                 }
             }
             .padding(.horizontal, 10).padding(.top, 2)
 
             Divider().padding(.horizontal, 16).padding(.vertical, 12)
             sidebarTitle("ЗВЕНО")
+            let tierCounts = router.tierFilterCounts
             VStack(spacing: 1) {
-                ForEach(router.tierCounts, id: \.0) { tier, count in
-                    let isInactive = tier == nil
-                    let active = isInactive ? router.noActiveProductionFilter
-                        : router.tierFilter == tier
+                ForEach(tierCounts, id: \.0) { tier, count in
+                    let active = router.tierFilters.contains(tier)
                     Button {
-                        if let tier {
-                            router.tierFilter = active ? nil : tier
-                            router.noActiveProductionFilter = false
-                        } else {
-                            router.noActiveProductionFilter.toggle()
-                            router.tierFilter = nil
-                        }
+                        if active { router.tierFilters.remove(tier) }
+                        else { router.tierFilters.insert(tier) }
                     } label: {
                         HStack(spacing: 9) {
-                            Image(systemName: isInactive ? "minus.circle" : "building.columns")
+                            Image(systemName: "building.columns")
                                 .font(.system(size: 11)).foregroundStyle(.tertiary)
-                            Text(tier.map(tierLabel) ?? "Нет активного производства")
+                            Text(tierLabel(tier))
                                 .font(.system(size: 12.5, weight: active ? .semibold : .regular))
                                 .foregroundStyle(active ? Color.accentColor : .primary)
                                 .lineLimit(1)
@@ -413,6 +421,8 @@ struct MyCasesView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityValue(active ? "Выбрано" : "Не выбрано")
+                    .accessibilityHint(active ? "Нажмите, чтобы убрать звено из выбора" : "Нажмите, чтобы добавить звено к выбору")
                 }
             }
             .padding(.horizontal, 10).padding(.top, 2)
@@ -446,6 +456,11 @@ struct MyCasesView: View {
                 .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 .overlay(Divider(), alignment: .top)
+
+            Toggle("Показывать завершённые", isOn: $router.showCompleted)
+                .font(.system(size: 12.5))
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .accessibilityHint("Включает завершённые дела и фильтры по их истории")
         }
         }
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
@@ -721,7 +736,7 @@ private struct CollectionRow: View {
 
     var body: some View {
         let active = router.folder == name
-        Button { router.folder = name; router.stageFilter = nil } label: {
+        Button { router.folder = name } label: {
             HStack(spacing: 9) {
                 Image(systemName: "folder.fill").font(.system(size: 11))
                     .foregroundStyle(Color(red: 0.5, green: 0.69, blue: 0.92))

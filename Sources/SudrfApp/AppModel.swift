@@ -72,12 +72,10 @@ final class AppRouter: ObservableObject {
     @Published var myView: MyCasesMode = .list
     /// Выбранная подборка («Все дела» — без фильтра).
     @Published var folder: String = "Все дела"
-    @Published var stageFilter: CaseStageKind? = nil
-    /// `nil` означает «Нет активного производства»; отдельный флаг отличает
-    /// этот фильтр от отсутствия фильтра вообще.
-    @Published var tierFilter: CourtTier? = nil
-    @Published var noActiveProductionFilter = false
-    @Published var prodFilter: ProductionType? = nil
+    @Published var productionFilters = Set<ProductionType>()
+    @Published var stageFilters = Set<CaseStageKind>()
+    @Published var tierFilters = Set<CourtTier>()
+    @Published var showCompleted = false
     /// Живой фильтр таблицы: номер + стороны + подборки + суд.
     @Published var query: String = ""
     @Published var sortBy: CaseSort = .activity
@@ -2519,6 +2517,136 @@ final class AppRouter: ObservableObject {
         }
     }
 
+    private static func filterFacets(
+        context: MovementContext?, movement: CaseMovement?, savedStage: CaseStageKind?,
+        currentInstance: CaseInstance?
+    ) -> (stage: CaseStageKind?, tier: CourtTier?, stages: Set<CaseStageKind>, tiers: Set<CourtTier>) {
+        let rootClassification = MaterialProductionContext.resolve(
+            context: context, movement: movement)
+        let rootProduction = rootClassification.production
+        let rootStage: CaseStageKind? = if let context, let rootProduction {
+            CaseLifecycleResolver.stage(for: context.baseInstanceLevel, production: rootProduction)
+        } else { nil }
+        var stages = Set<CaseStageKind>()
+        var tiers = Set<CourtTier>()
+        if let rootStage {
+            stages.insert(rootStage)
+            if let tier = sourceContextTier(context) { tiers.insert(tier) }
+        }
+
+        let instances = movement?.instances ?? []
+        if let movement {
+            for instance in instances where isRealProductionInstance(instance) {
+                let classification = MaterialProductionContext.resolve(
+                    instance: instance, movement: movement, baseContext: context)
+                // Legacy movement caches can lack per-card source evidence.
+                // The verified dossier production still classifies its real
+                // non-material cards; materials must prove their own relation.
+                let production = classification.production
+                    ?? (classification.basis != .conflict && !classification.isMaterial
+                        ? rootProduction : nil)
+                guard let production,
+                      let stage = CaseLifecycleResolver.stage(for: instance, production: production)
+                else { continue }
+                stages.insert(stage)
+                if let tier = verifiedTier(for: instance, context: context) { tiers.insert(tier) }
+            }
+        }
+
+        let currentStage = savedStage ?? (movement == nil ? rootStage : nil)
+        let currentTier: CourtTier?
+        if let currentStage, currentStage != .done {
+            if let movement, let currentInstance, isRealProductionInstance(currentInstance) {
+                let classification = MaterialProductionContext.resolve(
+                    instance: currentInstance, movement: movement, baseContext: context)
+                let production = classification.production
+                    ?? (classification.basis != .conflict && !classification.isMaterial
+                        ? rootProduction : nil)
+                if let production,
+                   CaseLifecycleResolver.stage(for: currentInstance, production: production) == currentStage {
+                    currentTier = verifiedTier(for: currentInstance, context: context)
+                } else {
+                    currentTier = nil
+                }
+            } else if movement == nil, currentStage == rootStage {
+                currentTier = sourceContextTier(context)
+            } else {
+                currentTier = nil
+            }
+        } else {
+            currentTier = nil
+        }
+        return (currentStage, currentTier, stages, tiers)
+    }
+
+    private static func isRealProductionInstance(_ instance: CaseInstance) -> Bool {
+        let number = instance.caseNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard instance.captchaFormURL == nil, instance.transientError != true,
+              !number.isEmpty, !["—", "–", "-", "…", "..."].contains(number)
+        else { return false }
+        guard let url = instance.sourceURL else { return true }
+        let host = sourceHost(instance.domain)
+        if MosGorSudRouting.isMosGorSud(domain: host) {
+            guard let urlHost = url.host,
+                  MosGorSudRouting.isMosGorSud(domain: urlHost) else { return false }
+            let cartoteki = CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }
+            return cartoteki.contains {
+                SourceNativeCardLocator.mosgorsud(url: url, cartoteka: $0) != nil
+            }
+        }
+        if ["vsrf.ru", "www.vsrf.ru"].contains(host) {
+            return SourceNativeCardLocator.vsrf(url: url) != nil
+        }
+        guard let card = try? SudrfCaseCardLink(url) else { return false }
+        return card.moduleHost == SudrfHost.moduleHost(host)
+    }
+
+    private static func verifiedTier(for instance: CaseInstance,
+                                     context: MovementContext?) -> CourtTier? {
+        let host = sourceHost(instance.domain)
+        var tiers = Set<CourtTier>()
+        if let level = instance.sourceEvidence?.sourceCourtLevel {
+            tiers.insert(MovementDerivation.tier(for: level))
+        }
+        if MosGorSudRouting.isMosGorSud(domain: host), let url = instance.sourceURL,
+           let alias = SourceNativeCardLocator.mosgorsudCourtKey(url: url) {
+            if alias == MosGorSudCourtDirectory.mgsAlias {
+                tiers.insert(.subject)
+            } else if MosGorSudCourtDirectory.districtCourts.contains(where: { $0.alias == alias }) {
+                tiers.insert(.district)
+            }
+        }
+        if let context, let level = sourceContextLevel(context),
+           !MosGorSudRouting.isMosGorSud(domain: host),
+           [context.searchDomain, context.displayDomain]
+            .contains(where: { SudrfHost.moduleHost(sourceHost($0)) == SudrfHost.moduleHost(host) }) {
+            tiers.insert(MovementDerivation.tier(for: level))
+        }
+        if let level = CourtDirectory.court(forDomain: host)?.level {
+            tiers.insert(MovementDerivation.tier(for: level))
+        }
+        if ["vsrf.ru", "www.vsrf.ru"].contains(host) { tiers.insert(.supreme) }
+        return tiers.count == 1 ? tiers.first : nil
+    }
+
+    private static func sourceContextTier(_ context: MovementContext?) -> CourtTier? {
+        context.flatMap(sourceContextLevel).map { MovementDerivation.tier(for: $0) }
+    }
+
+    private static func sourceContextLevel(_ context: MovementContext) -> CourtLevel? {
+        guard let level = CourtLevel(rawValue: context.courtLevelRaw) else { return nil }
+        let searchHost = SudrfHost.moduleHost(sourceHost(context.searchDomain))
+        let displayHost = SudrfHost.moduleHost(sourceHost(context.displayDomain))
+        guard !searchHost.isEmpty, searchHost == displayHost else { return nil }
+        return level
+    }
+
+    private static func sourceHost(_ value: String) -> String {
+        let candidate = value.contains("://") ? value : "https://\(value)"
+        if let host = URLComponents(string: candidate)?.host { return host.lowercased() }
+        return value.lowercased().split(separator: "/").first.map(String.init) ?? value.lowercased()
+    }
+
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
                                  stage: CaseStageKind,
                                  presentation: CaseLifecyclePresentation? = nil) -> TrackedCase {
@@ -2526,6 +2654,11 @@ final class AppRouter: ObservableObject {
         let today = DateUtil.today
         let production = productionType(for: rec)
         let ctx = rec.context
+        let savedStage = presentation?.stage
+            ?? snap.flatMap { CaseStageKind(rawValue: $0.stageRaw) }
+        let facets = Self.filterFacets(context: ctx, movement: rec.movement,
+                                       savedStage: savedStage,
+                                       currentInstance: presentation?.currentInstance)
         let recordDomain = ctx?.displayDomain ?? rec.displayDomain
         let recordCourt = CourtNamePresentation.readableCourtName(
             domain: recordDomain, savedTitle: rec.courtTitle,
@@ -2581,6 +2714,10 @@ final class AppRouter: ObservableObject {
                                  production: production), newDot: isNew,
                 lastEventDate: past ?? rec.addedAt, nextEventDate: next,
                 nextEventHelp: presentation?.nextEventHelp)
+            row.filterStage = facets.stage
+            row.filterTier = facets.tier
+            row.historicalStages = facets.stages
+            row.historicalTiers = facets.tiers
             row.searchFields = LocalCaseFilter.fields(
                 for: row, record: rec, context: ctx, movement: rec.movement,
                 snapshot: snap)
@@ -2614,6 +2751,10 @@ final class AppRouter: ObservableObject {
             steps: makeSteps(["active", "todo", "todo", "todo"],
                              production: production), newDot: false,
             lastEventDate: rec.addedAt, nextEventDate: nil)
+        row.filterStage = facets.stage
+        row.filterTier = facets.tier
+        row.historicalStages = facets.stages
+        row.historicalTiers = facets.tiers
         row.searchFields = LocalCaseFilter.fields(
             for: row, record: rec, context: ctx, movement: rec.movement,
             snapshot: snap)
@@ -3038,19 +3179,66 @@ final class AppRouter: ObservableObject {
 
     // MARK: Фильтры «Моих дел»
 
-    /// Таблица «Списком»: подборка ∧ вид производства ∧ стадия ∧ звено ∧ живой запрос,
-    /// затем выбранная сортировка. Фильтры комбинируются (И).
+    private enum SidebarFilterGroup: Equatable { case collection, production, stage, tier }
+
+    /// Counts use the same constraints as the table, while leaving the counted
+    /// group's own selection out so its other choices remain available.
+    var collectionFilterCounts: [(String, Int)] {
+        let rows = filterRows(excluding: .collection)
+        return collections.map { name, _ in
+            (name, name == "Все дела" ? rows.count : rows.filter { $0.collections.contains(name) }.count)
+        }
+    }
+
+    var productionFilterCounts: [(ProductionType, Int)] {
+        let rows = filterRows(excluding: .production)
+        return ProductionType.allCases.map { value in
+            (value, rows.filter { $0.production == value }.count)
+        }
+    }
+
+    var stageFilterCounts: [(CaseStageKind, Int)] {
+        let rows = filterRows(excluding: .stage)
+        let stages: [CaseStageKind] = [.first, .appeal, .cassation, .supervisory]
+        return stages.map { value in
+            (value, rows.filter { stageMatches($0, value) }.count)
+        }
+    }
+
+    var tierFilterCounts: [(CourtTier, Int)] {
+        let rows = filterRows(excluding: .tier)
+        let tiers: [CourtTier] = [.magistrate, .district, .subject, .appeal, .cassation, .supreme]
+        return tiers.map { value in
+            (value, rows.filter { tierMatches($0, value) }.count)
+        }
+    }
+
+    /// One result set feeds all four views, before their presentation grouping.
     func filteredCases() -> [TrackedCase] {
+        Self.sorted(filterRows(excluding: nil), by: sortBy)
+    }
+
+    private func filterRows(excluding group: SidebarFilterGroup?) -> [TrackedCase] {
         let q = LocalCaseFilter.Query(query)
-        let rows = cases.filter { c in
-            (folder == "Все дела" || c.collections.contains(folder))
-            && (prodFilter == nil || c.production == prodFilter)
-            && (stageFilter == nil || c.stage == stageFilter)
-            && (!noActiveProductionFilter || c.courtTier == nil)
-            && (tierFilter == nil || c.courtTier == tierFilter)
+        return cases.filter { c in
+            (showCompleted || c.filterStage != .done)
+            && (group == .collection || folder == "Все дела" || c.collections.contains(folder))
+            && (group == .production || productionFilters.isEmpty
+                || c.production.map(productionFilters.contains) == true)
+            && (group == .stage || stageFilters.isEmpty
+                || stageFilters.contains(where: { stageMatches(c, $0) }))
+            && (group == .tier || tierFilters.isEmpty
+                || tierFilters.contains(where: { tierMatches(c, $0) }))
             && (q.isEmpty || LocalCaseFilter.matches(c, query: q))
         }
-        return Self.sorted(rows, by: sortBy)
+    }
+
+    private func stageMatches(_ c: TrackedCase, _ stage: CaseStageKind) -> Bool {
+        showCompleted ? c.historicalStages.contains(stage) : c.filterStage == stage
+    }
+
+    private func tierMatches(_ c: TrackedCase, _ tier: CourtTier) -> Bool {
+        showCompleted ? c.historicalTiers.contains(tier) : c.filterTier == tier
     }
 
     /// Вхождение запроса в текущий/прежний номер + стороны + подборки + суд
@@ -3114,7 +3302,6 @@ final class AppRouter: ObservableObject {
         knownCollections.removeAll { $0 == name }
         if folder == name {
             folder = "Все дела"
-            stageFilter = nil
         }
         reload(spotlightScope: records.isEmpty ? nil : .cases(Set(records.map(\.key))))
         return true

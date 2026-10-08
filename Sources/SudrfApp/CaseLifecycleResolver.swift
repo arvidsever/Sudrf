@@ -777,9 +777,14 @@ enum CaseLifecycleResolver {
         }
     }
 
-    private static func stage(for instance: CaseInstance,
-                              production: ProductionType?) -> CaseStageKind? {
-        switch instance.level {
+    static func stage(for instance: CaseInstance,
+                      production: ProductionType?) -> CaseStageKind? {
+        stage(for: instance.level, production: production)
+    }
+
+    static func stage(for level: CaseInstance.Level,
+                      production: ProductionType?) -> CaseStageKind? {
+        switch level {
         case .first, .material: return .first
         case .appeal: return .appeal
         case .cassation, .vsCassation:

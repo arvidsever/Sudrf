@@ -87,7 +87,7 @@ extension Notification.Name {
             }
             let data = bitmap.representation(using: .png, properties: [:])!
             let output = URL(fileURLWithPath: "/private/tmp/sudrf-406/screenshots", isDirectory: true)
-            let name = router?.stageFilter?.rawValue ?? "all"
+            let name = router?.stageFilters.map(\.rawValue).sorted().joined(separator: "_") ?? "all"
             let panel = NSSavePanel()
             panel.directoryURL = output
             panel.nameFieldStringValue = "cases-" + name + ".png"

@@ -78,7 +78,7 @@ final class Issue128DeadlineVisualTests: XCTestCase {
         NSApp.activate(ignoringOtherApps: true)
         try await Task.sleep(for: .milliseconds(400))
         try capture(window, to: output.appendingPathComponent("overview.png"))
-        router.stageFilter = .first
+        router.stageFilters = [.first]
         router.myView = .stages
         XCTAssertEqual(router.filteredCases().count, 3)
         show(AnyView(MyCasesView().environmentObject(router)), in: window)

@@ -175,15 +175,134 @@ enum SummaryStaleness {
     }
 }
 
-enum SudrfSchemaV1: VersionedSchema {
-    static let versionIdentifier = Schema.Version(1, 0, 0)
+/// First tracked-case store, used by v0.38–v0.39. It predates `judicialUID`
+/// and was created without a versioned migration plan. Keep this exact schema
+/// so SwiftData can identify that unversioned store before migrating it to V1.
+enum SudrfSchemaV038: VersionedSchema {
+    static let versionIdentifier = Schema.Version(0, 38, 0)
+
+    @Model
+    final class TrackedCaseRecord {
+        @Attribute(.unique) var key: String
+        var addedAt: Date
+        var seenAt: Date?
+        var folderName: String
+        var collectionNames: [String] = []
+        var caseNumber: String
+        var courtTitle: String
+        var displayDomain: String
+        var contextData: Data
+        var snapshotData: Data?
+        var movementData: Data? = nil
+        var movementFetchedAt: Date? = nil
+
+        init(key: String, collections: [String], caseNumber: String,
+             courtTitle: String, displayDomain: String, contextData: Data,
+             snapshotData: Data?) {
+            self.key = key
+            self.addedAt = Date()
+            self.seenAt = nil
+            self.folderName = ""
+            self.collectionNames = collections
+            self.caseNumber = caseNumber
+            self.courtTitle = courtTitle
+            self.displayDomain = displayDomain
+            self.contextData = contextData
+            self.snapshotData = snapshotData
+        }
+    }
+
     static var models: [any PersistentModel.Type] { [TrackedCaseRecord.self] }
 }
 
+/// Exact V1 model from migration plan commit 075ef3c. Do not point historical
+/// schemas at the live TrackedCaseRecord: its later columns change the schema
+/// fingerprint and make old stores impossible to classify safely.
+enum SudrfSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+
+    @Model
+    final class TrackedCaseRecord {
+        @Attribute(.unique) var key: String
+        var addedAt: Date
+        var seenAt: Date?
+        var folderName: String
+        var collectionNames: [String] = []
+        var caseNumber: String
+        var courtTitle: String
+        var displayDomain: String
+        var judicialUID: String? = nil
+        var contextData: Data
+        var snapshotData: Data?
+        var movementData: Data? = nil
+        var movementFetchedAt: Date? = nil
+
+        init(key: String, collections: [String], caseNumber: String,
+             courtTitle: String, displayDomain: String, contextData: Data,
+             snapshotData: Data?) {
+            self.key = key
+            self.addedAt = Date()
+            self.seenAt = nil
+            self.folderName = ""
+            self.collectionNames = collections
+            self.caseNumber = caseNumber
+            self.courtTitle = courtTitle
+            self.displayDomain = displayDomain
+            self.contextData = contextData
+            self.snapshotData = snapshotData
+        }
+    }
+
+    static var models: [any PersistentModel.Type] { [TrackedCaseRecord.self] }
+}
+
+/// Exact V2 declaration from 075ef3c: V1's tracked-case entity plus the
+/// published-act projection. The nested projection is frozen with its V2
+/// columns even though the live entity has since gained implementation detail.
 enum SudrfSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
+
+    @Model
+    final class CourtActRecord {
+        @Attribute(.unique) var id: String
+        var caseKey: String
+        var sourceActID: String
+        var caseNumber: String
+        var judicialUID: String?
+        var court: String
+        var instanceLevel: String
+        var kind: String
+        var actDate: String
+        var sourceText: String
+        var sourceHash: String
+        var paragraphData: Data
+        var paragraphizerVersion: Int = 1
+        var identityVersion: Int = 1
+        var semanticKey: String = ""
+        var fetchedAt: Date
+
+        init(id: String, caseKey: String, sourceActID: String, caseNumber: String,
+             judicialUID: String?, court: String, instanceLevel: String,
+             kind: String, actDate: String, sourceText: String, sourceHash: String,
+             paragraphData: Data, fetchedAt: Date) {
+            self.id = id
+            self.caseKey = caseKey
+            self.sourceActID = sourceActID
+            self.caseNumber = caseNumber
+            self.judicialUID = judicialUID
+            self.court = court
+            self.instanceLevel = instanceLevel
+            self.kind = kind
+            self.actDate = actDate
+            self.sourceText = sourceText
+            self.sourceHash = sourceHash
+            self.paragraphData = paragraphData
+            self.fetchedAt = fetchedAt
+        }
+    }
+
     static var models: [any PersistentModel.Type] {
-        [TrackedCaseRecord.self, CourtActRecord.self]
+        [SudrfSchemaV1.TrackedCaseRecord.self, CourtActRecord.self]
     }
 }
 
@@ -374,12 +493,14 @@ enum SudrfSchemaV7: VersionedSchema {
 
 enum SudrfSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SudrfSchemaV1.self, SudrfSchemaV2.self, SudrfSchemaV3.self,
+        [SudrfSchemaV038.self, SudrfSchemaV1.self, SudrfSchemaV2.self,
+         SudrfSchemaV3.self,
          SudrfSchemaV4.self, SudrfSchemaV5.self, SudrfSchemaV6.self]
             + [SudrfSchemaV7.self]
     }
     static var stages: [MigrationStage] {
         [
+            .lightweight(fromVersion: SudrfSchemaV038.self, toVersion: SudrfSchemaV1.self),
             .lightweight(fromVersion: SudrfSchemaV1.self, toVersion: SudrfSchemaV2.self),
             .lightweight(fromVersion: SudrfSchemaV2.self, toVersion: SudrfSchemaV3.self),
             .lightweight(fromVersion: SudrfSchemaV3.self, toVersion: SudrfSchemaV4.self),

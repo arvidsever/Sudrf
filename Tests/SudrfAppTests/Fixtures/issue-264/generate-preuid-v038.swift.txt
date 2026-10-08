@@ -1,0 +1,74 @@
+import Foundation
+import XCTest
+import SwiftData
+import SudrfKit
+@testable import SudrfApp
+
+final class Issue264FixtureGeneratorTests: XCTestCase {
+    @MainActor
+    func testGeneratePreUIDStoreFromV038Source() throws {
+        let root = try outputRoot()
+        let storeURL = root.appendingPathComponent("pre-uid-v0.38.0.store")
+        let schema = Schema([TrackedCaseRecord.self])
+        let configuration = ModelConfiguration(
+            "Issue264Fixture", schema: schema, url: storeURL, cloudKitDatabase: .none)
+
+        do {
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            let context = ModelContext(container)
+            for index in 1...2 {
+                let number = "2-\(index)/2024"
+                let movementContext = fixtureContext(number: number, index: index)
+                let act = CaseAct(
+                    id: "fixture-act-\(index)", title: "Решение",
+                    date: "01.02.2024", courtShort: "Fixture court",
+                    instanceLevel: .first)
+                let movement = CaseMovement(
+                    uid: "fixture-uid-\(index)", caseNumber: number, inForce: false,
+                    instances: [], complaints: [:], acts: [act],
+                    actBodies: [act.id: "Synthetic judgment text \(index)"])
+                let record = TrackedCaseRecord(
+                    key: movementContext.key, collections: ["Fixture", "Archive"],
+                    caseNumber: number, courtTitle: movementContext.courtTitle,
+                    displayDomain: movementContext.displayDomain,
+                    contextData: try JSONEncoder().encode(movementContext),
+                    snapshotData: try JSONEncoder().encode(fixtureSnapshot(index: index)))
+                record.folderName = "Legacy folder \(index)"
+                record.movementData = try JSONEncoder().encode(movement)
+                record.movementFetchedAt = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+                context.insert(record)
+            }
+            try context.save()
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storeURL.path))
+    }
+
+    private func outputRoot() throws -> URL {
+        guard let path = ProcessInfo.processInfo.environment["ISSUE264_FIXTURE_OUTPUT"] else {
+            throw XCTSkip("Set ISSUE264_FIXTURE_OUTPUT to an isolated directory.")
+        }
+        let root = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func fixtureContext(number: String, index: Int) -> MovementContext {
+        MovementContext(
+            branchRaw: "general", region: "Fixture",
+            searchDomain: "fixture-\(index).invalid", displayDomain: "fixture.invalid",
+            courtTitle: "Synthetic Court", courtLevelRaw: "district",
+            courtCode: nil, cartotekaId: "g1", cartotekaLevelRaw: "district",
+            caseNumber: number, caseID: "fixture-card-\(index)",
+            caseUID: "fixture-link-\(index)")
+    }
+
+    private func fixtureSnapshot(index: Int) -> CaseSnapshot {
+        CaseSnapshot(
+            uid: "fixture-uid-\(index)", inForce: false, category: "Synthetic",
+            partiesShort: "Synthetic parties \(index)", leadCharges: nil,
+            secondPartyLine: nil, stageRaw: "first", stageTag: "fixture",
+            statusText: "Synthetic status", statusChipRaw: "blue",
+            lastEvent: "Synthetic event", nextEvent: "Synthetic next event",
+            nextChipRaw: "gray", steps: ["active"], sessions: [], deadlines: [])
+    }
+}

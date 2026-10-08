@@ -65,7 +65,7 @@
 | [#357](https://github.com/arvidsever/Sudrf/issues/357) | Убрать внутренние ID правил из колонки «Дальше» и перенос посреди слов. |
 | [#364](https://github.com/arvidsever/Sudrf/issues/364) | Выровнять карточки «Моих дел», показать вид производства и однозначную метку стадии. |
 | [#324](https://github.com/arvidsever/Sudrf/issues/324) | Мультивыбор фильтров «Моих дел», включая «всё, кроме завершённых». |
-| [#264](https://github.com/arvidsever/Sudrf/issues/264) | Проверить upgrade реальных V1/V2 баз до любой новой миграции схемы; gate для #333. |
+| [#264](https://github.com/arvidsever/Sudrf/issues/264) | V0.38 без УИД, V0.40, V1/V2/V3 → V7 проверены на stores исторического кода; 43 профильных теста и review пройдены. Полный gate/CI остаётся перед #333. [QA](qa/issue-264/README.md). |
 | [#333](https://github.com/arvidsever/Sudrf/issues/333) | После gate #264 добавить необязательное короткое название дела для календаря. |
 | [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. |
 | [#186](https://github.com/arvidsever/Sudrf/issues/186) | Проверить Spotlight identity Debug/Developer ID при общем bundle ID. |

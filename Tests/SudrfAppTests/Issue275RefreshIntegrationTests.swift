@@ -151,12 +151,9 @@ final class Issue275RefreshIntegrationTests: XCTestCase {
         XCTAssertNil(router.cases.first?.courtTier)
         XCTAssertFalse(router.stageCounts.contains { $0.0 == .cassation })
         XCTAssertEqual(router.stageCounts.first { $0.0 == .done }?.1, 1)
-        router.stageFilter = .cassation
+        router.stageFilters = [.cassation]
         XCTAssertTrue(router.filteredCases().isEmpty)
-        router.stageFilter = .done
-        XCTAssertEqual(router.filteredCases().count, 1)
-        router.stageFilter = nil
-        router.noActiveProductionFilter = true
+        router.showCompleted = true
         XCTAssertEqual(router.filteredCases().count, 1)
     }
 

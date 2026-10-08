@@ -32,6 +32,7 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
             nextEventDate: day,
             steps: [tag],
             currentTier: nil,
+            currentInstance: nil,
             currentReviewNumber: nil,
             nextEventCourt: nil)
     }

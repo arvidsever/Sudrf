@@ -142,6 +142,9 @@ struct CaseLifecyclePresentation {
     var steps: [String]
     /// Звено текущего производства. Для завершённых дел отсутствует.
     var currentTier: CourtTier?
+    /// Точная карточка, выбранная резолвером жизненного цикла как текущая.
+    /// Нужна производным представлениям, которым нельзя выбирать по дате массива.
+    var currentInstance: CaseInstance? = nil
     /// Номер текущей инстанции пересмотра для второй строки мониторинга.
     /// Не персистируется: вычисляется из `CaseLifecycleResolver.currentInstance`.
     var currentReviewNumber: String?
@@ -601,6 +604,7 @@ enum MovementDerivation {
             nextEventDate: nextEventDate,
             steps: resolution.steps,
             currentTier: currentTier,
+            currentInstance: resolution.currentInstance,
             currentReviewNumber: currentReviewNumber,
             nextEventCourt: nextEventCourt,
             nextEventHelp: nextEventHelp)

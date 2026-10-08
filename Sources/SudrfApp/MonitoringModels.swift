@@ -68,7 +68,7 @@ enum MyCasesMode: String, CaseIterable { case list, stages, prods, clients
 /// картотеке (`CartotekaRegistry.matches`): один и тот же префикс на разных
 /// звеньях значит разное («2-…»: район — гражданское, суд субъекта — уголовное).
 /// Без звена — эвристика по номеру через канонический `ProcessKind.detect`.
-enum ProductionType: String, CaseIterable {
+enum ProductionType: String, CaseIterable, Hashable {
     case civil, kas, crim, koap
 
     /// Категория по ключу картотеки (`Cartoteka.id`): `u*` — уголовное,
@@ -235,7 +235,7 @@ enum FeedTypeFilter: CaseIterable, Hashable {
     }
 }
 
-enum CaseStageKind: String { case first, appeal, cassation, supervisory, done
+enum CaseStageKind: String, CaseIterable, Hashable { case first, appeal, cassation, supervisory, done
     var label: String {
         switch self {
         case .first:     return "Первая инстанция"
@@ -253,6 +253,19 @@ enum CaseStageKind: String { case first, appeal, cassation, supervisory, done
         case .supervisory: return Color(red: 0.69, green: 0.32, blue: 0.87)
         case .done:      return Color.primary.opacity(0.25)
         }
+    }
+}
+
+enum MyCasesFilterStorage {
+    static func decode<Value: RawRepresentable & Hashable>(
+        _ raw: String, as type: Value.Type
+    ) -> Set<Value> where Value.RawValue == String {
+        Set(raw.split(separator: ",").compactMap { Value(rawValue: String($0)) })
+    }
+
+    static func encode<Value: RawRepresentable & Hashable>(_ values: Set<Value>) -> String
+    where Value.RawValue == String {
+        values.map(\.rawValue).sorted().joined(separator: ",")
     }
 }
 
@@ -408,6 +421,11 @@ struct TrackedCase: Identifiable {
     /// Подборки, в которых состоит дело (доверитель, тема — что угодно).
     var collections: [String]
     var stage: CaseStageKind
+    /// Filter facets are computed from confirmed source instances, not display fallbacks.
+    var filterStage: CaseStageKind?
+    var filterTier: CourtTier?
+    var historicalStages = Set<CaseStageKind>()
+    var historicalTiers = Set<CourtTier>()
     var stageTag: String
     var subject: String
     /// Суд для подписи: инстанция ближайшего события (#100).

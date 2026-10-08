@@ -17,7 +17,7 @@
             let screen = try Issue372VisualTests().screen()
             window = screen.0; router = screen.1
             if ProcessInfo.processInfo.environment["SUDRF_DEADLINE372_QA_SCREEN"] == "cases" {
-                screen.1.stageFilter = .first
+                screen.1.stageFilters = [.first]
                 screen.1.myView = .stages
                 screen.0.contentView = NSHostingView(rootView: MyCasesView()
                     .environmentObject(screen.1).environment(\.colorScheme, .light)

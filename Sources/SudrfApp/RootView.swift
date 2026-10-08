@@ -171,6 +171,11 @@ private struct StorageStartupLoadingView: View {
 /// поэтому записать данные во временную базу невозможно.
 private struct OperationalRootView: View {
     @ObservedObject var router: AppRouter
+    @SceneStorage("myCases.productionFilters") private var storedProductionFilters = ""
+    @SceneStorage("myCases.stageFilters") private var storedStageFilters = ""
+    @SceneStorage("myCases.tierFilters") private var storedTierFilters = ""
+    @SceneStorage("myCases.showCompleted") private var storedShowCompleted = false
+    @State private var restoredMyCasesFilters = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -219,6 +224,23 @@ private struct OperationalRootView: View {
         .background(WindowChrome())
         .modelContainer(router.modelContainer)
         .frame(minWidth: 1180, minHeight: 720)
+        .onAppear(perform: restoreMyCasesFilters)
+        .onChange(of: router.productionFilters) { _, values in
+            guard restoredMyCasesFilters else { return }
+            storedProductionFilters = MyCasesFilterStorage.encode(values)
+        }
+        .onChange(of: router.stageFilters) { _, values in
+            guard restoredMyCasesFilters else { return }
+            storedStageFilters = MyCasesFilterStorage.encode(Set(values.filter { $0 != .done }))
+        }
+        .onChange(of: router.tierFilters) { _, values in
+            guard restoredMyCasesFilters else { return }
+            storedTierFilters = MyCasesFilterStorage.encode(values)
+        }
+        .onChange(of: router.showCompleted) { _, value in
+            guard restoredMyCasesFilters else { return }
+            storedShowCompleted = value
+        }
         .animation(.easeOut(duration: 0.18), value: router.section)
         .animation(.easeOut(duration: 0.18), value: router.openedCase)
         .onReceive(NotificationCenter.default.publisher(for: .sudrfImportCases)) { _ in
@@ -276,6 +298,16 @@ private struct OperationalRootView: View {
         } message: {
             Text(router.persistenceError ?? "")
         }
+    }
+
+    private func restoreMyCasesFilters() {
+        guard !restoredMyCasesFilters else { return }
+        restoredMyCasesFilters = true
+        router.productionFilters = MyCasesFilterStorage.decode(storedProductionFilters, as: ProductionType.self)
+        router.stageFilters = Set(MyCasesFilterStorage.decode(storedStageFilters, as: CaseStageKind.self)
+            .filter { $0 != .done })
+        router.tierFilters = MyCasesFilterStorage.decode(storedTierFilters, as: CourtTier.self)
+        router.showCompleted = storedShowCompleted
     }
 
     /// Меню «Файл → Импортировать дела из CSV…»: выбор файла и запуск импорта.

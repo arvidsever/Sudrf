@@ -6,6 +6,16 @@ import SwiftData
 final class DataCatalogTests: XCTestCase {
     private enum ForcedPreparationSaveError: Error { case forced }
 
+    private func syntheticMovement(caseNumber: String, actID: String,
+                                   uid: String = "fixture-uid") -> CaseMovement {
+        let act = CaseAct(id: actID, title: "Решение", date: "01.02.2025",
+                          courtShort: "Synthetic Court", instanceLevel: .first)
+        return CaseMovement(
+            uid: uid, caseNumber: caseNumber, inForce: false,
+            instances: [], complaints: [:], acts: [act],
+            actBodies: [actID: "Synthetic judgment text"])
+    }
+
     /// Смена prompt или pipeline делает сохранённую сводку устаревшей: показывать
     /// результат прежнего prompt как актуальный нельзя. Без текущей конфигурации
     /// (нет ключа или согласия) сводку всё равно нельзя перегенерировать, поэтому
@@ -315,7 +325,9 @@ final class DataCatalogTests: XCTestCase {
             cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-9/2025")
         let lastSuccess = Date(timeIntervalSince1970: 1_700_000_000)
         let snapshotData = Data("legacy-snapshot".utf8)
-        let movementData = Data("legacy-movement".utf8)
+        let movementData = try JSONEncoder().encode(
+            syntheticMovement(caseNumber: legacyContext.caseNumber, actID: "v4-act",
+                              uid: "77RS0001-01-2025-000001-11"))
         let enforcementData = Data("legacy-enforcement".utf8)
 
         do {
@@ -347,7 +359,8 @@ final class DataCatalogTests: XCTestCase {
         let container = try ModelContainer(
             for: currentSchema, migrationPlan: SudrfSchemaMigrationPlan.self,
             configurations: configuration)
-        let migrated = try TrackedStore(container: container).all().first
+        let store = try TrackedStore(container: container)
+        let migrated = store.all().first
 
         XCTAssertEqual(migrated?.movementFetchedAt, lastSuccess)
         XCTAssertEqual(migrated?.folderName, "",
@@ -358,6 +371,9 @@ final class DataCatalogTests: XCTestCase {
         XCTAssertEqual(migrated?.movementData, movementData)
         XCTAssertEqual(migrated?.enforcementData, enforcementData)
         XCTAssertNil(migrated?.sourceRefreshAttempt)
+        XCTAssertEqual(store.courtActDocument(caseKey: legacyContext.key,
+                                              sourceActID: "v4-act")?.sourceText,
+                       "Synthetic judgment text")
     }
 
     @MainActor
@@ -398,6 +414,9 @@ final class DataCatalogTests: XCTestCase {
                 displayDomain: legacyContext.displayDomain,
                 contextData: try JSONEncoder().encode(legacyContext), snapshotData: nil)
             record.judicialUID = legacyContext.judicialUID
+            record.movementData = try JSONEncoder().encode(
+                syntheticMovement(caseNumber: legacyContext.caseNumber, actID: "v5-act",
+                                  uid: legacyContext.judicialUID!))
             context.insert(record)
             let duplicate = SudrfSchemaV5.TrackedCaseRecord(
                 key: duplicateContext.key, collections: ["Апелляция"],
@@ -433,6 +452,9 @@ final class DataCatalogTests: XCTestCase {
             XCTAssertEqual(firstState.cards.count, 2)
             XCTAssertNotNil(store.record(forLocator: legacyContext.key))
             XCTAssertNotNil(store.record(forLocator: duplicateContext.key))
+            XCTAssertEqual(store.courtActDocument(caseKey: legacyContext.key,
+                                                  sourceActID: "v5-act")?.sourceText,
+                           "Synthetic judgment text")
         }
 
         do {
@@ -451,6 +473,9 @@ final class DataCatalogTests: XCTestCase {
                 LogicalCaseState.self, from: XCTUnwrap(record.identityStateData)), firstState)
             XCTAssertEqual(record.key, legacyContext.key)
             XCTAssertNotNil(store.record(forLocator: duplicateContext.key))
+            XCTAssertEqual(store.courtActDocument(caseKey: legacyContext.key,
+                                                  sourceActID: "v5-act")?.sourceText,
+                           "Synthetic judgment text")
         }
     }
 
@@ -503,13 +528,16 @@ final class DataCatalogTests: XCTestCase {
                 cloudKitDatabase: .none)
             let container = try ModelContainer(for: schema, configurations: configuration)
             let context = ModelContext(container)
-            context.insert(SudrfSchemaV6.TrackedCaseRecord(
+            let record = SudrfSchemaV6.TrackedCaseRecord(
                 key: movementContext.key, collections: [],
                 caseNumber: movementContext.caseNumber,
                 courtTitle: movementContext.courtTitle,
                 displayDomain: movementContext.displayDomain,
                 contextData: try JSONEncoder().encode(movementContext),
-                snapshotData: nil))
+                snapshotData: nil)
+            record.movementData = try JSONEncoder().encode(
+                syntheticMovement(caseNumber: movementContext.caseNumber, actID: "v6-act"))
+            context.insert(record)
             try context.save()
         }
 
@@ -522,7 +550,11 @@ final class DataCatalogTests: XCTestCase {
             configurations: configuration)
         let store = try TrackedStore(container: container)
         let record = try XCTUnwrap(store.all().first)
+        XCTAssertEqual(record.key, movementContext.key)
         XCTAssertEqual(record.eventJournal, CaseEventJournal())
+        XCTAssertEqual(store.courtActDocument(caseKey: movementContext.key,
+                                              sourceActID: "v6-act")?.sourceText,
+                       "Synthetic judgment text")
     }
 
     @MainActor

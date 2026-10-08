@@ -36,6 +36,68 @@ final class Issue94RegistrationHistoryTests: XCTestCase {
         try XCTUnwrap(CartotekaRegistry.find(level: .district, id: id))
     }
 
+    func testCassationUIDRegistrationAcceptsItsOwnPublishedCourtTitle() async throws {
+        let court = Court(domain: "3kas.sudrf.ru",
+                          title: "Третий кассационный суд общей юрисдикции",
+                          level: .cassation)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
+        let priorURL = try XCTUnwrap(URL(string:
+            "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1001&case_uid=prior-guid&delo_id=\(cart.deloID)&new=\(cart.new)&srv_num=1"))
+        let prior = CaseSearchResult(
+            caseNumber: "88-1/2025", caseID: "1001", caseUID: "prior-guid",
+            cardURL: priorURL, courtTitle: court.title)
+        let base = CaseSearchResult(caseNumber: "88-2/2026", caseID: "2002",
+                                    caseUID: "current-guid")
+        let client = Issue94RegistrationHistoryClient(
+            rows: ["3kas.sudrf.ru/g3": [prior]],
+            cardsByID: ["2002": card(base.caseNumber)],
+            cardsByURL: [priorURL: card(prior.caseNumber, date: "01.01.2025")])
+
+        let movement = try await MovementService(client: client).movement(
+            for: base, court: court, cartoteka: cart)
+
+        XCTAssertEqual(Set(movement.instances.map(\.caseNumber)),
+                       Set([prior.caseNumber, base.caseNumber]))
+        XCTAssertEqual(movement.instances.first { $0.caseNumber == prior.caseNumber }?.sourceURL,
+                       priorURL)
+        XCTAssertNil(movement.incompleteHigherCourtDomains)
+        let fetched = await client.directURLs
+        XCTAssertEqual(fetched, [priorURL])
+    }
+
+    func testCassationUIDRegistrationRejectsContradictoryTitleOrLocator() async throws {
+        let court = Court(domain: "3kas.sudrf.ru",
+                          title: "Третий кассационный суд общей юрисдикции",
+                          level: .cassation)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
+        let validURL = "https://3kas.sudrf.ru/modules.php?name=sud_delo&name_op=case"
+            + "&case_id=1001&case_uid=prior-guid&delo_id=\(cart.deloID)&new=\(cart.new)&srv_num=1"
+        let base = CaseSearchResult(caseNumber: "88-2/2026", caseID: "2002",
+                                    caseUID: "current-guid")
+        for (title, locator) in [
+            ("Другой кассационный суд", validURL),
+            (court.title, validURL.replacingOccurrences(of: "case_id=1001", with: "case_id=9999")),
+            (court.title, validURL.replacingOccurrences(of: "case_uid=prior-guid", with: "case_uid=other-guid")),
+            (court.title, validURL.replacingOccurrences(of: "delo_id=\(cart.deloID)", with: "delo_id=5")),
+            (court.title, validURL.replacingOccurrences(of: "new=\(cart.new)", with: "new=0")),
+        ] {
+            let url = try XCTUnwrap(URL(string: locator))
+            let prior = CaseSearchResult(caseNumber: "88-1/2025", caseID: "1001",
+                                         caseUID: "prior-guid", cardURL: url, courtTitle: title)
+            let client = Issue94RegistrationHistoryClient(
+                rows: ["3kas.sudrf.ru/g3": [prior]],
+                cardsByID: ["2002": card(base.caseNumber)],
+                cardsByURL: [url: card(prior.caseNumber)])
+            let movement = try await MovementService(client: client).movement(
+                for: base, court: court, cartoteka: cart)
+            XCTAssertEqual(movement.instances.map(\.caseNumber), [base.caseNumber], locator)
+            XCTAssertEqual(movement.incompleteHigherCourtDomains, [court.domain], locator)
+            let fetched = await client.directURLs
+            XCTAssertTrue(fetched.isEmpty, locator)
+        }
+    }
+
     func testG1RegistrationHistoryKeepsActsAppealOrderAndMaterialSeparate() async throws {
         let priorURL = cardURL("prior", srvNum: "9")
         let current = row("2-4461/2026 ~ М-2633/2026", id: "current", date: "10.04.2026")

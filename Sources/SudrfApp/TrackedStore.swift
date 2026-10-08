@@ -1000,7 +1000,7 @@ final class TrackedStore {
     /// shared reconciler-ом устраняет только подтверждённые UID-дубли. Это
     /// повторяемо: второй запуск видит уже один persistent graph и ничего не
     /// меняет.
-    func reconcileStoredIdentity() throws -> IdentityReconciliationSummary {
+    func reconcileStoredIdentity(today: Date = DateUtil.today) throws -> IdentityReconciliationSummary {
         var summary = IdentityReconciliationSummary()
         let records = try allForMutation()
         let keys = records.map(\.key)
@@ -1062,7 +1062,8 @@ final class TrackedStore {
                 movement: record.movement, collections: record.collectionNames,
                 identityObservation: observation,
                 movementFetchedAt: record.movementFetchedAt,
-                updatesMovementFetchedAt: false)
+                updatesMovementFetchedAt: false,
+                today: today)
             let removed = before.subtracting(Set(try allForMutation().map(\.key)))
             summary.merged += removed.count
             summary.affectedKeys.formUnion(removed)
@@ -1071,7 +1072,7 @@ final class TrackedStore {
             }
             for oldKey in removed { summary.keyRemaps[oldKey] = survivor.key }
             if !removed.isEmpty {
-                let remainder = try reconcileStoredIdentity()
+                let remainder = try reconcileStoredIdentity(today: today)
                 summary.merged += remainder.merged
                 summary.keyRemaps.merge(remainder.keyRemaps) { _, latest in latest }
                 summary.affectedKeys.formUnion(remainder.affectedKeys)
@@ -1164,6 +1165,7 @@ final class TrackedStore {
                             movementFetchedAt: Date? = nil,
                             updatesMovementFetchedAt: Bool = true,
                             preserveActiveProposedDeadlinesOnPartial: Bool = false,
+                            today: Date = DateUtil.today,
                             saveChanges: Bool = true) throws -> TrackedCaseRecord {
         let observation = identityObservation
             ?? TrackedCaseIdentity.observation(context: ctx, movement: mv)
@@ -1220,6 +1222,7 @@ final class TrackedStore {
                     canonicalContext: ctx, canonicalCard: canonicalCard,
                     identityState: persistedState,
                     preserveActiveProposedDeadlinesOnPartial: preserveActiveProposedDeadlinesOnPartial,
+                    today: today,
                     saveChanges: saveChanges)
                 return survivor
             }
@@ -1233,6 +1236,7 @@ final class TrackedStore {
                     canonicalContext: canonical, canonicalCard: nil,
                     identityState: persistedState,
                     preserveActiveProposedDeadlinesOnPartial: preserveActiveProposedDeadlinesOnPartial,
+                    today: today,
                     saveChanges: false)
                 if preservesReviewRelationRefreshTime {
                     survivor.movementFetchedAt = previousMovementFetchedAt
@@ -1263,23 +1267,27 @@ final class TrackedStore {
                     let protectedActiveOccurrenceKeys = Set(oldSnapshots.flatMap { old in
                         old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey)
                     })
+                    var deferredRetention: [StoredDeadline] = []
                     var derived = MovementDerivation.snapshot(
-                        from: projectedMovement, context: canonicalContext)
+                        from: projectedMovement, context: canonicalContext, today: today)
                     if let snap {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
-                            derived, old: snap,
+                            derived, old: snap, today: today,
                             preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
                             movement: projectedMovement, context: canonicalContext,
-                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+                            deferredRetention: &deferredRetention)
                     }
                     if let cachedSnapshot {
                         derived = MovementDerivation.preservingConfirmedDeadlines(
-                            derived, old: cachedSnapshot,
+                            derived, old: cachedSnapshot, today: today,
                             preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
                             movement: projectedMovement, context: canonicalContext,
-                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+                            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+                            deferredRetention: &deferredRetention)
                     }
-                    projectedSnapshot = derived
+                    projectedSnapshot = MovementDerivation.applyingDeadlineRetention(
+                        to: derived, today: today, preserving: deferredRetention)
                 } else {
                     projectedSnapshot = cachedSnapshot ?? snap
                 }

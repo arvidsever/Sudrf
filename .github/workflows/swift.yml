@@ -41,7 +41,7 @@ jobs:
       - name: Install XcodeGen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
 
-      - name: Generate and build Xcode app target
+      - name: Generate and build isolated Xcode Debug app target
         run: |
           xcodegen generate
           xcodebuild \
@@ -54,9 +54,17 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
+      - name: Verify isolated Debug app identity
+        run: |
+          APP="$RUNNER_TEMP/SudrfDerivedData/Build/Products/Debug/Sudrf-Debug.app"
+          PLIST="$APP/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")" = "ru.sudrf.app.debug"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST")" = "Sudrf Debug"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$PLIST")" = "sudrf-debug"
+
       - name: Verify Xcode app contains production models
         run: |
-          RESOURCES="$RUNNER_TEMP/SudrfDerivedData/Build/Products/Debug/Sudrf.app/Contents/Resources"
+          RESOURCES="$RUNNER_TEMP/SudrfDerivedData/Build/Products/Debug/Sudrf-Debug.app/Contents/Resources"
           bash Scripts/verify-model.sh \
             --model-dir "$RESOURCES/model-captcha-numeric.mlmodelc" \
             --manifest Tests/CaptchaSolverTests/Fixtures/MODEL_MANIFEST.sha256

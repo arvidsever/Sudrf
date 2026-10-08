@@ -41,6 +41,75 @@ private actor RecordingSpotlightWriter: SpotlightIndexWriting {
     func snapshot() -> State { state }
 }
 
+private actor ControlledSpotlightWriter: SpotlightIndexWriting {
+    private let failuresBeforeSuccess: Int
+    private let failingAttempts: Set<Int>
+    private var indexAttempts = 0
+    private var indexedCaseFingerprints: [String: String] = [:]
+    private var attemptedCaseIDs: [[String]] = []
+    private var attemptedActIDs: [[String]] = []
+    private var pausedAttempt: Int?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    init(failuresBeforeSuccess: Int = 1, failingAttempts: Set<Int> = []) {
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+        self.failingAttempts = failingAttempts
+    }
+
+    func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {
+        indexAttempts += 1
+        attemptedCaseIDs.append(cases.map(\.id).sorted())
+        attemptedActIDs.append(acts.map(\.id).sorted())
+        if pausedAttempt == indexAttempts {
+            await withCheckedContinuation { releaseContinuation = $0 }
+            pausedAttempt = nil
+        }
+        guard indexAttempts > failuresBeforeSuccess, !failingAttempts.contains(indexAttempts) else {
+            throw NSError(domain: "SpotlightIntegrationTests", code: 1)
+        }
+        indexedCaseFingerprints.merge(
+            Dictionary(uniqueKeysWithValues: cases.map { ($0.id, $0.fingerprint) }),
+            uniquingKeysWith: { _, new in new })
+    }
+
+    func delete(caseIDs: [String], actIDs: [String]) {}
+
+    func deleteAll() { indexedCaseFingerprints.removeAll() }
+
+    func pauseIndexAttempt(_ count: Int) {
+        pausedAttempt = count
+    }
+
+    func waitUntilIndexAttemptStarts(_ count: Int, timeout: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while indexAttempts < count, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return indexAttempts >= count
+    }
+
+    func releaseIndexAttempt() {
+        pausedAttempt = nil
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+
+    func waitForIndexAttempts(_ count: Int, timeout: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
+            if indexAttempts >= count { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return indexAttempts >= count
+    }
+
+    func snapshot() -> (Int, [String: String], [[String]], [[String]]) {
+        (indexAttempts, indexedCaseFingerprints, attemptedCaseIDs, attemptedActIDs)
+    }
+}
+
 private actor DelayedSpotlightWriter: SpotlightIndexWriting {
     private var currentCaseIDs = Set<String>()
     private var currentActIDs = Set<String>()
@@ -87,6 +156,213 @@ private actor DelayedSpotlightWriter: SpotlightIndexWriting {
 }
 
 final class SpotlightIntegrationTests: XCTestCase {
+    private static func waitForManifest(
+        _ manifest: SpotlightManifestStore,
+        caseID: String,
+        fingerprint: String,
+        timeout: Duration
+    ) async -> SpotlightManifest {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var saved = await manifest.load()
+        while saved.cases[caseID] != fingerprint, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+            saved = await manifest.load()
+        }
+        return saved
+    }
+
+    private static func waitForActManifest(
+        _ manifest: SpotlightManifestStore,
+        actID: String,
+        fingerprint: String,
+        timeout: Duration
+    ) async -> SpotlightManifest {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var saved = await manifest.load()
+        while saved.acts[actID]?.fingerprint != fingerprint, clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+            saved = await manifest.load()
+        }
+        return saved
+    }
+
+    func testAppIdentityKeepsDebugLinksAndKeychainSeparate() throws {
+        let productionID = "ru.sudrf.app"
+        let debugID = AppIdentity.debugBundleIdentifier
+
+        XCTAssertNotEqual(productionID, debugID)
+        XCTAssertFalse(AppIdentity.isDebug(bundleIdentifier: productionID))
+        XCTAssertTrue(AppIdentity.isDebug(bundleIdentifier: debugID))
+        XCTAssertEqual(AppIdentity.urlScheme(bundleIdentifier: productionID), "sudrf")
+        XCTAssertEqual(AppIdentity.urlScheme(bundleIdentifier: debugID), "sudrf-debug")
+        XCTAssertEqual(AppIdentity.keychainService(bundleIdentifier: productionID),
+                       "ru.sudrf.app.ai-provider-key")
+        XCTAssertNotEqual(AppIdentity.keychainService(bundleIdentifier: productionID),
+                          AppIdentity.keychainService(bundleIdentifier: debugID))
+        let link = SudrfDeepLink.caseRecord(key: "debug/key")
+        let debugURL = try XCTUnwrap(link.url(bundleIdentifier: debugID))
+        XCTAssertEqual(debugURL.scheme, "sudrf-debug")
+        XCTAssertEqual(SudrfDeepLink(url: debugURL, bundleIdentifier: debugID), link)
+        XCTAssertNil(SudrfDeepLink(url: debugURL, bundleIdentifier: productionID))
+    }
+
+    @MainActor
+    func testScheduledSpotlightFailureKeepsManifestAndRetriesLatestSnapshot() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        _ = try store.upsert(context: context, snapshot: nil,
+                             movement: makeMovement(text: "Первый снимок."), collections: [])
+
+        let suite = "SpotlightRetryTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let writer = ControlledSpotlightWriter()
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        await indexer.scheduleSynchronization(scope: .full)
+        let firstAttemptStarted = await writer.waitForIndexAttempts(1, timeout: .seconds(2))
+        XCTAssertTrue(firstAttemptStarted)
+        let beforeRetry = await manifest.load()
+        XCTAssertEqual(beforeRetry, SpotlightManifest())
+
+        _ = try store.upsert(context: context, snapshot: nil,
+                             movement: makeMovement(text: "Обновлённый снимок."), collections: [])
+        await indexer.scheduleSynchronization(scope: .cases([context.key]))
+        let retryStarted = await writer.waitForIndexAttempts(2, timeout: .seconds(10))
+        XCTAssertTrue(retryStarted)
+        let catalog = CaseCatalog(container: store.container)
+        let currentSnapshot = try await catalog.caseSnapshot(id: context.key)
+        let savedSnapshot = try XCTUnwrap(currentSnapshot)
+        let expectedFingerprint = CaseEntity(snapshot: savedSnapshot).fingerprint
+        let savedManifest = await Self.waitForManifest(
+            manifest, caseID: context.key, fingerprint: expectedFingerprint, timeout: .seconds(2))
+        let writerState = await writer.snapshot()
+        XCTAssertEqual(writerState.0, 2)
+        XCTAssertEqual(writerState.1[context.key], expectedFingerprint)
+        XCTAssertEqual(savedManifest.cases[context.key], expectedFingerprint)
+    }
+
+    @MainActor
+    func testPersistentScheduledFailureStopsRetriesAndExplicitRecoveryDrainsConcurrentUpdate() async throws {
+        let store = TrackedStore(inMemory: true)
+        let context = makeContext()
+        _ = try store.upsert(context: context, snapshot: nil,
+                             movement: makeMovement(text: "Снимок."), collections: [])
+
+        let suite = "SpotlightRetryLimitTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let writer = ControlledSpotlightWriter(failuresBeforeSuccess: 3)
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        await indexer.scheduleSynchronization(scope: .full)
+        let boundedAttemptsStarted = await writer.waitForIndexAttempts(3, timeout: .seconds(40))
+        XCTAssertTrue(boundedAttemptsStarted)
+        await indexer.scheduleSynchronization(scope: .full)
+        try await Task.sleep(for: .milliseconds(350))
+
+        let state = await writer.snapshot()
+        let savedManifest = await manifest.load()
+        XCTAssertEqual(state.0, 3)
+        XCTAssertTrue(state.1.isEmpty)
+        XCTAssertEqual(savedManifest, SpotlightManifest())
+
+        await writer.pauseIndexAttempt(4)
+        let recovery = Task { try await indexer.setEnabled(true, revision: 1) }
+        let recoveryAttemptStarted = await writer.waitUntilIndexAttemptStarts(4, timeout: .seconds(3))
+        XCTAssertTrue(recoveryAttemptStarted)
+        _ = try store.upsert(context: context, snapshot: nil,
+                             movement: makeMovement(text: "Обновлённый во время recovery снимок."),
+                             collections: [])
+        await indexer.scheduleSynchronization(scope: .cases([context.key]))
+        await writer.releaseIndexAttempt()
+        try await recovery.value
+
+        let pendingUpdateStarted = await writer.waitForIndexAttempts(5, timeout: .seconds(3))
+        XCTAssertTrue(pendingUpdateStarted)
+        let latestSnapshotValue = try await CaseCatalog(container: store.container)
+            .caseSnapshot(id: context.key)
+        let latestSnapshot = try XCTUnwrap(latestSnapshotValue)
+        let latestFingerprint = CaseEntity(snapshot: latestSnapshot).fingerprint
+        let recoveredManifest = await Self.waitForManifest(
+            manifest, caseID: context.key, fingerprint: latestFingerprint, timeout: .seconds(2))
+        let recoveredWriterState = await writer.snapshot()
+        XCTAssertEqual(recoveredWriterState.0, 5)
+        XCTAssertEqual(recoveredWriterState.1[context.key], latestFingerprint)
+        XCTAssertEqual(recoveredManifest.cases[context.key], latestFingerprint)
+    }
+
+    @MainActor
+    func testFullRecoveryKeepsQueuedScheduledScopeAfterItsFirstWriteFails()
+        async throws {
+        let store = TrackedStore(inMemory: true)
+        let first = makeContext()
+        var second = first
+        second.displayDomain = "second.msk.sudrf.ru"
+        second.searchDomain = "second--msk.sudrf.ru"
+        second.caseNumber = "2-2/2026"
+        _ = try store.upsert(context: first, snapshot: nil,
+                             movement: makeMovement(text: "Первая исходная карточка."), collections: [])
+        _ = try store.upsert(context: second, snapshot: nil,
+                             movement: makeMovement(text: "Вторая исходная карточка."), collections: [])
+
+        let suite = "SpotlightRecoveryQueueTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let manifest = SpotlightManifestStore(suiteName: suite, key: "manifest")
+        let writer = ControlledSpotlightWriter(failuresBeforeSuccess: 0, failingAttempts: [2])
+        let indexer = SpotlightIndexer(
+            catalog: CaseCatalog(container: store.container), writer: writer,
+            manifestStore: manifest,
+            preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+
+        await writer.pauseIndexAttempt(1)
+        let fullSync = Task { try await indexer.setEnabled(true, revision: 1) }
+        let fullWriteStarted = await writer.waitUntilIndexAttemptStarts(1, timeout: .seconds(3))
+        XCTAssertTrue(fullWriteStarted)
+
+        _ = try store.upsert(context: first, snapshot: nil,
+                             movement: makeMovement(text: "Первая изменённая карточка."), collections: [])
+        await indexer.scheduleSynchronization(scope: .cases([first.key]))
+        try await Task.sleep(for: .milliseconds(750))
+
+        _ = try store.upsert(context: second, snapshot: nil,
+                             movement: makeMovement(text: "Вторая изменённая карточка."), collections: [])
+        await indexer.scheduleSynchronization(scope: .cases([second.key]))
+        await writer.releaseIndexAttempt()
+        try await fullSync.value
+
+        let retriedBothCases = await writer.waitForIndexAttempts(3, timeout: .seconds(8))
+        XCTAssertTrue(retriedBothCases)
+        let catalog = CaseCatalog(container: store.container)
+        let firstActDocuments = try await catalog.acts(caseKey: first.key)
+        let secondActDocuments = try await catalog.acts(caseKey: second.key)
+        let firstAct = CourtActEntity(document: try XCTUnwrap(firstActDocuments.first).document)
+        let secondAct = CourtActEntity(document: try XCTUnwrap(secondActDocuments.first).document)
+        let firstManifest = await Self.waitForActManifest(
+            manifest, actID: firstAct.id, fingerprint: firstAct.fingerprint, timeout: .seconds(2))
+        let secondManifest = await Self.waitForActManifest(
+            manifest, actID: secondAct.id, fingerprint: secondAct.fingerprint, timeout: .seconds(2))
+        let state = await writer.snapshot()
+        XCTAssertEqual(state.0, 3)
+        XCTAssertEqual(state.2[1], [])
+        XCTAssertEqual(state.3[1], [firstAct.id])
+        XCTAssertEqual(state.3[2], [firstAct.id, secondAct.id].sorted())
+        XCTAssertEqual(Set(state.1.keys), [first.key, second.key])
+        XCTAssertEqual(firstManifest.acts[firstAct.id]?.fingerprint, firstAct.fingerprint)
+        XCTAssertEqual(secondManifest.acts[secondAct.id]?.fingerprint, secondAct.fingerprint)
+    }
+
     func testCourtActFingerprintIncludesParagraphizerVersion() {
         let current = ActDocument(
             caseKey: "court/2-1/2026", sourceActID: "act-1", caseNumber: "2-1/2026",

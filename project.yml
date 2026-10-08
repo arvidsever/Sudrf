@@ -56,8 +56,8 @@ targets:
     info:
       path: Generated/Sudrf-Info.plist
       properties:
-        CFBundleName: Sudrf
-        CFBundleDisplayName: Sudrf
+        CFBundleName: "$(SUDRF_DISPLAY_NAME)"
+        CFBundleDisplayName: "$(SUDRF_DISPLAY_NAME)"
         NSHumanReadableCopyright: "© 2026 Arvid Vorobyev"
         # Публичная версия следует SemVer внутри альфа-канала (например,
         # Alpha 0.37.0); CURRENT_PROJECT_VERSION — монотонный номер билда.
@@ -69,9 +69,9 @@ targets:
         CFBundleDevelopmentRegion: ru
         LSApplicationCategoryType: public.app-category.productivity
         CFBundleURLTypes:
-          - CFBundleURLName: ru.sudrf.app
+          - CFBundleURLName: "$(PRODUCT_BUNDLE_IDENTIFIER)"
             CFBundleURLSchemes:
-              - sudrf
+              - "$(SUDRF_URL_SCHEME)"
         # ATS-исключения для доменов судов: у части «винтажных» серверов
         # (Воронеж и др.) TLS не дотягивает до требований App Transport
         # Security (TLS ≥1.2, forward secrecy) — рукопожатие рвалось с -1200,
@@ -101,6 +101,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app
+        SUDRF_DISPLAY_NAME: Sudrf
+        SUDRF_URL_SCHEME: sudrf
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         # Публичная версия и внутренний билд; Info.plist ссылается на них.
         MARKETING_VERSION: "0.64.6"
@@ -116,6 +118,12 @@ targets:
         # смене Xcode или настроек проекта.
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app.debug
+          PRODUCT_NAME: Sudrf-Debug
+          SUDRF_DISPLAY_NAME: Sudrf Debug
+          SUDRF_URL_SCHEME: sudrf-debug
 
 # Shared-схема app-бандла. Без неё Xcode после регенерации делает активной
 # авто-схему executable-продукта пакета (SudrfApp) — «Run» запускает голый

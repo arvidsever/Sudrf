@@ -949,13 +949,34 @@ enum MovementDerivation {
                                              movement: CaseMovement? = nil,
                                              context: MovementContext? = nil,
                                              protectedActiveOccurrenceKeys: Set<String> = []) -> CaseSnapshot {
-        guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
+        var deferredRetention: [StoredDeadline] = []
+        let reconciled = preservingConfirmedDeadlines(
+            snap, old: old, today: today,
+            preserveActiveProposedWhenMissing: preserveActiveProposedWhenMissing,
+            movement: movement, context: context,
+            protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+            deferredRetention: &deferredRetention)
+        return applyingDeadlineRetention(
+            to: reconciled, today: today, preserving: deferredRetention)
+    }
+
+    /// Batch merges collect ambiguous proposals and apply age retention after all aliases.
+    static func preservingConfirmedDeadlines(_ snap: CaseSnapshot,
+                                             old: CaseSnapshot?,
+                                             today: Date = DateUtil.today,
+                                             preserveActiveProposedWhenMissing: Bool = false,
+                                             movement: CaseMovement? = nil,
+                                             context: MovementContext? = nil,
+                                             protectedActiveOccurrenceKeys: Set<String> = [],
+                                             deferredRetention: inout [StoredDeadline]) -> CaseSnapshot {
+        guard let old else { return snap }
         let scopedKeys = Set((snap.deadlines + old.deadlines).compactMap(deadlineScopeKey))
         guard !scopedKeys.isEmpty else {
             return preservingSubjectDeadlines(snap, old: old, today: today,
                 preserveActiveProposedWhenMissing: preserveActiveProposedWhenMissing,
                 movement: movement, context: context,
-                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+                deferredRetention: &deferredRetention)
         }
         let subjects = movement.flatMap { mv in context.map {
             MaterialDeadlineScope.proven(in: mv, context: $0)
@@ -977,7 +998,8 @@ enum MovementDerivation {
                     || key != nil && subject == nil,
                 movement: key == nil ? movement : subject?.movement,
                 context: key == nil ? context : subject?.context,
-                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+                protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+                deferredRetention: &deferredRetention)
             out.deadlines += preserved.deadlines
             if key == nil { out.deadlineAssessments = preserved.deadlineAssessments }
         }
@@ -1013,8 +1035,9 @@ enum MovementDerivation {
                                              preserveActiveProposedWhenMissing: Bool = false,
                                              movement: CaseMovement? = nil,
                                              context: MovementContext? = nil,
-                                             protectedActiveOccurrenceKeys: Set<String> = []) -> CaseSnapshot {
-        guard let old else { return applyingDeadlineRetention(to: snap, today: today) }
+                                             protectedActiveOccurrenceKeys: Set<String> = [],
+                                             deferredRetention: inout [StoredDeadline]) -> CaseSnapshot {
+        guard let old else { return snap }
         var out = snap
         var fresh = out.deadlines
         var historical: [StoredDeadline] = []
@@ -1213,7 +1236,8 @@ enum MovementDerivation {
         out.deadlines = fresh.enumerated()
             .filter { !suppressedFresh.contains($0.offset) }
             .map(\.element) + historical
-        return applyingDeadlineRetention(to: out, today: today, preserving: ambiguousPreserved)
+        deferredRetention += ambiguousPreserved
+        return out
     }
 
     /// The old kind-only fallback could attach an opaque manual date to a
@@ -1361,9 +1385,9 @@ enum MovementDerivation {
         return repaired
     }
 
-    private static func applyingDeadlineRetention(to snapshot: CaseSnapshot,
-                                                   today: Date,
-                                                   preserving protected: [StoredDeadline] = []) -> CaseSnapshot {
+    static func applyingDeadlineRetention(to snapshot: CaseSnapshot,
+                                           today: Date,
+                                           preserving protected: [StoredDeadline] = []) -> CaseSnapshot {
         var out = snapshot
         out.deadlines = out.deadlines.map { deadline in
             guard !protected.contains(deadline), deadline.isActive,

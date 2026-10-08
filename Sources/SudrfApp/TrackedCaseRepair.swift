@@ -1219,6 +1219,7 @@ final class TrackedCaseRepairCoordinator {
                             canonicalCard: CaseCard?,
                             identityState: LogicalCaseState? = nil,
                             preserveActiveProposedDeadlinesOnPartial: Bool = false,
+                            today: Date = DateUtil.today,
                             saveChanges: Bool = true) throws -> [String: String] {
         do {
         let all = [survivor] + duplicates
@@ -1339,22 +1340,25 @@ final class TrackedCaseRepairCoordinator {
         survivor.eventJournalData = try JSONEncoder().encode(mergedJournal)
         survivor.movementFetchedAt = nil
         if let movement {
-            var snapshot = MovementDerivation.snapshot(from: movement, context: context)
+            var snapshot = MovementDerivation.snapshot(from: movement, context: context, today: today)
             let oldSnapshots = all.compactMap(\.snapshot)
             let protectedActiveOccurrenceKeys = Set(oldSnapshots.flatMap { old in
                 old.deadlines.filter(\.isActive).compactMap(\.occurrenceKey)
             })
+            var deferredRetention: [StoredDeadline] = []
             // Confirmed and manual deadlines remain user state across a
             // registration change. Fresh automatic calculations are derived
             // above from the accepted current card.
             for old in oldSnapshots.reversed() {
                 snapshot = MovementDerivation.preservingConfirmedDeadlines(
-                    snapshot, old: old,
+                    snapshot, old: old, today: today,
                     preserveActiveProposedWhenMissing: preserveActiveProposedDeadlinesOnPartial,
                     movement: movement, context: context,
-                    protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys)
+                    protectedActiveOccurrenceKeys: protectedActiveOccurrenceKeys,
+                    deferredRetention: &deferredRetention)
             }
-            survivor.snapshot = snapshot
+            survivor.snapshot = MovementDerivation.applyingDeadlineRetention(
+                to: snapshot, today: today, preserving: deferredRetention)
         }
         for rec in duplicates { store.deleteWithoutSaving(rec) }
         try store.prepareCourtActsForReroute(from: oldKeys, to: survivor.key)

@@ -326,11 +326,30 @@ final class Issue128DeadlineTests: XCTestCase {
         var proposal = legacyDeadline(status: .proposed)
         proposal.dateRef = DateUtil.parse("20.08.2026")!.timeIntervalSinceReferenceDate
         old.deadlines = [proposal]
+        let asOf = DateUtil.parse("10.09.2026")!
+        XCTAssertGreaterThan(DateUtil.daysBetween(proposal.date, asOf), AppRouter.deadlineGraceDays)
         let repaired = MovementDerivation.preservingConfirmedDeadlines(
-            snapshot(ambiguous, value), old: old, today: today,
+            MovementDerivation.snapshot(from: ambiguous, context: value, today: asOf),
+            old: old, today: asOf,
             movement: ambiguous, context: value)
         XCTAssertEqual(repaired.deadlines.first, proposal)
         XCTAssertEqual(repaired.deadlineAssessments?.first(where: {
+            $0.ruleID == "GPK-APPEAL-GENERAL"
+        })?.status, .needsLegalReview)
+
+        var deferredRetention: [StoredDeadline] = []
+        var combined = MovementDerivation.preservingConfirmedDeadlines(
+            MovementDerivation.snapshot(from: ambiguous, context: value, today: asOf),
+            old: old, today: asOf, movement: ambiguous, context: value,
+            deferredRetention: &deferredRetention)
+        combined = MovementDerivation.preservingConfirmedDeadlines(
+            combined, old: snapshot(ambiguous, value), today: asOf,
+            movement: ambiguous, context: value,
+            deferredRetention: &deferredRetention)
+        combined = MovementDerivation.applyingDeadlineRetention(
+            to: combined, today: asOf, preserving: deferredRetention)
+        XCTAssertEqual(combined.deadlines.first, proposal)
+        XCTAssertEqual(combined.deadlineAssessments?.first(where: {
             $0.ruleID == "GPK-APPEAL-GENERAL"
         })?.status, .needsLegalReview)
     }

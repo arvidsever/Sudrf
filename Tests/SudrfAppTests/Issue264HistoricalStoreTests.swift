@@ -10,6 +10,21 @@ final class Issue264HistoricalStoreTests: XCTestCase {
         let hasSummaryProjection: Bool
     }
 
+    private func assertFixtureContext(_ context: MovementContext, index: Int,
+                                      fixture: String,
+                                      file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(context.searchDomain, "fixture-\(index).invalid", fixture,
+                       file: file, line: line)
+        XCTAssertEqual(context.displayDomain, "fixture.invalid", fixture, file: file, line: line)
+        XCTAssertEqual(context.caseID, "fixture-card-\(index)", fixture, file: file, line: line)
+        XCTAssertEqual(context.caseUID, "fixture-link-\(index)", fixture, file: file, line: line)
+        XCTAssertEqual(context.courtLevelRaw, CourtLevel.district.rawValue, fixture,
+                       file: file, line: line)
+        XCTAssertEqual(context.cartotekaId, "g1", fixture, file: file, line: line)
+        XCTAssertEqual(context.cartotekaLevelRaw, CourtLevel.district.rawValue, fixture,
+                       file: file, line: line)
+    }
+
     @MainActor
     func testHistoricalStoreFixturesMigrateToV7AndReopenWithUserData() throws {
         let fixtures = [
@@ -50,6 +65,8 @@ final class Issue264HistoricalStoreTests: XCTestCase {
                 for index in 1...2 {
                     let key = "fixture.invalid/2-\(index)/2024"
                     let record = try XCTUnwrap(store.record(forKey: key), fixture.name)
+                    let context = try XCTUnwrap(record.context, fixture.name)
+                    assertFixtureContext(context, index: index, fixture: fixture.name)
                     XCTAssertEqual(record.collectionNames, ["Fixture", "Archive"], fixture.name)
                     XCTAssertEqual(record.folderName, "", fixture.name)
                     XCTAssertEqual(record.snapshot?.partiesShort, "Synthetic parties \(index)",
@@ -80,6 +97,30 @@ final class Issue264HistoricalStoreTests: XCTestCase {
                 let summaries = try container.mainContext.fetch(FetchDescriptor<ActSummaryRecord>())
                 XCTAssertEqual(summaries.count, fixture.hasSummaryProjection ? 2 : 0,
                                fixture.name)
+                if fixture.hasSummaryProjection {
+                    for index in 1...2 {
+                        let key = "fixture.invalid/2-\(index)/2024"
+                        let expectedDocument = ActDocument(
+                            caseKey: key, sourceActID: "fixture-act-\(index)",
+                            caseNumber: "2-\(index)/2024", judicialUID: "fixture-uid-\(index)",
+                            court: "Synthetic Court", instanceLevel: .first, kind: "Решение",
+                            date: "01.02.2024", sourceText: "Synthetic judgment text \(index)")
+                        let act = try XCTUnwrap(try container.mainContext.fetch(
+                            FetchDescriptor<CourtActRecord>()).first { $0.caseKey == key },
+                            fixture.name)
+                        let summary = try XCTUnwrap(
+                            summaries.first { $0.documentID == act.id }, fixture.name)
+                        XCTAssertEqual(summary.documentID, expectedDocument.id, fixture.name)
+                        XCTAssertEqual(summary.provider, "fixture", fixture.name)
+                        XCTAssertEqual(summary.model, "fixture", fixture.name)
+                        XCTAssertEqual(summary.promptVersion, "fixture-v1", fixture.name)
+                        XCTAssertEqual(summary.pipelineVersion, "fixture-v1", fixture.name)
+                        XCTAssertEqual(summary.sourceHash, expectedDocument.sourceHash, fixture.name)
+                        XCTAssertEqual(summary.generatedAt,
+                                       Date(timeIntervalSince1970: 1_700_000_200 + Double(index)),
+                                       fixture.name)
+                    }
+                }
             }
 
             // A second V7 container proves the migrated SQLite store, keys,
@@ -88,8 +129,12 @@ final class Issue264HistoricalStoreTests: XCTestCase {
             do {
                 let (container, store) = try openCurrentStore(at: storeURL)
                 XCTAssertEqual(store.all().count, 2, fixture.name)
-                for (key, logicalCaseID) in firstIdentities {
+                for index in 1...2 {
+                    let key = "fixture.invalid/2-\(index)/2024"
+                    let logicalCaseID = try XCTUnwrap(firstIdentities[key], fixture.name)
                     let record = try XCTUnwrap(store.record(forKey: key), fixture.name)
+                    let context = try XCTUnwrap(record.context, fixture.name)
+                    assertFixtureContext(context, index: index, fixture: fixture.name)
                     XCTAssertEqual(record.logicalCaseID, logicalCaseID, fixture.name)
                     XCTAssertNotNil(record.movement?.acts.first, fixture.name)
                     let acts = try container.mainContext.fetch(

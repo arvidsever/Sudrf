@@ -41,14 +41,17 @@
   доказательством их включения.
 - Xcode app не запускался. Production app, база, пользовательские defaults,
   Keychain и системный Spotlight не открывались.
-- Полный тестовый прогон: [лог](</private/tmp/sudrf-186-full-swift-test.log>).
-  `swift test -Xswiftc -strict-concurrency=complete` завершился с кодом 1:
-  1954 XCTest, 20 пропусков, один сбой; 28 Swift Testing прошли. По target:
-  SudrfKit 714/0, SudrfApp 1155/1 (15 пропусков), FSSPCaptchaLab 10/0,
-  CaptchaSolver 75/0 (5 пропусков). Единственный сбой — известная независимая
-  #426 `TrackedCaseRepairTests.testAliasMergeKeepsActiveExactPrivateDeadlineAheadOfClosedMonthlyHistory`:
-  `XCTUnwrap` не нашёл `StoredDeadline` в `Tests/SudrfAppTests/TrackedCaseRepairTests.swift:402`.
-  Сбой не исправлялся и проверка не ослаблялась в рамках #186.
+- После обновления на `main` `035599ff3e9faf3e1abd6314c848738882cfb707`
+  с отдельным исправлением #426 полный тестовый прогон прошёл: 1954 XCTest,
+  20 штатных пропусков, ошибок нет; 28 Swift Testing успешны.
+  По target: SudrfKit 714/0, SudrfApp 1155/0 (15 пропусков),
+  FSSPCaptchaLab 10/0, CaptchaSolver 75/0 (5 пропусков).
+  [Локальный протокол](</private/tmp/sudrf-186-after-426-full.log>).
+  Первоначальный независимый сбой ручного срока устранён в PR #428;
+  проверка не ослаблялась в рамках #186.
+- [Draft PR #430 и CI](https://github.com/arvidsever/Sudrf/pull/430/checks).
+  Hosted Xcode 27 job без соответствующего Xcode пропускает сборку;
+  локальная настоящая Xcode 27 сборка приведена выше.
 
 ## Приёмка остаётся открытой
 

@@ -349,7 +349,8 @@ final class Issue241AcceptanceTests: XCTestCase {
                 $0.occurrenceKey == manualDeadline.occurrenceKey
             }, manualDeadline)
             XCTAssertEqual(afterCaptcha.collectionNames, ["Проверка #241"])
-            XCTAssertEqual(afterCaptcha.eventJournal, savedJournal)
+            XCTAssertEqual(afterCaptcha.eventJournal?.events, savedJournal.events)
+            XCTAssertNil(afterCaptcha.eventJournal?.semanticBaselines?.courts["sudrf|3kas.sudrf.ru"])
 
             // The same search URL and the exact linked card URL each recover
             // independently after two maintenance replies.
@@ -393,8 +394,10 @@ final class Issue241AcceptanceTests: XCTestCase {
                 $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
             }?.sourceURL?.absoluteString, cassationURL.absoluteString)
             XCTAssertTrue(updated.eventJournal?.events.contains(seedEvent) == true)
-            XCTAssertEqual(updated.eventJournal, savedJournal,
+            XCTAssertEqual(updated.eventJournal?.events, savedJournal.events,
                            "successful refresh must not announce already saved old events")
+            XCTAssertNotNil(updated.eventJournal?.semanticBaselines?.courts["sudrf|3kas.sudrf.ru"],
+                            "the recovered court must acquire its own confirmed baseline")
             XCTAssertEqual(Set(updated.eventJournal?.events.map(\.id) ?? []).count,
                            updated.eventJournal?.events.count,
                            "журнал не должен повторять старые события")
@@ -492,7 +495,9 @@ final class Issue241AcceptanceTests: XCTestCase {
         XCTAssertEqual(record.movementFetchedAt, oldSuccessfulRefresh, file: file, line: line)
         XCTAssertEqual(record.seenAt, seenAt, "user read state changed on outage", file: file, line: line)
         XCTAssertEqual(record.collectionNames, ["Проверка #241"], file: file, line: line)
-        XCTAssertEqual(record.eventJournal, journal, "old event notifications were replayed", file: file, line: line)
+        XCTAssertEqual(record.eventJournal?.events, journal.events, "old event notifications were replayed", file: file, line: line)
+        XCTAssertNil(record.eventJournal?.semanticBaselines?.courts["sudrf|3kas.sudrf.ru"],
+                     "an unavailable court must not acquire a confirmed baseline", file: file, line: line)
         XCTAssertEqual(record.snapshot?.deadlines.first {
             $0.occurrenceKey == manualDeadline.occurrenceKey
         }, manualDeadline, file: file, line: line)

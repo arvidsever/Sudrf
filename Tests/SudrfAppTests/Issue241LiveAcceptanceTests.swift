@@ -27,10 +27,14 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         XCTAssertTrue((1...3).contains(attempt))
         guard (1...3).contains(attempt) else { return }
         let directory = URL(fileURLWithPath: outputPath).appendingPathComponent("run-\(attempt)")
+        guard !FileManager.default.fileExists(atPath: directory.path) else {
+            return XCTFail("#241 requires a fresh evidence directory for each attempt")
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let references = try JSONDecoder().decode([Reference].self,
             from: Data(contentsOf: URL(fileURLWithPath: referencePath)))
-        guard references.count == 2, Set(references.map(\.label)) == Set(["A", "B"]) else {
+        guard references.count == 2, Set(references.map(\.label)) == Set(["A", "B"]),
+              references.first(where: { $0.label == "B" })?.requiresAct == true else {
             return XCTFail("#241 requires exactly two private references A and B")
         }
         let oldDiagnostics = SearchDiagnostics.setDirForTesting(directory)
@@ -54,6 +58,7 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         var report: [[String: Any]] = []
         for reference in references {
             let started = Date()
+            var completedStages: [String] = []
             do {
                 let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: reference.cartotekaID))
                 let rows: [CaseSearchResult]
@@ -64,6 +69,7 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                     let solved = await AutoCaptchaSolver.solve(formURL: formURL, client: client,
                                                                 solver: solver, settings: settings.autoSolverSettings)
                     guard let token = solved.token else { throw LiveFailure.captchaExhausted }
+                    completedStages.append("captchaRecognized")
                     await tokens.store(token, domain: court.domain)
                     rows = try await client.search(court: court, cartoteka: cartoteka,
                                                    field: .uid, value: reference.uid)
@@ -73,6 +79,10 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                     throw LiveFailure.discovery
                 }
                 let parsed = try SudrfCaseCardLink(url: url)
+                completedStages.append("uidDiscovery")
+                try parsed.sanitizedURL.absoluteString.write(
+                    to: directory.appendingPathComponent("\(reference.label)-discovered-url.txt"),
+                    atomically: true, encoding: .utf8)
                 let context = MovementContext(
                     branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
                     searchDomain: court.domain, displayDomain: court.domain, courtTitle: court.title,
@@ -90,29 +100,54 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                 let center = RefreshCenter(store: store, client: client, captchaSolver: solver,
                                            captchaSettings: settings,
                                            serviceBuilder: { ctx in ctx.makeService(client: client) },
-                                           fsspAutoModelEnabled: false)
+                                           treasuryDiscover: { _, _, _ in throw LiveFailure.enforcementDisabled },
+                                           fsspAutoModelEnabled: false,
+                                           fsspDiscover: { _ in throw LiveFailure.enforcementDisabled })
                 let refreshed = await center.refresh(key: record.key)?.value
                 guard refreshed?.outcome == .refreshed, let movement = record.movement else {
                     try (center.lastErrors[record.key] ?? "refresh incomplete").write(
                         to: directory.appendingPathComponent("\(reference.label)-refresh-error.txt"),
                         atomically: true, encoding: .utf8)
+                    if let partial = record.movement {
+                        try JSONEncoder().encode(partial).write(
+                            to: directory.appendingPathComponent("\(reference.label)-partial-movement.json"),
+                            options: .atomic)
+                    }
+                    // A separate GET can explain availability, but is not the failed refresh response.
+                    do {
+                        let html = try await client.fetchHTML(url)
+                        try html.write(to: directory.appendingPathComponent(
+                            "\(reference.label)-additional-diagnostic-card-decoded.html"),
+                            atomically: true, encoding: .utf8)
+                    } catch {
+                        try String(describing: error).write(to: directory.appendingPathComponent(
+                            "\(reference.label)-additional-diagnostic-error.txt"),
+                            atomically: true, encoding: .utf8)
+                    }
                     throw LiveFailure.refresh
                 }
+                completedStages.append("completeRefresh")
                 let instance = try XCTUnwrap(movement.instances.first { $0.caseNumber == reference.number })
                 guard movement.uid == reference.uid,
                       instance.sourceURL == parsed.sanitizedURL else { throw LiveFailure.sourceURL }
+                completedStages.append("verifiedCard")
                 let displayed = CourtActPresentation.rows(in: movement)
                     .filter { $0.instanceLevel == .cassation && !$0.text.isEmpty
                         && $0.sourceIDs.contains(where: instance.linkedActIDs.contains) }
                 guard !instance.sessions.isEmpty, !reference.requiresAct || !displayed.isEmpty else {
                     throw LiveFailure.cardOrAct
                 }
+                completedStages.append("movement")
+                if !displayed.isEmpty { completedStages.append("publishedAct") }
                 let journal = record.eventJournal
                 let savedActs = movement.acts
                 let savedBodies = movement.actBodies
-                let html = try await client.fetchHTML(url)
-                try html.write(to: directory.appendingPathComponent("\(reference.label)-card-decoded.html"),
-                               atomically: true, encoding: .utf8)
+                // Evidence GET is separate from the successful refresh and cannot invalidate it.
+                if let html = try? await client.fetchHTML(url) {
+                    try html.write(to: directory.appendingPathComponent(
+                        "\(reference.label)-additional-diagnostic-card-decoded.html"),
+                        atomically: true, encoding: .utf8)
+                }
                 let bytes = try JSONEncoder().encode(movement)
                 try bytes.write(to: directory.appendingPathComponent("\(reference.label)-movement.json"), options: .atomic)
                 let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(
@@ -123,20 +158,29 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                       persisted.acts == savedActs, persisted.actBodies == savedBodies,
                       CourtActPresentation.rows(in: persisted).map(\.id) == CourtActPresentation.rows(in: movement).map(\.id)
                 else { throw LiveFailure.persistence }
+                completedStages.append("diskReopen")
                 // Refresh the saved production through the same native service/client path.
-                let repeated = await center.refresh(key: record.key)?.value
+                let reopenedRecord = try XCTUnwrap(reopened.record(forKey: record.key))
+                let reopenedCenter = RefreshCenter(store: reopened, client: client, captchaSolver: solver,
+                    captchaSettings: settings, serviceBuilder: { ctx in ctx.makeService(client: client) },
+                    treasuryDiscover: { _, _, _ in throw LiveFailure.enforcementDisabled },
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in throw LiveFailure.enforcementDisabled })
+                let repeated = await reopenedCenter.refresh(key: reopenedRecord.key)?.value
                 guard repeated?.outcome == .refreshed else { throw LiveFailure.repeatRefresh }
-                guard record.eventJournal == journal,
-                      record.movement?.instances.filter({ $0.caseNumber == reference.number }).count == 1,
-                      record.movement?.instances.first(where: { $0.caseNumber == reference.number })?.sourceURL == parsed.sanitizedURL,
-                      record.movement?.acts == savedActs, record.movement?.actBodies == savedBodies
+                guard reopenedRecord.eventJournal == journal,
+                      reopenedRecord.movement?.instances.filter({ $0.caseNumber == reference.number }).count == 1,
+                      reopenedRecord.movement?.instances.first(where: { $0.caseNumber == reference.number })?.sourceURL == parsed.sanitizedURL,
+                      reopenedRecord.movement?.acts == savedActs, reopenedRecord.movement?.actBodies == savedBodies
                 else { throw LiveFailure.repeatPersistence }
                 let finalStore = try TrackedStore(container: SudrfModelContainerFactory.make(
                     inMemory: false, storeURL: storeURL), prepared: true)
-                guard finalStore.record(forKey: record.key)?.movement == record.movement,
+                guard finalStore.record(forKey: record.key)?.movement == reopenedRecord.movement,
                       finalStore.record(forKey: record.key)?.eventJournal == journal
                 else { throw LiveFailure.repeatPersistence }
+                completedStages.append("repeatRefresh")
                 report.append(["reference": reference.label, "status": "success",
+                    "completedStages": completedStages,
                     "startedAt": ISO8601DateFormatter().string(from: started),
                     "finishedAt": ISO8601DateFormatter().string(from: Date()),
                     "events": instance.sessions.count, "displayedActs": displayed.count,
@@ -144,6 +188,7 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
             } catch {
                 // Avoid leaking source URLs/captcha query strings in public XCTest output.
                 report.append(["reference": reference.label, "status": "incomplete",
+                    "completedStages": completedStages,
                     "startedAt": ISO8601DateFormatter().string(from: started),
                     "finishedAt": ISO8601DateFormatter().string(from: Date()),
                     "errorType": String(describing: type(of: error))])
@@ -159,6 +204,7 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
 
     private enum LiveFailure: Error {
         case captchaExhausted, discovery, refresh, cardOrAct, repeatRefresh, sourceURL, persistence, repeatPersistence
+        case enforcementDisabled
     }
 
     private func makeSolver(directory: URL) throws -> CaptchaSolver {

@@ -160,6 +160,28 @@ private actor Issue322MoscowStub: MoscowOriginProviding, MosGorSudProviding {
     func searchRequests() -> [String] { searches }
 }
 
+private actor Issue322MovementProbe {
+    private var cached: CaseMovement?
+    private var fresh: CaseMovement?
+
+    func recordCached(_ movement: CaseMovement?) { cached = movement }
+    func recordFresh(_ movement: CaseMovement) { fresh = movement }
+    func snapshot() -> (CaseMovement?, CaseMovement?) { (cached, fresh) }
+}
+
+private struct Issue322RecordingMovementProvider: MovementProviding {
+    let base: any MovementProviding
+    let probe: Issue322MovementProbe
+
+    func movement(for base: CaseSearchResult, court: Court,
+                  cartoteka: Cartoteka) async throws -> CaseMovement {
+        let movement = try await self.base.movement(for: base, court: court,
+                                                    cartoteka: cartoteka)
+        await probe.recordFresh(movement)
+        return movement
+    }
+}
+
 private final class Issue322OfflineURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -200,8 +222,11 @@ final class Issue322AcceptanceTests: XCTestCase {
     private func seedMovement(card: CaseCard, context: MovementContext,
                               sourceURL: URL) -> CaseMovement {
         let number = context.caseNumber
-        let actID = "fixture-\(number)"
-        let date = card.decisionDate ?? "—"
+        // The excerpted issue fixtures omit act text. Model a previously cached
+        // body, but use the same source ID and metadata as the production card
+        // builder so refresh tests the real cache-merge contract.
+        let actID = "act_\(context.searchDomain)#\(number)"
+        let date = card.decisionDate ?? card.receiptDate ?? "—"
         let instance = CaseInstance(
             level: context.baseInstanceLevel, court: context.courtTitle,
             caseNumber: number, judge: card.judge, domain: context.searchDomain,
@@ -209,9 +234,10 @@ final class Issue322AcceptanceTests: XCTestCase {
             sessions: [CaseSession(date: date, event: "Рассмотрение",
                                    result: card.result)],
             actID: actID, sourceURL: sourceURL)
-        let act = CaseAct(id: actID, title: "Определение", date: date,
-                          courtShort: "1 АСОЮ",
-                          instanceLevel: CaseInstance.Level.appeal)
+        let act = CaseAct(id: actID,
+                          title: card.acts.first?.label ?? "Судебный акт",
+                          date: date, courtShort: context.courtTitle,
+                          instanceLevel: context.baseInstanceLevel)
         return CaseMovement(uid: card.uid ?? "", caseNumber: number,
                             inForce: false, instances: [instance], complaints: [:],
                             acts: [act], actBodies: [actID: "Исторический текст \(number)"])
@@ -260,14 +286,22 @@ final class Issue322AcceptanceTests: XCTestCase {
     private func makeCenter(store: TrackedStore, sudrf: Issue322SudrfStub,
                             moscow: Issue322MoscowStub,
                             repair: TrackedCaseRepairCoordinator,
-                            client: SudrfClient) -> RefreshCenter {
+                            client: SudrfClient,
+                            probe: Issue322MovementProbe? = nil,
+                            afterRepair: ((String, String) -> Void)? = nil) -> RefreshCenter {
         let center = RefreshCenter(
             store: store, client: client,
             serviceBuilder: { context in
-                context.makeService(client: sudrf, mosgorsud: moscow)
+                let service = context.makeService(client: sudrf, mosgorsud: moscow)
+                guard let probe else { return service }
+                return Issue322RecordingMovementProvider(base: service, probe: probe)
             })
         center.repairBeforeRefresh = { key, force in
-            try await repair.repairIfNeeded(key: key, forceAttempt: force).effectiveKey
+            let outcome = try await repair.repairIfNeeded(key: key, forceAttempt: force)
+            await probe?.recordCached(
+                store.record(forLocator: outcome.effectiveKey)?.movement)
+            afterRepair?(key, outcome.effectiveKey)
+            return outcome.effectiveKey
         }
         return center
     }
@@ -284,6 +318,42 @@ final class Issue322AcceptanceTests: XCTestCase {
     private func isolatedDefaults() throws -> (String, UserDefaults) {
         let name = "issue322-\(UUID().uuidString)"
         return (name, try XCTUnwrap(UserDefaults(suiteName: name)))
+    }
+
+    private func assertRetainedActText(_ expectedText: String,
+                                       linkedToCaseNumber caseNumber: String,
+                                       sourceURL: URL,
+                                       in record: TrackedCaseRecord,
+                                       file: StaticString = #filePath,
+                                       line: UInt = #line) {
+        guard let movement = record.movement else {
+            return XCTFail("missing movement for retained act", file: file, line: line)
+        }
+        assertRetainedActText(expectedText, linkedToCaseNumber: caseNumber,
+                              sourceURL: sourceURL, in: movement,
+                              file: file, line: line)
+    }
+
+    private func assertRetainedActText(_ expectedText: String,
+                                       linkedToCaseNumber caseNumber: String,
+                                       sourceURL: URL,
+                                       in movement: CaseMovement,
+                                       file: StaticString = #filePath,
+                                       line: UInt = #line) {
+        let retainedIDs = Set(movement.acts.filter {
+            movement.actBodies[$0.id] == expectedText
+        }.map(\.id))
+        XCTAssertFalse(retainedIDs.isEmpty,
+                       "historical act text was lost; acts=\(movement.acts.map(\.id)); bodyIDs=\(movement.actBodies.keys.sorted())",
+                       file: file, line: line)
+        let source = movement.instances.first {
+            $0.caseNumber.contains(caseNumber) && $0.sourceURL == sourceURL
+        }
+        XCTAssertNotNil(source, "missing source instance for retained act",
+                        file: file, line: line)
+        XCTAssertTrue(source?.linkedActIDs.contains(where: retainedIDs.contains) == true,
+                      "historical text is no longer linked to its source instance",
+                      file: file, line: line)
     }
 
     func testTwoAppealsRepairThroughRefreshAndRetainHistoryAcrossPartialFailureAndReopen() async throws {
@@ -314,16 +384,57 @@ final class Issue322AcceptanceTests: XCTestCase {
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let probe = Issue322MovementProbe()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
-                                repair: repair, client: client)
+                                repair: repair, client: client, probe: probe,
+                                afterRepair: { requestedKey, effectiveKey in
+            guard let record = store.record(forLocator: effectiveKey) else {
+                return XCTFail("repair did not leave a readable tracked record")
+            }
+            self.assertRetainedActText("Исторический текст 66а-2013/2020",
+                                  linkedToCaseNumber: "66а-2013/2020",
+                                  sourceURL: fixtures.appeal2013URL, in: record)
+            if requestedKey == second.key || store.all().count == 1 {
+                self.assertRetainedActText("Исторический текст 66а-4311/2020",
+                                      linkedToCaseNumber: "66а-4311/2020",
+                                      sourceURL: fixtures.appeal4311URL, in: record)
+            }
+        })
 
         for key in [first.key, second.key] {
             let task = try XCTUnwrap(center.refresh(key: key))
             let execution = await task.value
             guard case .partial = execution.outcome else {
                 return XCTFail("ordinary refresh must keep the chain while reporting verified empty listings")
+            }
+            let (cached, fresh) = await probe.snapshot()
+            if let cached, let fresh {
+                let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+                let numbers = key == first.key
+                    ? ["66а-2013/2020"]
+                    : ["66а-2013/2020", "66а-4311/2020"]
+                for number in numbers {
+                    let sourceURL = number == "66а-2013/2020"
+                        ? fixtures.appeal2013URL : fixtures.appeal4311URL
+                    self.assertRetainedActText("Исторический текст \(number)",
+                                                linkedToCaseNumber: number,
+                                                sourceURL: sourceURL, in: merged)
+                }
+            } else {
+                XCTFail("refresh probe did not capture both cache and fresh movement")
+            }
+            let refreshed = try XCTUnwrap(store.record(forKey: execution.effectiveKey))
+            let numbers = key == first.key
+                ? ["66а-2013/2020"]
+                : ["66а-2013/2020", "66а-4311/2020"]
+            for number in numbers {
+                let sourceURL = number == "66а-2013/2020"
+                    ? fixtures.appeal2013URL : fixtures.appeal4311URL
+                assertRetainedActText("Исторический текст \(number)",
+                                      linkedToCaseNumber: number,
+                                      sourceURL: sourceURL, in: refreshed)
             }
         }
 
@@ -375,6 +486,14 @@ final class Issue322AcceptanceTests: XCTestCase {
             let expectedURLs = Set(expected.map(\.1))
             XCTAssertEqual(Set(matching.compactMap(\.sourceURL)).intersection(expectedURLs).count,
                            3, file: file, line: line)
+            for number in ["66а-2013/2020", "66а-4311/2020"] {
+                let sourceURL = number == "66а-2013/2020"
+                    ? fixtures.appeal2013URL : fixtures.appeal4311URL
+                assertRetainedActText("Исторический текст \(number)",
+                                      linkedToCaseNumber: number,
+                                      sourceURL: sourceURL, in: record,
+                                      file: file, line: line)
+            }
         }
         assertThreeCards(saved)
         let firstJournal = try XCTUnwrap(saved.eventJournal?.events.map(\.id))
@@ -488,14 +607,33 @@ final class Issue322AcceptanceTests: XCTestCase {
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let probe = Issue322MovementProbe()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
-                                repair: repair, client: client)
+                                repair: repair, client: client, probe: probe,
+                                afterRepair: { _, effectiveKey in
+            guard let record = store.record(forLocator: effectiveKey),
+                  let act = cassationMovement.acts.first,
+                  let text = cassationMovement.actBodies[act.id] else {
+                return XCTFail("repair did not leave the seeded cassation act available")
+            }
+            self.assertRetainedActText(text, linkedToCaseNumber: "8а-7078/2022",
+                                  sourceURL: fixtures.cassationURL, in: record)
+        })
         let task = try XCTUnwrap(center.refresh(key: cassationRecord.key))
         let execution = await task.value
         guard case .partial = execution.outcome else {
             return XCTFail("ordinary refresh should retain the chain with verified empty listings")
+        }
+        let (cached, fresh) = await probe.snapshot()
+        if let cached, let fresh, let act = cassationMovement.acts.first,
+           let text = cassationMovement.actBodies[act.id] {
+            let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+            self.assertRetainedActText(text, linkedToCaseNumber: "8а-7078/2022",
+                                       sourceURL: fixtures.cassationURL, in: merged)
+        } else {
+            XCTFail("refresh probe did not capture the cassation cache and fresh movement")
         }
 
         XCTAssertEqual(store.all().count, 2)
@@ -526,6 +664,15 @@ final class Issue322AcceptanceTests: XCTestCase {
                           file: file, line: line)
             XCTAssertFalse(instances.contains { $0.caseNumber == "3а-1318/2021" },
                            file: file, line: line)
+            for act in cassationMovement.acts {
+                guard let text = cassationMovement.actBodies[act.id] else {
+                    XCTFail("seed act must have cached text", file: file, line: line)
+                    continue
+                }
+                assertRetainedActText(text, linkedToCaseNumber: "8а-7078/2022",
+                                      sourceURL: fixtures.cassationURL, in: record,
+                                      file: file, line: line)
+            }
         }
         assertFullChain(repaired)
         let journalAfterFull = try XCTUnwrap(repaired.eventJournal?.events.map(\.id))

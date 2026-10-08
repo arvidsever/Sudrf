@@ -1,0 +1,168 @@
+{
+  "date": "2026-10-08",
+  "baseCommit": "836bea91f50a929a1926acd2418eed9be1148a64",
+  "version": "0.62.9 (246)",
+  "privateReferenceSHA256": "ee50369621b1b051e5247140837bac102dc8b4fbdf77dc550c86b32cf30746a9",
+  "liveGatePassed": false,
+  "runs": [
+    {
+      "attempt": 1,
+      "reportSHA256": "b648d215bb504795474998d087fb96c3edb44885534acd7f8a80276e319e260e",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:55:22Z",
+          "reference": "A",
+          "startedAt": "2026-10-08T19:54:23Z",
+          "status": "incomplete"
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:55:44Z",
+          "reference": "B",
+          "startedAt": "2026-10-08T19:55:23Z",
+          "status": "incomplete"
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "A",
+          "persistedSessionCount": 4,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "e2298f9dc528cb8430cbaae2fb84c683cd4c262e143dfd72e9484d7f1e69ee11",
+            "containsExpectedNumber": true,
+            "containsExpectedUID": true,
+            "hasMovementSection": true,
+            "isOriginalRefreshResponse": false
+          }
+        },
+        {
+          "reference": "B",
+          "persistedSessionCount": 0,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "b71f60e3e8513345419b3559125fd7b9038afee66fb66943d55e1b6fac7dd674",
+            "containsExpectedNumber": false,
+            "containsExpectedUID": false,
+            "hasMovementSection": false,
+            "isOriginalRefreshResponse": false
+          }
+        }
+      ]
+    },
+    {
+      "attempt": 2,
+      "reportSHA256": "b42b39f013e4e5bb1ba6196bf1586b67e26096d9b7a4f1a6d2d248aad10137fe",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:57:14Z",
+          "reference": "A",
+          "startedAt": "2026-10-08T19:56:20Z",
+          "status": "incomplete"
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:57:25Z",
+          "reference": "B",
+          "startedAt": "2026-10-08T19:57:14Z",
+          "status": "incomplete"
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "A",
+          "persistedSessionCount": 4,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "e2298f9dc528cb8430cbaae2fb84c683cd4c262e143dfd72e9484d7f1e69ee11",
+            "containsExpectedNumber": true,
+            "containsExpectedUID": true,
+            "hasMovementSection": true,
+            "isOriginalRefreshResponse": false
+          }
+        },
+        {
+          "reference": "B",
+          "persistedSessionCount": 0,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "b71f60e3e8513345419b3559125fd7b9038afee66fb66943d55e1b6fac7dd674",
+            "containsExpectedNumber": false,
+            "containsExpectedUID": false,
+            "hasMovementSection": false,
+            "isOriginalRefreshResponse": false
+          }
+        }
+      ]
+    },
+    {
+      "attempt": 3,
+      "reportSHA256": "1d06db7c615456715a4c7930fbf04c1dc042ccd4225c3aaafdc06f936994b548",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:58:35Z",
+          "reference": "A",
+          "startedAt": "2026-10-08T19:58:09Z",
+          "status": "incomplete"
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-08T19:59:01Z",
+          "reference": "B",
+          "startedAt": "2026-10-08T19:58:35Z",
+          "status": "incomplete"
+        }
+      ],
+      "evidence": [
+        {
+          "reference": "A",
+          "persistedSessionCount": 4,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "312505002f4dc2d6ebae5402510c173d463baaaab93ee1d26510b740edb2efcd",
+            "containsExpectedNumber": true,
+            "containsExpectedUID": true,
+            "hasMovementSection": true,
+            "isOriginalRefreshResponse": false
+          }
+        },
+        {
+          "reference": "B",
+          "persistedSessionCount": 0,
+          "persistedActBodyCount": 0,
+          "additionalDiagnosticGET": {
+            "decodedUTF8SHA256": "9f867587e13adf53fa587dad8b95426f2bee98c097c3f8f7c7499a0fe138322d",
+            "containsExpectedNumber": false,
+            "containsExpectedUID": false,
+            "hasMovementSection": false,
+            "isOriginalRefreshResponse": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -56,7 +56,7 @@ public struct ImportedProductionCalendarMonthTotals: Codable, Hashable, Sendable
 /// partial years and unknown CSS markers before any packaged data is replaced.
 public enum ProductionCalendarImporter {
     public static func sourceURL(for year: Int) -> URL? {
-        guard (2013...2026).contains(year) else { return nil }
+        guard (2013...2027).contains(year) else { return nil }
         let slug = year == 2020 || year == 2024 ? "\(year)b" : String(year)
         return URL(string: "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/\(slug)/")
     }

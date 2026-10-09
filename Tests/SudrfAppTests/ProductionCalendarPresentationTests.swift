@@ -91,4 +91,15 @@ final class ProductionCalendarPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.isNonWorking)
         XCTAssertTrue(presentation.reasons.isEmpty)
     }
+
+    func testPackaged2027ShortenedTransferKeepsExistingPresentation() throws {
+        let calendar = try LegalCalendar.load()
+        let presentation = ProductionCalendarDayPresentation(
+            date: DateUtil.parse("20.02.2027")!, calendar: calendar, timeZone: DateUtil.cal.timeZone)
+        XCTAssertEqual(presentation.symbol, "↺½")
+        XCTAssertEqual(presentation.title, "Рабочий день по переносу · сокращённый")
+        XCTAssertFalse(presentation.isNonWorking)
+        XCTAssertTrue(presentation.reasons.contains { $0.id == "transfer-2027" })
+        XCTAssertTrue(presentation.accessibilityLabel.contains("сокращённый"))
+    }
 }

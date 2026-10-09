@@ -504,13 +504,24 @@ final class DeadlineRuleEngineTests: XCTestCase {
             $0.ruleID == "KOAP-APPEAL-INITIAL-GENERAL"
         })?.status, .unsupportedCalculation)
 
-        let unconfirmedMonth = try evaluation(qualifiedCivilMovement(date: "31.12.2026"))
+        let unconfirmedMonth = try evaluation(qualifiedCivilMovement(date: "31.12.2027"))
         XCTAssertTrue(unconfirmedMonth.deadlines.isEmpty)
         let assessment = try XCTUnwrap(unconfirmedMonth.assessments.single(where: {
             $0.ruleID == "GPK-APPEAL-GENERAL"
         }))
         XCTAssertEqual(assessment.status, .unsupportedCalculation)
         XCTAssertEqual(assessment.missingPolicyIDs, ["GPK-END-NONWORKING-NEXT-WORKING"])
+    }
+
+    func testConfirmed2027CalendarSeparatesMonthEndAndWorkingDayShift() throws {
+        let evaluated = try evaluation(qualifiedCivilMovement(date: "31.12.2026"))
+        let deadline = try XCTUnwrap(evaluated.deadlines.single(where: { $0.kind == "appeal" }))
+        XCTAssertEqual(deadline.date, DateUtil.parse("01.02.2027"))
+        let trace = try XCTUnwrap(deadline.provenance?.calendarTrace)
+        XCTAssertEqual(trace.start, LegalCalendarDate(year: 2027, month: 1, day: 31))
+        XCTAssertEqual(trace.result, LegalCalendarDate(year: 2027, month: 2, day: 1))
+        XCTAssertEqual(trace.revisions.map(\.year), [2027])
+        XCTAssertEqual(deadline.provenance?.ruleID, "GPK-APPEAL-GENERAL")
     }
 
     func testExistingKoAPBindingUsesWorkingDayCalendarWithoutActivatingAnotherRule() throws {

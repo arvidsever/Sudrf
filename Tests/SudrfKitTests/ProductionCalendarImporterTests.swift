@@ -28,6 +28,20 @@ final class ProductionCalendarImporterTests: XCTestCase {
         XCTAssertEqual(parsed.publishedDaysOff, 118)
     }
 
+    func testApproved2027TransfersAndShortenedWorkingSaturday() throws {
+        let parsed = try parse("consultant-2027", year: 2027)
+        XCTAssertEqual(parsed.days.count, 365)
+        XCTAssertEqual(parsed.publishedWorkingDays, 247)
+        XCTAssertEqual(parsed.publishedDaysOff, 118)
+        XCTAssertEqual(day(in: parsed, 2027, 2, 20)?.kind, .transferredWorkingDay)
+        XCTAssertEqual(day(in: parsed, 2027, 2, 20)?.isShortened, true)
+        for (month, date) in [(2, 22), (11, 5), (12, 31)] {
+            XCTAssertEqual(day(in: parsed, 2027, month, date)?.kind, .transferredDayOff)
+        }
+        XCTAssertEqual(parsed.days.filter(\.isShortened).map(\.date.iso8601),
+                       ["2027-02-20", "2027-04-30", "2027-06-11", "2027-11-03"])
+    }
+
     func testRejectsRedirectDraftAndUnapprovedFutureYear() throws {
         let data = try fixture("consultant-2026")
         let requested = try XCTUnwrap(ProductionCalendarImporter.sourceURL(for: 2026))
@@ -51,7 +65,12 @@ final class ProductionCalendarImporterTests: XCTestCase {
         let futureURL = URL(string: "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2027/")!
         XCTAssertThrowsError(try ProductionCalendarImporter.parse(
             data: future, expectedYear: 2027, requestedURL: futureURL, finalURL: futureURL)) {
-            XCTAssertEqual($0 as? ProductionCalendarImportError, .unsupportedYear(2027))
+            XCTAssertEqual($0 as? ProductionCalendarImportError, .unapprovedDraft)
+        }
+        let unapprovedURL = URL(string: "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2028/")!
+        XCTAssertThrowsError(try ProductionCalendarImporter.parse(
+            data: future, expectedYear: 2028, requestedURL: unapprovedURL, finalURL: unapprovedURL)) {
+            XCTAssertEqual($0 as? ProductionCalendarImportError, .unsupportedYear(2028))
         }
     }
 

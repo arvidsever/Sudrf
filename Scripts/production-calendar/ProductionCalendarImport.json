@@ -504,6 +504,54 @@
         "day": 26
       },
       "sha256": "f00d8789ca7112830b6e2a0b28025bc2180fc300995b59f7c0591b2db354a6a5"
+    },
+    {
+      "id": "consultant-calendar-2027",
+      "title": "Производственный календарь К+ на 2027 год",
+      "url": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2027/",
+      "sha256": "f31ac571377f35fe57b36ba302931fa2a165958a09c56ecf7bb282263a1ec18b"
+    },
+    {
+      "id": "transfer-2027-official",
+      "title": "Официальное опубликование: Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "url": "http://publication.pravo.gov.ru/document/0001202609180037",
+      "document": "Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "documentDate": {
+        "year": 2026,
+        "month": 9,
+        "day": 17
+      },
+      "sha256": "759d0bf5d8a7d5605bdf5c016ea5b7665719e0a04e649fea03818b975ab0a1d7"
+    },
+    {
+      "id": "transfer-2027-official-pdf",
+      "title": "Официальный PDF постановления Правительства РФ от 17 сентября 2026 года № 1187",
+      "url": "http://publication.pravo.gov.ru/file/pdf?eoNumber=0001202609180037",
+      "document": "Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "documentDate": {
+        "year": 2026,
+        "month": 9,
+        "day": 17
+      },
+      "sha256": "432c4340910bd96e0f93d5c67fe3a87d220746ab1c452f2b7e5a75b737a08ac2"
+    },
+    {
+      "id": "shortened-transfer-588-text",
+      "title": "Приказ Минздравсоцразвития РФ от 13 августа 2009 года № 588н, пункт 1; текст на К+",
+      "url": "https://www.consultant.ru/document/cons_doc_LAW_92167/a47abe7162ac502a7d7e253908900038d89071f6/",
+      "document": "Приказ Минздравсоцразвития РФ от 13 августа 2009 года № 588н; зарегистрирован в Минюсте 28 сентября 2009 года № 14900",
+      "documentDate": {
+        "year": 2009,
+        "month": 8,
+        "day": 13
+      },
+      "sha256": "c11f78191cefc84e02ca23f439a12190f3564925707d879ae8c0c3ceddc12232"
+    },
+    {
+      "id": "tk-official-2027-verification",
+      "title": "Трудовой кодекс РФ, официальный текст при сверке статей 95, 111 и 112 для 2027 года",
+      "url": "http://pravo.gov.ru/proxy/ips/?doc_itself=&nd=102074279&page=1&rdk=192&link_id=0",
+      "sha256": "6ccc7e5b92ce000ef974ed19068730a6c77388f656c9a36e26ce4bbf2a11d05a"
     }
   ],
   "reasons": [
@@ -691,6 +739,14 @@
         "special-2021-595"
       ],
       "note": "3 ноября сокращён только для организаций, где он оставался рабочим. Для остальных организаций день обозначен как специальный нерабочий. Процессуальное применение проверено отдельно для ГПК, КАС и УПК."
+    },
+    {
+      "id": "transfer-2027",
+      "title": "Перенос выходных дней в 2027 году",
+      "sourceIDs": [
+        "transfer-2027-official",
+        "transfer-2027-official-pdf"
+      ]
     }
   ],
   "years": [
@@ -1505,6 +1561,55 @@
         }
       ],
       "transferredShortenedDates": [],
+      "specialRanges": []
+    },
+    {
+      "year": 2027,
+      "revision": 1,
+      "verifiedOn": {
+        "year": 2026,
+        "month": 10,
+        "day": 9
+      },
+      "sourceIDs": [
+        "consultant-calendar-2027",
+        "transfer-2027-official",
+        "transfer-2027-official-pdf",
+        "shortened-transfer-588-text",
+        "tk-official-2027-verification"
+      ],
+      "calendarSourceID": "consultant-calendar-2027",
+      "observedFinalURL": "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2027/",
+      "transferReasonID": "transfer-2027",
+      "decreeReasonDates": [
+        {
+          "year": 2027,
+          "month": 2,
+          "day": 20
+        },
+        {
+          "year": 2027,
+          "month": 2,
+          "day": 22
+        },
+        {
+          "year": 2027,
+          "month": 11,
+          "day": 5
+        },
+        {
+          "year": 2027,
+          "month": 12,
+          "day": 31
+        }
+      ],
+      "transferredShortenedDates": [
+        {
+          "year": 2027,
+          "month": 2,
+          "day": 20
+        }
+      ],
       "specialRanges": []
     }
   ]

@@ -165,8 +165,9 @@ explicitly synthetic complete coverage and checks baseline, an actual hearing
 addition, reopening and a repeated refresh without duplication. This tests the
 native journal identity contract; it does not claim a complete live refresh.
 Both App disk regressions remain compile-only pending hosted execution.
-The decision to release a limited stage or require completeness first remains
-pending the author's response.
+On 9 October 2026, the author accepted releasing the first stage with this
+notification limitation. Search completeness remains an open criterion in
+#106; this decision does not change source confirmation or journal admission.
 
 The follow-up test review corrected two compile-only oracles: persisted movement
 coverage is nil after standard stripping; first complete coverage quietly seeds
@@ -175,3 +176,22 @@ and the cold reopen/repeated refresh must preserve that journal. Final compile
 and 18/18 Kit movement log SHA-256:
 `838f2e8a0068df9f962870f80244a22d00f7bb359aae737da983819760f511b2`.
 Production stripping and quiet first-baseline behavior were not changed.
+
+## UID trust boundary follow-up
+
+Independent review found that the live harness required the fetched card's
+own UID to match the query, while interactive opening did not enforce this
+when the result row omitted its UID. The app now retains the expected UID
+with that result batch and verifies the fetched native card before permitting
+tracking or higher-court requests. Editing the search field does not change
+the older row's criterion. The query is never copied into published row data.
+A failed fresh fetch revokes proof for that native identity; an older movement
+request cannot restore it. Wrong or missing card UIDs leave no tracking context.
+
+The focused Kit movement profile passed 19/19 with 0 failures. App and App-test
+targets compiled, with 0 App tests executed locally. Final log SHA-256:
+`0e8073c744a3cb1895806d41f83ebd8c37efc6d9ea2bc19e57c67535ab50602a`.
+Hosted CI on the previous commit stopped because a new synchronous test
+URLProtocol omitted its required `stopLoading()` override. Both new stubs now
+provide that override; hosted execution must be repeated on the updated commit.
+No further live attempt was performed for these synthetic regressions.

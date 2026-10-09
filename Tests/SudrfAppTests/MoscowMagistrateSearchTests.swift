@@ -60,6 +60,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
         XCTAssertTrue(model.uidSearchEnabled)
         model.queryCaseNumber = "5-42/425/2026"
         model.queryName = "Синтетический участник"
+        let searchedUID = "77MS0425-01-2026-000042-10"
+        model.queryUID = searchedUID
 
         await model.runSearch()
 
@@ -67,13 +69,20 @@ final class MoscowMagistrateSearchTests: XCTestCase {
         let result = try XCTUnwrap(model.results.first)
         XCTAssertEqual(result.cardURL?.absoluteString,
                        "https://mos-sud.ru/425/cases/admin/details/22222222-2222-4222-8222-222222222222")
+        XCTAssertNil(result.caseUID, "The UID query is not copied into the result's source-link UID")
         XCTAssertTrue(model.status.contains("выдача неполная"))
         XCTAssertFalse(model.status.contains("mos-sud.ru"))
 
+        model.selectedResultID = result.stableID
+        XCTAssertNil(model.currentContext(),
+                     "An unverified UID query is not source evidence")
+        model.queryUID = "77MS0425-01-2026-000099-10"
         await model.openCard(result)
         XCTAssertEqual(MoscowUnitSearchURLProtocol.cardRequests(), [result.cardURL])
         XCTAssertEqual(model.cardPDFMetadata?.courtName, selected.title)
         let context = try XCTUnwrap(model.currentContext())
+        XCTAssertEqual(context.judicialUID, searchedUID,
+                       "The row keeps the UID captured when the result batch was published")
         XCTAssertEqual(context.courtTitle, selected.title)
         XCTAssertEqual(context.courtCode, "77MS0425")
         XCTAssertEqual(context.cardURLString, result.cardURL?.absoluteString)
@@ -87,6 +96,15 @@ final class MoscowMagistrateSearchTests: XCTestCase {
         XCTAssertEqual(reopenedContext.courtCode, selected.code)
         XCTAssertEqual(reopenedContext.courtTitle, selected.title)
 
+        let otherCard = CaseSearchResult(
+            caseNumber: "5-43/425/2026",
+            cardURL: URL(string:
+                "https://mos-sud.ru/425/cases/admin/details/33333333-3333-4333-8333-333333333333"))
+        model.results.append(otherCard)
+        model.selectedResultID = otherCard.stableID
+        XCTAssertNil(model.currentContext()?.judicialUID,
+                     "A verified UID for one native card cannot transfer to another card")
+
         let wrongUnit = try XCTUnwrap(model.courts.first {
             $0.moscowMagistrateUnitPathID == "426"
         })
@@ -98,10 +116,145 @@ final class MoscowMagistrateSearchTests: XCTestCase {
 
         let searchRequests = MoscowUnitSearchURLProtocol.searchRequests()
         XCTAssertEqual(searchRequests.count, 2)
-        XCTAssertTrue(searchRequests.allSatisfy {
-            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems
-                == [URLQueryItem(name: "caseNumber", value: "5-42/425/2026")]
-        })
+        let searchFields = searchRequests.compactMap {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first
+        }
+        XCTAssertEqual(searchFields, [
+            URLQueryItem(name: "uid", value: searchedUID),
+            URLQueryItem(name: "uid", value: "77MS0425-01-2026-000099-10")
+        ])
+    }
+
+    func testUIDSearchRejectsWrongOrMissingOwnCardUID() async throws {
+        let ownUID = "77MS0425-01-2026-000042-10"
+        let wrongUIDCard = Self.cardHTML.replacingOccurrences(
+            of: ownUID, with: "77MS0425-01-2026-000043-10")
+        let missingUIDCard = Self.cardHTML.replacingOccurrences(
+            of: "<div class=\"row\"><div class=\"left\">Уникальный идентификатор</div><div class=\"right\">\(ownUID)</div></div>",
+            with: "")
+
+        for cardHTML in [wrongUIDCard, missingUIDCard] {
+            let (model, session, corpusURL) = try await makeUIDSearchModel(cardHTML: cardHTML)
+            defer {
+                session.invalidateAndCancel()
+                MoscowUnitSearchURLProtocol.reset()
+                try? FileManager.default.removeItem(at: corpusURL)
+            }
+
+            model.queryUID = ownUID
+            await model.runSearch()
+            let result = try XCTUnwrap(model.results.first)
+            model.selectedResultID = result.stableID
+            await model.openCard(result)
+
+            XCTAssertNil(model.cardPDFMetadata,
+                         "The card inspector must not accept a wrong or absent own UID")
+            XCTAssertNil(model.currentContext(),
+                         "The query UID must not become saved proof after a failed card check")
+            XCTAssertEqual(MoscowUnitSearchURLProtocol.cardRequests(), [result.cardURL])
+        }
+    }
+
+    func testFreshWrongOwnCardUIDRevokesPreviousProofForSameNativeIdentity() async throws {
+        let ownUID = "77MS0425-01-2026-000042-10"
+        let (model, session, corpusURL) = try await makeUIDSearchModel(cardHTML: Self.cardHTML)
+        defer {
+            session.invalidateAndCancel()
+            MoscowUnitSearchURLProtocol.reset()
+            try? FileManager.default.removeItem(at: corpusURL)
+        }
+
+        model.queryUID = ownUID
+        await model.runSearch()
+        let result = try XCTUnwrap(model.results.first)
+        model.selectedResultID = result.stableID
+        XCTAssertNil(model.currentContext())
+
+        await model.openCard(result)
+        XCTAssertEqual(model.currentContext()?.judicialUID, ownUID)
+
+        let wrongUIDCard = Self.cardHTML.replacingOccurrences(
+            of: ownUID, with: "77MS0425-01-2026-000043-10")
+        MoscowUnitSearchURLProtocol.configure(
+            directory: Self.directoryHTML, results: Self.resultsHTML, card: wrongUIDCard)
+        await model.openCard(result)
+
+        XCTAssertNil(model.cardPDFMetadata,
+                     "A failed fresh fetch must not leave the previous card preview visible")
+        XCTAssertNil(model.currentContext(),
+                     "A prior card proof cannot survive a contradictory fresh response")
+        XCTAssertEqual(MoscowUnitSearchURLProtocol.cardRequests(), [result.cardURL])
+    }
+
+    func testUIDQueryEditedDuringCardLoadKeepsExpectedUIDForPublishedRows() async throws {
+        let (model, session, corpusURL) = try await makeUIDSearchModel(
+            cardHTML: Self.cardHTML, cardDelay: 0.2)
+        defer {
+            session.invalidateAndCancel()
+            MoscowUnitSearchURLProtocol.reset()
+            try? FileManager.default.removeItem(at: corpusURL)
+        }
+        let searchedUID = "77MS0425-01-2026-000042-10"
+        model.queryUID = searchedUID
+        await model.runSearch()
+        let result = try XCTUnwrap(model.results.first)
+        model.selectedResultID = result.stableID
+
+        let openingCard = Task { await model.openCard(result) }
+        for _ in 0..<100 where MoscowUnitSearchURLProtocol.cardRequests().isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(MoscowUnitSearchURLProtocol.cardRequests(), [result.cardURL])
+        model.queryUID = "77MS0425-01-2026-000099-10"
+        await openingCard.value
+
+        XCTAssertEqual(model.currentContext()?.judicialUID, searchedUID)
+        XCTAssertEqual(model.cardPDFMetadata?.judicialUID, searchedUID)
+    }
+
+    private func makeUIDSearchModel(cardHTML: String) async throws
+        -> (model: SearchModel, session: URLSession, corpusURL: URL) {
+        try await makeUIDSearchModel(cardHTML: cardHTML, cardDelay: 0)
+    }
+
+    private func makeUIDSearchModel(cardHTML: String, cardDelay: TimeInterval) async throws
+        -> (model: SearchModel, session: URLSession, corpusURL: URL) {
+        MoscowUnitSearchURLProtocol.configure(
+            directory: Self.directoryHTML, results: Self.resultsHTML, card: cardHTML,
+            cardDelay: cardDelay)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MoscowUnitSearchURLProtocol.self]
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration)
+        let ordinaryClient = SudrfClient(
+            session: session, minInterval: 0,
+            variantStore: WorkingVariantStore(cacheURL: nil),
+            captchaStore: CaptchaTokenStore())
+        let moscowClient = MoscowMagistrateKoAPClient(
+            session: session, minInterval: 0, maxAttempts: 1)
+        let corpusURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("moscow-uid-proof-\(UUID().uuidString)", isDirectory: true)
+        let solver = CaptchaSolver(
+            provider: VisionOCRStrategy(), enabledKinds: [],
+            log: CaptchaSolverLog(fileURL: nil, failuresDir: nil))
+        let model = SearchModel(
+            captchaSolver: solver, captchaSettings: CaptchaSettings.shared,
+            corpusStore: CorpusStore(baseDir: corpusURL),
+            client: ordinaryClient,
+            resolver: DistrictCourtResolver(client: ordinaryClient, cacheURL: nil),
+            magistrateResolver: MagistrateCourtResolver(
+                client: ordinaryClient, cacheURL: nil, moscowDirectoryClient: moscowClient),
+            mosGorSudClient: MosGorSudClient(session: session, minInterval: 0),
+            moscowMagistrateClient: moscowClient)
+        model.tier = .magistrate
+        model.region = "77"
+        await model.resolveCourts()
+        model.selectedCourtID = try XCTUnwrap(model.courts.first {
+            $0.moscowMagistrateUnitPathID == "425"
+        }).id
+        return (model, session, corpusURL)
     }
 
     func testMoscowNativeIdentityAdmissionRequiresExactLoadedLocator() throws {
@@ -302,6 +455,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
 
     func testValidatedUnitContextPersistsAndRefreshesAfterDiskReopen() async throws {
         let context = try await validatedPickerContext()
+        XCTAssertEqual(context.judicialUID, "77MS0425-01-2026-000042-10",
+                       "Only the fetched published card may supply a judicial UID")
         let sourceURL = try XCTUnwrap(context.cardURLString.flatMap(URL.init(string:)))
         XCTAssertEqual(context.courtCode, "77MS0425")
         XCTAssertEqual(context.courtTitle,
@@ -343,6 +498,7 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(saved.context?.courtCode, "77MS0425")
             XCTAssertEqual(saved.context?.courtTitle, context.courtTitle)
             XCTAssertEqual(saved.context?.cardURLString, sourceURL.absoluteString)
+            XCTAssertEqual(saved.context?.judicialUID, context.judicialUID)
             XCTAssertEqual(saved.collectionNames, ["Проверка участка Москвы"])
             let base = try XCTUnwrap(saved.movement?.instances.first)
             XCTAssertEqual(base.sourceURL, sourceURL)
@@ -363,6 +519,7 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(loaded.context?.cardURLString, sourceURL.absoluteString)
             XCTAssertEqual(loaded.context?.courtCode, "77MS0425")
             XCTAssertEqual(loaded.context?.courtTitle, context.courtTitle)
+            XCTAssertEqual(loaded.context?.judicialUID, context.judicialUID)
 
             let center = refreshCenter(store: store, mosgorsud: mosgorsud, vsrf: vsrf)
             let repeated = await center.refresh(key: loaded.key, manually: true)?.value
@@ -527,13 +684,16 @@ private final class MoscowUnitSearchURLProtocol: URLProtocol {
     nonisolated(unsafe) private static var directory = ""
     nonisolated(unsafe) private static var results = ""
     nonisolated(unsafe) private static var card = ""
+    nonisolated(unsafe) private static var cardDelay: TimeInterval = 0
     nonisolated(unsafe) private static var requests: [URL] = []
 
-    static func configure(directory: String, results: String, card: String) {
+    static func configure(directory: String, results: String, card: String,
+                          cardDelay: TimeInterval = 0) {
         lock.lock()
         self.directory = directory
         self.results = results
         self.card = card
+        self.cardDelay = cardDelay
         requests = []
         lock.unlock()
     }
@@ -543,6 +703,7 @@ private final class MoscowUnitSearchURLProtocol: URLProtocol {
         directory = ""
         results = ""
         card = ""
+        cardDelay = 0
         requests = []
         lock.unlock()
     }
@@ -573,6 +734,10 @@ private final class MoscowUnitSearchURLProtocol: URLProtocol {
             return
         }
         let body: String? = Self.body(for: url)
+        if url.path.contains("/cases/admin/details/"),
+           let delay = Self.delayForCardResponse(), delay > 0 {
+            Thread.sleep(forTimeInterval: delay)
+        }
         guard let body, let response = HTTPURLResponse(
             url: url, statusCode: 200, httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "text/html; charset=utf-8"]) else {
@@ -583,6 +748,8 @@ private final class MoscowUnitSearchURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
+
+    override func stopLoading() {}
 
     private static func body(for url: URL) -> String? {
         lock.lock()
@@ -595,6 +762,12 @@ private final class MoscowUnitSearchURLProtocol: URLProtocol {
         if url.path == "/search" { return results }
         if url.path.contains("/cases/admin/details/") { return card }
         return nil
+    }
+
+    private static func delayForCardResponse() -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return cardDelay
     }
 }
 
@@ -684,6 +857,8 @@ private final class MoscowUnitRefreshURLProtocol: URLProtocol {
         client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
+
+    override func stopLoading() {}
 }
 
 private final class MoscowFederalBlockerURLProtocol: URLProtocol {

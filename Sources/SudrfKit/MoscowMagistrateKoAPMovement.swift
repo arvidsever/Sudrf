@@ -5,7 +5,8 @@ extension MovementService {
     /// district-court appeal when the source exposes enough matching facts.
     func moscowMagistrateKoAPMovement(for base: CaseSearchResult,
                                      court: Court,
-                                     cartoteka: Cartoteka) async throws -> CaseMovement {
+                                     cartoteka: Cartoteka,
+                                     expectedJudicialUID: String? = nil) async throws -> CaseMovement {
         guard court.domain.caseInsensitiveCompare(MoscowMagistrateKoAPSource.host) == .orderedSame,
               court.level == .magistrate,
               cartoteka.id == "adm",
@@ -29,6 +30,14 @@ extension MovementService {
               let publishedNumber = fetched.card.caseNumber,
               Self.sameMoscowPublishedCaseNumber(publishedNumber, base.caseNumber) else {
             throw SudrfError.caseCardTemporarilyUnavailable
+        }
+        if let expectedJudicialUID {
+            guard JudicialUIDObservation.validity(of: expectedJudicialUID) == .valid,
+                  JudicialUIDObservation.validity(of: fetched.card.uid) == .valid,
+                  JudicialUIDObservation.normalize(fetched.card.uid ?? "")
+                    == JudicialUIDObservation.normalize(expectedJudicialUID) else {
+                throw SudrfError.caseCardTemporarilyUnavailable
+            }
         }
         if let savedUID = Self.normalizedJudicialUID(base.caseUID),
            Self.normalizedJudicialUID(fetched.card.uid) != savedUID {

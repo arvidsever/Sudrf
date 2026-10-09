@@ -443,7 +443,10 @@ public actor MovementService: MovementProviding {
     let branch: CourtBranch
     /// УИД, сохранённый в фоне из ранее подтверждённой карточки. Он нужен
     /// только как безопасный якорь для временного fallback базовой карточки:
-    /// живая интерактивная ветка этот параметр не передаёт.
+    /// живая обычная ветка этот параметр не передаёт. Для московского KoAP
+    /// запроса поле также несёт runtime-ожидание UID, полученное из UID-поиска;
+    /// оно проверяется по карточке до запросов вышестоящих инстанций и не
+    /// переносится в результат или сохранённый контекст.
     let judicialUID: String?
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
     let vsrf: (any VSRFProviding)?
@@ -529,7 +532,8 @@ public actor MovementService: MovementProviding {
         if MoscowMagistrateKoAPSource.host.caseInsensitiveCompare(court.domain) == .orderedSame,
            court.level == .magistrate, cartoteka.id == "adm" {
             return try await moscowMagistrateKoAPMovement(
-                for: base, court: court, cartoteka: cartoteka)
+                for: base, court: court, cartoteka: cartoteka,
+                expectedJudicialUID: judicialUID)
         }
         // Суды Москвы — отдельный портал mos-gorsud.ru (см. MosGorSudMovement).
         // Ветка нужна и живому поиску, и перезапросу отслеживаемого дела

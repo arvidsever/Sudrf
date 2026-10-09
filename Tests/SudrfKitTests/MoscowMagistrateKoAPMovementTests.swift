@@ -30,9 +30,11 @@ final class MoscowMagistrateKoAPMovementTests: XCTestCase {
 
     private func anchorCard(person: String = "Синтетический участник",
                             category: String? = "Часть 1 статьи 12.8 КоАП РФ",
-                            number: String = "05-0042/424/2026") -> CaseCard {
+                            number: String = "05-0042/424/2026",
+                            cardUID: String? = nil,
+                            omitUID: Bool = false) -> CaseCard {
         CaseCard(rawText: "Synthetic Moscow magistrate card", actText: nil,
-                 uid: uid, caseNumber: number, category: category,
+                 uid: omitUID ? nil : (cardUID ?? uid), caseNumber: number, category: category,
                  parties: CaseParties(kind: .koap, roleItems: [
                     RoleItem(role: "Привлекаемое лицо", name: person)
                  ]), processKind: .koap)
@@ -203,6 +205,43 @@ final class MoscowMagistrateKoAPMovementTests: XCTestCase {
         let mgsRequests = await mgs.requests
         XCTAssertEqual(fetchedURLs, [baseURL])
         XCTAssertTrue(mgsRequests.isEmpty)
+    }
+
+    func testUIDSearchExpectationIsCheckedAgainstOwnCardBeforeHigherRequests() async throws {
+        let baseURL = try baseURL()
+        let court = Court(domain: MoscowMagistrateKoAPSource.host,
+                          title: "Мировой судья участка \(unit)", level: .magistrate)
+        let cart = try cartoteka()
+
+        let matchingMGS = KoAPMovementMosGorSudStub(rows: [])
+        let matching = try await MovementService(
+            client: KoAPMovementClientStub(card: anchorCard(), responseURL: baseURL),
+            mosgorsud: matchingMGS,
+            judicialUID: uid).movement(
+                for: CaseSearchResult(caseNumber: caseNumber, cardURL: baseURL),
+                court: court, cartoteka: cart)
+        XCTAssertEqual(matching.uid, uid)
+        let matchingRequests = await matchingMGS.requests
+        XCTAssertEqual(matchingRequests.count, 2,
+                       "Only the matching fetched own UID may start the higher-stage searches")
+
+        let wrongUID = "77MS0424-01-2026-000043-01"
+        for card in [anchorCard(cardUID: wrongUID), anchorCard(omitUID: true)] {
+            let client = KoAPMovementClientStub(card: card, responseURL: baseURL)
+            let mgs = KoAPMovementMosGorSudStub(rows: [])
+            do {
+                _ = try await MovementService(
+                    client: client, mosgorsud: mgs, judicialUID: uid).movement(
+                        for: CaseSearchResult(caseNumber: caseNumber, cardURL: baseURL),
+                        court: court, cartoteka: cart)
+                XCTFail("A UID search candidate must match the fetched card's own UID")
+            } catch { }
+            let fetchedURLs = await client.fetchedURLs
+            let mgsRequests = await mgs.requests
+            XCTAssertEqual(fetchedURLs, [baseURL])
+            XCTAssertTrue(mgsRequests.isEmpty,
+                          "A wrong or missing own UID must stop before every higher-source request")
+        }
     }
 
     func testPersonArticleSectionAndMultiplicityContradictionsStayPartial() async throws {

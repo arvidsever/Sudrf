@@ -934,18 +934,7 @@ actor CaseOriginResolver {
     /// Only the leading zeros in Moscow's own registration components vary.
     /// Other courts continue to use exact case-number comparison.
     static func sameMoscowNumber(_ lhs: String, _ rhs: String) -> Bool {
-        func normalized(_ value: String) -> String? {
-            let text = CartotekaRegistry.normalizedNumber(value)
-            let parts = text.split(separator: "/", maxSplits: 1).map(String.init)
-            guard parts.count == 2, parts[1].count == 4,
-                  let dash = parts[0].firstIndex(of: "-") else { return nil }
-            let prefix = String(parts[0][..<dash])
-            let serial = String(parts[0][parts[0].index(after: dash)...])
-            let index = String(prefix.drop(while: { $0 == "0" }))
-            guard !index.isEmpty, serial.allSatisfy(\.isNumber) else { return nil }
-            return "\(index)-\(Int(serial) ?? -1)/\(parts[1])"
-        }
-        return normalized(lhs) != nil && normalized(lhs) == normalized(rhs)
+        MosGorSudRouting.sameRegistrationNumber(lhs, rhs)
     }
 
     static func verifiedMoscowURL(_ url: URL, alias: String,

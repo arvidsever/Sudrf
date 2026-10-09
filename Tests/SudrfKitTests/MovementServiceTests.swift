@@ -31,6 +31,18 @@ final class MovementServiceTests: XCTestCase {
                          caseID: "30636693", caseUID: Self.linkGUID)
     }
 
+    private func cachedKnownCardMovement(_ known: KnownCard,
+                                         baseNumber: String) -> CaseMovement {
+        CaseMovement(
+            uid: "", caseNumber: baseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: known.level, court: known.courtTitle,
+                caseNumber: known.caseNumber ?? "—", judge: "Сохранённый судья",
+                domain: known.domain, foundByUID: false,
+                result: "Сохранённый результат", sessions: [], sourceURL: known.sourceURL)],
+            complaints: [:], acts: [])
+    }
+
     func testPrimarySubjectCriminalCassationRouteKeepsKSOYUCandidateOnlyWhenLinkedToLoadedMaterial() async throws {
         let uid = "63RS0001-01-2025-011255-03"
         let samara = Court(domain: "oblsud.sam.sudrf.ru",
@@ -225,6 +237,106 @@ final class MovementServiceTests: XCTestCase {
         XCTAssertFalse(MovementTargetBuilder.usesSupremeCriminalCassationRoute(
             courtLevel: .district, branch: .general, cartotekaID: "g1",
             caseNumber: entry.inst.caseNumber, sourceProcessKind: .civil))
+    }
+
+    func testMagistrateKnownCardWithoutOwnNumberStaysPartialAndPreservesCache() async throws {
+        let magistrateCart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let expectedNumber = "2-7/2026"
+        let url = try XCTUnwrap(URL(string:
+            "https://petrozavodsk.komi.msudrf.ru/modules.php?name=sud_delo&op=cs"
+                + "&case_id=known-magistrate&delo_id=\(magistrateCart.deloID)"
+                + "&new=\(magistrateCart.new)"))
+        let known = KnownCard(
+            domain: "petrozavodsk.komi.msudrf.ru",
+            courtTitle: "Петрозаводский судебный участок",
+            caseID: "known-magistrate", caseUID: "",
+            deloID: magistrateCart.deloID, new: magistrateCart.new,
+            caseNumber: expectedNumber, levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: magistrateCart.id, sourceURL: url)
+        let searchRow = CaseSearchResult(caseNumber: expectedNumber,
+                                         caseID: "known-magistrate", cardURL: url)
+        let client = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil, caseNumber: "2-9/2025"),
+            higherResults: [searchRow],
+            higherCards: ["known-magistrate": CaseCard(rawText: "", actText: nil,
+                                                        caseNumber: nil)])
+        let service = MovementService(client: client, higherCourtDomains: [],
+                                      knownCards: [known], magistrate: client)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-9/2025", caseID: "base",
+                                  caseUID: "base-guid"),
+            court: districtCourt(), cartoteka: cart)
+
+        let coverage = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "msudrf"
+        })
+        XCTAssertEqual(coverage.kind, .partial)
+        XCTAssertTrue(coverage.loadedCardIdentities.isEmpty,
+                      "номер CSV не доказывает свежесть карточки без номера в ответе портала")
+        let merged = MovementCachePolicy.merge(
+            fresh: movement, cached: cachedKnownCardMovement(known, baseNumber: "2-9/2025"))
+        XCTAssertTrue(merged.instances.contains {
+            $0.sourceURL == url && $0.judge == "Сохранённый судья"
+        }, "неподтверждённый ответ мирового судьи не стирает сохранённую карточку")
+    }
+
+    func testMoscowKnownCardRequiresOwnNumberAndPreservesCacheOnMissingNumber() async throws {
+        let districtCart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let expectedNumber = "2-1/2026"
+        let url = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/rs/tverskoj/services/cases/first-civil/details/known-moscow"))
+        let known = KnownCard(
+            domain: "mos-gorsud.ru", courtTitle: "Тверской районный суд",
+            caseID: "known-moscow", caseUID: "",
+            deloID: districtCart.deloID, new: districtCart.new,
+            caseNumber: expectedNumber, levelRaw: CaseInstance.Level.first.rawValue,
+            cartotekaID: districtCart.id, sourceURL: url)
+        let client = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil, caseNumber: "2-9/2025"),
+            higherResults: [], higherCards: [:])
+        let paddedProvider = DirectMosGorSudStub(cards: [
+            "known-moscow": MosGorSudCard(caseNumber: "02-0001/2026",
+                                           court: "Тверской районный суд")
+        ])
+        let paddedService = MovementService(client: client, higherCourtDomains: [],
+                                            knownCards: [known], mosgorsud: paddedProvider)
+        let paddedMovement = try await paddedService.movement(
+            for: CaseSearchResult(caseNumber: "2-9/2025", caseID: "base",
+                                  caseUID: "base-guid"),
+            court: districtCourt(), cartoteka: districtCart)
+        let paddedCoverage = try XCTUnwrap(paddedMovement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud"
+                && $0.loadedCardIdentities.contains {
+                    $0.cartotekaKey == "g1" && $0.sourceNativeID == "known-moscow"
+                }
+        })
+        XCTAssertTrue(paddedCoverage.isFull,
+                      "Moscow registration padding is accepted through the source-specific matcher")
+
+        let missingNumberProvider = DirectMosGorSudStub(cards: [
+            "known-moscow": MosGorSudCard(caseNumber: nil, court: "Тверской районный суд")
+        ])
+        let service = MovementService(client: client, higherCourtDomains: [],
+                                      knownCards: [known], mosgorsud: missingNumberProvider)
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-9/2025", caseID: "base",
+                                  caseUID: "base-guid"),
+            court: districtCourt(), cartoteka: districtCart)
+
+        let coverage = try XCTUnwrap(movement.sourceRefreshCoverage?.first {
+            $0.sourceFamily == "mosgorsud"
+        })
+        XCTAssertEqual(coverage.kind, .partial)
+        XCTAssertTrue(coverage.loadedCardIdentities.isEmpty,
+                      "номер CSV не доказывает свежесть карточки без номера в ответе портала")
+        let merged = MovementCachePolicy.merge(
+            fresh: movement, cached: cachedKnownCardMovement(known, baseNumber: "2-9/2025"))
+        XCTAssertTrue(merged.instances.contains {
+            $0.sourceURL == url && $0.judge == "Сохранённый судья"
+        }, "неподтверждённый ответ Мосгорсуда не стирает сохранённую карточку")
     }
 
     func testPrimaryCriminalCassationSourceFailuresKeepOnlyMaterialRetryStub() async throws {
@@ -1362,6 +1474,23 @@ private actor MockClient: CaseProviding {
         if caseID == firstCardID { return firstCard }
         if failedCardIDs.contains(caseID) { throw SudrfError.http(status: 404) }
         return higherCards[caseID] ?? firstCard
+    }
+}
+
+private struct DirectMosGorSudStub: MosGorSudProviding {
+    let cards: [String: MosGorSudCard]
+
+    func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                participant: String?, instance: Int,
+                processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+        []
+    }
+
+    func fetchCard(url: URL) async throws -> MosGorSudCard {
+        guard let card = cards[url.lastPathComponent] else {
+            throw SudrfError.http(status: 404)
+        }
+        return card
     }
 }
 

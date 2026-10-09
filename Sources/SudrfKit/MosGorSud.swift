@@ -181,6 +181,26 @@ public enum MosGorSudRouting {
             || d.hasPrefix("www." + MosGorSudEndpoint.host)
     }
 
+    /// Moscow cards sometimes pad both the court index and registration
+    /// serial with leading zeroes (for example, `2-1/2026` and
+    /// `02-0001/2026`). Keep this source-specific equivalence out of the
+    /// generic case-number matcher.
+    public static func sameRegistrationNumber(_ lhs: String, _ rhs: String) -> Bool {
+        func normalized(_ value: String) -> String? {
+            let text = CartotekaRegistry.normalizedNumber(value)
+            let parts = text.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[1].count == 4,
+                  let dash = parts[0].firstIndex(of: "-") else { return nil }
+            let prefix = String(parts[0][..<dash])
+            let serial = String(parts[0][parts[0].index(after: dash)...])
+            let index = String(prefix.drop(while: { $0 == "0" }))
+            guard !index.isEmpty, serial.allSatisfy(\.isNumber),
+                  let serialValue = Int(serial) else { return nil }
+            return "\(index)-\(serialValue)/\(parts[1])"
+        }
+        return normalized(lhs) != nil && normalized(lhs) == normalized(rhs)
+    }
+
     // MARK: - Разделы (сегменты пути ссылки результата)
 
     // Ключи разделов из scripts.js портала (instanceTypes/processTypes.keys)

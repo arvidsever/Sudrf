@@ -193,10 +193,11 @@ final class CaseImportTests: XCTestCase {
     }
 
     private func seed(_ r: ImportedRow) throws -> ImportSeed {
-        guard case .seed(let s) = CaseImporter.classify(r) else {
-            throw XCTSkip("строка неожиданно пропущена")
+        switch CaseImporter.classify(r) {
+        case .seed(let seed): return seed
+        case .skipped(let reason):
+            throw XCTSkip("строка неожиданно пропущена: \(reason) — \(r.urlString)")
         }
-        return s
     }
 
     func testDistrictCivilCase() throws {
@@ -290,9 +291,9 @@ final class CaseImportTests: XCTestCase {
             if case .skipped(let r) = CaseImporter.classify(row("1", "Суд", url)) { return r }
             return nil
         }
-        XCTAssertEqual(reason("https://zheshartsky.komi.msudrf.ru/modules.php?name=sud_delo&op=cs&case_id=141614450&delo_id=1540005"),
-                       CaseImporter.reasonMagistrate)
-        XCTAssertEqual(reason("https://mos-gorsud.ru/rs/cases/123"), CaseImporter.reasonMosgorsud)
+        XCTAssertNil(reason("https://zheshartsky.komi.msudrf.ru/modules.php?name=sud_delo&op=cs&case_id=141614450&delo_id=1540005"),
+                      "валидная карточка мирового судьи входит в первую стадию")
+        XCTAssertEqual(reason("https://mos-gorsud.ru/rs/cases/123"), CaseImporter.reasonBadURL)
         XCTAssertEqual(reason("https://mirsud.spb.ru/cases/detail/20/?id=5-583%2F2025-20"),
                        CaseImporter.reasonMagistrateSpb)
         XCTAssertEqual(reason("https://example.org/case/1"), CaseImporter.reasonPlatform)
@@ -307,6 +308,96 @@ final class CaseImportTests: XCTestCase {
         guard case .seed = CaseImporter.classify(unknownCourt) else {
             return XCTFail("корректный неизвестный sudrf.ru host нельзя отклонять автоматически")
         }
+    }
+
+    func testFirstStageProviderLocatorsAndRejectsWrongHostsOrPaths() throws {
+        let magistrate = try seed(row(
+            "2-1/2026", "Судебный участок № 1",
+            "https://zheshartsky.komi.msudrf.ru/modules.php?name=sud_delo&op=cs&case_id=141614450&delo_id=1540005"))
+        XCTAssertEqual(magistrate.provider, .msudrf)
+        XCTAssertEqual(magistrate.cartoteka?.id, "g1")
+        XCTAssertNotNil(SourceNativeCardLocator.msudrf(
+            url: URL(string: magistrate.row.urlString)!, cartoteka: magistrate.cartoteka!))
+
+        let moscow = try seed(row(
+            "3-1/2026", "Московский городской суд",
+            "https://mos-gorsud.ru/mgs/services/cases/first-civil/details/card-1"))
+        XCTAssertEqual(moscow.provider, .mosgorsud)
+        XCTAssertEqual(moscow.cartoteka?.id, "g1")
+        XCTAssertEqual(moscow.row.urlString,
+                       "https://mos-gorsud.ru/mgs/services/cases/first-civil/details/card-1")
+
+        for value in [
+            row("2-1/2026", "Судебный участок № 1",
+                "https://msudrf.ru.evil.org/modules.php?name=sud_delo&op=cs&case_id=1&delo_id=1540005"),
+            row("3-1/2026", "Московский городской суд",
+                "https://mos-gorsud.ru/mgs/services/cases/wrong/details/card-1"),
+            row("2-1/2026", "Верховный Суд РФ",
+                "https://example.org/lk/practice/cases/12-1")
+        ] {
+            guard case .skipped = CaseImporter.classify(value) else {
+                return XCTFail("wrong host/path must not become a source locator: \(value.urlString)")
+            }
+        }
+    }
+
+    func testVSRFImportsUseExactLocatorAndNeverGroupByUIDAlone() throws {
+        let caseRow = row("3-КГ26-1-К3", "Верховный Суд РФ",
+                          "https://www.vsrf.ru/lk/practice/claims/12-36321243")
+        let complaintRow = row("3-КФ26-1-К3", "Верховный Суд РФ",
+                               "https://vsrf.ru/lk/practice/appeals/21-36321242")
+        let caseSeed = try seed(caseRow)
+        let complaintSeed = try seed(complaintRow)
+        XCTAssertEqual(caseSeed.provider, .vsrf(.claims))
+        XCTAssertEqual(complaintSeed.provider, .vsrf(.appeals))
+
+        let uid = "11RS0001-01-2026-000001-01"
+        let caseCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: caseRow.number)
+        let complaintCard = CaseCard(rawText: "", actText: nil, uid: uid,
+                                     caseNumber: complaintRow.number)
+        let noProductionEvidence = CaseImporter.plan([
+            .init(seed: caseSeed, card: caseCard),
+            .init(seed: complaintSeed, card: complaintCard)
+        ])
+        XCTAssertEqual(noProductionEvidence.records.count, 2,
+                       "даже совпадающий УИД ВС РФ не связывает отдельные карточки")
+        XCTAssertTrue(noProductionEvidence.records.allSatisfy {
+            $0.context.judicialUID == nil && $0.context.knownCards == nil
+        })
+
+        let exactCard = VSRFCard(productions: [
+            VSRFProduction(cardID: "12-36321243", cardSection: .claims,
+                           kind: .caseFile, number: caseRow.number, uid: uid),
+            VSRFProduction(cardID: "21-36321242", cardSection: .appeals,
+                           kind: .complaint, number: complaintRow.number)
+        ])
+        let linked = CaseImporter.plan([
+            .init(seed: caseSeed, card: caseCard, vsrfCard: exactCard),
+            .init(seed: complaintSeed, card: complaintCard, vsrfCard: exactCard)
+        ])
+        XCTAssertEqual(linked.records.count, 1)
+        XCTAssertEqual(linked.stitched, 1)
+        XCTAssertEqual(linked.records[0].context.cardURLString, caseRow.urlString)
+        XCTAssertEqual(linked.records[0].context.judicialUID, nil)
+        XCTAssertNil(linked.records[0].context.cartoteka)
+        XCTAssertEqual(linked.records[0].context.knownCards?.compactMap {
+            $0.sourceURL?.absoluteString
+        }, [complaintRow.urlString],
+        "точная опубликованная пара сохраняется для последующего открытия карточки")
+
+        let ambiguousCard = VSRFCard(productions: exactCard.productions + [
+            VSRFProduction(cardID: "21-36321241", cardSection: .appeals,
+                           kind: .complaint, number: "3-КФ26-2-К3")
+        ])
+        let ambiguous = CaseImporter.plan([
+            .init(seed: caseSeed, card: caseCard, vsrfCard: ambiguousCard),
+            .init(seed: complaintSeed, card: complaintCard, vsrfCard: ambiguousCard)
+        ])
+        XCTAssertEqual(ambiguous.records.count, 2,
+                       "если карточка публикует неоднозначную пару, записи остаются отдельными")
+        XCTAssertTrue(ambiguous.records.allSatisfy { $0.context.knownCards == nil },
+                      "неоднозначная карточка не создаёт связь между записями")
     }
 
     // MARK: Сшивание по УИД

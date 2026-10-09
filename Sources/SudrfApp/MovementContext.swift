@@ -234,8 +234,13 @@ struct MovementContext: Codable, Equatable, Sendable {
     /// совместимым адресом поиска и deep links, но не является identity
     /// логического дела (её задаёт `TrackedCaseRecord.logicalCaseID`).
     var key: String {
-        Self.identityKey(displayDomain: displayDomain, courtCode: courtCode,
-                         caseNumber: caseNumber)
+        if let url = cardURLString.flatMap(URL.init(string:)),
+           let locator = SourceNativeCardLocator.vsrf(url: url),
+           searchDomain.caseInsensitiveCompare("vsrf.ru") == .orderedSame {
+            return "vsrf.ru#\(locator.cartotekaKey)/\(locator.sourceNativeID)"
+        }
+        return Self.identityKey(displayDomain: displayDomain, courtCode: courtCode,
+                                caseNumber: caseNumber)
     }
 
     /// Формула historical locator, общая для legacy persistence и memory-кэша
@@ -261,7 +266,8 @@ struct MovementContext: Codable, Equatable, Sendable {
     // MARK: Сервис движения (подбор доменов вышестоящих судов)
 
     func makeService(client: any CaseProviding, vsrf: (any VSRFProviding)? = nil,
-                     mosgorsud: (any MosGorSudProviding)? = nil) -> MovementService {
+                     mosgorsud: (any MosGorSudProviding)? = nil,
+                     magistrate: (any CaseProviding)? = nil) -> MovementService {
         let exactTargets = higherCourtTargets ?? cartoteka.flatMap {
             MovementTargetBuilder.targets(
                 branch: branch, courtLevel: courtLevel, baseCartoteka: $0,
@@ -274,6 +280,7 @@ struct MovementContext: Codable, Equatable, Sendable {
                                knownCards: knownCards ?? [],
                                baseInstanceLevel: baseInstanceLevel,
                                vsrf: vsrf, mosgorsud: mosgorsud,
+                               magistrate: magistrate,
                                judicialUID: judicialUID, branch: branch)
     }
 

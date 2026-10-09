@@ -156,7 +156,7 @@ final class RefreshCenter: ObservableObject {
 
     private let store: TrackedStore
     private let client: SudrfClient
-    private let vsrfClient = VSRFClient()
+    private let vsrfClient: any VSRFProviding
     private let mosGorSudClient = MosGorSudClient()
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
@@ -293,6 +293,7 @@ final class RefreshCenter: ObservableObject {
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
             -> EnforcementLookup)? = nil,
          fsspClient: FSSPClient? = nil,
+         vsrfProvider: (any VSRFProviding)? = nil,
          fsspAutoModelEnabled: Bool? = nil,
          fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil,
          initialTimerDelay: Duration = .seconds(5),
@@ -300,6 +301,8 @@ final class RefreshCenter: ObservableObject {
          walkDiagnostics: RefreshWalkDiagnostics = .disabled) {
         self.store = store
         self.client = client
+        let vsrf = vsrfProvider ?? VSRFClient()
+        self.vsrfClient = vsrf
         self.captchaSolver = captchaSolver
         self.captchaSettings = captchaSettings
         self.initialTimerDelay = initialTimerDelay
@@ -308,13 +311,14 @@ final class RefreshCenter: ObservableObject {
         // Локальные копии — чтобы default-замыкания не захватывали self
         // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
-        let vsrf = vsrfClient
         let mgs = mosGorSudClient
+        let magistrate = MagistrateClient(sudrfClient: client)
         self.serviceBuilder = serviceBuilder ?? { ctx in
             let provider: any CaseProviding = ctx.courtLevel == .magistrate
-                ? MagistrateClient(sudrfClient: client)
+                ? magistrate
                 : client
-            return ctx.makeService(client: provider, vsrf: vsrf, mosgorsud: mgs)
+            return ctx.makeService(client: provider, vsrf: vsrf,
+                                   mosgorsud: mgs, magistrate: magistrate)
         }
         self.autoSolve = autoSolve ?? { url, c, s, settings in
             await AutoCaptchaSolver.solve(formURL: url, client: c,
@@ -919,7 +923,14 @@ final class RefreshCenter: ObservableObject {
             return RefreshExecution(effectiveKey: effectiveKey, outcome: .cancelled)
         }
         guard let rec = store.record(forKey: effectiveKey),
-              var ctx = rec.context, let cart = ctx.cartoteka else {
+              var ctx = rec.context else {
+            return failure(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
+        }
+        if let locator = Self.vsrfAnchorLocator(in: ctx) {
+            return await refreshVSRFAnchor(key: effectiveKey, context: ctx,
+                                            locator: locator)
+        }
+        guard let cart = ctx.cartoteka else {
             return failure(effectiveKey, "Не удалось восстановить параметры поиска по делу.")
         }
         if JudicialUIDObservation.validity(of: ctx.judicialUID) != .valid,
@@ -948,6 +959,57 @@ final class RefreshCenter: ObservableObject {
         } catch {
             return failure(effectiveKey,
                            "Не удалось собрать движение дела: \(error.localizedDescription)")
+        }
+    }
+
+    private static func vsrfAnchorLocator(in context: MovementContext)
+        -> SourceNativeCardLocator? {
+        guard context.searchDomain.caseInsensitiveCompare("vsrf.ru") == .orderedSame,
+              context.courtLevel == .cassation,
+              context.cartotekaId.isEmpty,
+              [.first, .appeal, .vsCassation, .supervisory]
+                .contains(context.baseInstanceLevel),
+              let url = context.cardURLString.flatMap(URL.init(string:)) else { return nil }
+        return SourceNativeCardLocator.vsrf(url: url)
+    }
+
+    private func refreshVSRFAnchor(key: String, context: MovementContext,
+                                   locator: SourceNativeCardLocator) async -> RefreshExecution {
+        guard let section = VSRFCardSection(rawValue: locator.cartotekaKey),
+              let record = store.record(forKey: key), record.context == context,
+              let sourceURL = context.cardURLString.flatMap(URL.init(string:)) else {
+            return failure(key, "Не удалось восстановить точную карточку Верховного Суда РФ.")
+        }
+        do {
+            let card = try await vsrfClient.fetchCard(
+                productionID: locator.sourceNativeID, section: section)
+            try Task.checkCancellation()
+            let movement = try MovementService.vsrfAnchorMovement(
+                card: card, productionID: locator.sourceNativeID,
+                section: section, expectedNumber: context.caseNumber)
+            guard store.record(forKey: key)?.context == context else {
+                return RefreshExecution(effectiveKey: key, outcome: .cancelled)
+            }
+            let attempt = SourceAttempt(
+                kind: .usableSnapshot,
+                provenance: SourceProvenance(operation: .movement,
+                                             sourceFamily: "vsrf",
+                                             host: sourceURL.host ?? "vsrf.ru"))
+            return try applyMovement(key: key, ctx: context, mv: movement,
+                                     attempt: attempt, isComplete: true)
+        } catch is CancellationError {
+            return RefreshExecution(effectiveKey: key, outcome: .cancelled)
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            return RefreshExecution(effectiveKey: key, outcome: .cancelled)
+        } catch is TrackedStoreCommitError {
+            return failure(key, Self.persistenceFailureMessage)
+        } catch {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: error, operation: .movement,
+                sourceFamily: "vsrf", host: sourceURL.host ?? "vsrf.ru")
+            do { try persistAttempt(key, attempt) }
+            catch { return failure(key, Self.persistenceFailureMessage) }
+            return failure(key, error.localizedDescription)
         }
     }
 

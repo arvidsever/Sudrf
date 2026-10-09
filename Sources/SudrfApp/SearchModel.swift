@@ -361,7 +361,8 @@ final class SearchModel: ObservableObject {
                                higherCourtTargets: movementTargets(for: court, base: base),
                                baseInstanceLevel: baseLevel,
                                vsrf: vsrfClient,
-                               mosgorsud: mosGorSudClient, branch: branch)
+                               mosgorsud: mosGorSudClient,
+                               magistrate: magistrateClient, branch: branch)
     }
 
     var busy: Bool { resolving || searching || loadingCard }

@@ -196,6 +196,7 @@ final class DirectCaseLinkSheetTests: XCTestCase {
         let injectedIndexer = try XCTUnwrap(injectedSpotlightIndexer)
         XCTAssertTrue(router.spotlightIndexer === injectedIndexer)
         router.refreshCenter.repairBeforeRefresh = nil
+        router.refreshCenter.recoverCard = nil
 
         guard NSApp == nil else {
             throw XCTSkip("offline #339 test requires no AppKit application before import")
@@ -403,6 +404,7 @@ final class DirectCaseLinkSheetTests: XCTestCase {
             currentEntityActivityPublisher: { _ in },
             feedNotificationPublisher: { notificationReceiver.receive($0) })
         router.refreshCenter.repairBeforeRefresh = nil
+        router.refreshCenter.recoverCard = nil
 
         let key = try XCTUnwrap(router.addDirectCaseLink(ctx))
         guard router.refreshCenter.isRefreshing(key) else {
@@ -468,6 +470,7 @@ final class DirectCaseLinkSheetTests: XCTestCase {
             currentEntityActivityPublisher: { _ in },
             feedNotificationPublisher: { notificationReceiver.receive($0) })
         router.refreshCenter.repairBeforeRefresh = nil
+        router.refreshCenter.recoverCard = nil
 
         let repeatedImportStartedAt = Date()
         let key = try XCTUnwrap(router.addDirectCaseLink(ctx))

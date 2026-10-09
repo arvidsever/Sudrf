@@ -77,6 +77,24 @@ jobs:
       - name: Build CLI product
         run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
 
+      - name: Run isolated direct-link tests before AppKit tests
+        run: |
+          set -o pipefail
+          swift test -Xswiftc -strict-concurrency=complete --filter DirectCaseLinkSheetTests 2>&1 | tee "$RUNNER_TEMP/direct-link-tests.log"
+          grep -F "Test Suite 'DirectCaseLinkSheetTests' passed" "$RUNNER_TEMP/direct-link-tests.log"
+          for test in \
+            testPreviewProjectsAllConfirmationFieldsAndMissingValues \
+            testSheetStateKeepsOnlyResolvedPreviewAfterInput \
+            testTrackReturnsPersistentKeyAndExactContextReusesIt \
+            testDirectLinkUsesInjectedActivitySpotlightAndNotificationPublishers \
+            testHigherCourtURLReusesSearchTrackedLogicalCaseByJudicialUID \
+            testConfirmDirectLinkContinuesTwoCaptchasAfterSheetClosesAndSurvivesColdReopen; do
+            grep -F -- "-[SudrfAppTests.DirectCaseLinkSheetTests $test]' passed" "$RUNNER_TEMP/direct-link-tests.log"
+          done
+          if grep -E "DirectCaseLinkSheetTests.*skipped|Test skipped" "$RUNNER_TEMP/direct-link-tests.log"; then
+            exit 1
+          fi
+
       - name: Run tests
         run: swift test -Xswiftc -strict-concurrency=complete
 

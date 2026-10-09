@@ -64,3 +64,13 @@ The default `PublishedActSelection` cache only stores its directory URL at initi
 ## Current-main rebase checkpoint
 
 Rebased onto main `e9910a36b9d1af09d82de3f2eeaba246573a6cca` (0.64.5, build 257). The two conflict sites retain main's injected VSRF/import providers and the approved CAPTCHA token/solver seams together. All test targets compiled successfully without execution: `/private/tmp/sudrf-339-rebased-compile.log`, SHA-256 `e109692f1b459e4e62f0fa502cea061d92ac38b8f68698e22c2b43aa750826ac`. Runtime offline evidence must come from current-head CI and must show actual test execution rather than skips.
+
+## Focused hosted execution gate
+
+Full CI run `37992365897` passed on `f82c4a17259b2fa0a8d8de078bfef12a31e3423e`: 2,022 XCTest cases, 25 skipped, zero failures, plus 28 Swift Testing cases. Four AppRouter paths in `DirectCaseLinkSheetTests` were skipped because earlier tests had created `NSApp`; this run does not satisfy their acceptance.
+
+The stable hosted job now starts this six-test class in a fresh process before the full suite. The step requires every named test to report `passed` and rejects any skip; its log gate was checked with six passes, a missing pass and a skipped case. The three offline refresh paths also disable the existing `recoverCard` callback, so a fixture failure cannot reach the default network client. Production card recovery is unchanged.
+
+All test targets compile after this adjustment. Log: `/private/tmp/sudrf-339-focused-gate-compile.log`; SHA-256 `172183a26b3ccfb870def1b12db574c1c06b52ef1a48ae44d69c42c865a447e1`. Focused runtime results remain pending until the new hosted run finishes. No local AppRouter execution or new live request is claimed.
+
+Own Xcode 27 build on `f82c4a1` succeeded without launch: `/private/tmp/sudrf-339-current-xcodebuild.log`; SHA-256 `122eafc061750b6bdfb2713c5d9fbf26a563a6b174a0e47e807ded7839317115`. The later adjustment touches only tests and CI.

@@ -791,7 +791,7 @@ enum CaseEventDeriver {
                           occurrenceKey: value.occurrenceKey, relatedOccurrenceKey: nil)
     }
 
-    private static func hearingKey(_ value: StoredSession) -> String {
+    static func hearingKey(_ value: StoredSession) -> String {
         [value.sourceCardID ?? "", normalized(value.event), normalizedDate(value.dateRaw),
          normalizedTime(value.time)].joined(separator: "|")
     }

@@ -1,7 +1,8 @@
-# #179 — legacy renderer oracle and act-only journal shadow
+# #179 — legacy renderer oracle and event-family journal shadows
 
-This note records **stage 1** (legacy renderer extraction) and **stage 2** (published-act
-shadow); neither passes the full downstream shadow gate or authorizes cutover.
+This note records **stage 1** (legacy renderer extraction), **stage 2** (published-act
+shadow), and **stage 3** (hearing-family shadow); none passes the full downstream shadow
+gate or authorizes cutover.
 `AppRouter.reload` prepares ordered value-only inputs and calls
 `LegacyFeedProjection.project`; the focused renderer tests call that same pure function
 and assert the current legacy output. Stage 2 compares only the published-act family.
@@ -54,6 +55,44 @@ time and text and asserts those exact field mismatches.
 
 This is an act-family diagnostic only. The full shadow gate remains open; it
 does not establish corpus-wide parity or authorize cutover.
+
+## Stage 3: hearing journal shadow
+
+This layer projects only persisted `hearingScheduled` and `hearingPostponed`
+events; it reports `hearingRescheduled` only as an explicit diagnostic gap. It
+does not create a shadow entry from a current snapshot by itself.
+An event is projected only when its occurrence key matches exactly one current
+stored hearing and its source card, level, date, time, event text, result, own
+instance observation, and own movement instance all agree. The existing
+`CaseEventDeriver.hearingKey` helper supplies the occurrence key; the projector
+checks level and result separately because they are intentionally absent from
+that key.
+
+The legacy comparison runs on the complete `LegacyFeedProjection` output before
+hearing rows are selected. Exact aliases use the existing feed-ID and
+material-ID helpers, and every raw feed ID is counted first because its
+identity omits the row kind. Read and known marks migrate separately, while
+the case unread flag and material/previous-registration navigation fields
+remain part of the projected row. The history boundary is the process date's
+inclusive 0–45-day window; `observedAt` does not change it. Rows and events
+outside that window are quiet unless an event occurrence key points to a
+current stored hearing inside the window. Such an event stays in scope and an
+out-of-window evidence date is reported as a date conflict. Competing persisted
+events for that occurrence are counted before date filtering, so a stale event
+cannot let another event claim the legacy alias or read/known marks. A
+rescheduled event remains a gap when its affected occurrence keys point to a
+current in-window hearing, even if its stored date fields are outside the
+window.
+
+Multiple persisted events matching one current occurrence are reported as
+unmapped rather than choosing one. Rescheduled events are explicitly reported
+as unproven because their evidence carries both the prior and next occurrence.
+Quiet legacy hearing rows without a journal event remain unmapped. These are
+intentional diagnostic gaps, not claimed parity. Tests use synthetic records
+and events derived by `CaseEventBaselineTransition` / `CaseEventDeriver`, then
+compare against the actual `LegacyFeedProjection` output.
+
+This layer does not change feed, notification, badge, persistence, or UI callers.
 
 The focused tests use isolated fixed synthetic data. They do not instantiate `AppRouter`,
 read SwiftData or persisted preferences, make network calls, launch the app, or deliver
@@ -136,3 +175,56 @@ Independent Astra review cleared three concrete issues before accepting this nar
 checkpoint: legacy navigation fields, independent legacy-ID validation before mark
 transfer, and duplicate detection across all raw legacy act rows. Its final result
 was Ship for the act-only checkpoint; the full #179 gate remains open.
+
+Stage 3 focused result on **9 October 2026**: **35 XCTest cases, 0 failures** — fourteen
+hearing-shadow tests (including wrong-date diagnostics, stale-event collision
+blocking, rescheduled relevance, and full legacy material-mark handoff), eleven
+act-shadow tests (including the cross-family raw-ID collision regression), five
+legacy renderer tests, and five feed-compatibility tests.
+SwiftPM used isolated scratch tree `/private/tmp/sudrf-179-hearing-shadow`, module
+cache `/private/tmp/sudrf-179-hearing-shadow/module-cache`, and Clang module cache
+`/private/tmp/sudrf-179-hearing-shadow/clang-cache`.
+
+```sh
+SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/sudrf-179-hearing-shadow/module-cache \
+CLANG_MODULE_CACHE_PATH=/private/tmp/sudrf-179-hearing-shadow/clang-cache \
+swift test --disable-sandbox --skip-update \
+  --scratch-path /private/tmp/sudrf-179-hearing-shadow/build \
+  --filter 'HearingJournalFeedProjectionTests|CaseEventFeedCompatibilityTests|LegacyFeedProjectionTests|ActJournalFeedProjectionTests'
+```
+
+Before the evidence-window fix, the newly added wrong-date, competing-event, and
+stale-reschedule regressions failed: out-of-window evidence was skipped before
+the current occurrence was checked, leaving no date/reschedule diagnostic and
+allowing the competing current event to claim the legacy alias and marks.
+Red log `/private/tmp/sudrf-179-hearing-shadow/evidence-window-red.log`; the
+SHA-256 is `0e4fe0cc4614b1973ae80762ff188cb6f9aac4af08fa79134a59fd6e5ccf3bcc`.
+The corrected source and tests passed in the final focused run below.
+
+Final focused log `/private/tmp/sudrf-179-hearing-shadow/combined-final.log`.
+SHA-256: `ee7c42255b7f6785f40396be5570d8b3efbd998d26d860f96e6be13b36bcdf20`.
+This remains a synthetic, focused SwiftPM run; it is not the full suite, a CI run,
+live-corpus acceptance, or an application-build gate.
+
+The orchestrator independently repeated the final **35 pure tests, 0 failures**
+on 9 October 2026 after the date-relevance fix, distinct native-card fixture, and
+shared comparator extraction. Log `/private/tmp/sudrf-179-root-hearing-final.log`
+SHA-256: `0fbbff56882fc2cafd975e70dca8dbbf402125123b841f2100bd561883d0ba5a`.
+Independent Astra review cleared both concrete P2 findings and approved this
+checkpoint. The duplicate post-projection occurrence pass was removed because
+the earlier count and exact date/session validation already exclude every
+competing occurrence. This is still a synthetic pure-component gate, not real
+source-corpus acceptance, a local app/system run, or authorization for cutover.
+
+The earlier act-collision commit `7d478980f32f03a0f53a502306763186b75d3b12`
+passed [CI run 37886437956](https://github.com/arvidsever/Sudrf/actions/runs/37886437956):
+2,009 XCTest cases, 20 skipped, 0 failures; 28 Swift Testing cases passed;
+the Python corpus gate ran 26 tests with 6 skipped. Registry verification,
+Xcode app, SwiftPM app/CLI, packaged app, and all three model manifests passed.
+The hosted Xcode 27 build and test steps were skipped. This run precedes the
+hearing-shadow commit and is not CI evidence for that later source.
+
+The local Xcode project was regenerated after fetching the three immutable
+model assets through the existing manifest-checked script. Project generation
+does not build or launch the application. A local application build remains
+deferred because it would register the application with Launch Services.

@@ -1,6 +1,9 @@
 # #434 — сохранение акта при обновлении карточки
 
-Дата: 9 октября 2026 года. Основа: `3381809` (0.63.1 / build 251).
+Дата: 9 октября 2026 года. Первичный полный прогон был на `8eb91de`, до rebase
+на [#248](https://github.com/arvidsever/Sudrf/pull/435). Текущая база после
+rebase: `39f253c9256ed31f0889afb8e6c87776286e3543` (0.64.0 / build 252);
+кандидат выпуска — 0.64.1 / build 253 в PR #437.
 
 ## Проверяемый сценарий
 
@@ -32,10 +35,12 @@ TestFlight и живые судебные сайты не используютс
 ## Проверки
 
 - `swift test --disable-sandbox -Xswiftc -strict-concurrency=complete` — полный
-  прогон на коде `8eb91de` завершился с кодом 0: `SudrfKitTests` — 726 тестов;
-  `SudrfAppTests` — 1 160 (15 пропущено); `FSSPCaptchaLabTests` — 9 (1 пропущен);
-  `CaptchaSolverTests` — 75 (5 пропущено); `CaseEventDeriverTests` — 28. Во всех
-  наборах 0 ошибок. #434, #370, #76 и публикационные conflict-регрессии прошли.
+  прогон до rebase на #248, на коде `8eb91de`, завершился с кодом 0:
+  `SudrfKitTests` — 726 XCTest; `SudrfAppTests` — 1 160 (15 пропусков);
+  `FSSPCaptchaLabTests` — 10 (0 пропусков); `CaptchaSolverTests` — 75
+  (5 пропусков); `CaseEventDeriverTests` — 28 Swift Testing. Итого 1 971 XCTest,
+  20 пропусков, 0 ошибок и 28 успешных Swift Testing. #434, #370, #76 и
+  публикационные conflict-регрессии прошли.
 - На исходном production-файле `MovementCachePolicy.swift` из `861906f` тесты
   #370 и #76 проходили. В изменённой версии диагностировался сброс `seenAt`:
   при восстановлении кеша scalar act-ссылки превращались в эквивалентные
@@ -45,8 +50,18 @@ TestFlight и живые судебные сайты не используютс
 - `python3 Scripts/generate-legal-deadline-registry.py --check` — реестр
   актуален.
 - `xcodegen generate` — проект создан, отслеживаемых изменений генерации нет.
-- Xcode 27, macOS, unsigned build (`CODE_SIGNING_ALLOWED=NO`) — успешно после
-  conflict guard публикации.
+- После rebase выполнен строгий профильный прогон:
+  `swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter 'MovementCachePolicyTests|MovementDerivationTests|Issue434CachedActRetentionTests'` — 131 XCTest, 0 ошибок. Лог:
+  `/private/tmp/sudrf-434-final/affected-tests.log`.
+- После rebase `python3 Scripts/generate-legal-deadline-registry.py --check`
+  подтвердил актуальность реестра; лог:
+  `/private/tmp/sudrf-434-final/registry-check.log`.
+- Выпуск `0.64.1 (253)` собран без подписи на Xcode 27.0 (build 27A266a),
+  macOS SDK 27.0, командой
+  `xcodebuild -project Sudrf.xcodeproj -scheme Sudrf -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build`.
+  Сборка успешна. Логи:
+  `/private/tmp/sudrf-434-final/xcode-version.log` и
+  `/private/tmp/sudrf-434-final/xcodebuild.log`.
 - Исходные и скопированные в собранный `.app` модели numeric,
   numeric-specialist и FSSP совпали с manifest; файл eligibility в `.app`
   совпал с fixture.

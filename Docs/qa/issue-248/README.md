@@ -58,13 +58,23 @@ FSSP Lab 10, CAPTCHA 75 (5 пропусков). Лог:
 Лог `/private/tmp/sudrf-248-rebased-full.log`. Этот прогон предшествует
 добавлению заполненного старого журнала в тест пары ВС РФ.
 
+Ветка затем перенесена на `3381809f` (включая #156). Затронутые профили
+импорта, клиентов и передачи регистраций: **132 XCTest**, 0 пропусков и
+ошибок, `/private/tmp/sudrf-248-after-156-profile.log`. Повторные XcodeGen и
+unsigned Xcode 27 Debug прошли; все три встроенные модели и eligibility JSON
+проверены снова. Логи `/private/tmp/sudrf-248-after-156-{xcodegen,xcode}.log`.
+
 Registry актуален; Xcode-проект пересоздан; собственная unsigned Xcode 27
 Debug-сборка успешна. Все три CoreML-пакета внутри собранного приложения
 совпадают с tracked manifests; eligibility JSON FSSP совпадает побайтово.
 Логи `/private/tmp/sudrf-248-{registry,xcodegen,xcode}.log`.
 Повтор после rebase: `/private/tmp/sudrf-248-rebased-{registry,xcodegen,xcode}.log`,
 `/private/tmp/sudrf-248-rebased-modelbundle.log`.
-Окончательный CI и повтор затронутых профилей после rebase выполняются перед merge.
+Первоначальный CI на `129de252` успешен: run `37864190254`. После назначения
+0.64.0 (252) Xcode-проект пересоздан и unsigned Debug собран повторно;
+Info.plist подтверждает 0.64.0 / 252. Логи
+`/private/tmp/sudrf-248-release-{xcodegen,xcode}.log`. Финальный коммит выпуска
+проходит отдельный CI перед merge; его результат фиксируется в PR.
 
 ## Ограничения
 

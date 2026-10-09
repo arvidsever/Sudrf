@@ -43,7 +43,7 @@
 | [#248](https://github.com/arvidsever/Sudrf/issues/248) | Первый этап выполнен в [PR #435](https://github.com/arvidsever/Sudrf/pull/435): федеральные новые/старые URL, Мосгорсуд, региональные мировые и ВС РФ. Остались мировые Москвы и Петербурга после #106–#108; задача открыта. |
 | [#350](https://github.com/arvidsever/Sudrf/issues/350) | Довести картотеки окружных и флотских военных судов до паритета с живым сайтом. |
 | [#68](https://github.com/arvidsever/Sudrf/issues/68) | Добавить пользовательский экран Source Health поверх уже сохраняемой обезличенной диагностики. |
-| [#65](https://github.com/arvidsever/Sudrf/issues/65) | Запустить независимый live canary контрактов судебных порталов. |
+| [#65](https://github.com/arvidsever/Sudrf/issues/65) | Один ручной live-проход сохранён в [QA-отчёте](qa/issue-65/README.md): redirect SUDRF/VNKOD, CAPTCHA на суде субъекта и в КСОЮ, TLS network failure у мирового суда, redirect ВС РФ и лимит тела Мосгорсуда. Это не подтверждает здоровье семи парсеров; задача остаётся открытой. |
 | [#224](https://github.com/arvidsever/Sudrf/issues/224) | Федеральный 2027 год выпущен в PR #441 (0.64.3); остаются историческое покрытие 2002–2012 годов и отдельная проверка региональной применимости. [Доказательства и границы](qa/federal-calendar-2027/README.md). Issue остаётся открытой. |
 | [#111](https://github.com/arvidsever/Sudrf/issues/111) | Федеральные данные и переносы 2027 года выпущены в PR #441; принять оставшиеся критерии issue отдельно. Issue остаётся открытой. |
 | [#223](https://github.com/arvidsever/Sudrf/issues/223) | Отдельно рассчитывать и показывать нормативные сроки рассмотрения на том же календаре. |

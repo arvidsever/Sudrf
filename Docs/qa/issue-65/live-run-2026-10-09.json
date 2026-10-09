@@ -1,0 +1,109 @@
+{
+  "generatedAt" : "2026-10-09T17:01:35Z",
+  "requests" : [
+    {
+      "declaredCharset" : "unspecified",
+      "family" : "sudrf-district",
+      "host" : "syktsud--komi.sudrf.ru",
+      "httpStatus" : 301,
+      "outcome" : "redirectBlocked",
+      "stage" : "redirect"
+    },
+    {
+      "declaredCharset" : "unspecified",
+      "family" : "vnkod-legacy",
+      "host" : "zavolgskiy--uln.sudrf.ru",
+      "httpStatus" : 301,
+      "outcome" : "redirectBlocked",
+      "stage" : "redirect"
+    },
+    {
+      "bytes" : 69932,
+      "declaredCharset" : "windows-1251",
+      "decodedCharset" : "windows-1251",
+      "family" : "subject-court",
+      "host" : "sankt-peterburgsky.spb.sudrf.ru",
+      "httpStatus" : 200,
+      "outcome" : "captcha",
+      "safeDOM" : {
+        "elementCounts" : {
+          "a" : 68,
+          "body" : 1,
+          "div" : 117,
+          "form" : 2,
+          "head" : 1,
+          "html" : 1,
+          "img" : 30,
+          "input" : 64,
+          "script" : 20,
+          "span" : 252,
+          "table" : 4,
+          "tbody" : 4,
+          "td" : 82,
+          "tr" : 47
+        },
+        "hasCaptcha" : true,
+        "hasExpectedSearchControl" : true,
+        "hasKnownListingStructure" : false
+      },
+      "sha256" : "d621c31f81f2fa482f035d04502eb9ff27ef8d0e8bb953dbf001931ecb088754",
+      "stage" : "classification"
+    },
+    {
+      "bytes" : 149299,
+      "declaredCharset" : "windows-1251",
+      "decodedCharset" : "windows-1251",
+      "family" : "ksoyu",
+      "host" : "3kas.sudrf.ru",
+      "httpStatus" : 200,
+      "outcome" : "captcha",
+      "safeDOM" : {
+        "elementCounts" : {
+          "a" : 95,
+          "body" : 1,
+          "div" : 241,
+          "form" : 2,
+          "head" : 1,
+          "html" : 1,
+          "img" : 59,
+          "input" : 66,
+          "script" : 17,
+          "span" : 379,
+          "table" : 4,
+          "tbody" : 4,
+          "td" : 80,
+          "tr" : 45
+        },
+        "hasCaptcha" : true,
+        "hasExpectedSearchControl" : true,
+        "hasKnownListingStructure" : false
+      },
+      "sha256" : "0e09c747f933ae825c33eca0fb76aa206cde3002d35d9f509d963d1e635312ac",
+      "stage" : "classification"
+    },
+    {
+      "declaredCharset" : "unspecified",
+      "family" : "msudrf",
+      "host" : "petrozavodskoj.komi.msudrf.ru",
+      "outcome" : "networkFailure",
+      "stage" : "tls"
+    },
+    {
+      "declaredCharset" : "unspecified",
+      "family" : "vsrf",
+      "host" : "vsrf.ru",
+      "httpStatus" : 302,
+      "outcome" : "redirectBlocked",
+      "stage" : "redirect"
+    },
+    {
+      "bytes" : 1000000,
+      "declaredCharset" : "utf-8",
+      "family" : "mosgorsud",
+      "host" : "mos-gorsud.ru",
+      "httpStatus" : 200,
+      "outcome" : "bodyTooLarge",
+      "stage" : "body_limit"
+    }
+  ]
+}

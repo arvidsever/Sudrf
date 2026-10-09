@@ -8,7 +8,7 @@ struct SudrfCLI: AsyncParsableCommand {
         commandName: "sudrf-cli",
         abstract: "Поиск дел и судебных актов на сайтах судов общей юрисдикции (ГАС «Правосудие»).",
         subcommands: [Search.self, Card.self, Route.self, District.self, Harvest.self,
-                      CalendarImport.self],
+                      CalendarImport.self, PortalCanary.self],
         defaultSubcommand: Search.self
     )
 }

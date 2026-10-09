@@ -1,0 +1,39 @@
+name: Portal contract canary
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portal-contract-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check seven public portal contracts
+        run: |
+          mkdir -p "$RUNNER_TEMP/portal-canary"
+          set +e
+          swift run sudrf-cli portal-canary --live \
+            --output-directory "$RUNNER_TEMP/portal-canary" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          exit "$status"
+
+      - name: Upload sanitized structural report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portal-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portal-canary/portal-canary-report.json
+          if-no-files-found: warn
+          retention-days: 7

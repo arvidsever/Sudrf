@@ -52,7 +52,8 @@ let package = Package(
             name: "sudrf-cli",
             dependencies: [
                 "SudrfKit",
-                .product(name: "ArgumentParser", package: "swift-argument-parser")
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "SwiftSoup", package: "SwiftSoup")
             ]
         ),
         .executableTarget(
@@ -76,6 +77,10 @@ let package = Package(
             name: "SudrfAppTests",
             dependencies: ["SudrfApp"],
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "SudrfCLITests",
+            dependencies: ["sudrf-cli", "SudrfKit", .product(name: "SwiftSoup", package: "SwiftSoup")]
         ),
         .testTarget(
             name: "CaptchaSolverTests",

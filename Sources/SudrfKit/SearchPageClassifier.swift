@@ -92,7 +92,10 @@ public enum SearchPageClassifier {
         return .unrecognized
     }
 
-    private static func resultCount(in html: String) -> Int? {
+    /// Returns the published result count when the page includes the standard
+    /// SUDRF counter. Callers can use it as structural evidence without
+    /// changing `classify`'s established outcomes.
+    public static func resultCount(in html: String) -> Int? {
         let pattern = #"Всего\s+по\s+запросу\s+найдено\s*[-—:]?\s*(?:<[^>]+>\s*)*(\d+)"#
         guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
         let ns = html as NSString

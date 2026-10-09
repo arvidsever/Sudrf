@@ -195,3 +195,24 @@ Hosted CI on the previous commit stopped because a new synchronous test
 URLProtocol omitted its required `stopLoading()` override. Both new stubs now
 provide that override; hosted execution must be repeated on the updated commit.
 No further live attempt was performed for these synthetic regressions.
+
+## Native identity across initial save and refresh
+
+Hosted run `37978229688` on `325220d078da60e1d17ed4f40b27d939c35b4489`
+executed the new App regressions. UID, picker and partial-save checks passed;
+the complete-refresh disk test failed two assertions. Diagnosis found that
+initial save used generic `msudrf|77MS0425` identity while complete refresh
+used the Moscow source family. Without a judicial UID, reconciliation created
+a second dossier and wrote the refreshed baseline there. Reading another key
+or adding a UID to the fixture would hide the defect.
+
+The shared identity builder now uses the validated native card locator for
+initial save, refresh and bootstrap: `moscow-magistrate-koap|425|adm|UUID`.
+The separately published court code remains unchanged. Contradictory source
+domains, register, court level, native path or saved UUID fail closed.
+The disk oracle still starts without a judicial UID and checks one record,
+stable record key/logical ID/native identity, quiet first baseline, one actual
+reschedule and no duplicate after cold reopening and repeated refresh.
+Independent Astra review passed for this delta. App test targets compiled
+locally without execution; hosted CI must be repeated on the new commit.
+Existing persisted identity graphs are not silently rebuilt by this change.

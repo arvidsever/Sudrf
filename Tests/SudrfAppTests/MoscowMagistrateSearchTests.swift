@@ -315,6 +315,68 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             for: wrongSection, context: context))
     }
 
+    func testInitialMoscowIdentityUsesExactNativeLocatorWithoutJudicialUID() throws {
+        let cardURL = try XCTUnwrap(URL(string:
+            "https://mos-sud.ru/425/cases/admin/details/22222222-2222-4222-8222-222222222222"))
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
+        let expected = try XCTUnwrap(SourceNativeCardLocator.moscowMagistrateKoAP(
+            url: cardURL, cartoteka: cartoteka)?.identity)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Москва",
+            searchDomain: MoscowMagistrateDirectoryParser.host,
+            displayDomain: MoscowMagistrateDirectoryParser.host,
+            courtTitle: "Участок мирового судьи № 425 (Синтетический район 425)",
+            courtLevelRaw: CourtLevel.magistrate.rawValue, courtCode: "77MS0425",
+            cartotekaId: "adm", cartotekaLevelRaw: CourtLevel.magistrate.rawValue,
+            caseNumber: "05-0042/425/2026", caseID: expected.sourceNativeID,
+            caseUID: "synthetic-source-link", cardURLString: cardURL.absoluteString)
+
+        let observation = try XCTUnwrap(TrackedCaseIdentity.observation(context: context))
+        XCTAssertEqual(observation.cardIdentity, expected)
+        XCTAssertEqual(observation.cardIdentity.sourceFamily, "moscow-magistrate-koap")
+        XCTAssertEqual(observation.cardIdentity.courtKey, "425",
+                       "The native unit path is distinct from the published court code")
+        XCTAssertEqual(observation.provenance.sourceFamily, "moscow-magistrate-koap")
+        XCTAssertEqual(context.courtCode, "77MS0425")
+        XCTAssertNil(context.judicialUID)
+        XCTAssertEqual(observation.caseUID, context.caseUID)
+        XCTAssertEqual(observation.judicialUID?.validity, .empty,
+                       "A source-link UID is not evidence of a judicial UID")
+
+        var mismatchedUUID = context
+        mismatchedUUID.caseID = "33333333-3333-4333-8333-333333333333"
+        XCTAssertNil(TrackedCaseIdentity.observation(context: mismatchedUUID),
+                     "A contradictory saved native UUID cannot fall through to code identity")
+
+        var missingSavedUUID = context
+        missingSavedUUID.caseID = nil
+        XCTAssertEqual(TrackedCaseIdentity.observation(context: missingSavedUUID)?.cardIdentity,
+                       expected,
+                       "A validated source locator is sufficient when an old context lacks UUID")
+
+        var wrongNativePath = context
+        wrongNativePath.cardURLString = cardURL.absoluteString.replacingOccurrences(
+            of: "/cases/admin/", with: "/cases/civil/")
+        XCTAssertNil(TrackedCaseIdentity.observation(context: wrongNativePath),
+                     "A same-host URL outside the native admin-card route is not an identity")
+
+        var mismatchedDomain = context
+        mismatchedDomain.searchDomain = "other.example"
+        XCTAssertNil(TrackedCaseIdentity.observation(context: mismatchedDomain),
+                     "The native card URL must agree with both saved source domains")
+
+        var mismatchedLevel = context
+        mismatchedLevel.courtLevelRaw = CourtLevel.district.rawValue
+        XCTAssertNil(TrackedCaseIdentity.observation(context: mismatchedLevel),
+                     "A Moscow magistrate locator cannot identify a different court level")
+
+        var mismatchedCartoteka = context
+        mismatchedCartoteka.cartotekaId = "admj"
+        mismatchedCartoteka.cartotekaLevelRaw = CourtLevel.district.rawValue
+        XCTAssertNil(TrackedCaseIdentity.observation(context: mismatchedCartoteka),
+                     "The admin anchor cannot be reclassified through a different register")
+    }
+
     func testSyntheticCompleteMoscowAnchorTransitionPersistsOnceAcrossDiskReopen() async throws {
         let cardURL = try XCTUnwrap(URL(string:
             "https://mos-sud.ru/425/cases/admin/details/22222222-2222-4222-8222-222222222222"))
@@ -329,7 +391,7 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             courtLevelRaw: CourtLevel.magistrate.rawValue, courtCode: "77MS0425",
             cartotekaId: "adm", cartotekaLevelRaw: CourtLevel.magistrate.rawValue,
             caseNumber: "05-0042/425/2026",
-            caseID: identity.sourceNativeID, caseUID: "77MS0425-01-2026-000042-10",
+            caseID: identity.sourceNativeID, caseUID: "synthetic-source-link",
             cardURLString: cardURL.absoluteString)
 
         func movement(sessions: [CaseSession]) -> CaseMovement {
@@ -383,12 +445,22 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             captchaStore: CaptchaTokenStore())
 
         var baselineIDs: [String] = []
+        var trackedKey: String?
+        var logicalCaseID: UUID?
         do {
             let container = try SudrfModelContainerFactory.make(inMemory: false,
                                                                 storeURL: storeURL)
             let store = try TrackedStore(container: container, prepared: true)
             let record = try store.upsert(context: context, snapshot: nil, movement: nil,
                                           collections: ["Синтетическая полная выдача"])
+            trackedKey = record.key
+            logicalCaseID = record.logicalCaseID
+            XCTAssertNil(context.judicialUID,
+                         "The starting context has no judicial UID to drive reconciliation")
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(TrackedCaseIdentity.state(for: record).cards.map(\.identity), [identity])
+            XCTAssertEqual(TrackedCaseIdentity.state(for: record).cards.map(\.identity)
+                .filter { $0.sourceFamily == "msudrf" }.count, 0)
             let center = RefreshCenter(
                 store: store, client: client,
                 serviceBuilder: { _ in sequence }, fsspAutoModelEnabled: false,
@@ -396,6 +468,10 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             let first = await center.refresh(key: record.key, manually: true)?.value
             XCTAssertEqual(first?.outcome, .refreshed)
             let saved = try XCTUnwrap(store.record(forKey: record.key))
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(saved.key, trackedKey)
+            XCTAssertEqual(saved.logicalCaseID, logicalCaseID)
+            XCTAssertEqual(TrackedCaseIdentity.state(for: saved).cards.map(\.identity), [identity])
             let events = try XCTUnwrap(saved.eventJournal).events
             XCTAssertTrue(events.isEmpty, "An initial verified refresh seeds the journal quietly")
             XCTAssertNil(saved.movement?.sourceRefreshCoverage,
@@ -414,6 +490,10 @@ final class MoscowMagistrateSearchTests: XCTestCase {
                                                                 storeURL: storeURL)
             let store = try TrackedStore(container: container, prepared: true)
             let loaded = try XCTUnwrap(store.all().first)
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(loaded.key, trackedKey)
+            XCTAssertEqual(loaded.logicalCaseID, logicalCaseID)
+            XCTAssertEqual(TrackedCaseIdentity.state(for: loaded).cards.map(\.identity), [identity])
             XCTAssertEqual(try XCTUnwrap(loaded.eventJournal).events.map(\.id), baselineIDs)
             let center = RefreshCenter(
                 store: store, client: client,
@@ -422,6 +502,10 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             let changed = await center.refresh(key: loaded.key, manually: true)?.value
             XCTAssertEqual(changed?.outcome, .refreshed)
             let saved = try XCTUnwrap(store.record(forKey: loaded.key))
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(saved.key, trackedKey)
+            XCTAssertEqual(saved.logicalCaseID, logicalCaseID)
+            XCTAssertEqual(TrackedCaseIdentity.state(for: saved).cards.map(\.identity), [identity])
             let events = try XCTUnwrap(saved.eventJournal).events
             XCTAssertEqual(events.count, 1)
             XCTAssertEqual(events.map(\.kind), [.hearingRescheduled])
@@ -436,6 +520,10 @@ final class MoscowMagistrateSearchTests: XCTestCase {
                                                                 storeURL: storeURL)
             let store = try TrackedStore(container: container, prepared: true)
             let loaded = try XCTUnwrap(store.all().first)
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(loaded.key, trackedKey)
+            XCTAssertEqual(loaded.logicalCaseID, logicalCaseID)
+            XCTAssertEqual(TrackedCaseIdentity.state(for: loaded).cards.map(\.identity), [identity])
             let priorJournal = try XCTUnwrap(loaded.eventJournal)
             XCTAssertEqual(priorJournal.events.map(\.id), baselineIDs)
             let center = RefreshCenter(

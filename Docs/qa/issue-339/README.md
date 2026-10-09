@@ -16,9 +16,17 @@ The unchanged production solver ran twice and returned two tokens, one each for 
 
 Second run log SHA-256: `de380c54c99fb4e91e1a0985b45c2fe30693d075620c6b5d2f78b3bd72de4854`. Private locator diagnostic SHA-256: `80103bcb3db1dfced00f82611c5c0b7df81bee6d74527d3261e544e8d4ca215a`; observed directory mode `0700`, file mode `0600`. Requested/effective URLs, CAPTCHA values, tokens, cookies and raw responses are not published. Two pure test-only locator comparison tests passed before this attempt, including identity conflicts and unknown parameter preservation; log SHA-256 `00ce4aeedc0f9fe1689a939eec3f622f37081d50c23f6171108bb31c69548592`. The production link parser/equality and resolver were not changed.
 
-Own Xcode 27 build after the diagnostics writer fix passed without launch; log SHA-256 `cb50a3fd69e4f40e424af5bdc46af450dfa3bcc03318eb0e1e2822c83913935e`. The subsequent locator change is test-only. Current-head hosted CI is required before any merge.
+Own Xcode 27 build after the diagnostics writer fix passed without launch; log SHA-256 `cb50a3fd69e4f40e424af5bdc46af450dfa3bcc03318eb0e1e2822c83913935e`. The subsequent locator change is test-only. Hosted CI [37997870822](https://github.com/arvidsever/Sudrf/actions/runs/37997870822) passed on `013adf3dd5c93918356b000297d6dcc8f027d0d4`: all six focused sheet tests executed without skips; full suite 2,041 XCTest cases (25 explicit skips, zero failures), 28 Swift Testing cases, and 26 Python cases (six skips). Log SHA-256: `abbe39e3f37a3b421b88f7f1b44296e373b172aeaa686e0a6d48f164912ad8cf`. This run predates the separate native QA host below; its final commit needs current-head CI before merge.
 
 Native SwiftUI sheet, pasteboard and visual acceptance remain pending. No ordinary application, TestFlight or working store was opened. The sections below retain the harness contract and earlier checkpoints; their compile-only holds describe earlier stages, not the current six-test result.
+
+## Native QA preparation — 10 October 2026
+
+`build-ui.sh` builds the unchanged `DirectCaseLinkSheet` with an isolated native host and a generated seven-site AppModel overlay. The bundle is `ru.sudrf.qa.issue339`; storage, settings, tokens, logs and caches are temporary, providers are synthetic, and publication receivers are disabled. The actual sheet source hash is checked before generation.
+
+Independent review caught and corrected three native-specific boundaries before launch: external links are discarded through the QA view environment; the production sandbox migration resource is excluded; production intent actions and shortcuts are excluded. A clean rebuild asserts absence of `container-migration.plist`, empty intent/shortcut metadata, no URL schemes, and actual signed sandbox entitlements with network and selected-file access disabled. These safeguards are QA-only; production files and interface are unchanged.
+
+The clean own Xcode build passed. Build log SHA-256: `032b4e7a8152184aeacbbf82b87eb5995dd1aef4f80427164688307428b0da67`; binary SHA-256: `7bdb09fcd4a70a0cd55861562a09a2a009d22adbb1241d5db3bcfcb4912d5538`. Independent artifact recheck: Ship for requesting launch permission. **The QA app has not been launched.** Native runtime, pasteboard and visual acceptance remain pending; synthetic providers do not stand in for the separately recorded live CAPTCHA run.
 
 ## Test-only system publication boundaries
 

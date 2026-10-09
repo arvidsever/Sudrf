@@ -121,6 +121,7 @@ private struct Issue339QAView: View {
         }
         .frame(minWidth: 900, minHeight: 680)
         .sheet(isPresented: $showSheet) { DirectCaseLinkSheet().environmentObject(router) }
+        .environment(\.openURL, OpenURLAction { _ in .discarded })
     }
 }
 

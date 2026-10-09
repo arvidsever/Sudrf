@@ -27,7 +27,7 @@ replace_once("  Sudrf:\n    type: application", "  Sudrf339QA:\n    type: applic
 replace_once(
     "      - path: Sources/SudrfApp\n",
     f"      - path: {root / 'Sources/SudrfApp'}\n"
-    "        excludes: [SudrfApp.swift, AppModel.swift]\n"
+    "        excludes: [SudrfApp.swift, AppModel.swift, AppIntentsIntegration.swift, Resources/container-migration.plist]\n"
     f"      - path: {qa / 'AppModel+Issue339QA.swift'}\n"
     f"      - path: {root / 'Docs/qa/issue-339/GUIHost.swift'}\n",
     "QA source overlay",
@@ -190,12 +190,13 @@ PYCONFIG
 xcodebuild -project "$QA/Sudrf339QA.xcodeproj" \
   -scheme Sudrf339QA -configuration Debug \
   -derivedDataPath "$QA/DerivedData" \
-  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES ENABLE_TESTABILITY=YES build \
-  > "$QA/xcodebuild.log" 2>&1
+  CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES ENABLE_TESTABILITY=YES \
+  clean build > "$QA/xcodebuild.log" 2>&1
 
 APP="$QA/DerivedData/Build/Products/Debug/Sudrf339QA.app"
 python3 - "$APP/Contents/Info.plist" "$QA/Generated/Sudrf.entitlements" <<'PYPLIST'
 import plistlib
+import json
 import sys
 from pathlib import Path
 info_path, entitlements_path = map(Path, sys.argv[1:])
@@ -203,6 +204,15 @@ info = plistlib.loads(info_path.read_bytes())
 assert info.get("CFBundleIdentifier") == "ru.sudrf.qa.issue339", info.get("CFBundleIdentifier")
 assert "CFBundleURLTypes" not in info, "QA app must not register URL schemes"
 assert "CFBundleURLSchemes" not in info, "QA app must not register URL schemes"
+resources = info_path.parent / "Resources"
+assert not (resources / "container-migration.plist").exists(), "production migration resource remains"
+actions_path = resources / "Metadata.appintents/extract.actionsdata"
+if actions_path.exists():
+    actions = json.loads(actions_path.read_text())
+    assert not actions.get("actions"), "QA app must not expose production intent actions"
+    assert not actions.get("autoShortcuts"), "QA app must not publish shortcuts"
+    assert not actions.get("assistantIntents"), "QA app must not publish assistant intents"
+    assert not actions.get("autoShortcutProviderMangledName"), "QA shortcut provider remains"
 entitlements = plistlib.loads(entitlements_path.read_bytes())
 assert entitlements.get("com.apple.security.network.client") is False, entitlements
 assert entitlements.get("com.apple.security.files.user-selected.read-write") is False, entitlements

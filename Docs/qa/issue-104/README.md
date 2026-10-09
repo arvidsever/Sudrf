@@ -1,0 +1,61 @@
+# #104 / #262 — полнота поиска ВС РФ
+
+Дата проверки: **9 октября 2026 года**. Проверен узкий контракт списка производств ВС РФ; общая задача #104 остаётся открытой.
+
+## Поведение
+
+После успешного поиска по УИД и после успешного поиска по номеру первой инстанции `MovementService.vsrfInstancesOutcome` теперь помечает источник неполным, если опубликованное `total` превышает число сырых строк `results`. Проверка выполняется до фильтрации по УИД, суду и номеру. Уже возвращённые строки продолжают сопоставляться и гидратироваться штатно. Неполнота накапливается между двумя поисками и не сбрасывается успешным ответом второй ветки.
+
+Если `total == results.count`, выдача остаётся полной, даже когда фильтр сопоставления отбрасывает чужие производства. Существующие правила сопоставления, порядок запросов, обработка ошибок и отмены, а также гидратация карточек не менялись. Пагинация не добавлялась.
+
+## Регрессии и границы
+
+Добавлены синтетические случаи:
+
+- частичный поиск по УИД вместе с полной выдачей по номеру сохраняет найденное производство и помечает источник неполным;
+- полный поиск по УИД вместе с частичной выдачей по номеру сохраняет совпавшие строки обеих выдач и помечает источник неполным;
+- `total`, равный числу сырых строк с посторонними судами/УИД, не становится неполным только из-за последующей фильтрации;
+- две полные выдачи остаются полными;
+- полный `MovementService.movement` отражает частичность в `sourceRefreshCoverage`, сохраняет identity успешно загруженной строки, а `MovementCachePolicy.merge` возвращает отсутствующий в свежем ответе VS-круг вместе со связью на акт и сохранённым текстом.
+
+Новые сценарии используют только синтетические объекты `VSRFProduction` и локальные моки. Существующий тест потока санитизированных fixture проходит через перехватывающий `URLProtocol`; реальные сайты не запрашивались. Проверка ограничена SwiftPM-пакетами `SudrfKit` и его XCTest-таргетом: приложение, `AppRouter`, SwiftData, настройки и `NSUserActivity` не запускались и не использовались. Полный набор и сборка приложения здесь не выполнялись.
+
+Отдельно root провёл один ограниченный live-запрос по номеру `2-8236/2025` на исходной базе `8403266` 9 октября 2026 года, 05:44:23.795–05:44:25.115 UTC. В санитизированном отчёте указана категория `parsing` (ошибка разбора/неизвестного формата), без строк, `total` и загрузки карточки; повторов не было. Отчёт: `/private/tmp/sudrf-104-probe-20261009/outcome.json`, SHA-256 `20998e09ec6cf3d6c82597218871d34c053543142b5c2fe3107814a24a5fb824`. Он не сохраняет исходный ответ, поэтому точная причина ошибки не установлена. Запрос не проверяет и не подтверждает гипотезу о `total > results.count`, не служит входом регрессионных тестов и не закрывает live-приёмку #104.
+
+## Проверки
+
+До двухстрочного исправления Kit-only профиль `VSRFMovementTests` завершился ожидаемым RED: **17 тестов, 5 ошибок**. Два новых теста выдачи не обнаруживали частичность; три assertion сквозного теста не видели partial coverage и восстановление кэшированного круга.
+
+После исправления, в отдельной копии только `Sources/SudrfKit` и `Tests/SudrfKitTests` с минимальным SwiftPM manifest и локальным checkout SwiftSoup:
+
+- `--filter VSRFMovement` — **23 XCTest, 0 ошибок** (17 `VSRFMovementTests`, 6 `VSRFMovementCacheTests`);
+- `--filter MovementCachePolicyTests` — **23 XCTest, 0 ошибок**;
+- `--filter VSRFCardParserTests` — **31 XCTest, 0 ошибок**.
+
+Использовались изолированные build и module cache в `/private/tmp/sudrf-104-kit-red-20261009-01`. Команды запускались последовательно:
+
+```sh
+env SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/sudrf-104-kit-red-20261009-01/module-cache \
+    CLANG_MODULE_CACHE_PATH=/private/tmp/sudrf-104-kit-red-20261009-01/clang-cache \
+    swift test --package-path /private/tmp/sudrf-104-kit-red-20261009-01 \
+      --scratch-path /private/tmp/sudrf-104-kit-red-20261009-01/build \
+      --skip-update --filter VSRFMovement
+
+env SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/sudrf-104-kit-red-20261009-01/module-cache \
+    CLANG_MODULE_CACHE_PATH=/private/tmp/sudrf-104-kit-red-20261009-01/clang-cache \
+    swift test --package-path /private/tmp/sudrf-104-kit-red-20261009-01 \
+      --scratch-path /private/tmp/sudrf-104-kit-red-20261009-01/build \
+      --skip-update --filter MovementCachePolicyTests
+
+env SWIFTPM_MODULECACHE_OVERRIDE=/private/tmp/sudrf-104-kit-red-20261009-01/module-cache \
+    CLANG_MODULE_CACHE_PATH=/private/tmp/sudrf-104-kit-red-20261009-01/clang-cache \
+    swift test --package-path /private/tmp/sudrf-104-kit-red-20261009-01 \
+      --scratch-path /private/tmp/sudrf-104-kit-red-20261009-01/build \
+      --skip-update --filter VSRFCardParserTests
+```
+
+Локальные логи остаются в scratch: `red.log`, `green-movement-final.log`, `cache-policy.log`, `card-parser.log`.
+
+Root отдельно повторил общий профиль `VSRFMovement|MovementCachePolicyTests|VSRFCardParserTests`: **77 XCTest, 0 ошибок**. Перед запуском SHA-256 скопированных `Movement.swift` и `VSRFMovementTests.swift` совпали с веткой. Лог `/private/tmp/sudrf-104-root-profile-20261009.log`, SHA-256 `ea606ad02f9811cffb5f4ff5c2ff83b00219afd0e28f359849af17ca68c53387`.
+
+Генератор registry с `--check` подтвердил актуальность; Xcode-проект пересоздан после проверки трёх неизменённых моделей по manifest. Генерация не является сборкой приложения. Локальный app-build и системная регистрация приложения не выполнялись; полный набор и сборку проверит CI. Xcode 27 на этой ветке ещё не проверялся.

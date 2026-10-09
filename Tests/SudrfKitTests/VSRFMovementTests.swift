@@ -157,6 +157,161 @@ final class VSRFMovementTests: XCTestCase {
         XCTAssertEqual(result.instances.map(\.caseNumber), ["3-КФ22-336-К3"])
     }
 
+    func testPartialUIDSearchKeepsReturnedProductionWhenNumberSearchIsComplete() async throws {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
+                                      caseNumber: "2-1649/2022")
+        let production = VSRFProduction(
+            cardID: "partial-uid", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025", uid: uid,
+            firstInstance: first,
+            events: [VSRFEvent(date: "20.01.2025", text: "Передано судье")])
+        let mock = MockVSRF(
+            uidResults: .init(total: 2, results: [production]),
+            numberResults: .init(total: 1, results: [production]),
+            cardsByID: [production.id: VSRFCard(productions: [production])])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+
+        XCTAssertTrue(outcome.incomplete, "total exceeds raw UID rows even when number search is complete")
+        XCTAssertEqual(outcome.instances.map(\.caseNumber), [production.number])
+    }
+
+    func testPartialNumberSearchKeepsMatchingUIDAndNumberRows() async throws {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
+                                      caseNumber: "2-1649/2022")
+        let caseProduction = VSRFProduction(
+            cardID: "complete-uid", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025", uid: uid,
+            firstInstance: first,
+            events: [VSRFEvent(date: "20.01.2025", text: "Передано судье")])
+        let complaint = VSRFProduction(
+            cardID: "partial-number", cardSection: .claims, kind: .complaint,
+            number: "3-КФ25-7-К3", incomingDate: "01.01.2025", firstInstance: first,
+            applicant: "Петров Пётр")
+        let mock = MockVSRF(
+            uidResults: .init(total: 1, results: [caseProduction]),
+            numberResults: .init(total: 3, results: [caseProduction, complaint]),
+            cardsByID: [
+                caseProduction.id: VSRFCard(productions: [caseProduction]),
+                complaint.id: VSRFCard(productions: [complaint])
+            ])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+
+        XCTAssertTrue(outcome.incomplete, "a partial number listing remains partial after UID success")
+        XCTAssertEqual(Set(outcome.instances.compactMap(\.caseNumber)),
+                       Set([caseProduction.number!, complaint.number!]))
+    }
+
+    func testCompleteSearchCountsUseRawRowsBeforeFilteringForeignProductions() async throws {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
+                                      caseNumber: "2-1649/2022")
+        let production = VSRFProduction(
+            cardID: "exact", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025", uid: uid,
+            firstInstance: first)
+        let foreignUID = VSRFProduction(
+            cardID: "foreign-uid", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-4-А2", incomingDate: "20.01.2025",
+            uid: "11OS0000-01-2025-000170-68", firstInstance: first)
+        let foreignCourt = VSRFFirstInstance(court: "Другой городской суд",
+                                             caseNumber: first.caseNumber!)
+        let foreignComplaint = VSRFProduction(
+            cardID: "foreign-court", cardSection: .claims, kind: .complaint,
+            number: "3-КФ25-8-К3", incomingDate: "01.01.2025",
+            firstInstance: foreignCourt)
+        let mock = MockVSRF(
+            uidResults: .init(total: 2, results: [production, foreignUID]),
+            numberResults: .init(total: 2, results: [production, foreignComplaint]),
+            cardsByID: [production.id: VSRFCard(productions: [production])])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+
+        XCTAssertFalse(outcome.incomplete,
+                       "completeness compares published total with raw rows, not matched rows")
+        XCTAssertEqual(outcome.instances.map(\.caseNumber), [production.number])
+    }
+
+    func testCompleteUIDAndNumberSearchesRemainComplete() async throws {
+        let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
+                                      caseNumber: "2-1649/2022")
+        let production = VSRFProduction(
+            cardID: "complete", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025", uid: uid,
+            firstInstance: first,
+            events: [VSRFEvent(date: "20.01.2025", text: "Передано судье")])
+        let mock = MockVSRF(
+            uidResults: .init(total: 1, results: [production]),
+            numberResults: .init(total: 1, results: [production]),
+            cardsByID: [production.id: VSRFCard(productions: [production])])
+
+        let outcome = try await MovementService.vsrfInstancesOutcome(
+            vsrf: mock, uid: uid, firstInstanceCourt: first.court!,
+            firstInstanceCaseNumber: first.caseNumber!, partySurnames: [])
+
+        XCTAssertFalse(outcome.incomplete)
+        XCTAssertEqual(outcome.instances.map(\.caseNumber), [production.number])
+    }
+
+    func testPartialVSRFMovementCoverageKeepsCachedMissingRoundActAndText() async throws {
+        let first = VSRFFirstInstance(court: district().title,
+                                      caseNumber: base().caseNumber)
+        let production = VSRFProduction(
+            cardID: "12-fresh", cardSection: .claims, kind: .caseFile,
+            number: "3-ИКАД25-3-А2", incomingDate: "20.01.2025", uid: uid,
+            firstInstance: first,
+            events: [VSRFEvent(date: "20.01.2025", text: "Передано судье")])
+        let mock = MockVSRF(
+            uidResults: .init(total: 2, results: [production]),
+            numberResults: .init(total: 1, results: [production]),
+            cardsByID: [production.id: VSRFCard(productions: [production])])
+        let client = MockCase(firstCardID: "900001", firstCard: try baseCard())
+        let service = MovementService(client: client, higherCourtDomains: [], vsrf: mock)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        let fresh = try await service.movement(for: base(), court: district(), cartoteka: cart)
+
+        let oldCardURL = URL(string: "https://www.vsrf.ru/lk/practice/cases/12-cached")!
+        let oldActURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/900001")!
+        let oldActID = "act_vsrf_12-cached_/lk/practice/stor_pdf/900001"
+        let oldRound = CaseInstance(
+            level: .vsCassation, court: "Верховный Суд РФ", caseNumber: "3-КГ24-1-К3",
+            judge: "Сохранённый судья", domain: "www.vsrf.ru", foundByUID: true,
+            result: "Сохранённый результат",
+            sessions: [CaseSession(date: "10.10.2024", event: "Сохранённое движение")],
+            actID: oldActID, actIDs: [oldActID], actURL: oldActURL,
+            actURLs: [oldActURL], sourceURL: oldCardURL)
+        let oldAct = CaseAct(
+            id: oldActID, title: "Сохранённое определение", date: "10.10.2024",
+            courtShort: "ВС РФ", instanceLevel: .vsCassation,
+            sourceFileURL: oldActURL, productionNumber: "3-КГ24-1-К3")
+        let cached = CaseMovement(
+            uid: uid, caseNumber: base().caseNumber, inForce: false,
+            instances: [oldRound], complaints: [:], acts: [oldAct],
+            actBodies: [oldActID: "Сохранённый текст акта"])
+
+        XCTAssertTrue(fresh.incompleteHigherCourtDomains?.contains("vsrf.ru") == true)
+        XCTAssertEqual(fresh.sourceRefreshCoverage?.first(where: {
+            $0.sourceFamily == "vsrf" && $0.courtKey == "vsrf.ru"
+        })?.kind, .partial)
+        XCTAssertEqual(fresh.sourceRefreshCoverage?.first(where: {
+            $0.sourceFamily == "vsrf" && $0.courtKey == "vsrf.ru"
+        })?.loadedCardIdentities.map(\.sourceNativeID), ["12-fresh"])
+
+        let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+        let restored = try XCTUnwrap(merged.instances.first { $0.sourceURL == oldCardURL })
+        XCTAssertEqual(restored.caseNumber, "3-КГ24-1-К3")
+        XCTAssertEqual(restored.result, "Сохранённый результат")
+        XCTAssertEqual(restored.linkedActIDs, [oldActID])
+        XCTAssertEqual(merged.acts.first(where: { $0.id == oldActID }), oldAct)
+        XCTAssertEqual(merged.actBodies[oldActID], "Сохранённый текст акта")
+    }
+
     func testIntakeIsAssignedOnlyToNearestFollowingCaseRound() async {
         let first = VSRFFirstInstance(court: "Сыктывкарский городской суд", caseNumber: "2-1649/2022")
         let complaintOne = VSRFProduction(cardID: "c1", kind: .complaint, number: "3-КФ-1",

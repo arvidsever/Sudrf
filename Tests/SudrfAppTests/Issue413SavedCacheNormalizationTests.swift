@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import XCTest
+import CaptchaSolver
 @testable import SudrfKit
 @testable import SudrfApp
 
@@ -308,6 +309,80 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         XCTAssertEqual(after.journal?.events.filter { $0.kind == .judicialActPublished }.count, 0)
     }
 
+    func testCalendarSelectionSurvivesCorrectionReloadWhenHearingIDChanges()
+        async throws {
+        guard ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true" else {
+            throw XCTSkip("AppRouter storage acceptance runs only on the isolated hosted runner.")
+        }
+
+        let directory = try makeTemporaryDirectory("issue-413-calendar-selection")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("tracked.store")
+        let seed = try seedLegacyStore(at: storeURL)
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let correctionOnly = try movement(ownCourt: ownCourt, ownJudge: nil,
+                                          actID: "issue413-existing-act", partial: true)
+        let router = try AppRouter(
+            modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("corpus")),
+            refreshCenterFactory: { store, _ in
+                self.makeRefreshCenter(store: store, movement: correctionOnly)
+            },
+            trackedStoreProjectionSynchronizer: { _, _ in })
+
+        let recordBefore = try XCTUnwrap(container.mainContext.fetch(
+            FetchDescriptor<TrackedCaseRecord>()).first { $0.key == seed.key })
+        recordBefore.snapshotData = try XCTUnwrap(seed.snapshotData)
+        try container.mainContext.save()
+        router.reload()
+
+        let fixtureDate = try XCTUnwrap(DateUtil.parse("01.01.2099"))
+        let beforeHearing = try XCTUnwrap(router.calendarHearings.first {
+            $0.recordKey == seed.key && $0.time == "10:00"
+                && DateUtil.sameDay($0.date, fixtureDate)
+        })
+        XCTAssertEqual(beforeHearing.court, composite)
+        let selectedDay = DateUtil.startOfDay(beforeHearing.date)
+        let permanentJournalIDs = try XCTUnwrap(recordBefore.eventJournal?.events.map(\.id))
+        XCTAssertEqual(recordBefore.seenAt, seenAt)
+
+        router.openCalendar(date: selectedDay)
+        XCTAssertEqual(router.calSelectedDate, selectedDay)
+
+        guard case .partial? = await router.refreshCenter.refresh(key: seed.key)?.value.outcome else {
+            return XCTFail("ожидалось частичное обновление из синтетического источника")
+        }
+
+        let afterHearing = try XCTUnwrap(router.calendarHearings.first {
+            $0.recordKey == seed.key && $0.time == "10:00"
+                && DateUtil.sameDay($0.date, selectedDay)
+        })
+        XCTAssertEqual(afterHearing.court, ownCourt)
+        XCTAssertNotEqual(beforeHearing.id, afterHearing.id,
+                          "исправленный собственный суд входит в computed hearing ID")
+        XCTAssertEqual(router.calSelectedDate, selectedDay,
+                       "reload после коррекции не должен сбрасывать выбранный день")
+
+        let recordAfter = try XCTUnwrap(container.mainContext.fetch(
+            FetchDescriptor<TrackedCaseRecord>()).first { $0.key == seed.key })
+        XCTAssertEqual(recordAfter.seenAt, seenAt,
+                       "техническая коррекция не сбрасывает отметку прочтения")
+        XCTAssertEqual(recordAfter.eventJournal?.events.map(\.id), permanentJournalIDs,
+                       "техническая коррекция не меняет постоянные ID событий")
+        XCTAssertEqual(recordAfter.eventJournal?.events.filter { $0.kind == .judgeChanged }.count, 0)
+        XCTAssertEqual(recordAfter.eventJournal?.events.filter {
+            $0.kind == .judicialActPublished
+        }.count, 0)
+
+        router.reload()
+        XCTAssertEqual(router.calSelectedDate, selectedDay,
+                       "повторная сборка календаря сохраняет выбранный день")
+        XCTAssertEqual(router.calendarHearings.first {
+            $0.recordKey == seed.key && $0.time == "10:00"
+                && DateUtil.sameDay($0.date, selectedDay)
+        }?.id, afterHearing.id)
+    }
+
     func testUnconfirmedDisplayChangeWaitsForOwnCardConfirmationAcrossReopen() async throws {
         let directory = try makeTemporaryDirectory("issue-413-delayed-confirmation")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -415,6 +490,56 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         XCTAssertEqual(after.journalData, seed.journalData)
     }
 
+    func testCourtActProjectionKeepsIdentityAndSummaryAcrossCorrectionAndPartialRefresh()
+        async throws {
+        let directory = try makeTemporaryDirectory("issue-413-act-projection")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("tracked.store")
+        let seed = try seedLegacyStore(at: storeURL)
+        let before = try seedCourtActProjection(at: storeURL, key: seed.key)
+        XCTAssertEqual(before.court, composite)
+        XCTAssertEqual(before.sourceActID, "issue413-existing-act")
+        XCTAssertFalse(before.paragraphIDs.isEmpty)
+        XCTAssertFalse(before.summaryStale)
+
+        XCTAssertTrue(try prepareStore(at: storeURL))
+        let afterPreparation = try courtActProjection(at: storeURL, key: seed.key)
+        XCTAssertEqual(afterPreparation.court, ownCourt)
+        XCTAssertEqual(afterPreparation.id, before.id)
+        XCTAssertEqual(afterPreparation.sourceActID, before.sourceActID)
+        XCTAssertEqual(afterPreparation.sourceHash, before.sourceHash)
+        XCTAssertEqual(afterPreparation.paragraphIDs, before.paragraphIDs)
+        XCTAssertEqual(afterPreparation.sourceText, before.sourceText)
+        XCTAssertEqual(afterPreparation.summaryDocumentID, before.summaryDocumentID)
+        XCTAssertEqual(afterPreparation.summaryData, before.summaryData)
+        XCTAssertEqual(afterPreparation.summarySourceHash, before.summarySourceHash)
+        XCTAssertEqual(afterPreparation.summaryGeneratedAt, before.summaryGeneratedAt)
+        XCTAssertFalse(afterPreparation.summaryStale)
+
+        var partial = try movement(ownCourt: ownCourt, ownJudge: nil,
+                                  actID: "issue413-existing-act", partial: true)
+        partial.actBodies["issue413-existing-act"] = before.sourceText
+        let afterRefresh = try await refreshWithProductionProjection(
+            at: storeURL, key: seed.key, movement: partial)
+        XCTAssertEqual(afterRefresh.seenAt, seenAt)
+        XCTAssertEqual(afterRefresh.key, seed.key)
+        XCTAssertEqual(afterRefresh.logicalCaseID, seed.logicalCaseID)
+        XCTAssertEqual(afterRefresh.journal?.events.map(\.id), seed.journal.events.map(\.id))
+
+        let reopened = try courtActProjection(at: storeURL, key: seed.key)
+        XCTAssertEqual(reopened.court, ownCourt)
+        XCTAssertEqual(reopened.id, before.id)
+        XCTAssertEqual(reopened.sourceActID, before.sourceActID)
+        XCTAssertEqual(reopened.sourceHash, before.sourceHash)
+        XCTAssertEqual(reopened.paragraphIDs, before.paragraphIDs)
+        XCTAssertEqual(reopened.sourceText, before.sourceText)
+        XCTAssertEqual(reopened.summaryDocumentID, before.summaryDocumentID)
+        XCTAssertEqual(reopened.summaryData, before.summaryData)
+        XCTAssertEqual(reopened.summarySourceHash, before.summarySourceHash)
+        XCTAssertEqual(reopened.summaryGeneratedAt, before.summaryGeneratedAt)
+        XCTAssertFalse(reopened.summaryStale)
+    }
+
     private struct Seed: Equatable {
         let key: String
         let logicalCaseID: UUID
@@ -456,6 +581,21 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
             movement = record.movement
             journal = record.eventJournal
         }
+    }
+
+    private struct CourtActProjectionFacts: Equatable {
+        let id: String
+        let caseKey: String
+        let sourceActID: String
+        let court: String
+        let sourceHash: String
+        let sourceText: String
+        let paragraphIDs: [String]
+        let summaryDocumentID: String
+        let summaryData: Data
+        let summarySourceHash: String
+        let summaryGeneratedAt: Date
+        let summaryStale: Bool
     }
 
     private func seedLegacyStore(at storeURL: URL) throws -> Seed {
@@ -592,6 +732,63 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         }
     }
 
+    private func seedCourtActProjection(at storeURL: URL,
+                                        key: String) throws -> CourtActProjectionFacts {
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let store = try TrackedStore(container: container, prepared: true)
+        let record = try XCTUnwrap(store.record(forKey: key))
+        var movement = try XCTUnwrap(record.movement)
+        let sourceText = "Синтетический текст апелляционного акта.\n\n" +
+            "Суд постановил сохранить проверяемые абзацы."
+        movement.actBodies["issue413-existing-act"] = sourceText
+        record.movement = movement
+        try store.save(projection: .cases([key]))
+
+        let act = try XCTUnwrap(try container.mainContext.fetch(
+            FetchDescriptor<CourtActRecord>(predicate: #Predicate { $0.caseKey == key })).first)
+        let document = try XCTUnwrap(act.document)
+        let summary = ActSummary(localWarnings: ["synthetic-summary-sentinel"],
+                                 intermediateEnglishSummary: "synthetic stored summary")
+        let summaryRecord = try ActSummaryRecord(
+            documentID: act.id, summary: summary, provider: "fixture", model: "fixture",
+            promptVersion: "issue-413", pipelineVersion: "fixture",
+            sourceHash: document.sourceHash,
+            paragraphizerVersion: document.paragraphizerVersion,
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_500))
+        container.mainContext.insert(summaryRecord)
+        try store.save()
+        return try courtActProjection(in: container.mainContext, key: key)
+    }
+
+    private func courtActProjection(at storeURL: URL,
+                                    key: String) throws -> CourtActProjectionFacts {
+        try withStore(at: storeURL) { _, context in
+            try courtActProjection(in: context, key: key)
+        }
+    }
+
+    private func courtActProjection(in context: ModelContext,
+                                    key: String) throws -> CourtActProjectionFacts {
+        let acts = try context.fetch(FetchDescriptor<CourtActRecord>(
+            predicate: #Predicate { $0.caseKey == key }))
+        XCTAssertEqual(acts.count, 1)
+        let act = try XCTUnwrap(acts.first)
+        let actID = act.id
+        let document = try XCTUnwrap(act.document)
+        let summaries = try context.fetch(FetchDescriptor<ActSummaryRecord>(
+            predicate: #Predicate { $0.documentID == actID }))
+        XCTAssertEqual(summaries.count, 1)
+        let summary = try XCTUnwrap(summaries.first)
+        return CourtActProjectionFacts(
+            id: act.id, caseKey: act.caseKey, sourceActID: act.sourceActID,
+            court: act.court, sourceHash: act.sourceHash, sourceText: act.sourceText,
+            paragraphIDs: document.paragraphs.map(\.id),
+            summaryDocumentID: summary.documentID, summaryData: summary.summaryData,
+            summarySourceHash: summary.sourceHash,
+            summaryGeneratedAt: summary.generatedAt,
+            summaryStale: summary.isStale(for: document))
+    }
+
     private func persistedFacts(at storeURL: URL, key: String) throws -> PersistedFacts {
         try withStore(at: storeURL) { _, context in
             let record = try XCTUnwrap(context.fetch(FetchDescriptor<TrackedCaseRecord>()).first {
@@ -614,6 +811,19 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         }
         let record = try XCTUnwrap(store.record(forKey: key))
         return PersistedFacts(record)
+    }
+
+    private func refreshWithProductionProjection(at storeURL: URL, key: String,
+                                                 movement: CaseMovement) async throws -> PersistedFacts {
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+        let store = try TrackedStore(container: container, prepared: true)
+        let center = makeRefreshCenter(store: store, movement: movement)
+        let execution = await center.refresh(key: key)?.value
+        guard case .partial? = execution?.outcome else {
+            XCTFail("ожидался частичный исход синтетического источника")
+            return PersistedFacts(try XCTUnwrap(store.record(forKey: key)))
+        }
+        return PersistedFacts(try XCTUnwrap(store.record(forKey: key)))
     }
 
     private func repeatAfterReopen(at storeURL: URL, key: String,

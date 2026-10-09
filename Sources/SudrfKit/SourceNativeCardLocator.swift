@@ -89,6 +89,25 @@ public struct SourceNativeCardLocator: Codable, Equatable, Hashable, Sendable, I
                     cartotekaKey: cartoteka.id, sourceNativeID: caseID)
     }
 
+    /// Locator for a first-instance Moscow magistrate KoAP card. Its URL embeds
+    /// the court unit and a UUID; both are part of the source-native identity.
+    public static func moscowMagistrateKoAP(url: URL, cartoteka: Cartoteka) -> Self? {
+        guard cartoteka.id == "adm", MoscowMagistrateKoAPURLPolicy.allows(url) else { return nil }
+
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count == 5,
+              let unit = parts.first,
+              unit.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil,
+              let unitNumber = Int(unit), unitNumber > 0,
+              parts[1] == "cases", parts[2] == "admin", parts[3] == "details",
+              let uuid = UUID(uuidString: parts[4]),
+              uuid.uuidString.caseInsensitiveCompare(parts[4]) == .orderedSame else { return nil }
+
+        return Self(sourceFamily: MoscowMagistrateKoAPSource.family,
+                    courtKey: unit, cartotekaKey: cartoteka.id,
+                    sourceNativeID: uuid.uuidString.lowercased())
+    }
+
     /// Locator for a Moscow card URL. The court alias is part of the native
     /// scope, so cards from distinct `/rs/<alias>/` paths stay separate.
     public static func mosgorsud(url: URL, cartoteka: Cartoteka) -> Self? {

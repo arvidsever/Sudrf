@@ -46,6 +46,14 @@ struct StoredSession: Codable, Equatable, Sendable {
     }
 }
 
+struct MoscowOwnCourtCorrection: Equatable, Sendable {
+    let sourceCardID: String
+    let caseNumber: String
+    let previousCourt: String
+    let court: String
+    let clearsInvalidJudge: Bool
+}
+
 struct StoredDeadline: Codable, Equatable, Sendable {
     var kind: String           // «appeal» | «cassation»
     var what: String           // «Апелляционная жалоба»
@@ -220,9 +228,7 @@ enum MovementDerivation {
         // Порядок `acts` не должен сам по себе создавать ложное уведомление.
         // Тело акта намеренно не включаем: для факта новой публикации достаточно
         // стабильных публичных метаданных, а снимок остаётся компактным.
-        let actsFingerprint = mv.acts.map {
-            "\($0.id)|\($0.date)|\($0.title)|\($0.courtShort)|\($0.instanceLevel.rawValue)"
-        }.sorted()
+        let actsFingerprint = sourceActsFingerprint(from: mv)
         let instanceObservations = mv.instances.map { instance in
             StoredInstanceObservation(
                 sourceCardID: CaseSnapshotSourceIdentity.sourceCardID(
@@ -235,11 +241,7 @@ enum MovementDerivation {
                 < ($1.sourceCardID ?? "", $1.levelRaw, $1.caseNumber)
         }
         let actObservations = mv.acts.map { act -> StoredActObservation in
-            let linked = mv.instances.filter { $0.linkedActIDs.contains(act.id) }
-            let candidates = linked.isEmpty && act.instanceLevel != .material
-                ? mv.instances.filter { $0.level == act.instanceLevel }
-                : linked
-            let owner = candidates.count == 1 ? candidates[0] : nil
+            let owner = actOwner(for: act, in: mv)
             return StoredActObservation(
                 sourceCardID: owner.flatMap {
                     CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
@@ -280,11 +282,18 @@ enum MovementDerivation {
             nextChipRaw: presentation.nextChip.rawValue,
             steps: presentation.steps, sessions: sessions, deadlines: deadlines,
             deadlineAssessments: deadlineEvaluation.assessments,
-            actsFingerprint: actsFingerprint.isEmpty ? nil : actsFingerprint,
+            actsFingerprint: actsFingerprint,
             semanticProjectionVersion: CaseEventJournal.currentDerivationVersion,
             instanceObservations: instanceObservations,
             actObservations: actObservations,
             complaintObservations: complaintObservations)
+    }
+
+    static func sourceActsFingerprint(from movement: CaseMovement) -> [String]? {
+        let values = movement.acts.map {
+            "\($0.id)|\($0.date)|\($0.title)|\($0.courtShort)|\($0.instanceLevel.rawValue)"
+        }.sorted()
+        return values.isEmpty ? nil : values
     }
 
     /// Пересчёт представляемой стадии по сохранённому движению и снимку. Поля
@@ -304,9 +313,254 @@ enum MovementDerivation {
 
     static func normalizedMovement(_ movement: CaseMovement,
                                    context: MovementContext?) -> CaseMovement {
-        MovementTargetBuilder.normalizeCriminalCassationRoute(
+        let routed = MovementTargetBuilder.normalizeCriminalCassationRoute(
             in: movement, courtLevel: context?.courtLevel, branch: context?.branch,
             cartotekaID: context?.cartotekaId, caseNumber: context?.caseNumber)
+        return normalizedMoscowOwnCourtFacts(in: routed, context: context)
+    }
+
+    static func normalizedMoscowOwnCourtFacts(in movement: CaseMovement,
+                                              context: MovementContext?) -> CaseMovement {
+        let corrections = moscowOwnCourtCorrections(in: movement, context: context)
+        guard !corrections.isEmpty, let context else { return movement }
+        let byID = Dictionary(uniqueKeysWithValues: corrections.map { ($0.sourceCardID, $0) })
+        var result = movement
+        for index in result.instances.indices {
+            let instance = movement.instances[index]
+            guard let id = CaseSnapshotSourceIdentity.sourceCardID(
+                for: instance, context: context),
+                  let correction = byID[id] else { continue }
+            result.instances[index].court = correction.court
+            if correction.clearsInvalidJudge,
+               instance.judge == correction.previousCourt {
+                result.instances[index].judge = nil
+            }
+        }
+        let correctionsByActID = moscowLinkedActCorrections(
+            in: movement, context: context, corrections: corrections)
+        for index in result.acts.indices {
+            guard let correction = correctionsByActID[movement.acts[index].id] else { continue }
+            result.acts[index].courtShort = correction.court
+        }
+        return result
+    }
+
+    static func moscowOwnCourtCorrections(in movement: CaseMovement,
+                                          context: MovementContext?) -> [MoscowOwnCourtCorrection] {
+        guard let context,
+              let contextCartoteka = context.cartoteka else { return [] }
+        let expectedProcess = MosGorSudRouting.map(cartoteka: contextCartoteka).processType
+        let allCartotekas = CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }
+        return movement.instances.compactMap { instance in
+            guard instance.level == .appeal,
+                  MosGorSudRouting.isMosGorSud(domain: instance.domain),
+                  let url = instance.sourceURL else { return nil }
+            let locators = Set(allCartotekas.compactMap {
+                SourceNativeCardLocator.mosgorsud(url: url, cartoteka: $0)
+            })
+            guard locators.count == 1, let locator = locators.first,
+                  let cardCartoteka = CartotekaRegistry.sets(for: .subject).first(where: {
+                      $0.id == locator.cartotekaKey
+                  }),
+                  locator.courtKey == MosGorSudCourtDirectory.mgsAlias,
+                  MosGorSudRouting.map(cartoteka: cardCartoteka).instance
+                    == MosGorSudInstance.appeal,
+                  MosGorSudRouting.map(cartoteka: cardCartoteka).processType == expectedProcess,
+                  CaseSnapshotSourceIdentity.sourceCardID(for: instance, context: context)
+                    == locator.id else { return nil }
+            let matchingInstances = movement.instances.filter {
+                CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context) == locator.id
+            }
+            guard matchingInstances.count == 1,
+                  let sourceCardID = CaseSnapshotSourceIdentity.sourceCardID(
+                    for: instance, context: context) else { return nil }
+            let oldCourt = instance.court.trimmingCharacters(in: .whitespacesAndNewlines)
+            let clearsInvalidJudge = instance.judge == instance.court
+                && isKnownMoscowDistrictComposite(oldCourt)
+            return MoscowOwnCourtCorrection(
+                sourceCardID: sourceCardID,
+                caseNumber: instance.caseNumber,
+                previousCourt: instance.court,
+                court: "Московский городской суд",
+                clearsInvalidJudge: clearsInvalidJudge)
+        }
+    }
+
+    static func normalizedMoscowSnapshotFacts(
+        _ snapshot: CaseSnapshot,
+        corrections: [MoscowOwnCourtCorrection],
+        sourceMovement: CaseMovement,
+        context: MovementContext
+    )
+        -> CaseSnapshot {
+        guard !corrections.isEmpty else { return snapshot }
+        var result = snapshot
+        result.sessions = normalizedMoscowSessions(
+            snapshot.sessions, corrections: corrections,
+            sourceMovement: sourceMovement, context: context)
+        result.instanceObservations = normalizedMoscowInstances(
+            snapshot.instanceObservations ?? [], corrections: corrections,
+            sourceMovement: sourceMovement, context: context)
+        let linkedActCorrections = moscowLinkedActCorrections(
+            in: sourceMovement, context: context, corrections: corrections)
+        result.actObservations = normalizedMoscowActs(
+            snapshot.actObservations ?? [], linkedActCorrections: linkedActCorrections)
+        if snapshot.actsFingerprint == sourceActsFingerprint(from: sourceMovement) {
+            result.actsFingerprint = sourceActsFingerprint(from:
+                normalizedMoscowOwnCourtFacts(in: sourceMovement, context: context))
+        }
+        return result
+    }
+
+    static func normalizedMoscowActs(
+        _ observations: [StoredActObservation],
+        linkedActCorrections: [String: MoscowOwnCourtCorrection]
+    )
+        -> [StoredActObservation] {
+        observations.map { observation in
+            guard let correction = linkedActCorrections[observation.sourceActID],
+                  observation.sourceCardID == correction.sourceCardID else { return observation }
+            var result = observation
+            result.court = correction.court
+            return result
+        }
+    }
+
+    static func moscowLinkedActCorrections(
+        in movement: CaseMovement,
+        context: MovementContext,
+        corrections: [MoscowOwnCourtCorrection]
+    ) -> [String: MoscowOwnCourtCorrection] {
+        var result: [String: MoscowOwnCourtCorrection] = [:]
+        for act in movement.acts {
+            guard let owner = exactLinkedActOwner(for: act, in: movement),
+                  let sourceCardID = CaseSnapshotSourceIdentity.sourceCardID(
+                    for: owner, context: context),
+                  let correction = corrections.first(where: {
+                      $0.sourceCardID == sourceCardID
+                  }) else { continue }
+            result[act.id] = correction
+        }
+        return result
+    }
+
+    private static func exactLinkedActOwner(for act: CaseAct,
+                                            in movement: CaseMovement) -> CaseInstance? {
+        let owners = movement.instances.filter { $0.linkedActIDs.contains(act.id) }
+        return owners.count == 1 ? owners.first : nil
+    }
+
+    private static func actOwner(for act: CaseAct,
+                                 in movement: CaseMovement) -> CaseInstance? {
+        let linked = movement.instances.filter { $0.linkedActIDs.contains(act.id) }
+        let candidates = linked.isEmpty && act.instanceLevel != .material
+            ? movement.instances.filter { $0.level == act.instanceLevel }
+            : linked
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
+    static func normalizedMoscowSessions(
+        _ sessions: [StoredSession],
+        corrections: [MoscowOwnCourtCorrection],
+        sourceMovement: CaseMovement,
+        context: MovementContext
+    ) -> [StoredSession] {
+        sessions.map { session in
+            guard let correction = correction(for: session, corrections: corrections,
+                                              sourceMovement: sourceMovement,
+                                              context: context) else {
+                return session
+            }
+            guard session.court == correction.previousCourt else { return session }
+            var result = session
+            result.court = correction.court
+            if correction.clearsInvalidJudge,
+               session.judge == correction.previousCourt {
+                result.judge = nil
+            }
+            return result
+        }
+    }
+
+    static func normalizedMoscowInstances(
+        _ observations: [StoredInstanceObservation],
+        corrections: [MoscowOwnCourtCorrection],
+        sourceMovement: CaseMovement,
+        context: MovementContext
+    )
+        -> [StoredInstanceObservation] {
+        observations.map { observation in
+            guard let correction = correction(for: observation, corrections: corrections,
+                                              sourceMovement: sourceMovement,
+                                              context: context) else {
+                return observation
+            }
+            guard observation.court == correction.previousCourt else { return observation }
+            var result = observation
+            result.court = correction.court
+            if correction.clearsInvalidJudge,
+               observation.judge == correction.previousCourt {
+                result.judge = nil
+            }
+            return result
+        }
+    }
+
+    private static func correction(for session: StoredSession,
+                                   corrections: [MoscowOwnCourtCorrection],
+                                   sourceMovement: CaseMovement,
+                                   context: MovementContext)
+        -> MoscowOwnCourtCorrection? {
+        if let id = session.sourceCardID {
+            return corrections.first { $0.sourceCardID == id }
+        }
+        guard let number = session.caseNumber, session.level == .appeal else { return nil }
+        return correction(forLegacyIdentity: number, level: .appeal,
+                         corrections: corrections, sourceMovement: sourceMovement,
+                         context: context)
+    }
+
+    private static func correction(for observation: StoredInstanceObservation,
+                                   corrections: [MoscowOwnCourtCorrection],
+                                   sourceMovement: CaseMovement,
+                                   context: MovementContext)
+        -> MoscowOwnCourtCorrection? {
+        if let id = observation.sourceCardID {
+            return corrections.first { $0.sourceCardID == id }
+        }
+        guard CaseInstance.Level(rawValue: observation.levelRaw) == .appeal else { return nil }
+        return correction(forLegacyIdentity: observation.caseNumber, level: .appeal,
+                         corrections: corrections, sourceMovement: sourceMovement,
+                         context: context)
+    }
+
+    private static func correction(forLegacyIdentity number: String,
+                                   level: CaseInstance.Level,
+                                   corrections: [MoscowOwnCourtCorrection],
+                                   sourceMovement: CaseMovement,
+                                   context: MovementContext)
+        -> MoscowOwnCourtCorrection? {
+        let candidates = sourceMovement.instances.filter {
+            $0.level == level
+                && MosGorSudRouting.sameRegistrationNumber($0.caseNumber, number)
+        }
+        guard candidates.count == 1, let candidate = candidates.first,
+              let sourceCardID = CaseSnapshotSourceIdentity.sourceCardID(
+                for: candidate, context: context) else { return nil }
+        return corrections.first { $0.sourceCardID == sourceCardID }
+    }
+
+    static func isKnownMoscowDistrictComposite(_ value: String) -> Bool {
+        func normalize(_ value: String) -> String {
+            value.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        let candidate = normalize(value)
+        return MosGorSudCourtDirectory.districtCourts.contains { court in
+            let prefix = normalize(court.title) + " ("
+            return candidate.hasPrefix(prefix) && candidate.hasSuffix(")")
+                && candidate.count > prefix.count + 1
+        }
     }
 
     /// Old snapshots may still label a cached related-court card's sessions

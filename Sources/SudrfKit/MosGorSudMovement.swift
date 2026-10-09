@@ -248,8 +248,12 @@ extension MovementService {
                         markIncomplete(MosGorSudEndpoint.host)
                         continue
                     }
-                    let rowLocator = upCartoteka.flatMap {
+                    guard let rowLocator = upCartoteka.flatMap({
                         SourceNativeCardLocator.mosgorsud(url: rowURL, cartoteka: $0)
+                    }) else {
+                        markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
+                        markIncomplete(MosGorSudEndpoint.host)
+                        continue
                     }
                     let card: MosGorSudCard
                     do {
@@ -263,13 +267,24 @@ extension MovementService {
                         markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
                         continue
                     }
-                    if let rowLocator {
-                        coverage.recordLoaded(rowLocator)
-                    } else {
+                    let hasOwnNumber = card.caseNumber.map {
+                        MosGorSudRouting.sameRegistrationNumber(r.caseNumber, $0)
+                    } == true
+                    let matchingUIDs = [r.uid, card.uid].compactMap { $0 }.allSatisfy { $0 == uid }
+                    guard hasOwnNumber, matchingUIDs else {
                         markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
                         markIncomplete(MosGorSudEndpoint.host)
+                        continue
                     }
-                    let court = r.court ?? card.court ?? "Московский городской суд"
+                    coverage.recordLoaded(rowLocator)
+                    let locatorCourt = rowLocator.courtKey == MosGorSudCourtDirectory.mgsAlias
+                        ? "Московский городской суд"
+                        : MosGorSudCourtDirectory.title(forAlias: rowLocator.courtKey)
+                    guard let court = r.court ?? card.court ?? locatorCourt else {
+                        markMoscowCoveragePartial(for: rowURL, cartoteka: upCartoteka)
+                        markIncomplete(MosGorSudEndpoint.host)
+                        continue
+                    }
                     let actURLs = card.actFiles.compactMap {
                         PublishedActURLPolicy.safeMosGorSudURL($0.url)
                     }

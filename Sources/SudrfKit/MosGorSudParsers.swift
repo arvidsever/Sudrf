@@ -121,6 +121,10 @@ public enum MosGorSudResultsParser {
 public enum MosGorSudCardParser {
 
     public static func parse(html: String) throws -> MosGorSudCard {
+        try parse(html: html, sourceURL: nil)
+    }
+
+    static func parse(html: String, sourceURL: URL?) throws -> MosGorSudCard {
         let doc: Document
         do { doc = try SwiftSoup.parse(html) }
         catch { throw SudrfError.parsing("SwiftSoup не смог разобрать карточку mos-gorsud") }
@@ -142,8 +146,19 @@ public enum MosGorSudCardParser {
             if key.contains("сторон") { partiesRawHTML = try? right.html() }
         }
         func field(_ needles: String...) -> String? {
-            for n in needles {
-                if let hit = fields.first(where: { $0.key.contains(n.lowercased()) }),
+            for needle in needles {
+                if let hit = fields.first(where: { $0.key.contains(needle.lowercased()) }),
+                   !hit.value.isEmpty { return hit.value }
+            }
+            return nil
+        }
+        func exactField(_ keys: String...) -> String? {
+            func normalized(_ value: String) -> String {
+                value.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            }
+            // Lower-instance labels contain the same words as own fields.
+            for key in keys {
+                if let hit = fields.first(where: { normalized($0.key) == normalized(key) }),
                    !hit.value.isEmpty { return hit.value }
             }
             return nil
@@ -198,18 +213,26 @@ public enum MosGorSudCardParser {
             participants = parseParties(raw)
         }
 
-        let numberRaw = field("номер дела", "номер заявления", "номер материала") ?? ""
+        let numberRaw = exactField("номер жалобы ~ дела", "номер дела ~ материала",
+                                   "номер дела", "номер заявления", "номер материала") ?? ""
+        let uidRaw = field("уникальный идентификатор")
+        let publishedCourt = exactField("наименование суда")
+        let sourceCourt = sourceURL.flatMap { verifiedCourt(for: $0, in: doc) }
+        if let sourceCourt, let publishedCourt,
+           !matchesPublishedCourt(publishedCourt, sourceCourt: sourceCourt) {
+            throw SudrfError.parsing("название суда карточки не совпадает с её опубликованным адресом")
+        }
         guard !fields.isEmpty,
-              !numberRaw.isEmpty || field("уникальный идентификатор") != nil || !sessions.isEmpty else {
+              !numberRaw.isEmpty || uidRaw != nil || !sessions.isEmpty else {
             throw SudrfError.parsing("страница не содержит признаков карточки mos-gorsud")
         }
 
         return MosGorSudCard(
-            uid: field("уникальный идентификатор").flatMap(MGSParse.firstUID(in:))
+            uid: uidRaw.flatMap(MGSParse.firstUID(in:))
                 ?? MGSParse.firstUID(in: rawText),
             caseNumber: numberRaw.isEmpty ? nil : MGSParse.firstNumber(in: numberRaw),
-            court: field("наименование суда", "суд первой инстанции"),
-            judge: field("удья"),   // «Cудья» — латинская C, ищем по вхождению
+            court: sourceCourt ?? publishedCourt,
+            judge: exactField("судья", "cудья"),
             category: field("категория дела", "категория"),
             result: field("текущее состояние", "результат рассмотрения", "решение первой инстанции"),
             receiptDate: field("дата поступления", "дата регистрации"),
@@ -219,6 +242,38 @@ public enum MosGorSudCardParser {
             participants: participants,
             actFiles: actFiles,
             rawText: rawText)
+    }
+
+    private static func verifiedCourt(for url: URL, in doc: Document) -> String? {
+        guard let section = MosGorSudRouting.section(fromCardURL: url),
+              let cartoteka = CartotekaRegistry.sets(for: .subject).first(where: {
+                  MosGorSudRouting.sectionSegments(cartoteka: $0).contains(section)
+              }),
+              let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka) else {
+            return nil
+        }
+        if locator.courtKey == MosGorSudCourtDirectory.mgsAlias {
+            let breadcrumbs = (try? doc.select(".top-bar__breadcrumbs .breadcrumb li").array()) ?? []
+            guard breadcrumbs.contains(where: {
+                (try? $0.text().trimmingCharacters(in: .whitespacesAndNewlines))
+                    == "Московский городской суд"
+            }) else { return nil }
+            return "Московский городской суд"
+        }
+        return MosGorSudCourtDirectory.title(forAlias: locator.courtKey)
+    }
+
+    private static func matchesPublishedCourt(_ published: String, sourceCourt: String) -> Bool {
+        guard MovementService.sameCourtName(sourceCourt, published) else { return false }
+        func words(_ title: String) -> [String] {
+            title.lowercased().replacingOccurrences(of: "ё", with: "е")
+                .split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        }
+        let source = words(sourceCourt), candidate = words(published)
+        guard !source.isEmpty, candidate.starts(with: source) else { return false }
+        let qualifier = Array(candidate.dropFirst(source.count))
+        return qualifier.isEmpty || qualifier == ["города", "москвы"]
+            || qualifier == ["г", "москвы"]
     }
 
     // MARK: - helpers

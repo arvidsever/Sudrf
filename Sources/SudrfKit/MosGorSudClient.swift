@@ -81,7 +81,7 @@ public actor MosGorSudClient {
     /// Карточка дела по ссылке из выдачи (/…/details/…).
     public func fetchCard(url: URL) async throws -> MosGorSudCard {
         let html = try await fetchUTF8(url)
-        return try MosGorSudCardParser.parse(html: html)
+        return try MosGorSudCardParser.parse(html: html, sourceURL: url)
     }
 
     /// Fetches and verifies a published attachment. A successful HTTP request

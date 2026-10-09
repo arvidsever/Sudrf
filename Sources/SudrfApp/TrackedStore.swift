@@ -61,12 +61,15 @@ enum TrackedStorePreparation {
         save: (ModelContext) throws -> Void = { try $0.save() }
     ) throws -> Bool {
         var paragraphSnapshots: [(record: CourtActRecord, version: Int, data: Data)] = []
+        var moscowSnapshots: [(record: TrackedCaseRecord, snapshot: Data?, movement: Data?, journal: Data?)] = []
         do {
             try migrateFolders(context: context)
             try migrateJudicialUIDs(context: context)
             try migrateMoscowKeyAliases(context: context)
             try bootstrapPersistentIdentity(context: context)
             try bootstrapEventJournals(context: context)
+            try normalizeMoscowOwnCourtCache(
+                context: context, rollbackSnapshots: &moscowSnapshots)
             try repairKoapPartySnapshots(context: context)
             try recalculateStoredDeadlineSnapshots(context: context, today: today)
             try migrateStoredActParagraphSnapshots(
@@ -85,8 +88,71 @@ enum TrackedStorePreparation {
                 snapshot.record.paragraphData = snapshot.data
                 snapshot.record.paragraphizerVersion = snapshot.version
             }
+            for snapshot in moscowSnapshots {
+                snapshot.record.snapshotData = snapshot.snapshot
+                snapshot.record.movementData = snapshot.movement
+                snapshot.record.eventJournalData = snapshot.journal
+            }
             context.rollback()
             throw error
+        }
+    }
+
+    private static func normalizeMoscowOwnCourtCache(
+        context: ModelContext,
+        rollbackSnapshots: inout [(record: TrackedCaseRecord, snapshot: Data?, movement: Data?, journal: Data?)]
+    ) throws {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        for record in try context.fetch(FetchDescriptor<TrackedCaseRecord>()) {
+            guard let movement = record.movement,
+                  let movementContext = record.context else { continue }
+            let corrections = MovementDerivation.moscowOwnCourtCorrections(
+                in: movement, context: movementContext)
+            guard !corrections.isEmpty else { continue }
+
+            let normalizedMovement = MovementDerivation.normalizedMoscowOwnCourtFacts(
+                in: movement, context: movementContext)
+            let normalizedSnapshot = record.snapshot.map {
+                MovementDerivation.normalizedMoscowSnapshotFacts(
+                    $0, corrections: corrections, sourceMovement: movement,
+                    context: movementContext)
+            }
+            var normalizedJournalData = record.eventJournalData
+            if let data = record.eventJournalData,
+               var journal = try? decoder.decode(CaseEventJournal.self, from: data),
+               var baselines = journal.semanticBaselines,
+               var moscow = baselines.courts["mosgorsud|\(MosGorSudCourtDirectory.mgsAlias)"] {
+                let previous = moscow
+                let linkedActCorrections = MovementDerivation.moscowLinkedActCorrections(
+                    in: movement, context: movementContext, corrections: corrections)
+                moscow.normalizeMoscowOwnCourtFacts(
+                    corrections, linkedActCorrections: linkedActCorrections)
+                if moscow != previous {
+                    baselines.courts["mosgorsud|\(MosGorSudCourtDirectory.mgsAlias)"] = moscow
+                    journal.semanticBaselines = baselines
+                    normalizedJournalData = try encoder.encode(journal)
+                }
+            }
+            let movementData = normalizedMovement == movement
+                ? record.movementData : try encoder.encode(normalizedMovement)
+            let snapshotData: Data?
+            if normalizedSnapshot == record.snapshot {
+                snapshotData = record.snapshotData
+            } else if let normalizedSnapshot {
+                snapshotData = try encoder.encode(normalizedSnapshot)
+            } else {
+                snapshotData = nil
+            }
+            guard movementData != record.movementData
+                    || snapshotData != record.snapshotData
+                    || normalizedJournalData != record.eventJournalData else { continue }
+
+            rollbackSnapshots.append((record, record.snapshotData,
+                                      record.movementData, record.eventJournalData))
+            record.movementData = movementData
+            record.snapshotData = snapshotData
+            record.eventJournalData = normalizedJournalData
         }
     }
 

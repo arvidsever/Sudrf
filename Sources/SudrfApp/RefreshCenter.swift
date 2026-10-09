@@ -1642,6 +1642,15 @@ final class RefreshCenter: ObservableObject {
                 from: merged, cached: rec.movement, fresh: mv)
             merged.caseNumber = projectionContext.caseNumber
         }
+        merged = MovementDerivation.normalizedMoscowOwnCourtFacts(
+            in: merged, context: projectionContext)
+        let oldMoscowCorrections = rec.movement.map {
+            MovementDerivation.moscowOwnCourtCorrections(in: $0, context: projectionContext)
+        } ?? []
+        let oldMoscowLinkedActCorrections = rec.movement.map {
+            MovementDerivation.moscowLinkedActCorrections(
+                in: $0, context: projectionContext, corrections: oldMoscowCorrections)
+        } ?? [:]
         var oldMovement = rec.movement.map {
             MovementDerivation.normalizedMovement($0, context: projectionContext)
         }
@@ -1682,6 +1691,9 @@ final class RefreshCenter: ObservableObject {
                 baseline.actsFingerprint = MovementDerivation.snapshot(
                     from: oldMovement, context: projectionContext).actsFingerprint
             }
+            baseline = MovementDerivation.normalizedMoscowSnapshotFacts(
+                baseline, corrections: oldMoscowCorrections,
+                sourceMovement: source, context: projectionContext)
             if correctsCriminalRoute {
                 baseline.inForce = MovementDerivation.effectiveLegalForce(
                     from: oldMovement, context: projectionContext)
@@ -1777,13 +1789,25 @@ final class RefreshCenter: ObservableObject {
             }
             persisted.sourceRefreshAttempt = attempt
             var journal = try store.requiredEventJournal(for: persisted)
+            if !oldMoscowCorrections.isEmpty,
+               var baselines = journal.semanticBaselines,
+               var moscow = baselines.courts["mosgorsud|\(MosGorSudCourtDirectory.mgsAlias)"] {
+                moscow.normalizeMoscowOwnCourtFacts(
+                    oldMoscowCorrections,
+                    linkedActCorrections: oldMoscowLinkedActCorrections)
+                baselines.courts["mosgorsud|\(MosGorSudCourtDirectory.mgsAlias)"] = moscow
+                journal.semanticBaselines = baselines
+            }
             if correctsCriminalRoute, let oldMovement,
                journal.semanticBaselines?.global?.inForce == priorInForce {
                 journal.semanticBaselines?.global?.inForce = MovementDerivation.effectiveLegalForce(
                     from: oldMovement, context: projectionContext)
             }
             let finalSnapshot = persisted.snapshot ?? newSnap
-            let freshSnapshot = MovementDerivation.snapshot(from: mv, context: projectionContext)
+            let freshMovement = MovementDerivation.normalizedMoscowOwnCourtFacts(
+                in: mv, context: projectionContext)
+            let freshSnapshot = MovementDerivation.snapshot(from: freshMovement,
+                                                           context: projectionContext)
             let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)
             // The legacy refresh outcome treats a recognized empty listing as
             // partial. Fresh per-court proof can still confirm the whole journal

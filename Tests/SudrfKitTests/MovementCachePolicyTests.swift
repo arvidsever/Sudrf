@@ -58,6 +58,200 @@ final class MovementCachePolicyTests: XCTestCase {
                        "живая инстанция не должна подменяться кэшем")
     }
 
+    func testExactNativeCardRestoresOmittedCachedActOnCompleteRefresh() throws {
+        let url = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723657"
+            + "&case_uid=576e5fae-ee46-434a-99eb-5956562963b0&new=0&delo_id=43"))
+        let number = "8а-7078/2022"
+        let actID = "act_2kas.sudrf.ru#\(number)"
+        let text = "Синтетический текст ранее сохранённого акта"
+        var cachedInstance = CaseInstance(
+            level: .cassation, court: "Второй кассационный суд общей юрисдикции",
+            caseNumber: number, judge: "Старый судья", domain: "2kas.sudrf.ru",
+            foundByUID: true, result: "Старый результат", sessions: [],
+            actID: actID, actIDs: [actID], sourceURL: url,
+            sourceEvidence: .init(judicialUID: "11RS0001-01-2021-000001-11",
+                                 cartotekaID: "g3"))
+        cachedInstance.note = "Старая метка"
+        let cachedAct = CaseAct(id: actID, title: "Сохранённое определение",
+                                date: "01.09.2026", courtShort: "2-й КСОЮ",
+                                instanceLevel: .cassation)
+        let cached = movement([cachedInstance], acts: [cachedAct], bodies: [actID: text])
+        let freshInstance = CaseInstance(
+            level: .cassation, court: "Второй кассационный суд общей юрисдикции",
+            caseNumber: number, judge: "Свежий судья", domain: "2kas.sudrf.ru",
+            foundByUID: true, result: "Свежий результат", sessions: [],
+            sourceURL: url,
+            sourceEvidence: .init(judicialUID: "11RS0001-01-2021-000001-11",
+                                 cartotekaID: "g3"))
+
+        let merged = MovementCachePolicy.merge(fresh: movement([freshInstance]), cached: cached)
+
+        XCTAssertEqual(merged.instances.first?.linkedActIDs, [actID])
+        XCTAssertEqual(merged.acts, [cachedAct])
+        XCTAssertEqual(merged.actBodies[actID], text)
+        XCTAssertEqual(merged.instances.first?.judge, "Свежий судья")
+        XCTAssertEqual(merged.instances.first?.result, "Свежий результат")
+        XCTAssertNil(merged.instances.first?.note)
+    }
+
+    func testCachedActRequiresExactCardLevelAndNonConflictingCartoteka() throws {
+        let url = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723657"
+            + "&case_uid=576e5fae-ee46-434a-99eb-5956562963b0&new=0&delo_id=43"))
+        let differentUID = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723658"
+            + "&case_uid=different-card-uid&new=0&delo_id=43"))
+        let differentID = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723658"
+            + "&new=0&delo_id=43"))
+        let number = "8а-7078/2022"
+        let actID = "act_2kas.sudrf.ru#\(number)"
+        let cachedInstance = CaseInstance(
+            level: .cassation, court: "Второй кассационный суд общей юрисдикции",
+            caseNumber: number, judge: nil, domain: "2kas.sudrf.ru", foundByUID: true,
+            result: nil, sessions: [], actID: actID, sourceURL: url,
+            sourceEvidence: .init(cartotekaID: "g3"))
+        let cached = movement(
+            [cachedInstance],
+            acts: [CaseAct(id: actID, title: "Определение", date: "01.09.2026",
+                           courtShort: "2-й КСОЮ", instanceLevel: .cassation)],
+            bodies: [actID: "Синтетический текст"])
+
+        func candidate(url candidateURL: URL?, caseNumber candidateNumber: String = number,
+                       domain: String = "2kas.sudrf.ru",
+                       level: CaseInstance.Level = .cassation,
+                       cartotekaID: String? = "g3") -> CaseInstance {
+            CaseInstance(
+                level: level, court: "Второй кассационный суд общей юрисдикции",
+                caseNumber: candidateNumber, judge: nil, domain: domain, foundByUID: true,
+                result: nil, sessions: [], sourceURL: candidateURL,
+                sourceEvidence: .init(cartotekaID: cartotekaID))
+        }
+
+        let negatives: [(String, CaseInstance)] = [
+            ("different case UID", candidate(url: differentUID)),
+            ("different native card ID without UID", candidate(url: differentID)),
+            ("conflicting case number", candidate(url: url, caseNumber: "8а-7079/2022")),
+            ("different level", candidate(url: url, level: .appeal)),
+            ("conflicting cartoteka", candidate(url: url, cartotekaID: "g2")),
+            ("different host", candidate(url: url, domain: "3kas.sudrf.ru")),
+            ("missing source URL", candidate(url: nil)),
+            ("unvalidated source URL", candidate(url: URL(string: "https://example.test/card")))
+        ]
+
+        for (reason, freshInstance) in negatives {
+            let merged = MovementCachePolicy.merge(
+                fresh: movement([freshInstance]), cached: cached)
+            XCTAssertTrue(merged.acts.isEmpty, reason)
+            XCTAssertNil(merged.actBodies[actID], reason)
+            XCTAssertTrue(merged.instances.first?.linkedActIDs.isEmpty == true, reason)
+        }
+    }
+
+    func testFreshActMetadataAndTextRemainAuthoritativeForExactCard() throws {
+        let url = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723657"
+            + "&case_uid=576e5fae-ee46-434a-99eb-5956562963b0&new=0&delo_id=43"))
+        let actID = "act_2kas.sudrf.ru#8а-7078/2022"
+        let oldAct = CaseAct(id: actID, title: "Старое определение", date: "01.08.2026",
+                             courtShort: "Старый суд", instanceLevel: .cassation)
+        let freshAct = CaseAct(id: actID, title: "Новое определение", date: "01.09.2026",
+                               courtShort: "2-й КСОЮ", instanceLevel: .cassation)
+        let actURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/act.pdf"))
+        let cachedInstance = CaseInstance(
+            level: .cassation, court: "2-й КСОЮ", caseNumber: "8а-7078/2022",
+            judge: nil, domain: "2kas.sudrf.ru", foundByUID: true,
+            result: nil, sessions: [], actID: actID, actURL: actURL, sourceURL: url)
+        let freshInstance = cachedInstance
+
+        let merged = MovementCachePolicy.merge(
+            fresh: movement([freshInstance], acts: [freshAct], bodies: [actID: "Новый текст"]),
+            cached: movement([cachedInstance], acts: [oldAct], bodies: [actID: "Старый текст"]))
+
+        XCTAssertEqual(merged.acts, [freshAct])
+        XCTAssertEqual(merged.actBodies[actID], "Новый текст")
+        XCTAssertEqual(merged.instances.first, freshInstance,
+                       "an already-present scalar act ID and URL must not be normalized into arrays")
+    }
+
+    func testConflictingFreshPublicationDoesNotRestoreCachedActFieldsOrText() throws {
+        let cardURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&srv_num=1&name_op=case&case_id=2723657"
+            + "&case_uid=576e5fae-ee46-434a-99eb-5956562963b0&new=0&delo_id=43"))
+        let oldFileURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/acts/old.pdf"))
+        let revisedFileURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/acts/revised.pdf"))
+        let actID = "act_2kas.sudrf.ru#8а-7078/2022"
+
+        func provenance(url: URL, hash: String) -> PublishedActProvenance {
+            PublishedActProvenance(
+                sourceURL: url, finalURL: url, format: .pdf, contentType: "application/pdf",
+                contentHash: hash, byteCount: 20, fetchedAt: Date(timeIntervalSince1970: 1),
+                extractorVersion: 1)
+        }
+
+        func instance(actURL: URL) -> CaseInstance {
+            CaseInstance(
+                level: .cassation, court: "2-й КСОЮ", caseNumber: "8а-7078/2022",
+                judge: nil, domain: "2kas.sudrf.ru", foundByUID: true, result: nil,
+                sessions: [], actID: actID, actURL: actURL, sourceURL: cardURL)
+        }
+
+        let cachedAct = CaseAct(
+            id: actID, title: "Старые реквизиты", date: "01.08.2026", courtShort: "Старый суд",
+            instanceLevel: .cassation, fileProvenance: provenance(url: oldFileURL, hash: "old-hash"),
+            sourceFileURL: oldFileURL, productionNumber: "8а-7078/2022")
+        let cached = movement(
+            [instance(actURL: oldFileURL)], acts: [cachedAct],
+            bodies: [actID: "Старый текст опубликованного файла"])
+
+        let freshPublications: [(String, CaseAct, URL)] = [
+            ("changed source URL", CaseAct(
+                id: actID, title: "Свежие реквизиты", date: "", courtShort: "",
+                instanceLevel: .cassation, sourceFileURL: revisedFileURL,
+                productionNumber: "8а-7078/2022"), revisedFileURL),
+            ("changed production number", CaseAct(
+                id: actID, title: "Свежие реквизиты", date: "", courtShort: "",
+                instanceLevel: .cassation, sourceFileURL: oldFileURL,
+                productionNumber: "8а-7079/2022"), oldFileURL),
+            ("changed content hash", CaseAct(
+                id: actID, title: "Свежие реквизиты", date: "", courtShort: "",
+                instanceLevel: .cassation,
+                fileProvenance: provenance(url: oldFileURL, hash: "new-hash"),
+                sourceFileURL: oldFileURL, productionNumber: "8а-7078/2022"), oldFileURL)
+        ]
+
+        for (reason, freshAct, freshURL) in freshPublications {
+            let fresh = movement([instance(actURL: freshURL)], acts: [freshAct])
+            let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
+
+            XCTAssertEqual(merged.acts, [freshAct], reason)
+            XCTAssertNil(merged.actBodies[actID], reason)
+            XCTAssertEqual(merged.instances.first?.linkedActURLs, [freshURL], reason)
+        }
+    }
+
+    func testCompleteRefreshDoesNotAppendOmittedCachedRound() throws {
+        let url = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/modules.php"
+            + "?name=sud_delo&name_op=case&case_id=2723657&case_uid=card-uid"
+            + "&delo_id=43&new=0"))
+        let number = "8а-7078/2022"
+        let actID = "act_2kas.sudrf.ru#\(number)"
+        let cached = movement(
+            [CaseInstance(level: .cassation, court: "2-й КСОЮ", caseNumber: number,
+                          judge: nil, domain: "2kas.sudrf.ru", foundByUID: true,
+                          result: nil, sessions: [], actID: actID, sourceURL: url)],
+            acts: [CaseAct(id: actID, title: "Определение", date: "01.09.2026",
+                           courtShort: "2-й КСОЮ", instanceLevel: .cassation)],
+            bodies: [actID: "Синтетический текст"])
+
+        let merged = MovementCachePolicy.merge(fresh: movement([]), cached: cached)
+
+        XCTAssertTrue(merged.instances.isEmpty)
+        XCTAssertTrue(merged.acts.isEmpty)
+        XCTAssertTrue(merged.actBodies.isEmpty)
+    }
+
     func testHonestZeroDoesNotDeleteKnownCourtRound() {
         let actID = "act_vs"
         let cached = movement(

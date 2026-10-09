@@ -1414,6 +1414,8 @@ enum MovementDerivation {
             CaseLifecycleResolver.realInstances(in: movement).map {
                 var instance = $0
                 instance.sourceEvidence = nil
+                instance.actIDs = instance.linkedActIDs
+                instance.actURLs = instance.linkedActURLs
                 return instance
             }.sorted(by: MovementService.precedesInChronology)
         }

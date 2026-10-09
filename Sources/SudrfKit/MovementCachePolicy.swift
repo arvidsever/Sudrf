@@ -34,6 +34,44 @@ public enum MovementCachePolicy {
         var actBodies = fresh.actBodies
         var changed = false
 
+        func comparablePublicationURL(_ url: URL) -> URL {
+            PublishedActURLPolicy.safePublishedURL(url) ?? url
+        }
+
+        func hasConflictingPublication(_ freshAct: CaseAct, _ cachedAct: CaseAct) -> Bool {
+            let freshURL = freshAct.sourceFileURL ?? freshAct.fileProvenance?.sourceURL
+            let cachedURL = cachedAct.sourceFileURL ?? cachedAct.fileProvenance?.sourceURL
+            if let freshURL, let cachedURL {
+                if comparablePublicationURL(freshURL) != comparablePublicationURL(cachedURL) {
+                    return true
+                }
+            }
+            if let freshNumber = freshAct.productionNumber?.trimmingCharacters(
+                in: .whitespacesAndNewlines), !freshNumber.isEmpty,
+               let cachedNumber = cachedAct.productionNumber?.trimmingCharacters(
+                in: .whitespacesAndNewlines), !cachedNumber.isEmpty,
+               freshNumber != cachedNumber {
+                return true
+            }
+            if let freshHash = freshAct.fileProvenance?.contentHash,
+               let cachedHash = cachedAct.fileProvenance?.contentHash,
+               freshHash != cachedHash {
+                return true
+            }
+            return false
+        }
+
+        func conflictingCachedPublicationURLs(for cachedInstance: CaseInstance) -> Set<URL> {
+            Set(cachedInstance.linkedActIDs.compactMap { actID in
+                guard let freshAct = acts.first(where: { $0.id == actID }),
+                      let cachedAct = cached.acts.first(where: { $0.id == actID }),
+                      hasConflictingPublication(freshAct, cachedAct),
+                      let sourceURL = cachedAct.sourceFileURL ?? cachedAct.fileProvenance?.sourceURL
+                else { return nil }
+                return comparablePublicationURL(sourceURL)
+            })
+        }
+
         // Complete cards discover file metadata, not the downloaded document.
         // Overlay only files still present under the same verified publication;
         // missing productions are restored solely by the partial-source rules.
@@ -108,6 +146,114 @@ public enum MovementCachePolicy {
             changed = true
         }
 
+        func restoreCachedLinkedActs(from cachedInstance: CaseInstance, into freshIndex: Int) {
+            let conflictingURLs = conflictingCachedPublicationURLs(for: cachedInstance)
+            if instances[freshIndex].actID == nil, let actID = cachedInstance.actID {
+                instances[freshIndex].actID = actID
+                changed = true
+            }
+            let priorLinkedIDs = instances[freshIndex].linkedActIDs
+            var linkedIDs = priorLinkedIDs
+            for id in cachedInstance.linkedActIDs where !linkedIDs.contains(id) {
+                linkedIDs.append(id)
+            }
+            if linkedIDs != priorLinkedIDs {
+                instances[freshIndex].actIDs = linkedIDs
+                changed = true
+            }
+
+            if instances[freshIndex].actURL == nil, let actURL = cachedInstance.actURL,
+               !conflictingURLs.contains(comparablePublicationURL(actURL)) {
+                instances[freshIndex].actURL = actURL
+                changed = true
+            }
+            let priorActURLs = instances[freshIndex].linkedActURLs
+            var actURLs = priorActURLs
+            for url in cachedInstance.linkedActURLs
+            where !conflictingURLs.contains(comparablePublicationURL(url)) {
+                if !actURLs.contains(url) { actURLs.append(url) }
+            }
+            if actURLs != priorActURLs {
+                instances[freshIndex].actURLs = actURLs
+                changed = true
+            }
+
+            for actID in cachedInstance.linkedActIDs {
+                guard let cachedAct = cached.acts.first(where: { $0.id == actID }) else { continue }
+                let cachedBody = cached.actBodies[actID]?.trimmingCharacters(
+                    in: .whitespacesAndNewlines)
+                if let index = acts.firstIndex(where: { $0.id == actID }) {
+                    var act = acts[index]
+                    guard !hasConflictingPublication(act, cachedAct) else { continue }
+                    if act.sourceFileURL == nil, let url = cachedAct.sourceFileURL {
+                        act.sourceFileURL = url
+                    }
+                    if act.productionNumber == nil, let number = cachedAct.productionNumber {
+                        act.productionNumber = number
+                    }
+                    if act.fileProvenance == nil, let provenance = cachedAct.fileProvenance {
+                        act.fileProvenance = provenance
+                    }
+                    if act.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        act.title = cachedAct.title
+                    }
+                    if act.date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        act.date = cachedAct.date
+                    }
+                    if act.courtShort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        act.courtShort = cachedAct.courtShort
+                    }
+                    if acts[index] != act {
+                        acts[index] = act
+                        changed = true
+                    }
+                    if (actBodies[actID]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+                       let cachedBody, !cachedBody.isEmpty {
+                        actBodies[actID] = cachedBody
+                        changed = true
+                    }
+                } else {
+                    // A published PDF is a real act even before it has text.
+                    guard !(cachedBody?.isEmpty ?? true)
+                            || cachedAct.sourceFileURL != nil
+                            || cachedAct.fileProvenance != nil else { continue }
+                    acts.append(cachedAct)
+                    if let cachedBody, !cachedBody.isEmpty {
+                        actBodies[actID] = cachedBody
+                    }
+                    changed = true
+                }
+            }
+        }
+
+        // A fresh complete card can omit old acts while keeping the same native card.
+        for cachedInstance in cached.instances where cachedInstance.captchaFormURL == nil
+            && cachedInstance.transientError != true {
+            guard let freshIndex = instances.firstIndex(where: { freshInstance in
+                guard freshInstance.captchaFormURL == nil,
+                      freshInstance.transientError != true,
+                      canonicalHost(freshInstance.domain) == canonicalHost(cachedInstance.domain),
+                      freshInstance.level == cachedInstance.level,
+                      let freshURL = freshInstance.sourceURL,
+                      let cachedURL = cachedInstance.sourceURL,
+                      canonicalHost(freshURL.host?.lowercased() ?? "")
+                        == canonicalHost(freshInstance.domain),
+                      canonicalHost(cachedURL.host?.lowercased() ?? "")
+                        == canonicalHost(cachedInstance.domain),
+                      MovementService.sameCaseNumber(
+                        freshInstance.caseNumber, cachedInstance.caseNumber),
+                      MovementService.sameSourceCard(freshURL, cachedURL) == true
+                else { return false }
+                let freshCartotekaID = (freshInstance.sourceEvidence?.cartotekaID ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let cachedCartotekaID = (cachedInstance.sourceEvidence?.cartotekaID ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return freshCartotekaID.isEmpty || cachedCartotekaID.isEmpty
+                    || freshCartotekaID == cachedCartotekaID
+            }) else { continue }
+            restoreCachedLinkedActs(from: cachedInstance, into: freshIndex)
+        }
+
         func restoreCachedRealInstances(for canonical: String) -> Bool {
             let overlaysSparseBase = baseIsIncomplete && canonical == freshBaseCanonicalDomain
             let realInstances = cached.instances.filter {
@@ -117,12 +263,14 @@ public enum MovementCachePolicy {
             }
             guard !realInstances.isEmpty else { return false }
             for r in realInstances {
-                if let freshIndex = instances.firstIndex(where: {
+                let freshIndex: Int
+                if let existingIndex = instances.firstIndex(where: {
                     canonicalHost($0.domain) == canonicalHost(r.domain)
                         && (canonical == "vsrf.ru"
                             ? MovementService.sameVSRFCard($0.sourceURL, r.sourceURL)
                             : MovementService.sameCaseNumber($0.caseNumber, r.caseNumber))
                 }) {
+                    freshIndex = existingIndex
                     if canonical == "vsrf.ru",
                        incompleteDomains.contains(canonical),
                        instances[freshIndex].note == "Движение временно недоступно" {
@@ -217,75 +365,12 @@ public enum MovementCachePolicy {
                         instances[freshIndex].note = note
                         changed = true
                     }
-                    if instances[freshIndex].actID == nil, let actID = r.actID {
-                        instances[freshIndex].actID = r.actID
-                        changed = true
-                    }
-                    let priorLinkedIDs = instances[freshIndex].linkedActIDs
-                    var linked = instances[freshIndex].linkedActIDs
-                    for id in r.linkedActIDs where !linked.contains(id) { linked.append(id) }
-                    instances[freshIndex].actIDs = linked.isEmpty ? nil : linked
-                    if linked != priorLinkedIDs { changed = true }
-                    if instances[freshIndex].actURL == nil, let actURL = r.actURL {
-                        instances[freshIndex].actURL = r.actURL
-                        changed = true
-                    }
-                    let priorSourceURLs = instances[freshIndex].linkedActURLs
-                    var sourceURLs = instances[freshIndex].linkedActURLs
-                    for url in r.linkedActURLs where !sourceURLs.contains(url) {
-                        sourceURLs.append(url)
-                    }
-                    instances[freshIndex].actURLs = sourceURLs.isEmpty ? nil : sourceURLs
-                    if sourceURLs != priorSourceURLs { changed = true }
                 } else {
                     instances.append(r)
+                    freshIndex = instances.count - 1
                     changed = true
                 }
-                for actID in r.linkedActIDs {
-                    guard let cachedAct = cached.acts.first(where: { $0.id == actID }) else { continue }
-                    let cachedBody = cached.actBodies[actID]?.trimmingCharacters(
-                        in: .whitespacesAndNewlines)
-                    if let freshIndex = acts.firstIndex(where: { $0.id == actID }) {
-                        var act = acts[freshIndex]
-                        if act.sourceFileURL == nil, let url = cachedAct.sourceFileURL {
-                            act.sourceFileURL = url
-                        }
-                        if act.productionNumber == nil, let number = cachedAct.productionNumber {
-                            act.productionNumber = number
-                        }
-                        if act.fileProvenance == nil, let provenance = cachedAct.fileProvenance {
-                            act.fileProvenance = provenance
-                        }
-                        if act.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            act.title = cachedAct.title
-                        }
-                        if act.date.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            act.date = cachedAct.date
-                        }
-                        if act.courtShort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            act.courtShort = cachedAct.courtShort
-                        }
-                        if acts[freshIndex] != act {
-                            acts[freshIndex] = act
-                            changed = true
-                        }
-                        if (actBodies[actID]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
-                           let cachedBody, !cachedBody.isEmpty {
-                            actBodies[actID] = cachedBody
-                            changed = true
-                        }
-                    } else {
-                        // A published PDF is a real act even before it has text.
-                        guard !(cachedBody?.isEmpty ?? true)
-                                || cachedAct.sourceFileURL != nil
-                                || cachedAct.fileProvenance != nil else { continue }
-                        acts.append(cachedAct)
-                        if let cachedBody, !cachedBody.isEmpty {
-                            actBodies[actID] = cachedBody
-                        }
-                        changed = true
-                    }
-                }
+                restoreCachedLinkedActs(from: r, into: freshIndex)
             }
             return true
         }

@@ -32,13 +32,10 @@ TestFlight и живые судебные сайты не используютс
 ## Проверки
 
 - `swift test --disable-sandbox -Xswiftc -strict-concurrency=complete` — полный
-  прогон на `3381809`, до последнего guard публикации, завершился с кодом 0;
-  целевые сводки: 1 160 тестов приложения (15 пропущено, 0 ошибок) и 75 тестов
-  SwiftPM (5 пропущено, 0 ошибок). Остальные тестовые наборы также завершились
-  без ошибок.
-- После guard публикации focused strict suite прошёл: 23 теста `MovementCachePolicy`,
-  4 app-теста, 0 ошибок и пропусков. Включены #434, #370, #76, сравнение источника
-  акта и отрицательные проверки конфликтующих URL, номера производства и хеша.
+  прогон на коде `8eb91de` завершился с кодом 0: `SudrfKitTests` — 726 тестов;
+  `SudrfAppTests` — 1 160 (15 пропущено); `FSSPCaptchaLabTests` — 9 (1 пропущен);
+  `CaptchaSolverTests` — 75 (5 пропущено); `CaseEventDeriverTests` — 28. Во всех
+  наборах 0 ошибок. #434, #370, #76 и публикационные conflict-регрессии прошли.
 - На исходном production-файле `MovementCachePolicy.swift` из `861906f` тесты
   #370 и #76 проходили. В изменённой версии диагностировался сброс `seenAt`:
   при восстановлении кеша scalar act-ссылки превращались в эквивалентные
@@ -48,9 +45,8 @@ TestFlight и живые судебные сайты не используютс
 - `python3 Scripts/generate-legal-deadline-registry.py --check` — реестр
   актуален.
 - `xcodegen generate` — проект создан, отслеживаемых изменений генерации нет.
-- Xcode 27, macOS, unsigned build (`CODE_SIGNING_ALLOWED=NO`) — успешно на
-  rebased source до последнего guard публикации; повторная сборка отложена до
-  независимого review.
+- Xcode 27, macOS, unsigned build (`CODE_SIGNING_ALLOWED=NO`) — успешно после
+  conflict guard публикации.
 - Исходные и скопированные в собранный `.app` модели numeric,
   numeric-specialist и FSSP совпали с manifest; файл eligibility в `.app`
   совпал с fixture.

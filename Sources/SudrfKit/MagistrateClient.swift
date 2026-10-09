@@ -422,7 +422,9 @@ public enum MagistratePageClassifier {
         return .unrecognized
     }
 
-    private static func resultCount(in html: String) -> Int? {
+    /// Returns the published result count when the magistrate page includes
+    /// its standard counter. This does not change `classify`'s outcomes.
+    public static func resultCount(in html: String) -> Int? {
         let patterns = [
             #"Найдено\s+дел\s*:(?:\s|&nbsp;|&#160;|&#xA0;|<[^>]+>)*(\d+)"#,
             #"Всего\s+по\s+запросу\s+найдено\s*[-—:]?(?:\s|&nbsp;|&#160;|&#xA0;|<[^>]+>)*(\d+)"#

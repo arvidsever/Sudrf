@@ -204,6 +204,36 @@ final class MovementDerivationTests: XCTestCase {
         XCTAssertFalse(MovementDerivation.hasSameRefreshSource(source, changedSource))
     }
 
+    func testRefreshSourceComparesEffectiveActLinksWithoutIgnoringRealChanges() throws {
+        let actURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/acts/one.pdf"))
+        let anotherActURL = try XCTUnwrap(URL(string: "https://2kas.sudrf.ru/acts/two.pdf"))
+        let scalar = CaseInstance(
+            level: .cassation, court: "2-й КСОЮ", caseNumber: "8а-1/2026",
+            judge: nil, domain: "2kas.sudrf.ru", foundByUID: true, result: nil,
+            sessions: [], actID: "act-one", actURL: actURL,
+            sourceURL: URL(string: "https://2kas.sudrf.ru/card?case_id=1"))
+        let base = CaseMovement(uid: "uid", caseNumber: "2-1/2026", inForce: false,
+                                instances: [scalar], complaints: [:], acts: [])
+        var redundantArrays = base
+        redundantArrays.instances[0].actIDs = ["act-one"]
+        redundantArrays.instances[0].actURLs = [actURL]
+
+        XCTAssertTrue(MovementDerivation.hasSameRefreshSource(base, redundantArrays),
+                      "single-value linked arrays duplicate the scalar publication")
+
+        var anotherAct = redundantArrays
+        anotherAct.instances[0].actIDs = ["act-one", "act-two"]
+        anotherAct.instances[0].actURLs = [actURL, anotherActURL]
+        XCTAssertFalse(MovementDerivation.hasSameRefreshSource(base, anotherAct),
+                       "additional linked acts or files remain a source change")
+
+        var changedPrimary = redundantArrays
+        changedPrimary.instances[0].actID = "act-two"
+        changedPrimary.instances[0].actURL = anotherActURL
+        XCTAssertFalse(MovementDerivation.hasSameRefreshSource(base, changedPrimary),
+                       "a changed primary act or URL remains a source change")
+    }
+
     func testFutureHearingsUseNumericTimeAndExcludeTerminalSessionToday() {
         let sessions = [
             StoredSession(dateRaw: "01.05.2026", time: "11:00", room: nil,

@@ -2600,7 +2600,7 @@ extension MovementService {
         if let uid, !uid.isEmpty {
             do {
                 let r = try await vsrf.search(uniqueNumber: uid, oldCaseNumber: nil, keywords: nil)
-                if r.total > r.results.count { incomplete = true }
+                if !r.hasPublishedTotal || r.total > r.results.count { incomplete = true }
                 prods += r.results.filter {
                     VSRFLinkKey.normUID($0.uid) != nil
                         && VSRFLinkKey.normUID($0.uid) == VSRFLinkKey.normUID(uid)
@@ -2618,7 +2618,7 @@ extension MovementService {
         do {
             let r = try await vsrf.search(uniqueNumber: nil,
                                           oldCaseNumber: firstInstanceCaseNumber, keywords: nil)
-            if r.total > r.results.count { incomplete = true }
+            if !r.hasPublishedTotal || r.total > r.results.count { incomplete = true }
             let court = VSRFLinkKey.normCourt(firstInstanceCourt)
             let caseNo = VSRFLinkKey.normCaseNo(firstInstanceCaseNumber)
             for p in r.results {

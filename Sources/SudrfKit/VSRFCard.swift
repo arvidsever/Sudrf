@@ -225,6 +225,8 @@ public struct VSRFCard: Sendable {
 public struct VSRFSearchResults: Sendable {
     public var total: Int
     public var results: [VSRFProduction]
+    // Without a published count, total remains a compatible lower bound only.
+    var hasPublishedTotal = true
     public init(total: Int, results: [VSRFProduction]) { self.total = total; self.results = results }
 
     /// Результаты, привязываемые к заданному ключу (УИД или тройка).
@@ -364,7 +366,9 @@ public enum VSRFSearchParser {
             guard !results.isEmpty else {
                 throw SudrfError.parsing("В выдаче ВС РФ нет явного счётчика пустого результата")
             }
-            return VSRFSearchResults(total: results.count, results: results)
+            var page = VSRFSearchResults(total: results.count, results: results)
+            page.hasPublishedTotal = false
+            return page
         }
         guard total >= results.count,
               (total == 0) == results.isEmpty else {

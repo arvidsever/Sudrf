@@ -178,6 +178,31 @@ final class VSRFMovementTests: XCTestCase {
         XCTAssertEqual(outcome.instances.map(\.caseNumber), [production.number])
     }
 
+    func testCounterlessPositiveSearchCannotConfirmWholeSource() async throws {
+        let html = try fixture("vsrf_current_search_positive")
+        let complete = try VSRFSearchParser.parse(html: html)
+        let results = try VSRFSearchParser.parse(html: html.replacingOccurrences(
+            of: "<span>Найдено: 1</span>", with: ""))
+        let production = try XCTUnwrap(results.results.first)
+        XCTAssertEqual(results.results.count, 1,
+                       "The synthetic counter removal must preserve the published card row")
+        for (uidResults, numberResults) in [(results, complete), (complete, results),
+                                            (results, results)] {
+            let mock = MockVSRF(
+                uidResults: uidResults, numberResults: numberResults,
+                cardsByID: [production.id: VSRFCard(productions: [production])])
+
+            let outcome = try await MovementService.vsrfInstancesOutcome(
+                vsrf: mock, uid: uid,
+                firstInstanceCourt: "Сыктывкарский городской суд",
+                firstInstanceCaseNumber: "2-1649/2022", partySurnames: [])
+
+            XCTAssertEqual(outcome.instances.map(\.caseNumber), [production.number])
+            XCTAssertTrue(outcome.incomplete,
+                          "A missing published count cannot be repaired by the other query")
+        }
+    }
+
     func testPartialNumberSearchKeepsMatchingUIDAndNumberRows() async throws {
         let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
                                       caseNumber: "2-1649/2022")

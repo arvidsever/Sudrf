@@ -7,6 +7,7 @@ mkdir -p "$QA_BUILD"
 
 python3 - "$ROOT" "$QA_BUILD" <<'PYCONFIG'
 from pathlib import Path
+import re
 import sys
 
 root, build = map(Path, sys.argv[1:])
@@ -38,13 +39,21 @@ text = text.replace(
     + "\n    dependencies:",
     1)
 text = text.replace("path: Generated/", "path: " + str(build / "Generated") + "/")
-text = text.replace(
-    "PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app",
-    "PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.qa.issue431")
-text = text.replace("CFBundleName: Sudrf", "CFBundleName: Sudrf431QA")
-text = text.replace("CFBundleDisplayName: Sudrf", "CFBundleDisplayName: Sudrf431QA")
-text = text.replace("CFBundleURLName: ru.sudrf.app", "CFBundleURLName: ru.sudrf.qa.issue431")
-text = text.replace("              - sudrf\n", "              - sudrf-qa-431\n")
+for key, value in (
+    ("CFBundleName", "Sudrf431QA"),
+    ("CFBundleDisplayName", "Sudrf431QA"),
+    ("PRODUCT_BUNDLE_IDENTIFIER", "ru.sudrf.qa.issue431"),
+    ("PRODUCT_NAME", "Sudrf431QA"),
+    ("SUDRF_DISPLAY_NAME", "Sudrf431QA"),
+    ("SUDRF_URL_SCHEME", "sudrf-qa-431"),
+):
+    text = re.sub(r"(?m)^([ \t]*" + re.escape(key) + r":)[^\n]*$",
+                  r"\1 " + value, text)
+text = re.sub(r"(?m)^([ \t]*-[ \t]*CFBundleURLName:)[^\n]*$",
+              r"\1 ru.sudrf.qa.issue431", text)
+text = re.sub(
+    r"(?m)^([ \t]*CFBundleURLSchemes:\n[ \t]*-[ \t]*).+$",
+    r"\1sudrf-qa-431", text)
 text = text.replace("com.apple.security.network.client: true",
                     "com.apple.security.network.client: false")
 text = text.replace("CODE_SIGN_STYLE: Automatic", "CODE_SIGN_STYLE: Manual")

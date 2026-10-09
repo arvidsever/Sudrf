@@ -102,7 +102,12 @@ enum TrackedStorePreparation {
 
     private static func migrateJudicialUIDs(context: ModelContext) throws {
         let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
-        for rec in records where (rec.judicialUID ?? "").isEmpty {
+        for rec in records {
+            if TrackedCaseIdentity.isVSRFAnchor(rec.context) {
+                rec.judicialUID = nil
+                continue
+            }
+            guard (rec.judicialUID ?? "").isEmpty else { continue }
             let uid = rec.context?.judicialUID ?? rec.movement?.uid
             guard let uid, !uid.isEmpty else { continue }
             rec.judicialUID = TrackedStore.normalizedUID(uid)
@@ -1129,7 +1134,9 @@ final class TrackedStore {
             record.caseNumber = correctedContext.caseNumber
             record.courtTitle = correctedContext.courtTitle
             record.displayDomain = correctedContext.displayDomain
-            if let uid = correctedContext.judicialUID, !uid.isEmpty {
+            if TrackedCaseIdentity.isVSRFAnchor(correctedContext) {
+                record.judicialUID = nil
+            } else if let uid = correctedContext.judicialUID, !uid.isEmpty {
                 record.judicialUID = Self.normalizedUID(uid)
             }
             record.addLegacyKeyAlias(correctedContext.key)
@@ -1389,7 +1396,9 @@ final class TrackedStore {
             record.caseNumber = movementContext.caseNumber
             record.courtTitle = movementContext.courtTitle
             record.displayDomain = movementContext.displayDomain
-            if let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
+            if TrackedCaseIdentity.isVSRFAnchor(movementContext) {
+                record.judicialUID = nil
+            } else if let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
                 record.judicialUID = Self.normalizedUID(uid)
             }
         } else if var canonical = record.context,
@@ -1436,7 +1445,8 @@ final class TrackedStore {
             displayDomain: movementContext.displayDomain,
             contextData: contextData, snapshotData: snapshotData)
         record.logicalCaseID = logicalCaseID
-        if let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
+        if !TrackedCaseIdentity.isVSRFAnchor(movementContext),
+           let uid = movementContext.judicialUID ?? movement?.uid, !uid.isEmpty {
             record.judicialUID = Self.normalizedUID(uid)
         }
         if let movement {

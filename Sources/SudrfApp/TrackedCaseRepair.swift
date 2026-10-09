@@ -830,6 +830,11 @@ final class TrackedCaseRepairCoordinator {
     }
 
     private func shouldRepair(_ context: MovementContext) -> Bool {
+        if context.searchDomain.caseInsensitiveCompare("vsrf.ru") == .orderedSame,
+           let url = context.cardURLString.flatMap(URL.init(string:)),
+           SourceNativeCardLocator.vsrf(url: url) != nil {
+            return false
+        }
         if Self.mayBecomeMainCase(context) { return true }
         if context.baseInstanceLevel == .appeal || context.baseInstanceLevel == .cassation
             || context.baseInstanceLevel == .material {

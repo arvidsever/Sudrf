@@ -63,6 +63,12 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(MosGorSudInstance.cassation, 4)  // Кассационная
     }
 
+    func testMoscowRegistrationNumbersAcceptOnlyEquivalentZeroPadding() {
+        XCTAssertTrue(MosGorSudRouting.sameRegistrationNumber("2-1/2026", "02-0001/2026"))
+        XCTAssertFalse(MosGorSudRouting.sameRegistrationNumber("2-1/2026", "2-10/2026"))
+        XCTAssertFalse(MosGorSudRouting.sameRegistrationNumber("2-1/2026", "2-1/2025"))
+    }
+
     func testSectionSegments() {
         // Первая × Гражданское → CS → first-civil (МГС) / civil (райсуд).
         XCTAssertEqual(MosGorSudRouting.sectionSegments(processType: .civil, instance: 1),
@@ -232,6 +238,44 @@ final class MosGorSudTests: XCTestCase {
         return MockMosGorSud(
             searchByInstance: [2: [appealRow]],
             cards: ["first1": firstCard, "app1": appealCard])
+    }
+
+    func testMoscowColdAnchorAcceptsPublishedZeroPaddedNumber() async throws {
+        let url = URL(string: "https://mos-gorsud.ru/rs/tverskoj/services/cases/civil/details/first1")!
+        let base = MosGorSudResult(caseNumber: "2-1/2026", uid: nil,
+                                   court: "Тверской районный суд", cardURL: url)
+        let provider = MockMosGorSud(
+            searchByInstance: [:],
+            cards: ["first1": MosGorSudCard(caseNumber: "02-0001/2026",
+                                              court: "Тверской районный суд")])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                      mosgorsud: provider)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.moscowMovement(for: base, cartoteka: cart)
+
+        XCTAssertEqual(movement.instances.first?.caseNumber, "2-1/2026")
+        XCTAssertTrue(movement.sourceRefreshCoverage?.first(where: {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == "tverskoj"
+        })?.isFull == true)
+    }
+
+    func testMoscowColdAnchorNeedsItsOwnPublishedCaseNumber() async throws {
+        let url = URL(string: "https://mos-gorsud.ru/rs/tverskoj/services/cases/civil/details/first1")!
+        let base = MosGorSudResult(caseNumber: "2-1/2026", uid: nil,
+                                   court: "Тверской районный суд", cardURL: url)
+        let provider = MockMosGorSud(
+            searchByInstance: [:],
+            cards: ["first1": MosGorSudCard(caseNumber: nil,
+                                              court: "Тверской районный суд")])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                      mosgorsud: provider)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        do {
+            _ = try await service.moscowMovement(for: base, cartoteka: cart)
+            XCTFail("неподтверждённый номер собственной карточки не должен считаться свежим")
+        } catch { }
     }
 
     func testMoscowMovementIncludesPublishedSupremeCourtActMetadata() async throws {

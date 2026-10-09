@@ -62,6 +62,33 @@ public struct SourceNativeCardLocator: Codable, Equatable, Hashable, Sendable, I
                     sourceNativeID: caseID)
     }
 
+    /// Locator for a magistrate card, whose native route and query differ from
+    /// the federal `sud_delo&name_op=case` pages.
+    public static func msudrf(url: URL, cartoteka: Cartoteka) -> Self? {
+        guard let host = url.host?.lowercased(),
+              SudrfHost.isMSudrfHost(host),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil, url.port == nil,
+              url.path.caseInsensitiveCompare("/modules.php") == .orderedSame,
+              let name = queryValue(["name"], in: url),
+              name.caseInsensitiveCompare("sud_delo") == .orderedSame,
+              let operation = queryValue(["op"], in: url),
+              operation.caseInsensitiveCompare("cs") == .orderedSame,
+              let caseID = queryValue(["case_id", "_id"], in: url),
+              let deloID = queryValue(["delo_id", "_deloId"], in: url),
+              deloID == cartoteka.deloID else { return nil }
+        let newValue: String
+        if hasQueryParameter(["new", "_new"], in: url) {
+            guard let value = queryValue(["new", "_new"], in: url) else { return nil }
+            newValue = value
+        } else {
+            newValue = "0"
+        }
+        guard newValue == cartoteka.new else { return nil }
+        return Self(sourceFamily: "msudrf", courtKey: SudrfHost.moduleHost(host),
+                    cartotekaKey: cartoteka.id, sourceNativeID: caseID)
+    }
+
     /// Locator for a Moscow card URL. The court alias is part of the native
     /// scope, so cards from distinct `/rs/<alias>/` paths stay separate.
     public static func mosgorsud(url: URL, cartoteka: Cartoteka) -> Self? {
@@ -101,6 +128,26 @@ public struct SourceNativeCardLocator: Codable, Equatable, Hashable, Sendable, I
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty, !value.contains("|"), !value.contains("/") else { return nil }
         return value
+    }
+
+    private static func queryValue(_ names: [String], in url: URL) -> String? {
+        let accepted = Set(names.map { $0.lowercased() })
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let matching = items.filter { accepted.contains($0.name.lowercased()) }
+        guard !matching.isEmpty else { return nil }
+        var values: [String] = []
+        for item in matching {
+            guard let value = clean(item.value), value == item.value else { return nil }
+            values.append(value)
+        }
+        guard let value = values.first, values.allSatisfy({ $0 == value }) else { return nil }
+        return value
+    }
+
+    private static func hasQueryParameter(_ names: [String], in url: URL) -> Bool {
+        let accepted = Set(names.map { $0.lowercased() })
+        return (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .contains { accepted.contains($0.name.lowercased()) }
     }
 
     private static func mosgorsudPath(url: URL) -> (parts: [String], alias: String,

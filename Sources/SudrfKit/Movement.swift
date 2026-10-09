@@ -450,6 +450,9 @@ public actor MovementService: MovementProviding {
     /// Клиент портала судов Москвы (mos-gorsud.ru). nil — московская ветка
     /// не обслуживается (движение по делу Москвы не собрать).
     let mosgorsud: (any MosGorSudProviding)?
+    /// Прямой загрузчик MSDK-карточек, которые попали в импортированную
+    /// UID-группу с якорем другого суда.
+    let magistrate: (any CaseProviding)?
     /// The portal directory is consulted only when a UID listing publishes a
     /// card on another court's host. Tests may supply a fixed directory view.
     let transferCourts: @Sendable (String) async throws -> [DistrictCourt]
@@ -460,6 +463,7 @@ public actor MovementService: MovementProviding {
                 baseInstanceLevel: CaseInstance.Level = .first,
                 vsrf: (any VSRFProviding)? = nil,
                 mosgorsud: (any MosGorSudProviding)? = nil,
+                magistrate: (any CaseProviding)? = nil,
                 judicialUID: String? = nil, branch: CourtBranch = .general,
                 transferCourts: (@Sendable (String) async throws -> [DistrictCourt])? = nil) {
         self.client = client
@@ -473,6 +477,7 @@ public actor MovementService: MovementProviding {
         self.judicialUID = normalizedUID.flatMap { $0.isEmpty || $0 == "—" ? nil : $0 }
         self.vsrf = vsrf
         self.mosgorsud = mosgorsud
+        self.magistrate = magistrate
         self.transferCourts = transferCourts ?? { subjectCode in
             try await DistrictCourtResolver().allCourts(forSubjectCode: subjectCode)
         }
@@ -603,6 +608,12 @@ public actor MovementService: MovementProviding {
         func nativeLocator(row: CaseSearchResult, court: Court, cartoteka: Cartoteka,
                            sourceURL: URL? = nil) -> SourceNativeCardLocator? {
             if let url = sourceURL ?? row.cardURL {
+                if SudrfHost.isMSudrfHost(url.host ?? "") {
+                    return SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka)
+                }
+                if MosGorSudRouting.isMosGorSud(domain: url.host ?? "") {
+                    return SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka)
+                }
                 return SourceNativeCardLocator.sudrf(url: url, cartoteka: cartoteka)
             }
             guard let caseID = row.caseID else { return nil }
@@ -611,7 +622,8 @@ public actor MovementService: MovementProviding {
         }
         func knownCardLocator(_ known: KnownCard,
                               fetchedURL: URL? = nil) -> SourceNativeCardLocator? {
-            let level = Self.knownCardCourtLevel(forDomain: known.domain)
+            let level = Self.knownCardCourtLevel(forDomain: known.domain,
+                                                 courtTitle: known.courtTitle)
             let cartoteka = known.cartotekaID.flatMap {
                 CartotekaRegistry.find(level: level, id: $0)
             } ?? CartotekaRegistry.resolve(level: level, deloID: known.deloID,
@@ -620,6 +632,12 @@ public actor MovementService: MovementProviding {
             guard let cartoteka else { return nil }
             let court = Court(domain: known.domain, title: known.courtTitle, level: level)
             if let url = fetchedURL ?? known.sourceURL {
+                if SudrfHost.isMSudrfHost(url.host ?? "") {
+                    return SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka)
+                }
+                if MosGorSudRouting.isMosGorSud(domain: url.host ?? "") {
+                    return SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka)
+                }
                 return SourceNativeCardLocator.sudrf(url: url, cartoteka: cartoteka)
             }
             return SourceNativeCardLocator.sudrf(court: court, cartoteka: cartoteka,
@@ -1768,19 +1786,70 @@ public actor MovementService: MovementProviding {
         async throws -> (inst: CaseInstance, act: CaseAct?, body: String?) {
         // Звено суда для fetchCard не участвует в построении URL — достаточно домена.
         let fetchCourt = Court(domain: kc.domain, title: kc.courtTitle,
-                               level: Self.knownCardCourtLevel(forDomain: kc.domain))
+                               level: Self.knownCardCourtLevel(forDomain: kc.domain,
+                                                               courtTitle: kc.courtTitle))
         let fetched: (card: CaseCard, sourceURL: URL?)
         if let sourceURL = kc.sourceURL {
-            let link = try SudrfCaseCardLink(url: sourceURL)
-            guard link.moduleHost == SudrfHost.moduleHost(kc.domain) else {
-                throw SudrfError.parsing("ссылка KnownCard относится к другому суду")
+            if SudrfHost.isMSudrfHost(sourceURL.host ?? "") {
+                guard let cartoteka = kc.cartotekaID.flatMap({
+                    CartotekaRegistry.find(level: .magistrate, id: $0)
+                }) ?? CartotekaRegistry.resolve(level: .magistrate, deloID: kc.deloID,
+                                                new: kc.new,
+                                                caseNumber: kc.caseNumber ?? ""),
+                      let locator = SourceNativeCardLocator.msudrf(
+                        url: sourceURL, cartoteka: cartoteka),
+                      locator.courtKey == SudrfHost.moduleHost(kc.domain) else {
+                    throw SudrfError.parsing("ссылка KnownCard не подтверждает карточку мирового судьи")
+                }
+                let provider = magistrate ?? client
+                let card = try await provider.fetchCard(url: sourceURL)
+                guard let expected = kc.caseNumber?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !expected.isEmpty, expected != "—",
+                      let actual = card.caseNumber?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !actual.isEmpty, actual != "—",
+                      CartotekaRegistry.normalizedNumber(expected)
+                        == CartotekaRegistry.normalizedNumber(actual) else {
+                    throw SudrfError.parsing("номер KnownCard мирового судьи не совпадает с опубликованной карточкой")
+                }
+                fetched = (card, sourceURL)
+            } else if MosGorSudRouting.isMosGorSud(domain: sourceURL.host ?? "") {
+                let level: CourtLevel = fetchCourt.level == .subject ? .subject : .district
+                guard let cartoteka = kc.cartotekaID.flatMap({
+                    CartotekaRegistry.find(level: level, id: $0)
+                }) ?? CartotekaRegistry.resolve(level: level, deloID: kc.deloID,
+                                                new: kc.new,
+                                                caseNumber: kc.caseNumber ?? ""),
+                      SourceNativeCardLocator.mosgorsud(
+                        url: sourceURL, cartoteka: cartoteka) != nil,
+                      let mosgorsud else {
+                    throw SudrfError.parsing("ссылка KnownCard не подтверждает карточку Мосгорсуда")
+                }
+                let source = try await mosgorsud.fetchCard(url: sourceURL)
+                guard let expected = kc.caseNumber?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !expected.isEmpty, expected != "—",
+                      let actual = source.caseNumber?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !actual.isEmpty, actual != "—",
+                      MosGorSudRouting.sameRegistrationNumber(expected, actual) else {
+                    throw SudrfError.parsing("номер KnownCard Мосгорсуда не совпадает с опубликованной карточкой")
+                }
+                let card = CaseCard(
+                    rawText: source.rawText, actText: nil, sessions: source.sessions,
+                    judge: source.judge, result: source.result, uid: source.uid,
+                    caseNumber: source.caseNumber, category: source.category,
+                    receiptDate: source.receiptDate, legalForceDate: source.legalForceDate)
+                fetched = (card, sourceURL)
+            } else {
+                let link = try SudrfCaseCardLink(url: sourceURL)
+                guard link.moduleHost == SudrfHost.moduleHost(kc.domain) else {
+                    throw SudrfError.parsing("ссылка KnownCard относится к другому суду")
+                }
+                let response = try await client.fetchCardWithResponseURL(url: link.sanitizedURL)
+                let effective = try SudrfCaseCardLink(url: response.effectiveURL)
+                guard effective.moduleHost == SudrfHost.moduleHost(kc.domain) else {
+                    throw SudrfError.parsing("карточка KnownCard перенаправлена в другой суд")
+                }
+                fetched = (response.card, effective.sanitizedURL)
             }
-            let response = try await client.fetchCardWithResponseURL(url: link.sanitizedURL)
-            let effective = try SudrfCaseCardLink(url: response.effectiveURL)
-            guard effective.moduleHost == SudrfHost.moduleHost(kc.domain) else {
-                throw SudrfError.parsing("карточка KnownCard перенаправлена в другой суд")
-            }
-            fetched = (response.card, effective.sanitizedURL)
         } else {
             fetched = (try await client.fetchCard(court: fetchCourt, caseID: kc.caseID,
                                                   caseUID: kc.caseUID, deloID: kc.deloID,
@@ -2173,6 +2242,26 @@ extension MovementService {
 
     static func sourceURL(for knownCard: KnownCard) -> URL? {
         if let url = knownCard.sourceURL {
+            let level = knownCardCourtLevel(forDomain: knownCard.domain,
+                                            courtTitle: knownCard.courtTitle)
+            let cartoteka = knownCard.cartotekaID.flatMap {
+                CartotekaRegistry.find(level: level, id: $0)
+            } ?? CartotekaRegistry.resolve(level: level, deloID: knownCard.deloID,
+                                           new: knownCard.new,
+                                           caseNumber: knownCard.caseNumber ?? "")
+            if SudrfHost.isMSudrfHost(url.host ?? "") {
+                guard let cartoteka,
+                      SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka)?.courtKey
+                        == SudrfHost.moduleHost(knownCard.domain) else { return nil }
+                return url
+            }
+            if MosGorSudRouting.isMosGorSud(domain: url.host ?? "") {
+                guard let cartoteka,
+                      SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka) != nil else {
+                    return nil
+                }
+                return url
+            }
             guard let link = try? SudrfCaseCardLink(url: url),
                   link.moduleHost == SudrfHost.moduleHost(knownCard.domain) else { return nil }
             return link.sanitizedURL
@@ -2216,6 +2305,14 @@ extension MovementService {
     /// Обычная выдача без колонки «Суд» сохраняет прежний fallback по своим
     /// идентификаторам; подтверждённая межсудебная выдача его не допускает.
     func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka) async throws -> CaseCard {
+        if let url = row.cardURL, SudrfHost.isMSudrfHost(url.host ?? "") {
+            guard let locator = SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka),
+                  locator.courtKey == SudrfHost.moduleHost(court.domain),
+                  row.caseID == nil || row.caseID == locator.sourceNativeID else {
+                throw SudrfError.parsing("ссылка базовой карточки мирового судьи не соответствует делу")
+            }
+            return try await (magistrate ?? client).fetchCard(url: url)
+        }
         if let url = row.cardURL, let link = try? SudrfCaseCardLink(url: url) {
             if link.moduleHost == SudrfHost.moduleHost(court.domain) {
                 return try await client.fetchCard(url: link.sanitizedURL)
@@ -2235,7 +2332,13 @@ extension MovementService {
     }
 
     /// Сохранённая ссылка может вести в районный суд, а не только в вышестоящий.
-    private static func knownCardCourtLevel(forDomain domain: String) -> CourtLevel {
+    private static func knownCardCourtLevel(forDomain domain: String,
+                                            courtTitle: String = "") -> CourtLevel {
+        if SudrfHost.isMSudrfHost(domain) { return .magistrate }
+        if MosGorSudRouting.isMosGorSud(domain: domain) {
+            return courtTitle.localizedCaseInsensitiveContains("Московский городской суд")
+                ? .subject : .district
+        }
         if let court = CourtDirectory.court(forDomain: domain) { return court.level }
         let host = SudrfHost.moduleHost(domain)
         let militaryCourts = CourtDirectory.okrugMilitaryCourts
@@ -2676,7 +2779,60 @@ extension MovementService {
         return first == second
     }
 
-    /// Отображает производство ВС РФ в инстанцию второй кассации.
+    /// Refreshes an explicitly imported Supreme Court production from its
+    /// exact published card. A case/complaint pair is added only when that
+    /// same official card lists one of each with their own validated locators.
+    /// This is a card snapshot, not a court-wide listing, so cached VS
+    /// productions outside the card remain protected during cache merge.
+    public static func vsrfAnchorMovement(card: VSRFCard,
+                                          productionID: String,
+                                          section: VSRFCardSection,
+                                          expectedNumber: String) throws -> CaseMovement {
+        func locator(_ production: VSRFProduction) -> SourceNativeCardLocator? {
+            guard let url = production.cardURL,
+                  let locator = SourceNativeCardLocator.vsrf(url: url),
+                  locator.cartotekaKey == production.resolvedSection.rawValue,
+                  locator.sourceNativeID == production.cardID else { return nil }
+            return locator
+        }
+        let matching = card.productions.filter {
+            $0.cardID == productionID && $0.resolvedSection == section
+                && locator($0) != nil
+                && CartotekaRegistry.normalizedNumber($0.number ?? "")
+                    == CartotekaRegistry.normalizedNumber(expectedNumber)
+        }
+        guard matching.count == 1, let target = matching.first else {
+            throw SudrfError.parsing("карточка ВС РФ не подтверждает точное производство и номер дела")
+        }
+
+        var selected = [target]
+        let cases = card.productions.filter { $0.kind == .caseFile && locator($0) != nil }
+        let complaints = card.productions.filter { $0.kind == .complaint && locator($0) != nil }
+        if cases.count == 1, complaints.count == 1,
+           let caseLocator = locator(cases[0]),
+           let complaintLocator = locator(complaints[0]),
+           caseLocator.id != complaintLocator.id,
+           [caseLocator.id, complaintLocator.id].contains(where: {
+               $0 == locator(target)?.id
+           }) {
+            selected = [cases[0], complaints[0]]
+        }
+
+        let loaded = selected.compactMap(locator).map(\.identity)
+        let acts = selected.flatMap(Self.mapPublishedActs)
+        return CaseMovement(
+            uid: cases.first?.uid ?? target.uid ?? "",
+            caseNumber: target.number ?? expectedNumber,
+            inForce: false,
+            instances: selected.map { Self.mapProduction($0) },
+            complaints: [:], acts: acts, actBodies: [:],
+            incompleteHigherCourtDomains: ["vsrf.ru"],
+            sourceRefreshCoverage: [MovementCourtCoverage(
+                sourceFamily: "vsrf", courtKey: "vsrf.ru",
+                kind: .usableSnapshot, loadedCardIdentities: loaded)])
+    }
+
+    /// Отображает производство ВС РФ на уровне, указанном самой карточкой.
     static func mapProduction(_ p: VSRFProduction, extraEvents: [VSRFEvent] = []) -> CaseInstance {
         // Движение: события производства + (для дела) события истребовавшей жалобы,
         // в хронологическом порядке.
@@ -2706,7 +2862,7 @@ extension MovementService {
         let publishedURLs = p.publishedActs.map(\.url)
 
         return CaseInstance(
-            level: .vsCassation,
+            level: p.resolvedInstanceLevel,
             court: "Верховный Суд РФ",
             caseNumber: p.number ?? "—",
             judge: p.rapporteur,
@@ -2729,12 +2885,26 @@ extension MovementService {
             let sourceTitle = published.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let title: String
             switch sourceTitle.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: " .:;")) {
-            case "определение": title = "Кассационное определение"
-            case "постановление": title = "Кассационное постановление"
+            case "определение":
+                switch production.resolvedInstanceLevel {
+                case .first: title = "Определение"
+                case .appeal: title = "Апелляционное определение"
+                case .supervisory: title = "Надзорное определение"
+                case .cassation, .vsCassation: title = "Кассационное определение"
+                case .material: title = sourceTitle
+                }
+            case "постановление":
+                switch production.resolvedInstanceLevel {
+                case .first: title = "Постановление"
+                case .appeal: title = "Апелляционное постановление"
+                case .supervisory: title = "Постановление суда надзорной инстанции"
+                case .cassation, .vsCassation: title = "Кассационное постановление"
+                case .material: title = sourceTitle
+                }
             default: title = sourceTitle
             }
             return CaseAct(id: stableID, title: title, date: published.date,
-                           courtShort: "ВС РФ", instanceLevel: .vsCassation,
+                           courtShort: "ВС РФ", instanceLevel: production.resolvedInstanceLevel,
                            sourceFileURL: published.url, productionNumber: number)
         }
     }

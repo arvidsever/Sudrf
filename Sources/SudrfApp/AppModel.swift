@@ -186,6 +186,8 @@ final class AppRouter: ObservableObject {
     /// origin-scoped URLSession.
     let client = SudrfClient()
     private let cardRecovery: CaseCardRecovery
+    private let importVSRFProvider: any VSRFProviding
+    private let importMosGorSudProvider: any MosGorSudProviding
     let refreshCenter: RefreshCenter
     private let repairCoordinator: TrackedCaseRepairCoordinator
     @Published var repairSummary: CaseRepairSummary? = nil
@@ -406,6 +408,8 @@ final class AppRouter: ObservableObject {
          modelContainerIsPrepared: Bool = false,
          captchaCorpus: CorpusStore = .shared,
          refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil,
+         importVSRFProvider: (any VSRFProviding)? = nil,
+         importMosGorSudProvider: (any MosGorSudProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
@@ -439,6 +443,10 @@ final class AppRouter: ObservableObject {
         let captchaSettings = suppliedCaptchaSettings ?? .shared
         let fsspClient = FSSPClient()
         self.fsspClient = fsspClient
+        let vsrfProvider = importVSRFProvider ?? VSRFClient()
+        let mosGorSudProvider = importMosGorSudProvider ?? MosGorSudClient()
+        self.importVSRFProvider = vsrfProvider
+        self.importMosGorSudProvider = mosGorSudProvider
         let configuredSolver = CaptchaSolverFactory.make(settings: captchaSettings)
         self.cardRecovery = CaseCardRecovery(provider: client)
         let originResolver = CaseOriginResolver(client: client)
@@ -453,6 +461,7 @@ final class AppRouter: ObservableObject {
                              captchaSolver: configuredSolver,
                              captchaSettings: captchaSettings,
                              fsspClient: fsspClient,
+                             vsrfProvider: vsrfProvider,
                              walkDiagnostics: .live)
         refreshCenter.repairBeforeRefresh = { [weak self] key, manually in
             guard let self else { return key }
@@ -1183,28 +1192,91 @@ final class AppRouter: ObservableObject {
         for (i, seed) in seeds.enumerated() {
             let originalContext = CaseImporter.makeContext(
                 CaseImporter.Fetched(seed: seed, card: nil), known: [])
-            let card: CaseCard?
+            var card: CaseCard?
+            var vsrfCard: VSRFCard?
             var resolvedContext: MovementContext?
             var sourceAttempt: SourceAttempt?
             var wasRecovered = false
             do {
-                let resolved = try await cardRecovery.resolve(context: originalContext)
-                card = resolved.card
-                resolvedContext = resolved.context
-                wasRecovered = resolved.wasRecovered
+                switch seed.provider {
+                case .sudrf:
+                    let resolved = try await cardRecovery.resolve(context: originalContext)
+                    card = resolved.card
+                    resolvedContext = resolved.context
+                    wasRecovered = resolved.wasRecovered
+                    if resolved.wasRecovered {
+                        recoveredLinks += 1
+                        report.append(ImportIssue(
+                            category: .cardLinkRecovered,
+                            reason: "Ссылка на карточку восстановлена: \(Self.recoveryReasonText(resolved.reason)).",
+                            sourceRow: seed.row, severity: .warning))
+                    }
+                case .msudrf:
+                    guard let url = URL(string: seed.row.urlString),
+                          let cartoteka = seed.cartoteka,
+                          let locator = SourceNativeCardLocator.msudrf(
+                            url: url, cartoteka: cartoteka),
+                          locator.sourceNativeID == seed.caseID,
+                          locator.courtKey == SudrfHost.moduleHost(seed.searchDomain) else {
+                        throw SudrfError.parsing("прямая ссылка мирового судьи не соответствует исходной строке")
+                    }
+                    let loaded = try await MagistrateClient(sudrfClient: client).fetchCard(url: url)
+                    guard Self.importNumberMatches(seed.row.number, loaded.caseNumber) else {
+                        throw SudrfError.parsing("номер карточки мирового судьи не совпадает с CSV")
+                    }
+                    card = loaded
+                case .mosgorsud:
+                    guard let url = URL(string: seed.row.urlString),
+                          let cartoteka = seed.cartoteka,
+                          let locator = SourceNativeCardLocator.mosgorsud(
+                            url: url, cartoteka: cartoteka),
+                          locator.sourceNativeID == seed.caseID else {
+                        throw SudrfError.parsing("прямая ссылка Мосгорсуда не соответствует исходной строке")
+                    }
+                    let loaded = try await importMosGorSudProvider.fetchCard(url: url)
+                    guard Self.importNumberMatches(seed.row.number, loaded.caseNumber,
+                                                   mosgorsud: true) else {
+                        throw SudrfError.parsing("номер карточки Мосгорсуда не совпадает с CSV")
+                    }
+                    card = CaseCard(
+                        rawText: loaded.rawText, actText: nil, sessions: loaded.sessions,
+                        judge: loaded.judge, result: loaded.result, uid: loaded.uid,
+                        caseNumber: loaded.caseNumber, category: loaded.category,
+                        receiptDate: loaded.receiptDate, legalForceDate: loaded.legalForceDate)
+                case .vsrf(let section):
+                    guard let url = URL(string: seed.row.urlString),
+                          let locator = SourceNativeCardLocator.vsrf(url: url),
+                          locator.cartotekaKey == section.rawValue,
+                          locator.sourceNativeID == seed.caseID else {
+                        throw SudrfError.parsing("прямая ссылка ВС РФ не соответствует исходной строке")
+                    }
+                    let loaded = try await importVSRFProvider.fetchCard(
+                        productionID: locator.sourceNativeID, section: section)
+                    let matches = loaded.productions.filter { production in
+                        guard production.cardID == locator.sourceNativeID,
+                              production.resolvedSection == section,
+                              let sourceURL = production.cardURL,
+                              let resolved = SourceNativeCardLocator.vsrf(url: sourceURL)
+                        else { return false }
+                        return resolved.identity == locator.identity
+                    }
+                    guard matches.count == 1, let production = matches.first,
+                          Self.importNumberMatches(seed.row.number, production.number) else {
+                        throw SudrfError.parsing("карточка ВС РФ не подтверждает точное производство и номер из CSV")
+                    }
+                    vsrfCard = loaded
+                    card = CaseCard(
+                        rawText: loaded.rawText, actText: nil,
+                        judge: production.rapporteur, uid: production.uid,
+                        caseNumber: production.number,
+                        receiptDate: production.incomingDate)
+                }
                 sourceAttempt = SourceAttempt(
                     kind: .usableSnapshot,
                     provenance: SourceProvenance(operation: .discovery,
-                                                 sourceFamily: "sudrf",
+                                                 sourceFamily: seed.provider.sourceFamily,
                                                  host: seed.searchDomain))
-                if resolved.wasRecovered {
-                    recoveredLinks += 1
-                    report.append(ImportIssue(
-                        category: .cardLinkRecovered,
-                        reason: "Ссылка на карточку восстановлена: \(Self.recoveryReasonText(resolved.reason)).",
-                        sourceRow: seed.row, severity: .warning))
-                }
-                if card?.uid?.isEmpty != false {
+                if !seed.provider.isVSRF, card?.uid?.isEmpty != false {
                     withoutUID += 1
                     report.append(CaseImporter.missingUIDIssue(
                         for: seed.row,
@@ -1230,7 +1302,8 @@ final class AppRouter: ObservableObject {
             } catch let error as SudrfError {
                 card = nil
                 sourceAttempt = SourceOutcomeClassifier.attempt(
-                    for: error, operation: .discovery, sourceFamily: "sudrf",
+                    for: error, operation: .discovery,
+                    sourceFamily: seed.provider.sourceFamily,
                     host: seed.searchDomain)
                 var issue = CaseImporter.issue(for: seed.row, error: error)
                 issue.severity = .warning
@@ -1240,7 +1313,8 @@ final class AppRouter: ObservableObject {
             } catch {
                 card = nil
                 sourceAttempt = SourceOutcomeClassifier.attempt(
-                    for: error, operation: .discovery, sourceFamily: "sudrf",
+                    for: error, operation: .discovery,
+                    sourceFamily: seed.provider.sourceFamily,
                     host: seed.searchDomain)
                 parsing += 1
                 var issue = CaseImporter.issue(for: seed.row, error: error)
@@ -1251,7 +1325,8 @@ final class AppRouter: ObservableObject {
             fetched.append(CaseImporter.Fetched(
                 seed: seed, card: card, resolvedContext: resolvedContext,
                 originalContext: wasRecovered ? originalContext : nil,
-                sourceAttempt: sourceAttempt, wasRecovered: wasRecovered))
+                sourceAttempt: sourceAttempt, wasRecovered: wasRecovered,
+                vsrfCard: vsrfCard))
             importState = .running(done: i + 1, total: seeds.count, canCancel: true)
         }
 
@@ -1349,9 +1424,16 @@ final class AppRouter: ObservableObject {
             } else {
                 initialContext = incomingContext
             }
+            let importIdentityObservation = record.provenVSRFRelation.flatMap { proof in
+                TrackedCaseIdentity.observation(
+                    context: initialContext, attempt: record.sourceAttempt,
+                    provenVSRFRelation: proof)
+            }
             let saved = try store.reconcileAndUpsert(
                 context: initialContext, snapshot: nil, movement: nil,
-                collections: [collection], saveChanges: false)
+                collections: [collection],
+                identityObservation: importIdentityObservation,
+                saveChanges: false)
             let persisted: TrackedCaseRecord
             if record.originalContext != nil,
                let attempt = record.sourceAttempt {
@@ -1390,6 +1472,18 @@ final class AppRouter: ObservableObject {
         case .caseNumber:
             return "карточка найдена по номеру дела"
         }
+    }
+
+    private nonisolated static func importNumberMatches(_ expected: String,
+                                                        _ published: String?,
+                                                        mosgorsud: Bool = false) -> Bool {
+        let expected = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expected.isEmpty else { return true }
+        guard let published = published?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !published.isEmpty else { return false }
+        if mosgorsud { return CaseOriginResolver.sameMoscowNumber(expected, published) }
+        return CartotekaRegistry.normalizedNumber(expected)
+            == CartotekaRegistry.normalizedNumber(published)
     }
 
     private func mergeImportRepair(_ repaired: CaseRepairSummary,

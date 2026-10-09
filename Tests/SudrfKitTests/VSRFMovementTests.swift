@@ -95,6 +95,48 @@ final class VSRFMovementTests: XCTestCase {
         XCTAssertFalse(mv.instances.contains { $0.level == .vsCassation })
     }
 
+    func testSupremeCourtCardsKeepPublishedFirstAndAppealInstances() throws {
+        let firstActURL = URL(string: "https://www.vsrf.ru/files/first.pdf")!
+        let appealActURL = URL(string: "https://www.vsrf.ru/files/appeal.pdf")!
+        let first = VSRFProduction(
+            cardID: "12-first", cardSection: .cases, kind: .caseFile,
+            number: "АКПИ25-1", instanceType: "Первая инстанция",
+            publishedActs: [VSRFPublishedAct(url: firstActURL, date: "01.02.2025",
+                                             title: "Определение")])
+        let appeal = VSRFProduction(
+            cardID: "12-appeal", cardSection: .cases, kind: .caseFile,
+            number: "АПЛ25-1", instanceType: "Апелляционная инстанция",
+            publishedActs: [VSRFPublishedAct(url: appealActURL, date: "01.03.2025",
+                                              title: "Определение")])
+        let romanLabelFirst = VSRFProduction(
+            cardID: "12-roman-first", cardSection: .claims, kind: .caseFile,
+            number: "3-КГ25-12-К5", instanceType: "I инстанция")
+
+        let firstMovement = try MovementService.vsrfAnchorMovement(
+            card: VSRFCard(productions: [first]), productionID: "12-first",
+            section: .cases, expectedNumber: first.number!)
+        let appealMovement = try MovementService.vsrfAnchorMovement(
+            card: VSRFCard(productions: [appeal]), productionID: "12-appeal",
+            section: .cases, expectedNumber: appeal.number!)
+        let romanLabelMovement = try MovementService.vsrfAnchorMovement(
+            card: VSRFCard(productions: [romanLabelFirst]), productionID: "12-roman-first",
+            section: .claims, expectedNumber: romanLabelFirst.number!)
+        let firstInstance = try XCTUnwrap(firstMovement.instances.first)
+        let appealInstance = try XCTUnwrap(appealMovement.instances.first)
+        let romanLabelInstance = try XCTUnwrap(romanLabelMovement.instances.first)
+        let firstMappedAct = try XCTUnwrap(firstMovement.acts.first)
+        let appealMappedAct = try XCTUnwrap(appealMovement.acts.first)
+
+        XCTAssertEqual(firstInstance.level, .first)
+        XCTAssertEqual(firstMappedAct.instanceLevel, .first)
+        XCTAssertEqual(firstMappedAct.title, "Определение")
+        XCTAssertEqual(appealInstance.level, .appeal)
+        XCTAssertEqual(appealMappedAct.instanceLevel, .appeal)
+        XCTAssertEqual(appealMappedAct.title, "Апелляционное определение")
+        XCTAssertEqual(romanLabelInstance.level, .first,
+                       "метка I инстанция сильнее кассационного номера производства")
+    }
+
     func testFailedUIDSearchKeepsSuccessfulCaseNumberResultAsPartial() async throws {
         let first = VSRFFirstInstance(court: "Сыктывкарский городской суд",
                                       caseNumber: "2-1649/2022")
@@ -199,6 +241,39 @@ final class VSRFMovementTests: XCTestCase {
                 $0.name == "oldCaseNumber1" && $0.value == "3а-85/2025"
             } == true
         })
+    }
+
+    func testDirectVSRFAnchorUsesExactCardAndOnlyUnambiguousCoLocatedPair() throws {
+        let card = try VSRFCardParser.parse(html: fixture("vsrf_card_vorobyev"))
+        let caseProduction = try XCTUnwrap(card.productions.first { $0.kind == .caseFile })
+        let caseID = try XCTUnwrap(caseProduction.cardID)
+        let number = try XCTUnwrap(caseProduction.number)
+        let movement = try MovementService.vsrfAnchorMovement(
+            card: card, productionID: caseID,
+            section: caseProduction.resolvedSection, expectedNumber: number)
+
+        XCTAssertEqual(movement.instances.count, 2,
+                       "точная карточка публикует ровно одно дело и одну жалобу")
+        XCTAssertEqual(Set(movement.instances.compactMap(\.sourceURL).compactMap {
+            SourceNativeCardLocator.vsrf(url: $0)?.sourceNativeID
+        }), Set(card.productions.compactMap(\.cardID)))
+        XCTAssertEqual(movement.incompleteHigherCourtDomains, ["vsrf.ru"],
+                       "прямая карточка не является полным списком ВС РФ")
+        XCTAssertEqual(movement.sourceRefreshCoverage?.first?.loadedCardIdentities.count, 2)
+
+        XCTAssertThrowsError(try MovementService.vsrfAnchorMovement(
+            card: card, productionID: caseID,
+            section: caseProduction.resolvedSection, expectedNumber: "не тот номер"))
+
+        let ambiguous = VSRFCard(productions: card.productions + [
+            VSRFProduction(cardID: "21-ambiguous", cardSection: .appeals,
+                           kind: .complaint, number: "3-КФ26-999-К3")
+        ])
+        let safe = try MovementService.vsrfAnchorMovement(
+            card: ambiguous, productionID: caseID,
+            section: caseProduction.resolvedSection, expectedNumber: number)
+        XCTAssertEqual(safe.instances.map(\.sourceURL), [caseProduction.cardURL],
+                       "неоднозначные жалобы не приписываются делу")
     }
 
     func testPublishedComplaintPDFRemainsLinkedWhenComplaintTimelineIsAttachedToCase() async throws {

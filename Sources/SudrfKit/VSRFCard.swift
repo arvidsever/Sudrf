@@ -157,6 +157,33 @@ public struct VSRFProduction: Sendable, Equatable, Identifiable {
         cardSection ?? (kind == .complaint ? .appeals : .cases)
     }
 
+    /// Instance stated by the Supreme Court card. The source's own instance
+    /// label takes precedence; the production number is only a fallback for
+    /// cards whose legacy markup omits that label.
+    public var resolvedInstanceLevel: CaseInstance.Level {
+        func explicitLevel(_ value: String?) -> CaseInstance.Level? {
+            guard let value else { return nil }
+            let metadata = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased().replacingOccurrences(of: "ё", with: "е")
+            guard !metadata.isEmpty else { return nil }
+            if metadata.contains("надзор") { return .supervisory }
+            if metadata.contains("апелляц") || metadata.contains("апелля") { return .appeal }
+            if metadata.contains("кассац") { return .vsCassation }
+            if metadata.contains("первая инстанц") || metadata.contains("i инстанц")
+                || metadata.contains("1 инстанц") { return .first }
+            return nil
+        }
+
+        if let level = explicitLevel(instanceType) { return level }
+        if let level = explicitLevel(procedureType) { return level }
+
+        let registration = (number ?? "").uppercased()
+            .replacingOccurrences(of: "Ё", with: "Е")
+        if registration.contains("АКПИ") { return .first }
+        if registration.contains("АПЛ") { return .appeal }
+        return .vsCassation
+    }
+
     /// Ссылка на карточку (есть только когда есть `cardID`).
     public var cardURL: URL? {
         cardID.flatMap { VSRFEndpoint.cardURL(productionID: $0, section: resolvedSection) }

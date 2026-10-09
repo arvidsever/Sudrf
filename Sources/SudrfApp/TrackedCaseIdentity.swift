@@ -6,16 +6,23 @@ import SudrfKit
 /// identity; `key` нужен здесь только как synthetic locator для старых строк,
 /// где портал уже не оставил source-native ID.
 enum TrackedCaseIdentity {
+    static func isVSRFAnchor(_ context: MovementContext?) -> Bool {
+        guard let context else { return false }
+        return vsrfCardIdentity(context) != nil
+    }
+
     static func observation(
         context: MovementContext,
         movement: CaseMovement? = nil,
         attempt: SourceAttempt? = nil,
         outcome: SourceOutcomeKind = .usableSnapshot,
-        observedAt: Date = .now
+        observedAt: Date = .now,
+        provenVSRFRelation: CaseImporter.PlannedRecord.ProvenVSRFRelation? = nil
     ) -> SourceCardObservation? {
         let known = context.sourceKnownCard
         let moscowCard = moscowCardIdentity(context)
-        let sourceNativeID = moscowCard?.sourceNativeID
+        let vsrfCard = vsrfCardIdentity(context)
+        let sourceNativeID = vsrfCard?.sourceNativeID ?? moscowCard?.sourceNativeID
             ?? nonEmpty(context.caseID) ?? nonEmpty(known?.caseID)
         guard let sourceNativeID else { return nil }
 
@@ -24,7 +31,7 @@ enum TrackedCaseIdentity {
         let provenance = attempt?.provenance ?? SourceProvenance(
             operation: .discovery, sourceFamily: sourceFamily, host: host,
             observedAt: observedAt)
-        let card = moscowCard ?? SourceNativeCardIdentity(
+        let card = vsrfCard ?? moscowCard ?? SourceNativeCardIdentity(
             sourceFamily: sourceFamily,
             courtKey: nonEmpty(context.courtCode)
                 ?? SudrfHost.moduleHost(known?.domain ?? context.searchDomain),
@@ -33,7 +40,11 @@ enum TrackedCaseIdentity {
         let officialRelations = (predecessorRelation(
             context: context, movement: movement, sourceCard: card,
             sourceFamily: sourceFamily, outcome: outcome, provenance: provenance
-        ).map { [$0] } ?? [])
+            ).map { [$0] } ?? [])
+            + (verifiedVSRFRelation(
+                context: context, sourceCard: card, sourceFamily: sourceFamily,
+                attempt: attempt, outcome: outcome, provenance: provenance,
+                proof: provenVSRFRelation).map { [$0] } ?? [])
             + reviewRelations(
                 context: context, movement: movement, sourceCard: card,
                 sourceFamily: sourceFamily,
@@ -43,14 +54,51 @@ enum TrackedCaseIdentity {
                     : [])
         return SourceCardObservation(
             cardIdentity: card,
-            caseUID: nonEmpty(context.caseUID) ?? nonEmpty(known?.caseUID),
+            caseUID: vsrfCard == nil
+                ? (nonEmpty(context.caseUID) ?? nonEmpty(known?.caseUID)) : nil,
             caseNumber: nonEmpty(context.caseNumber),
             judicialUID: JudicialUIDObservation(
-                rawValue: nonEmpty(movement?.uid) ?? nonEmpty(context.judicialUID),
+                rawValue: vsrfCard == nil
+                    ? (nonEmpty(movement?.uid) ?? nonEmpty(context.judicialUID)) : nil,
                 provenance: provenance),
             officialRelations: officialRelations,
             outcome: outcome,
             provenance: provenance)
+    }
+
+    /// Only the importer can pass this transient proof, which is created from
+    /// one fetched VSRF card containing one exact case production and one exact
+    /// complaint production. `knownCards` URLs never establish this relation
+    /// on their own, and the Supreme Court UID is deliberately not consulted.
+    private static func verifiedVSRFRelation(
+        context: MovementContext,
+        sourceCard: SourceNativeCardIdentity,
+        sourceFamily: String,
+        attempt: SourceAttempt?,
+        outcome: SourceOutcomeKind,
+        provenance: SourceProvenance,
+        proof: CaseImporter.PlannedRecord.ProvenVSRFRelation?
+    ) -> OfficialCardRelation? {
+        guard sourceFamily == "vsrf", sourceCard.sourceFamily == "vsrf",
+              sourceCard.courtKey == "vsrf.ru",
+              attempt?.kind == .usableSnapshot,
+              outcome == .usableSnapshot,
+              let proof,
+              proof.sourceCard == sourceCard,
+              proof.relatedCard != sourceCard,
+              proof.relatedCard.sourceFamily == "vsrf",
+              proof.relatedCard.courtKey == "vsrf.ru",
+              [VSRFCardSection.cases.rawValue, VSRFCardSection.claims.rawValue,
+               VSRFCardSection.appeals.rawValue].contains(sourceCard.cartotekaKey),
+              [VSRFCardSection.cases.rawValue, VSRFCardSection.claims.rawValue,
+               VSRFCardSection.appeals.rawValue].contains(proof.relatedCard.cartotekaKey),
+              let contextURL = context.cardURLString.flatMap(URL.init(string:)),
+              SourceNativeCardLocator.vsrf(url: contextURL)?.identity == sourceCard else {
+            return nil
+        }
+        return OfficialCardRelation(
+            kind: .sourceNative, relatedCard: proof.relatedCard,
+            outcome: .usableSnapshot, provenance: provenance)
     }
 
     /// A partial chain may still contain review cards that were fetched in
@@ -128,6 +176,12 @@ enum TrackedCaseIdentity {
             operation: .discovery, sourceFamily: family(for: record.context),
             host: record.context?.searchDomain ?? record.displayDomain,
             observedAt: record.movementFetchedAt ?? record.addedAt)
+        if let context = record.context, isVSRFAnchor(context),
+           let observation = observation(
+               context: context, movement: record.movement, outcome: .usableSnapshot,
+               observedAt: bootstrapProvenance.observedAt) {
+            return observation
+        }
         if let context = record.context, let movement = record.movement,
            let observation = observation(
                context: context, movement: movement, outcome: .usableSnapshot,
@@ -177,9 +231,10 @@ enum TrackedCaseIdentity {
             caseUID: context?.caseUID,
             caseNumber: record.caseNumber,
             judicialUID: JudicialUIDObservation(
-                rawValue: nonEmpty(context?.judicialUID)
-                    ?? nonEmpty(record.movement?.uid)
-                    ?? nonEmpty(record.judicialUID),
+                rawValue: isVSRFAnchor(context) ? nil
+                    : nonEmpty(context?.judicialUID)
+                        ?? nonEmpty(record.movement?.uid)
+                        ?? nonEmpty(record.judicialUID),
                 provenance: provenance),
             outcome: .usableSnapshot,
             provenance: provenance)
@@ -311,6 +366,12 @@ enum TrackedCaseIdentity {
               url.user == nil, url.password == nil,
               let host = url.host else { return nil }
 
+        if sourceFamily == "vsrf" {
+            guard ["vsrf.ru", "www.vsrf.ru"].contains(host.lowercased()),
+                  let locator = SourceNativeCardLocator.vsrf(url: url) else { return nil }
+            return locator.identity
+        }
+
         let known = context.sourceKnownCard
         let expectedHost = SudrfHost.moduleHost(known?.domain ?? context.searchDomain)
         guard SudrfHost.moduleHost(host) == expectedHost else { return nil }
@@ -366,8 +427,17 @@ enum TrackedCaseIdentity {
 
     private static func family(for context: MovementContext?) -> String {
         guard let context else { return "legacy" }
+        if context.cardURLString.flatMap(URL.init(string:))
+            .flatMap({ SourceNativeCardLocator.vsrf(url: $0) }) != nil { return "vsrf" }
         if MosGorSudRouting.isMosGorSud(domain: context.searchDomain) { return "mosgorsud" }
         return context.courtLevel == .magistrate ? "msudrf" : "sudrf"
+    }
+
+    private static func vsrfCardIdentity(_ context: MovementContext) -> SourceNativeCardIdentity? {
+        guard context.searchDomain.caseInsensitiveCompare("vsrf.ru") == .orderedSame,
+              let url = context.cardURLString.flatMap(URL.init(string:)),
+              let locator = SourceNativeCardLocator.vsrf(url: url) else { return nil }
+        return locator.identity
     }
 
     private static func moscowCardIdentity(_ context: MovementContext) -> SourceNativeCardIdentity? {

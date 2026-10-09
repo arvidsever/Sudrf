@@ -83,13 +83,21 @@ extension MovementService {
         // 1. Карточка базовой инстанции (сессии, УИД, судья, вложения актов).
         let baseCard: MosGorSudCard?
         if let url = base.cardURL {
-            baseCard = try await mosgorsud.fetchCard(url: url)
-            if let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka) {
-                coverage.recordLoaded(locator)
-            } else {
-                markMoscowCoveragePartial(for: url, cartoteka: cartoteka)
-                markIncomplete(MosGorSudEndpoint.host)
+            guard let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka) else {
+                throw SudrfError.parsing("ссылка базовой карточки Мосгорсуда не соответствует картотеке")
             }
+            if let title = base.court {
+                let expectedCourtKey = Self.mosGorSudCourtKey(for: title)
+                guard expectedCourtKey == locator.courtKey else {
+                    throw SudrfError.parsing("ссылка базовой карточки Мосгорсуда относится к другому суду")
+                }
+            }
+            baseCard = try await mosgorsud.fetchCard(url: url)
+            guard let publishedNumber = baseCard?.caseNumber,
+                  MosGorSudRouting.sameRegistrationNumber(base.caseNumber, publishedNumber) else {
+                throw SudrfError.parsing("номер карточки Мосгорсуда не совпадает с базовой записью")
+            }
+            coverage.recordLoaded(locator)
         } else {
             baseCard = nil
             markSharedMoscowCoverage(.partial)
@@ -233,7 +241,7 @@ extension MovementService {
                 for r in rows {
                     if instances.contains(where: {
                         $0.domain == MosGorSudEndpoint.host
-                            && Self.sameCaseNumber($0.caseNumber, r.caseNumber)
+                            && MosGorSudRouting.sameRegistrationNumber($0.caseNumber, r.caseNumber)
                     }) { continue }
                     guard let rowURL = r.cardURL else {
                         markSharedMoscowCoverage(.partial)
@@ -388,6 +396,15 @@ extension MovementService {
                                 ? nil : incompleteDomains,
                             honestZeroDomains: honestZeroDomains.isEmpty ? nil : honestZeroDomains,
                             sourceRefreshCoverage: coverage.values.isEmpty ? nil : coverage.values)
+    }
+
+    private static func mosGorSudCourtKey(for title: String) -> String? {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: "ё", with: "е")
+        if normalized == "московский городской суд" { return MosGorSudCourtDirectory.mgsAlias }
+        return MosGorSudCourtDirectory.districtCourts.first {
+            $0.title.lowercased().replacingOccurrences(of: "ё", with: "е") == normalized
+        }?.alias
     }
 
     private static func moscowPublishedActID(url: URL, caseNumber: String) -> String {

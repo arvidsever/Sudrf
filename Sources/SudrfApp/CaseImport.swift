@@ -270,6 +270,7 @@ struct ImportedRow: Equatable, Hashable {
 /// Разобранная строка: всё, что нужно, чтобы открыть карточку и собрать контекст.
 struct ImportSeed {
     var row: ImportedRow
+    var provider: ImportProvider
     var searchDomain: String    // модульная («--») форма хоста
     var displayDomain: String   // точечная форма (ключ записи)
     var branch: CourtBranch
@@ -289,6 +290,27 @@ struct ImportSeed {
         if isMaterial { return .material }
         return MovementContext.instanceLevel(
             cartotekaID: cartoteka?.id ?? "", courtLevel: level)
+    }
+}
+
+enum ImportProvider: Equatable {
+    case sudrf
+    case msudrf
+    case mosgorsud
+    case vsrf(VSRFCardSection)
+
+    var sourceFamily: String {
+        switch self {
+        case .sudrf: return "sudrf"
+        case .msudrf: return "msudrf"
+        case .mosgorsud: return "mosgorsud"
+        case .vsrf: return "vsrf"
+        }
+    }
+
+    var isVSRF: Bool {
+        if case .vsrf = self { return true }
+        return false
     }
 }
 
@@ -715,24 +737,23 @@ enum CaseImporter {
         guard let url = URL(string: row.urlString), let host = url.host?.lowercased() else {
             return .skipped(reason: reasonBadURL)
         }
-        if SudrfHost.isMSudrfHost(host) { return .skipped(reason: reasonMagistrate) }
+        if host.hasSuffix(".msudrf.ru") { return classifyMagistrate(row, url: url, host: host) }
         // У петербургских мировых судей собственный портал (не msudrf.ru).
         if host.hasSuffix("mirsud.spb.ru") { return .skipped(reason: reasonMagistrateSpb) }
-        if host.contains("mos-gorsud") { return .skipped(reason: reasonMosgorsud) }
-        guard host.hasSuffix("sudrf.ru") else { return .skipped(reason: reasonPlatform) }
-
-        var params: [String: String] = [:]
-        for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] {
-            params[item.name] = item.value
+        if ["mos-gorsud.ru", "www.mos-gorsud.ru"].contains(host) {
+            return classifyMosGorSud(row, url: url)
         }
-        guard let caseID = params["case_id"], !caseID.isEmpty,
-              let caseUID = params["case_uid"], !caseUID.isEmpty,
-              let deloID = params["delo_id"], !deloID.isEmpty else {
+        if ["vsrf.ru", "www.vsrf.ru"].contains(host) {
+            return classifyVSRF(row, url: url)
+        }
+        guard host.hasSuffix(".sudrf.ru") else {
+            return .skipped(reason: host.contains("mos-gorsud") ? reasonMosgorsud : reasonPlatform)
+        }
+        guard let link = try? SudrfCaseCardLink(url: url) else {
             return .skipped(reason: reasonBadURL)
         }
-        let newParam = params["new"]
 
-        let searchDomain = SudrfHost.moduleHost(host)
+        let searchDomain = link.moduleHost
         let displayDomain = SudrfHost.alternate(searchDomain) ?? searchDomain
         let (level, branch) = courtLevelAndBranch(forHost: searchDomain, courtTitle: row.court)
 
@@ -750,16 +771,179 @@ enum CaseImporter {
             courtCode = CourtDirectory.subjectCode(forRegionSuffix: suffix)
         }
 
-        let isMaterial = deloID == "1610001" || deloID == "1610002"
+        let isMaterial = link.deloID == "1610001" || link.deloID == "1610002"
         let cartoteka = CartotekaRegistry.resolve(
-            level: level, deloID: deloID, new: newParam, caseNumber: row.number)
+            level: level, deloID: link.deloID, new: link.new, caseNumber: row.number)
 
         return .seed(ImportSeed(
-            row: row, searchDomain: searchDomain, displayDomain: displayDomain,
+            row: row, provider: .sudrf,
+            searchDomain: searchDomain, displayDomain: displayDomain,
             branch: branch, level: level, courtTitle: courtTitle, region: region,
-            courtCode: courtCode, caseID: caseID, caseUID: caseUID,
-            deloID: deloID, new: newParam ?? "0",
+            courtCode: courtCode, caseID: link.caseID ?? "", caseUID: link.caseUID ?? "",
+            deloID: link.deloID, new: link.resolvedNew,
             isMaterial: isMaterial, cartoteka: cartoteka))
+    }
+
+    private static func classifyMagistrate(_ row: ImportedRow, url: URL,
+                                            host: String) -> ImportRowOutcome {
+        guard safeDirectURL(url, requireHTTPS: false),
+              url.path.caseInsensitiveCompare("/modules.php") == .orderedSame,
+              let name = uniqueParameter(["name"], in: url),
+              name.caseInsensitiveCompare("sud_delo") == .orderedSame,
+              let operation = uniqueParameter(["op"], in: url),
+              operation.caseInsensitiveCompare("cs") == .orderedSame,
+              let caseID = uniqueParameter(["case_id", "_id"], in: url),
+              let deloID = uniqueParameter(["delo_id", "_deloid"], in: url) else {
+            return .skipped(reason: reasonBadURL)
+        }
+        let new: String
+        if hasParameter(["new", "_new"], in: url) {
+            guard let value = uniqueParameter(["new", "_new"], in: url) else {
+                return .skipped(reason: reasonBadURL)
+            }
+            new = value
+        } else {
+            new = "0"
+        }
+        let caseUID: String
+        if hasParameter(["case_uid", "_uid"], in: url) {
+            guard let value = uniqueParameter(["case_uid", "_uid"], in: url) else {
+                return .skipped(reason: reasonBadURL)
+            }
+            caseUID = value
+        } else {
+            caseUID = ""
+        }
+        guard let cartoteka = CartotekaRegistry.resolve(
+            level: .magistrate, deloID: deloID, new: new, caseNumber: row.number),
+              let locator = SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka),
+              locator.sourceNativeID == caseID else {
+            return .skipped(reason: reasonBadURL)
+        }
+        let (courtTitle, region) = splitCourtAndRegion(row.court)
+        return .seed(ImportSeed(
+            row: row, provider: .msudrf,
+            searchDomain: host, displayDomain: host,
+            branch: .general, level: .magistrate,
+            courtTitle: courtTitle, region: region, courtCode: nil,
+            caseID: caseID, caseUID: caseUID,
+            deloID: deloID, new: new,
+            isMaterial: deloID == "1610001" || deloID == "1610002",
+            cartoteka: cartoteka))
+    }
+
+    private static func classifyMosGorSud(_ row: ImportedRow, url: URL) -> ImportRowOutcome {
+        guard url.host?.lowercased() != nil, safeDirectURL(url, requireHTTPS: true) else {
+            return .skipped(reason: reasonBadURL)
+        }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let alias: String
+        let prefixCount: Int
+        let level: CourtLevel
+        let courtTitle: String
+        let courtCode: String?
+        if parts.first == "mgs" {
+            alias = "mgs"; prefixCount = 1; level = .subject
+            courtTitle = "Московский городской суд"; courtCode = nil
+        } else if parts.count > 1, parts[0] == "rs",
+                  let district = MosGorSudCourtDirectory.districtCourts.first(where: {
+                      $0.alias == parts[1]
+                  }) {
+            alias = district.alias; prefixCount = 2; level = .district
+            courtTitle = district.title; courtCode = district.code
+        } else {
+            return .skipped(reason: reasonBadURL)
+        }
+        guard parts.count == prefixCount + 5,
+              parts[prefixCount] == "services", parts[prefixCount + 1] == "cases",
+              parts[prefixCount + 3] == "details",
+              parts.indices.contains(prefixCount + 2),
+              !parts[prefixCount + 2].isEmpty,
+              let cardID = parts.last, !cardID.isEmpty else {
+            return .skipped(reason: reasonBadURL)
+        }
+        let section = parts[prefixCount + 2]
+
+        let (providedTitle, _) = splitCourtAndRegion(row.court)
+        if !providedTitle.isEmpty,
+           !CaseOriginResolver.sameCourtTitle(providedTitle, courtTitle, region: "Город Москва") {
+            return .skipped(reason: reasonBadURL)
+        }
+        let numberCartotekas = Set(CartotekaRegistry.matches(
+            caseNumber: row.number, level: level).map(\.id))
+        let candidates = CartotekaRegistry.sets(for: level).filter { cart in
+            MosGorSudRouting.sectionSegments(cartoteka: cart).contains(section)
+                && (row.number.isEmpty || numberCartotekas.contains(cart.id))
+        }
+        guard candidates.count == 1, let cartoteka = candidates.first,
+              let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka),
+              locator.courtKey == alias else {
+            return .skipped(reason: reasonBadURL)
+        }
+        return .seed(ImportSeed(
+            row: row, provider: .mosgorsud,
+            searchDomain: MosGorSudEndpoint.host, displayDomain: MosGorSudEndpoint.host,
+            branch: .general, level: level, courtTitle: courtTitle,
+            region: "Город Москва", courtCode: courtCode,
+            caseID: cardID, caseUID: "", deloID: cartoteka.deloID,
+            new: cartoteka.new, isMaterial: cartoteka.id == "m",
+            cartoteka: cartoteka))
+    }
+
+    private static func classifyVSRF(_ row: ImportedRow, url: URL) -> ImportRowOutcome {
+        guard let locator = SourceNativeCardLocator.vsrf(url: url),
+              let section = VSRFCardSection(rawValue: url.pathComponents
+                .filter { $0 != "/" }.dropFirst(2).first ?? "") else {
+            return .skipped(reason: reasonBadURL)
+        }
+        let (providedTitle, _) = splitCourtAndRegion(row.court)
+        if !providedTitle.isEmpty {
+            let title = providedTitle.lowercased().replacingOccurrences(of: "ё", with: "е")
+            guard title.contains("верховн"), title.contains("суд"),
+                  title.contains("рф") || title.contains("российск") else {
+                return .skipped(reason: reasonBadURL)
+            }
+        }
+        return .seed(ImportSeed(
+            row: row, provider: .vsrf(section),
+            searchDomain: "vsrf.ru", displayDomain: "vsrf.ru",
+            branch: .general, level: .cassation,
+            courtTitle: "Верховный Суд РФ", region: "Российская Федерация",
+            courtCode: nil, caseID: locator.sourceNativeID, caseUID: "",
+            deloID: "", new: "0", isMaterial: false, cartoteka: nil))
+    }
+
+    private static func safeDirectURL(_ url: URL, requireHTTPS: Bool) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https" || (!requireHTTPS && scheme == "http"),
+              url.user == nil, url.password == nil, url.port == nil else { return false }
+        return true
+    }
+
+    private static func uniqueParameter(_ names: [String], in url: URL) -> String? {
+        let aliases = Set(names.map { $0.lowercased() })
+        let values = (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .compactMap { item -> String? in
+                guard aliases.contains(item.name.lowercased()) else { return nil }
+                guard let value = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty, value == item.value else { return nil }
+                return value
+            }
+        guard let value = values.first, values.allSatisfy({ $0 == value }) else { return nil }
+        return value
+    }
+
+    private static func hasParameter(_ names: [String], in url: URL) -> Bool {
+        let aliases = Set(names.map { $0.lowercased() })
+        return (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .contains { aliases.contains($0.name.lowercased()) }
+    }
+
+    private static func splitCourtAndRegion(_ value: String) -> (title: String, region: String) {
+        guard let open = value.range(of: " ("), value.hasSuffix(")") else {
+            return (value.trimmingCharacters(in: .whitespacesAndNewlines), "")
+        }
+        return (String(value[..<open.lowerBound]), String(value[open.upperBound...].dropLast()))
     }
 
     /// Звено и ветвь по домену (модульная форма) и названию суда. Гарнизонные
@@ -792,6 +976,10 @@ enum CaseImporter {
     struct Fetched {
         var seed: ImportSeed
         var card: CaseCard?
+        /// The original Supreme Court card response is transient import evidence.
+        /// Its exact production IDs may prove a case/complaint relation; a UID
+        /// alone never does.
+        var vsrfCard: VSRFCard? = nil
         var higherCourtTargets: [MovementSearchTarget]? = nil
         /// A card resolver may correct only the published card locator.  The
         /// original context remains available until the batch commits so its
@@ -809,9 +997,11 @@ enum CaseImporter {
              resolvedContext: MovementContext? = nil,
              originalContext: MovementContext? = nil,
              sourceAttempt: SourceAttempt? = nil,
-             wasRecovered: Bool = false) {
+             wasRecovered: Bool = false,
+             vsrfCard: VSRFCard? = nil) {
             self.seed = seed
             self.card = card
+            self.vsrfCard = vsrfCard
             self.higherCourtTargets = higherCourtTargets
             self.sourceRows = sourceRows ?? [seed.row]
             self.resolvedContext = resolvedContext
@@ -824,6 +1014,10 @@ enum CaseImporter {
         var provenance: [ImportedRow] { sourceRows }
 
         var instanceLevel: CaseInstance.Level {
+            if seed.provider.isVSRF {
+                return CaseImporter.verifiedVSRFProduction(for: self)?.resolvedInstanceLevel
+                    ?? .vsCassation
+            }
             if seed.isMaterial { return .material }
             return MovementContext.instanceLevel(
                 cartotekaID: seed.cartoteka?.id ?? "", courtLevel: seed.level,
@@ -847,6 +1041,14 @@ enum CaseImporter {
 
     /// Готовая к записи единица импорта.
     struct PlannedRecord {
+        /// Transient proof from one fetched official VSRF card. The persisted
+        /// graph receives this exact pair at commit; a URL retained in
+        /// `knownCards` by itself never creates an identity relation.
+        struct ProvenVSRFRelation {
+            let sourceCard: SourceNativeCardIdentity
+            let relatedCard: SourceNativeCardIdentity
+        }
+
         struct RecoveredSource {
             var originalContext: MovementContext
             var verifiedContext: MovementContext
@@ -860,6 +1062,7 @@ enum CaseImporter {
         /// without leaving its stale URL among active known cards.
         var originalContext: MovementContext? = nil
         var sourceAttempt: SourceAttempt? = nil
+        var provenVSRFRelation: ProvenVSRFRelation? = nil
         /// Recovered non-anchor cards of a UID group. Their active URLs live
         /// in `knownCards`; this transient list carries their old locators and
         /// source observations into the same atomic store commit.
@@ -872,12 +1075,14 @@ enum CaseImporter {
              sourceRows: [ImportedRow] = [],
              originalContext: MovementContext? = nil,
              sourceAttempt: SourceAttempt? = nil,
+             provenVSRFRelation: ProvenVSRFRelation? = nil,
              recoveredSources: [RecoveredSource] = []) {
             self.context = context
             self.isMaterial = isMaterial
             self.sourceRows = sourceRows
             self.originalContext = originalContext
             self.sourceAttempt = sourceAttempt
+            self.provenVSRFRelation = provenVSRFRelation
             self.recoveredSources = recoveredSources
         }
 
@@ -897,7 +1102,9 @@ enum CaseImporter {
         var plan = Plan()
         var groups: [String: [Fetched]] = [:]
         var loners: [Fetched] = []
-        for f in fetched {
+        let sudrfFetched = fetched.filter { !$0.seed.provider.isVSRF }
+        let vsrfFetched = fetched.filter { $0.seed.provider.isVSRF }
+        for f in sudrfFetched {
             if let uid = f.card?.uid, !uid.isEmpty {
                 groups[TrackedStore.normalizedUID(uid), default: []].append(f)
             } else {
@@ -905,6 +1112,10 @@ enum CaseImporter {
                 if f.card == nil { plan.cold += 1 }
             }
         }
+        let vsrf = planVSRF(vsrfFetched)
+        plan.records.append(contentsOf: vsrf.records)
+        plan.stitched += vsrf.stitched
+        plan.cold += vsrf.cold
         for f in loners {
             plan.records.append(plannedRecord(f, known: []))
             if f.wasRecovered { plan.recoveredLinks += 1 }
@@ -940,6 +1151,89 @@ enum CaseImporter {
         return plan
     }
 
+    /// Supreme Court production UIDs are not case/complaint links. Keep each
+    /// exact production standalone unless one fetched official card names the
+    /// precise case ID and complaint ID together, with one unambiguous pair.
+    private static func planVSRF(_ fetched: [Fetched]) -> (records: [PlannedRecord], stitched: Int, cold: Int) {
+        var byID: [String: [Fetched]] = [:]
+        var unlocated: [Fetched] = []
+        for item in fetched {
+            guard let url = URL(string: item.seed.row.urlString),
+                  let locator = SourceNativeCardLocator.vsrf(url: url) else {
+                unlocated.append(item)
+                continue
+            }
+            byID[locator.id, default: []].append(item)
+        }
+
+        var uniqueByID: [String: Fetched] = [:]
+        for (id, copies) in byID {
+            let preferred = copies.first(where: { $0.card != nil }) ?? copies[0]
+            var merged = preferred
+            merged.sourceRows = uniqueSourceRows(copies.flatMap(\.sourceRows))
+            if merged.vsrfCard == nil {
+                merged.vsrfCard = copies.compactMap(\.vsrfCard).first
+            }
+            uniqueByID[id] = merged
+        }
+
+        struct Pair: Hashable {
+            let caseID: String
+            let complaintID: String
+        }
+        func locatorID(for production: VSRFProduction) -> String? {
+            guard let url = production.cardURL,
+                  let locator = SourceNativeCardLocator.vsrf(url: url) else { return nil }
+            return locator.id
+        }
+
+        var proposedPairs = Set<Pair>()
+        for item in uniqueByID.values {
+            guard let card = item.vsrfCard else { continue }
+            guard let pair = exactVSRFCaseComplaintPair(in: card),
+                  uniqueByID[pair.caseLocator.id] != nil,
+                  uniqueByID[pair.complaintLocator.id] != nil else { continue }
+            proposedPairs.insert(Pair(caseID: pair.caseLocator.id,
+                                      complaintID: pair.complaintLocator.id))
+        }
+
+        var degree: [String: Int] = [:]
+        for pair in proposedPairs {
+            degree[pair.caseID, default: 0] += 1
+            degree[pair.complaintID, default: 0] += 1
+        }
+
+        var pairedIDs = Set<String>()
+        var records: [PlannedRecord] = []
+        var stitched = 0
+        for pair in proposedPairs.sorted(by: {
+            ($0.caseID, $0.complaintID) < ($1.caseID, $1.complaintID)
+        }) {
+            guard degree[pair.caseID] == 1, degree[pair.complaintID] == 1,
+                  let first = uniqueByID[pair.caseID], let second = uniqueByID[pair.complaintID],
+                  let caseFetched = [first, second].first(where: {
+                      $0.vsrfCard?.productions.contains {
+                          $0.kind == .caseFile && locatorID(for: $0) == pair.caseID
+                      } == true
+                  }), caseFetched.seed.provider.isVSRF else { continue }
+            var anchor = caseFetched
+            anchor.sourceRows = uniqueSourceRows(first.sourceRows + second.sourceRows)
+            records.append(plannedRecord(anchor, known: []))
+            pairedIDs.formUnion([pair.caseID, pair.complaintID])
+            stitched += 1
+        }
+
+        for (id, item) in uniqueByID.sorted(by: { $0.key < $1.key })
+            where !pairedIDs.contains(id) {
+            records.append(plannedRecord(item, known: []))
+        }
+        for item in unlocated {
+            records.append(plannedRecord(item, known: []))
+        }
+        let cold = fetched.filter { $0.card == nil }.count
+        return (records, stitched, cold)
+    }
+
     private static func uniqueSourceRows(_ rows: [ImportedRow]) -> [ImportedRow] {
         var seen = Set<String>()
         return rows.filter { seen.insert($0.sourceIdentity).inserted }
@@ -950,7 +1244,9 @@ enum CaseImporter {
                       isMaterial: fetched.seed.isMaterial,
                       sourceRows: fetched.sourceRows,
                       originalContext: fetched.wasRecovered ? fetched.originalContext : nil,
-                      sourceAttempt: fetched.sourceAttempt)
+                      sourceAttempt: fetched.sourceAttempt,
+                      provenVSRFRelation: fetched.sourceAttempt?.kind == .usableSnapshot
+                        ? provenVSRFRelation(for: fetched) : nil)
     }
 
     /// Контекст записи «Моих дел» из карточки-якоря.
@@ -970,6 +1266,41 @@ enum CaseImporter {
         }
         let seed = f.seed
         let number = f.card?.caseNumber ?? seed.row.number
+        if seed.provider.isVSRF {
+            let production = verifiedVSRFProduction(for: f)
+            var pairedCards = known
+            if let pair = provenVSRFPair(for: f),
+               let counterpartCard = knownVSRFCard(pair.counterpartProduction) {
+                pairedCards.append(counterpartCard)
+            }
+            var context = MovementContext(
+                branchRaw: CourtBranch.general.rawValue,
+                region: "Российская Федерация",
+                searchDomain: "vsrf.ru",
+                displayDomain: "vsrf.ru",
+                courtTitle: "Верховный Суд РФ",
+                courtLevelRaw: CourtLevel.cassation.rawValue,
+                courtCode: nil,
+                cartotekaId: "",
+                cartotekaLevelRaw: CourtLevel.cassation.rawValue,
+                caseNumber: number.isEmpty ? "—" : number,
+                caseID: nil,
+                caseUID: nil,
+                essence: seed.row.parties.isEmpty ? nil : seed.row.parties,
+                judge: f.card?.judge,
+                receiptDate: f.card?.receiptDate,
+                decisionDate: f.card?.decisionDate,
+                resultText: f.card?.result,
+                legalForceDate: nil,
+                cardURLString: seed.row.urlString)
+            // A Supreme Court UID is a search field, not sufficient proof that
+            // two separately imported source productions are the same record.
+            context.judicialUID = nil
+            context.baseInstanceLevelRaw = production?.resolvedInstanceLevel.rawValue
+                ?? CaseInstance.Level.vsCassation.rawValue
+            if !pairedCards.isEmpty { context.knownCards = uniqueVSRFKnownCards(pairedCards) }
+            return context
+        }
         // Стороны из карточки авторитетнее выгрузки; формат выгрузки «X ⚔ Y»
         // остаётся читаемым в списке до загрузки движения (поле essence).
         let essence = seed.row.parties.isEmpty ? nil : seed.row.parties
@@ -993,9 +1324,11 @@ enum CaseImporter {
             resultText: f.card?.result,
             legalForceDate: nil,
             cardURLString: seed.row.urlString)
-        ctx.judicialUID = f.card?.uid
+        ctx.judicialUID = seed.provider.isVSRF ? nil : f.card?.uid
         ctx.baseInstanceLevelRaw = f.instanceLevel.rawValue
-        if !seed.caseID.isEmpty, !seed.caseUID.isEmpty { ctx.sourceKnownCard = knownCard(f) }
+        if seed.provider == .sudrf && (!seed.caseID.isEmpty || !seed.caseUID.isEmpty) {
+            ctx.sourceKnownCard = knownCard(f)
+        }
         if !known.isEmpty { ctx.knownCards = known }
         ctx.higherCourtTargets = f.higherCourtTargets ?? seed.cartoteka.flatMap {
             MovementTargetBuilder.targets(
@@ -1019,7 +1352,123 @@ enum CaseImporter {
                          new: seed.new,
                          caseNumber: f.card?.caseNumber ?? (seed.row.number.isEmpty ? nil : seed.row.number),
                          levelRaw: f.instanceLevel.rawValue,
-                         cartotekaID: seed.cartoteka?.id)
+                         cartotekaID: seed.cartoteka?.id,
+                         sourceURL: URL(string: seed.row.urlString))
+    }
+
+    private struct VSRFCaseComplaintPair {
+        let caseProduction: VSRFProduction
+        let caseLocator: SourceNativeCardLocator
+        let complaintProduction: VSRFProduction
+        let complaintLocator: SourceNativeCardLocator
+    }
+
+    private struct VerifiedVSRFPair {
+        let sourceProduction: VSRFProduction
+        let sourceLocator: SourceNativeCardLocator
+        let counterpartProduction: VSRFProduction
+        let counterpartLocator: SourceNativeCardLocator
+    }
+
+    /// Only a one-case/one-complaint pair with exact, host-validated native
+    /// card locators can be carried into the persisted identity graph.
+    private static func exactVSRFCaseComplaintPair(
+        in card: VSRFCard
+    ) -> VSRFCaseComplaintPair? {
+        let cases = card.productions.filter { $0.kind == .caseFile }
+        let complaints = card.productions.filter { $0.kind == .complaint }
+        guard cases.count == 1, complaints.count == 1,
+              let caseURL = cases[0].cardURL,
+              let caseLocator = SourceNativeCardLocator.vsrf(url: caseURL),
+              let complaintURL = complaints[0].cardURL,
+              let complaintLocator = SourceNativeCardLocator.vsrf(url: complaintURL),
+              caseLocator.identity != complaintLocator.identity else { return nil }
+        return VSRFCaseComplaintPair(
+            caseProduction: cases[0], caseLocator: caseLocator,
+            complaintProduction: complaints[0], complaintLocator: complaintLocator)
+    }
+
+    private static func provenVSRFPair(for fetched: Fetched) -> VerifiedVSRFPair? {
+        guard let source = verifiedVSRFProduction(for: fetched),
+              let sourceURL = source.cardURL,
+              let sourceLocator = SourceNativeCardLocator.vsrf(url: sourceURL),
+              let pair = fetched.vsrfCard.flatMap(exactVSRFCaseComplaintPair(in:)) else {
+            return nil
+        }
+        if sourceLocator.identity == pair.caseLocator.identity {
+            return VerifiedVSRFPair(
+                sourceProduction: source, sourceLocator: sourceLocator,
+                counterpartProduction: pair.complaintProduction,
+                counterpartLocator: pair.complaintLocator)
+        }
+        if sourceLocator.identity == pair.complaintLocator.identity {
+            return VerifiedVSRFPair(
+                sourceProduction: source, sourceLocator: sourceLocator,
+                counterpartProduction: pair.caseProduction,
+                counterpartLocator: pair.caseLocator)
+        }
+        return nil
+    }
+
+    private static func provenVSRFRelation(
+        for fetched: Fetched
+    ) -> PlannedRecord.ProvenVSRFRelation? {
+        guard let pair = provenVSRFPair(for: fetched) else { return nil }
+        return PlannedRecord.ProvenVSRFRelation(
+            sourceCard: pair.sourceLocator.identity,
+            relatedCard: pair.counterpartLocator.identity)
+    }
+
+    private static func verifiedVSRFProduction(for fetched: Fetched) -> VSRFProduction? {
+        guard case .vsrf(let section) = fetched.seed.provider,
+              let sourceURL = URL(string: fetched.seed.row.urlString),
+              let expected = SourceNativeCardLocator.vsrf(url: sourceURL),
+              expected.cartotekaKey == section.rawValue,
+              let card = fetched.vsrfCard,
+              let importedNumber = fetched.card?.caseNumber?.trimmingCharacters(
+                in: .whitespacesAndNewlines), !importedNumber.isEmpty else { return nil }
+        let matches = card.productions.filter { production in
+            guard production.cardID == expected.sourceNativeID,
+                  production.resolvedSection == section,
+                  let cardURL = production.cardURL,
+                  let locator = SourceNativeCardLocator.vsrf(url: cardURL),
+                  let publishedNumber = production.number?.trimmingCharacters(
+                    in: .whitespacesAndNewlines) else { return false }
+            return locator.identity == expected.identity
+                && normalizedVSRFNumber(importedNumber) == normalizedVSRFNumber(publishedNumber)
+                && (fetched.seed.row.number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || normalizedVSRFNumber(fetched.seed.row.number)
+                        == normalizedVSRFNumber(publishedNumber))
+        }
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
+    private static func normalizedVSRFNumber(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "ё", with: "е")
+            .replacingOccurrences(of: "Ё", with: "Е")
+            .lowercased()
+    }
+
+    private static func knownVSRFCard(_ production: VSRFProduction) -> KnownCard? {
+        guard let url = production.cardURL,
+              let locator = SourceNativeCardLocator.vsrf(url: url),
+              let number = production.number, !number.isEmpty else { return nil }
+        return KnownCard(domain: "vsrf.ru", courtTitle: "Верховный Суд РФ",
+                         caseID: locator.sourceNativeID, caseUID: "",
+                         deloID: "", new: "0", caseNumber: number,
+                         levelRaw: production.resolvedInstanceLevel.rawValue,
+                         sourceURL: url)
+    }
+
+    private static func uniqueVSRFKnownCards(_ cards: [KnownCard]) -> [KnownCard] {
+        var seen = Set<SourceNativeCardIdentity>()
+        return cards.filter { card in
+            guard let url = card.sourceURL,
+                  let locator = SourceNativeCardLocator.vsrf(url: url) else { return true }
+            return seen.insert(locator.identity).inserted
+        }
     }
 
 }

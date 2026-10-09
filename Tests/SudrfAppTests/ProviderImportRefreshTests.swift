@@ -14,6 +14,7 @@ private struct PersistedProviderState: Equatable {
     let relatedCardIDs: [String]
     let collections: [String]
     let addedAt: Date
+    let seenAt: Date?
     let context: MovementContext?
     let movement: CaseMovement?
     let movementFetchedAt: Date?
@@ -29,6 +30,7 @@ private struct PersistedProviderState: Equatable {
         }.sorted()
         collections = record.collectionNames.sorted()
         addedAt = record.addedAt
+        seenAt = record.seenAt
         context = record.context
         movement = record.movement
         movementFetchedAt = record.movementFetchedAt

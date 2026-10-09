@@ -9,6 +9,7 @@ private struct VSRFPersistedState: Equatable {
     let relatedCardIDs: [String]
     let collections: [String]
     let addedAt: Date
+    let seenAt: Date?
     let context: MovementContext?
     let movement: CaseMovement?
     let movementFetchedAt: Date?
@@ -24,6 +25,7 @@ private struct VSRFPersistedState: Equatable {
         }.sorted()
         collections = record.collectionNames.sorted()
         addedAt = record.addedAt
+        seenAt = record.seenAt
         context = record.context
         movement = record.movement
         movementFetchedAt = record.movementFetchedAt
@@ -271,6 +273,13 @@ final class VSRFAnchorRefreshTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let storeURL = directory.appendingPathComponent("fixture.store")
+        let seenAt = Date(timeIntervalSince1970: 1_700_000_123)
+        let existingEvent = CaseEvent.make(
+            kind: .instanceDiscovered, occurrence: ["existing-import-event"],
+            observedAt: seenAt,
+            evidence: CaseEventEvidence(sourceCardID: "12-36321243",
+                                        caseNumber: caseNumber,
+                                        event: "already known before CSV reimport"))
         let firstState: VSRFPersistedState
         do {
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
@@ -279,11 +288,16 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             _ = try router.commitImport(records: [casePlan], collection: "CSV")
             let store = try TrackedStore(container: container, prepared: true)
             let first = try XCTUnwrap(store.all().first)
+            first.collectionNames = ["CSV", "Пользовательская"]
+            first.seenAt = seenAt
+            first.eventJournal = CaseEventJournal(events: [existingEvent])
+            try store.save()
             firstState = try VSRFPersistedState(record: first)
             XCTAssertEqual(firstState.relatedCardIDs, ["21-36321242"])
             XCTAssertEqual(firstState.cardIDs, ["12-36321243"])
-            XCTAssertEqual(firstState.collections, ["CSV"])
-            XCTAssertEqual(firstState.eventJournalIDs, [])
+            XCTAssertEqual(firstState.collections, ["CSV", "Пользовательская"])
+            XCTAssertEqual(firstState.seenAt, seenAt)
+            XCTAssertEqual(firstState.eventJournalIDs, [existingEvent.id])
             XCTAssertNil(firstState.movementFetchedAt)
         }
 
@@ -311,9 +325,10 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             XCTAssertEqual(finalState.cardIDs, ["12-36321243", "21-36321242"])
             XCTAssertEqual(finalState.collections, firstState.collections)
             XCTAssertEqual(finalState.addedAt, firstState.addedAt)
+            XCTAssertEqual(finalState.seenAt, seenAt)
             XCTAssertEqual(finalState.eventJournalIDs, firstState.eventJournalIDs)
-            XCTAssertEqual(finalState.eventJournalIDs, [],
-                           "reimport does not create historical notifications")
+            XCTAssertEqual(finalState.eventJournalIDs, [existingEvent.id],
+                           "reimport preserves the old journal without adding events")
             XCTAssertNil(finalState.movementFetchedAt)
             XCTAssertEqual(finalState.sourceRefreshAttempt?.kind, .usableSnapshot)
         }

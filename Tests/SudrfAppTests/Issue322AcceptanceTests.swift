@@ -172,6 +172,72 @@ private final class Issue322OfflineURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+private struct Issue322InstanceSnapshot: Equatable, Sendable {
+    let level: String
+    let caseNumber: String
+    let domain: String
+    let sourceURL: String?
+
+    var sortKey: String {
+        [level, caseNumber, domain, sourceURL ?? ""].joined(separator: "\u{0}")
+    }
+}
+
+private struct Issue322ActLinkSnapshot: Equatable, Sendable {
+    let level: String
+    let caseNumber: String
+    let sourceURL: String?
+    let actID: String
+    let body: String
+}
+
+/// Plain values only. A phase returns this instead of retaining SwiftData
+/// models/contexts, so reopening below really starts after the first store and
+/// its managed objects have left scope.
+private struct Issue322RecordSnapshot: Equatable, Sendable {
+    let key: String
+    let caseNumber: String
+    let courtTitle: String
+    let displayDomain: String
+    let addedAt: Date
+    let seenAt: Date?
+    let folderName: String
+    let collections: [String]
+    let movementFetchedAt: Date?
+    let refreshAttemptKind: String?
+    let eventJournal: CaseEventJournal?
+    let totalInstanceCount: Int
+    let instances: [Issue322InstanceSnapshot]
+    let linkedActTexts: [Issue322ActLinkSnapshot]
+    let knownCards: [String]
+}
+
+private struct Issue322PersistenceCheckpoint: Sendable {
+    let storePath: String
+    let defaultsSuiteName: String
+    let targetLocator: String
+    let controlLocator: String?
+    let records: [Issue322RecordSnapshot]
+}
+
+private enum Issue322TestFailure: Error {
+    case unexpectedRefreshOutcome
+}
+
+/// Test-only transfer directory. The normal MovementContext factory creates a
+/// production directory resolver by default, so the RefreshCenter profile
+/// reconstructs MovementService with this injected, fixture-backed boundary.
+private actor Issue322TransferCourtDirectory {
+    private var requestedSubjects: [String] = []
+
+    func courts(for subjectCode: String) -> [DistrictCourt] {
+        requestedSubjects.append(subjectCode)
+        return []
+    }
+
+    func requests() -> [String] { requestedSubjects }
+}
+
 @MainActor
 final class Issue322AcceptanceTests: XCTestCase {
     private func offlineClient() -> SudrfClient {
@@ -222,7 +288,7 @@ final class Issue322AcceptanceTests: XCTestCase {
     }
 
     private func seed(_ context: MovementContext, card: CaseCard, url: URL,
-                      collection: String, addedAt: Date,
+                      collection: String, addedAt: Date, seenAt: Date,
                       store: TrackedStore) throws -> TrackedCaseRecord {
         let movement = seedMovement(card: card, context: context, sourceURL: url)
         let record = try store.upsert(
@@ -230,7 +296,7 @@ final class Issue322AcceptanceTests: XCTestCase {
             snapshot: MovementDerivation.snapshot(from: movement, context: context),
             movement: movement, collections: ["Москва", collection])
         record.addedAt = addedAt
-        record.seenAt = nil
+        record.seenAt = seenAt
         record.movementFetchedAt = Date(timeIntervalSince1970: 50)
         let event = CaseEvent.make(
             kind: .instanceDiscovered, occurrence: ["issue322", context.caseNumber],
@@ -265,11 +331,14 @@ final class Issue322AcceptanceTests: XCTestCase {
                             moscow: Issue322MoscowStub,
                             repair: TrackedCaseRepairCoordinator,
                             client: SudrfClient,
+                            transferDirectory: Issue322TransferCourtDirectory,
                             afterRepair: ((String, String) -> Void)? = nil) -> RefreshCenter {
         let center = RefreshCenter(
             store: store, client: client,
             serviceBuilder: { context in
-                context.makeService(client: sudrf, mosgorsud: moscow)
+                self.makeOfflineService(context: context, client: sudrf,
+                                        moscow: moscow,
+                                        transferDirectory: transferDirectory)
             })
         center.repairBeforeRefresh = { key, force in
             let outcome = try await repair.repairIfNeeded(key: key, forceAttempt: force)
@@ -277,6 +346,33 @@ final class Issue322AcceptanceTests: XCTestCase {
             return outcome.effectiveKey
         }
         return center
+    }
+
+    private func makeOfflineService(context: MovementContext,
+                                    client: any CaseProviding,
+                                    moscow: any MosGorSudProviding,
+                                    transferDirectory: Issue322TransferCourtDirectory)
+        -> MovementService {
+        let targets = context.higherCourtTargets ?? context.cartoteka.flatMap {
+            MovementTargetBuilder.targets(
+                branch: context.branch, courtLevel: context.courtLevel,
+                baseCartoteka: $0, caseNumber: context.caseNumber,
+                judicialUID: context.judicialUID, courtTitle: context.courtTitle,
+                courtCode: context.courtCode, region: context.region,
+                displayDomain: context.displayDomain)
+        }
+        return MovementService(
+            client: client,
+            higherCourtDomains: context.expandedHigherDomains(),
+            higherCourtTargets: targets,
+            knownCards: context.knownCards ?? [],
+            baseInstanceLevel: context.baseInstanceLevel,
+            mosgorsud: moscow,
+            judicialUID: context.judicialUID,
+            branch: context.branch,
+            transferCourts: { subjectCode in
+                await transferDirectory.courts(for: subjectCode)
+            })
     }
 
     private func persistentStore() throws -> (URL, TrackedStore) {
@@ -291,6 +387,80 @@ final class Issue322AcceptanceTests: XCTestCase {
     private func isolatedDefaults() throws -> (String, UserDefaults) {
         let name = "issue322-\(UUID().uuidString)"
         return (name, try XCTUnwrap(UserDefaults(suiteName: name)))
+    }
+
+    private func instanceSnapshot(_ instance: CaseInstance) -> Issue322InstanceSnapshot {
+        Issue322InstanceSnapshot(level: instance.level.rawValue,
+                                 caseNumber: instance.caseNumber,
+                                 domain: instance.domain,
+                                 sourceURL: instance.sourceURL?.absoluteString)
+    }
+
+    private func recordSnapshot(_ record: TrackedCaseRecord) -> Issue322RecordSnapshot {
+        let movement = record.movement
+        let instances = (movement?.instances ?? []).map(instanceSnapshot)
+            .sorted { $0.sortKey < $1.sortKey }
+        let linkedActTexts = (movement?.instances ?? []).flatMap { instance in
+            instance.linkedActIDs.compactMap { actID -> Issue322ActLinkSnapshot? in
+                guard let body = movement?.actBodies[actID] else { return nil }
+                return Issue322ActLinkSnapshot(
+                    level: instance.level.rawValue, caseNumber: instance.caseNumber,
+                    sourceURL: instance.sourceURL?.absoluteString,
+                    actID: actID, body: body)
+            }
+        }.sorted {
+            [$0.level, $0.caseNumber, $0.sourceURL ?? "", $0.actID, $0.body]
+                .lexicographicallyPrecedes(
+                    [$1.level, $1.caseNumber, $1.sourceURL ?? "", $1.actID, $1.body])
+        }
+        let knownCards = (record.context?.knownCards ?? []).map {
+            [$0.levelRaw, $0.caseNumber ?? "", $0.domain,
+             $0.sourceURL?.absoluteString ?? ""].joined(separator: "\u{0}")
+        }.sorted()
+        return Issue322RecordSnapshot(
+            key: record.key, caseNumber: record.caseNumber,
+            courtTitle: record.courtTitle, displayDomain: record.displayDomain,
+            addedAt: record.addedAt, seenAt: record.seenAt,
+            folderName: record.folderName, collections: record.collectionNames,
+            movementFetchedAt: record.movementFetchedAt,
+            refreshAttemptKind: record.sourceRefreshAttempt?.kind.rawValue,
+            eventJournal: record.eventJournal,
+            totalInstanceCount: movement?.instances.count ?? 0,
+            instances: instances, linkedActTexts: linkedActTexts,
+            knownCards: knownCards)
+    }
+
+    private func recordSnapshots(_ records: [TrackedCaseRecord]) -> [Issue322RecordSnapshot] {
+        records.map(recordSnapshot).sorted { $0.key < $1.key }
+    }
+
+    private func expectedInstances(_ values: [Issue322InstanceSnapshot])
+        -> [Issue322InstanceSnapshot] {
+        values.sorted { $0.sortKey < $1.sortKey }
+    }
+
+    private func assertExactInstances(_ record: TrackedCaseRecord,
+                                      expected: [Issue322InstanceSnapshot],
+                                      file: StaticString = #filePath,
+                                      line: UInt = #line) {
+        let actual = (record.movement?.instances ?? []).map(instanceSnapshot)
+        XCTAssertEqual(record.movement?.instances.count, expected.count,
+                       "unexpected or duplicate movement instances", file: file, line: line)
+        XCTAssertEqual(expectedInstances(actual), expectedInstances(expected),
+                       "movement instances must match exact level, number, domain, and URL tuples",
+                       file: file, line: line)
+    }
+
+    private func assertUserData(_ snapshot: Issue322RecordSnapshot,
+                                addedAt: Date, seenAt: Date,
+                                collections: [String],
+                                file: StaticString = #filePath,
+                                line: UInt = #line) {
+        XCTAssertEqual(snapshot.addedAt, addedAt, file: file, line: line)
+        XCTAssertEqual(snapshot.seenAt, seenAt, file: file, line: line)
+        XCTAssertFalse(snapshot.seenAt == nil, "seenAt must be meaningful and nonnil",
+                       file: file, line: line)
+        XCTAssertEqual(snapshot.collections, collections, file: file, line: line)
     }
 
     private func assertRetainedActText(_ expectedText: String,
@@ -329,38 +499,45 @@ final class Issue322AcceptanceTests: XCTestCase {
                       file: file, line: line)
     }
 
-    func testTwoAppealsRepairThroughRefreshAndRetainHistoryAcrossPartialFailureAndReopen() async throws {
+    private func runTwoAppealsThroughPartialRefresh()
+        async throws -> Issue322PersistenceCheckpoint {
         let fixtures = try Issue322FixtureSet.load()
         let (storeURL, store) = try persistentStore()
-        defer { try? FileManager.default.removeItem(at: storeURL.deletingLastPathComponent()) }
         let (suiteName, defaults) = try isolatedDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
         let client = offlineClient()
+        let firstAddedAt = Date(timeIntervalSince1970: 100)
+        let firstSeenAt = Date(timeIntervalSince1970: 1_100)
+        let secondAddedAt = Date(timeIntervalSince1970: 200)
+        let secondSeenAt = Date(timeIntervalSince1970: 1_200)
 
         let first = try seed(
             appealContext(number: "66а-2013/2020", id: "6724440",
                           guid: "0cd448a3-5cf2-49bc-99c1-35bf0706c2d5",
                           url: fixtures.appeal2013URL),
             card: fixtures.appeal2013, url: fixtures.appeal2013URL,
-            collection: "Частная жалоба", addedAt: Date(timeIntervalSince1970: 100),
+            collection: "Частная жалоба", addedAt: firstAddedAt, seenAt: firstSeenAt,
             store: store)
         let second = try seed(
             appealContext(number: "66а-4311/2020", id: "6749107",
                           guid: "6dc098e7-acb0-4b6b-b250-fcbb25479004",
                           url: fixtures.appeal4311URL),
             card: fixtures.appeal4311, url: fixtures.appeal4311URL,
-            collection: "Апелляция", addedAt: Date(timeIntervalSince1970: 200),
+            collection: "Апелляция", addedAt: secondAddedAt, seenAt: secondSeenAt,
             store: store)
         XCTAssertEqual(store.all().count, 2)
         XCTAssertTrue(store.all().allSatisfy { $0.context?.searchDomain == "1ap.sudrf.ru" },
                        "the Moscow first-instance record must not be pre-added")
+        XCTAssertEqual(first.seenAt, firstSeenAt)
+        XCTAssertEqual(second.seenAt, secondSeenAt)
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let transferDirectory = Issue322TransferCourtDirectory()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
                                 repair: repair, client: client,
+                                transferDirectory: transferDirectory,
                                 afterRepair: { requestedKey, effectiveKey in
             guard let record = store.record(forLocator: effectiveKey) else {
                 return XCTFail("repair did not leave a readable tracked record")
@@ -379,7 +556,8 @@ final class Issue322AcceptanceTests: XCTestCase {
             let task = try XCTUnwrap(center.refresh(key: key))
             let execution = await task.value
             guard case .partial = execution.outcome else {
-                return XCTFail("ordinary refresh must keep the chain while reporting verified empty listings")
+                XCTFail("ordinary refresh must keep the chain while reporting verified empty listings")
+                throw Issue322TestFailure.unexpectedRefreshOutcome
             }
             let refreshed = try XCTUnwrap(store.record(forKey: execution.effectiveKey))
             let numbers = key == first.key
@@ -399,8 +577,7 @@ final class Issue322AcceptanceTests: XCTestCase {
         XCTAssertEqual(saved.caseNumber, "3а-3696/2020")
         XCTAssertEqual(saved.context?.cardURLString, fixtures.moscowFirstURL.absoluteString)
         XCTAssertEqual(Set(saved.collectionNames), ["Москва", "Частная жалоба", "Апелляция"])
-        XCTAssertEqual(saved.addedAt, Date(timeIntervalSince1970: 100))
-        XCTAssertNil(saved.seenAt)
+        XCTAssertEqual(saved.addedAt, firstAddedAt)
         let appealCards = saved.context?.knownCards ?? []
         XCTAssertEqual(Set(appealCards.compactMap(\.sourceURL)),
                        [fixtures.appeal2013URL, fixtures.appeal4311URL])
@@ -422,93 +599,166 @@ final class Issue322AcceptanceTests: XCTestCase {
         XCTAssertEqual(Set(seededJournalIDs), originalEventIDs)
         XCTAssertEqual(seededJournalIDs.count, Set(seededJournalIDs).count)
 
-        func assertThreeCards(_ record: TrackedCaseRecord, file: StaticString = #filePath,
-                              line: UInt = #line) {
-            let instances = record.movement?.instances ?? []
-            let expected: [(String, URL)] = [
-                ("3а-3696/2020", fixtures.moscowFirstURL),
-                ("66а-2013/2020", fixtures.appeal2013URL),
-                ("66а-4311/2020", fixtures.appeal4311URL)
-            ]
-            for (number, url) in expected {
-                XCTAssertTrue(instances.contains {
-                    $0.caseNumber == number && $0.sourceURL == url
-                }, "missing \(number) at \(url)", file: file, line: line)
-            }
-            let matching = instances.filter { instance in
-                expected.contains { $0.0 == instance.caseNumber && $0.1 == instance.sourceURL }
-            }
-            XCTAssertEqual(matching.count, 3, file: file, line: line)
-            let expectedURLs = Set(expected.map(\.1))
-            XCTAssertEqual(Set(matching.compactMap(\.sourceURL)).intersection(expectedURLs).count,
-                           3, file: file, line: line)
-            for number in ["66а-2013/2020", "66а-4311/2020"] {
-                let sourceURL = number == "66а-2013/2020"
-                    ? fixtures.appeal2013URL : fixtures.appeal4311URL
-                assertRetainedActText("Исторический текст \(number)",
-                                      linkedToCaseNumber: number,
-                                      sourceURL: sourceURL, in: record,
-                                      file: file, line: line)
-            }
+        let expectedInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "3а-3696/2020",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowFirstURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "66а-2013/2020",
+                                     domain: "1ap.sudrf.ru",
+                                     sourceURL: fixtures.appeal2013URL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "66а-4311/2020",
+                                     domain: "1ap.sudrf.ru",
+                                     sourceURL: fixtures.appeal4311URL.absoluteString)
+        ])
+        assertExactInstances(saved, expected: expectedInstances)
+        for number in ["66а-2013/2020", "66а-4311/2020"] {
+            let sourceURL = number == "66а-2013/2020"
+                ? fixtures.appeal2013URL : fixtures.appeal4311URL
+            assertRetainedActText("Исторический текст \(number)",
+                                  linkedToCaseNumber: number,
+                                  sourceURL: sourceURL, in: saved)
         }
-        assertThreeCards(saved)
         let firstJournal = try XCTUnwrap(saved.eventJournal?.events.map(\.id))
         XCTAssertEqual(firstJournal.count, Set(firstJournal).count)
         let successfulRefresh = Date(timeIntervalSince1970: 400)
+        let seenAfterRepair = Date(timeIntervalSince1970: 1_400)
         saved.movementFetchedAt = successfulRefresh
+        // A newly discovered first-instance card may legitimately mark the
+        // repaired chain unread. Model the user reviewing it now so the
+        // partial/reopen persistence checks start from a meaningful read date.
+        saved.seenAt = seenAfterRepair
         try store.save()
 
         await sudrf.fail([fixtures.appeal4311URL])
         let partialTask = try XCTUnwrap(center.refresh(key: saved.key))
         guard case .partial = await partialTask.value.outcome else {
-            return XCTFail("one unreadable known appeal must produce a partial refresh")
+            XCTFail("one unreadable known appeal must produce a partial refresh")
+            throw Issue322TestFailure.unexpectedRefreshOutcome
         }
         let partial = try XCTUnwrap(store.record(forKey: saved.key))
-        assertThreeCards(partial)
+        assertExactInstances(partial, expected: expectedInstances)
+        for number in ["66а-2013/2020", "66а-4311/2020"] {
+            let sourceURL = number == "66а-2013/2020"
+                ? fixtures.appeal2013URL : fixtures.appeal4311URL
+            assertRetainedActText("Исторический текст \(number)",
+                                  linkedToCaseNumber: number,
+                                  sourceURL: sourceURL, in: partial)
+        }
         XCTAssertEqual(partial.movementFetchedAt, successfulRefresh)
         XCTAssertEqual(partial.sourceRefreshAttempt?.kind, .partial)
         XCTAssertEqual(partial.eventJournal?.events.map(\.id), firstJournal)
         let failedAppealReads = await sudrf.failedCardURLs()
         XCTAssertTrue(failedAppealReads.contains(fixtures.appeal4311URL))
-        await sudrf.fail([])
+        let transferRequests = await transferDirectory.requests()
+        XCTAssertTrue(transferRequests.isEmpty,
+                      "offline MovementService must never consult a live transfer directory")
 
-        let reopenedContainer = try SudrfModelContainerFactory.make(
-            inMemory: false, storeURL: storeURL)
-        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
-        let reopenedRepair = makeRepair(store: reopened,
-                                        sudrf: sudrf, moscow: moscow, defaults: defaults,
-                                        client: client)
-        let reopenedCenter = makeCenter(store: reopened, sudrf: sudrf,
-                                        moscow: moscow, repair: reopenedRepair, client: client)
-        let reopenedRecord = try XCTUnwrap(reopened.all().first)
-        let repeatTask = try XCTUnwrap(
-            reopenedCenter.refresh(key: reopenedRecord.key))
-        let repeatExecution = await repeatTask.value
-        guard case .partial = repeatExecution.outcome else {
-            return XCTFail("repeat refresh should preserve the known historical-chain state")
-        }
-        XCTAssertEqual(reopened.record(forKey: reopenedRecord.key)?.movementFetchedAt,
-                       successfulRefresh)
-        XCTAssertEqual(reopened.all().count, 1)
-        let repeated = try XCTUnwrap(reopened.all().first)
-        assertThreeCards(repeated)
-        XCTAssertEqual(Set(repeated.collectionNames), ["Москва", "Частная жалоба", "Апелляция"])
-        XCTAssertEqual(repeated.eventJournal?.events.map(\.id), firstJournal)
-
-        let moscowRequests = await moscow.searchRequests()
-        XCTAssertTrue(moscowRequests.contains { $0.contains("alias=mgs") && $0.contains("3а-3696/2020") })
-        let sudrfRequests = await sudrf.requestedCardURLs()
-        XCTAssertTrue(sudrfRequests.contains(fixtures.appeal2013URL))
-        XCTAssertTrue(sudrfRequests.contains(fixtures.appeal4311URL))
+        let partialSnapshot = recordSnapshot(partial)
+        assertUserData(partialSnapshot, addedAt: firstAddedAt, seenAt: seenAfterRepair,
+                       collections: ["Москва", "Частная жалоба", "Апелляция"])
+        return Issue322PersistenceCheckpoint(
+            storePath: storeURL.path, defaultsSuiteName: suiteName,
+            targetLocator: saved.key, controlLocator: nil,
+            records: recordSnapshots(store.all()))
     }
 
-    func testKSOYURefreshRestoresBothMoscowCardsWithoutJoiningPositiveControl() async throws {
+    private func verifyTwoAppealsAfterColdReopen(
+        _ checkpoint: Issue322PersistenceCheckpoint) async throws {
         let fixtures = try Issue322FixtureSet.load()
-        let (storeURL, store) = try persistentStore()
-        defer { try? FileManager.default.removeItem(at: storeURL.deletingLastPathComponent()) }
-        let (suiteName, defaults) = try isolatedDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: URL(fileURLWithPath: checkpoint.storePath))
+        let reopened = try TrackedStore(container: container, prepared: true)
+        XCTAssertEqual(recordSnapshots(reopened.all()), checkpoint.records,
+                       "cold reopen must restore the saved state before another refresh")
+        XCTAssertEqual(reopened.all().count, 1)
+        let reopenedRecord = try XCTUnwrap(reopened.record(forLocator: checkpoint.targetLocator))
+        let expectedInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "3а-3696/2020",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowFirstURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "66а-2013/2020",
+                                     domain: "1ap.sudrf.ru",
+                                     sourceURL: fixtures.appeal2013URL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "66а-4311/2020",
+                                     domain: "1ap.sudrf.ru",
+                                     sourceURL: fixtures.appeal4311URL.absoluteString)
+        ])
+        assertExactInstances(reopenedRecord, expected: expectedInstances)
+        for number in ["66а-2013/2020", "66а-4311/2020"] {
+            let sourceURL = number == "66а-2013/2020"
+                ? fixtures.appeal2013URL : fixtures.appeal4311URL
+            assertRetainedActText("Исторический текст \(number)",
+                                  linkedToCaseNumber: number,
+                                  sourceURL: sourceURL, in: reopenedRecord)
+        }
+        let beforeRepeat = recordSnapshot(reopenedRecord)
+        let persistedTarget = try XCTUnwrap(checkpoint.records.first {
+            $0.key == checkpoint.targetLocator
+        })
+        XCTAssertEqual(beforeRepeat, persistedTarget)
+        assertUserData(beforeRepeat, addedAt: Date(timeIntervalSince1970: 100),
+                       seenAt: Date(timeIntervalSince1970: 1_400),
+                       collections: ["Москва", "Частная жалоба", "Апелляция"])
+
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: checkpoint.defaultsSuiteName))
         let client = offlineClient()
+        let sudrf = try Issue322SudrfStub(fixtures: fixtures)
+        let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let transferDirectory = Issue322TransferCourtDirectory()
+        let repair = makeRepair(store: reopened, sudrf: sudrf,
+                                moscow: moscow, defaults: defaults, client: client)
+        let center = makeCenter(store: reopened, sudrf: sudrf, moscow: moscow,
+                                repair: repair, client: client,
+                                transferDirectory: transferDirectory)
+        let repeatTask = try XCTUnwrap(center.refresh(key: reopenedRecord.key))
+        let repeatExecution = await repeatTask.value
+        guard case .partial = repeatExecution.outcome else {
+            return XCTFail("repeat refresh should preserve the persisted historical-chain state")
+        }
+        let afterRepeat = try XCTUnwrap(reopened.record(forLocator: checkpoint.targetLocator))
+        assertExactInstances(afterRepeat, expected: expectedInstances)
+        XCTAssertEqual(recordSnapshots(reopened.all()), checkpoint.records,
+                       "repeat refresh must preserve every persisted record value")
+        XCTAssertEqual(recordSnapshot(afterRepeat), beforeRepeat)
+        let transferRequests = await transferDirectory.requests()
+        XCTAssertTrue(transferRequests.isEmpty,
+                      "offline MovementService must never consult a live transfer directory")
+
+        let requestedURLs = await sudrf.requestedCardURLs()
+        XCTAssertTrue(requestedURLs.contains(fixtures.appeal2013URL))
+        XCTAssertTrue(requestedURLs.contains(fixtures.appeal4311URL))
+    }
+
+    func testTwoAppealsRepairThroughRefreshAndRetainHistoryAcrossPartialFailureAndReopen() async throws {
+        let checkpoint = try await runTwoAppealsThroughPartialRefresh()
+        defer {
+            try? FileManager.default.removeItem(atPath:
+                URL(fileURLWithPath: checkpoint.storePath).deletingLastPathComponent().path)
+            UserDefaults(suiteName: checkpoint.defaultsSuiteName)?
+                .removePersistentDomain(forName: checkpoint.defaultsSuiteName)
+        }
+        try await verifyTwoAppealsAfterColdReopen(checkpoint)
+
+    }
+
+    private func runKSOYUThroughPartialRefresh()
+        async throws -> Issue322PersistenceCheckpoint {
+        let fixtures = try Issue322FixtureSet.load()
+        let cassationCaseNumber = try XCTUnwrap(fixtures.cassation.caseNumber)
+        let cassationActText = "Исторический текст \(cassationCaseNumber)"
+        let (storeURL, store) = try persistentStore()
+        let (suiteName, defaults) = try isolatedDefaults()
+        let client = offlineClient()
+        let targetAddedAt = Date(timeIntervalSince1970: 300)
+        let targetSeenAt = Date(timeIntervalSince1970: 1_300)
+        let controlAddedAt = Date(timeIntervalSince1970: 200)
+        let controlSeenAt = Date(timeIntervalSince1970: 1_200)
 
         var cassationContext = MovementContext(
             branchRaw: CourtBranch.general.rawValue, region: "город Москва",
@@ -529,11 +779,12 @@ final class Issue322AcceptanceTests: XCTestCase {
             context: cassationContext,
             snapshot: MovementDerivation.snapshot(from: cassationMovement,
                                                   context: cassationContext),
-            movement: cassationMovement, collections: ["Лукьянова"])
-        cassationRecord.addedAt = Date(timeIntervalSince1970: 300)
+            movement: cassationMovement, collections: ["Лукьянова", "Мои дела"])
+        cassationRecord.addedAt = targetAddedAt
+        cassationRecord.seenAt = targetSeenAt
         let seedEvent = CaseEvent.make(
             kind: .instanceDiscovered, occurrence: ["issue322", "8а-7078/2022"],
-            observedAt: cassationRecord.addedAt,
+            observedAt: targetAddedAt,
             evidence: CaseEventEvidence(instanceLevelRaw: CaseInstance.Level.cassation.rawValue,
                                         caseNumber: "8а-7078/2022"))
         try store.appendCaseEvents([seedEvent], to: cassationRecord)
@@ -557,16 +808,33 @@ final class Issue322AcceptanceTests: XCTestCase {
                 result: nil, sessions: [])], complaints: [:], acts: [])
         let control = try store.upsert(context: controlContext, snapshot: nil,
                                        movement: controlMovement,
-                                       collections: ["Положительный контроль"])
+                                       collections: ["Положительный контроль", "Мои дела"])
+        control.addedAt = controlAddedAt
+        control.seenAt = controlSeenAt
+        let controlEvent = CaseEvent.make(
+            kind: .instanceDiscovered,
+            occurrence: ["issue322-control", "3а-1318/2021"],
+            observedAt: controlAddedAt,
+            evidence: CaseEventEvidence(instanceLevelRaw: CaseInstance.Level.first.rawValue,
+                                        caseNumber: "3а-1318/2021"))
+        try store.appendCaseEvents([controlEvent], to: control)
         try store.save()
         XCTAssertEqual(store.all().count, 2)
+        XCTAssertEqual(cassationRecord.seenAt, targetSeenAt)
+        XCTAssertEqual(control.seenAt, controlSeenAt)
+        let controlSeedSnapshot = recordSnapshot(control)
+        assertUserData(controlSeedSnapshot, addedAt: controlAddedAt,
+                       seenAt: controlSeenAt,
+                       collections: ["Положительный контроль", "Мои дела"])
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let transferDirectory = Issue322TransferCourtDirectory()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
                                 repair: repair, client: client,
+                                transferDirectory: transferDirectory,
                                 afterRepair: { _, effectiveKey in
             guard let record = store.record(forLocator: effectiveKey),
                   let act = cassationMovement.acts.first,
@@ -579,7 +847,8 @@ final class Issue322AcceptanceTests: XCTestCase {
         let task = try XCTUnwrap(center.refresh(key: cassationRecord.key))
         let execution = await task.value
         guard case .partial = execution.outcome else {
-            return XCTFail("ordinary refresh should retain the chain with verified empty listings")
+            XCTFail("ordinary refresh should retain the chain with verified empty listings")
+            throw Issue322TestFailure.unexpectedRefreshOutcome
         }
 
         XCTAssertEqual(store.all().count, 2)
@@ -594,81 +863,171 @@ final class Issue322AcceptanceTests: XCTestCase {
         XCTAssertEqual(repaired.eventJournal?.events.map(\.id), [seedEvent.id])
         XCTAssertTrue(store.record(forLocator: control.key) === control)
         XCTAssertEqual(control.caseNumber, "3а-1318/2021")
+        XCTAssertEqual(recordSnapshot(control), controlSeedSnapshot,
+                       "repairing the target must not change the separate control record")
 
-        func assertFullChain(_ record: TrackedCaseRecord,
-                             file: StaticString = #filePath, line: UInt = #line) {
-            let instances = record.movement?.instances ?? []
-            let first = instances.first { $0.caseNumber == "02а-0419/2021" }
-            let appeal = instances.first { $0.caseNumber == "33а-6088/2021" }
-            let cassation = instances.first { $0.caseNumber.contains("8а-7078/2022") }
-            XCTAssertEqual([first, appeal, cassation].compactMap { $0 }.count, 3,
-                           file: file, line: line)
-            XCTAssertEqual(first?.sourceURL, fixtures.moscowHamovURL, file: file, line: line)
-            XCTAssertEqual(appeal?.sourceURL, fixtures.moscowAppealURL, file: file, line: line)
-            XCTAssertEqual(cassation?.sourceURL, fixtures.cassationURL, file: file, line: line)
-            XCTAssertTrue(cassation?.caseNumber.contains("88а-8501/2022") == true,
-                          file: file, line: line)
-            XCTAssertFalse(instances.contains { $0.caseNumber == "3а-1318/2021" },
-                           file: file, line: line)
-            for act in cassationMovement.acts {
-                guard let text = cassationMovement.actBodies[act.id] else {
-                    XCTFail("seed act must have cached text", file: file, line: line)
-                    continue
-                }
-                assertRetainedActText(text, linkedToCaseNumber: "8а-7078/2022",
-                                      sourceURL: fixtures.cassationURL, in: record,
-                                      file: file, line: line)
-            }
-        }
-        assertFullChain(repaired)
+        let expectedTargetInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "02а-0419/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowHamovURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "33а-6088/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowAppealURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.cassation.rawValue,
+                                     caseNumber: try XCTUnwrap(fixtures.cassation.caseNumber),
+                                     domain: "2kas.sudrf.ru",
+                                     sourceURL: fixtures.cassationURL.absoluteString)
+        ])
+        let expectedControlInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "3а-1318/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: nil)
+        ])
+        assertExactInstances(repaired, expected: expectedTargetInstances)
+        assertExactInstances(control, expected: expectedControlInstances)
+        assertRetainedActText(cassationActText,
+                              linkedToCaseNumber: "8а-7078/2022",
+                              sourceURL: fixtures.cassationURL, in: repaired)
         let journalAfterFull = try XCTUnwrap(repaired.eventJournal?.events.map(\.id))
         XCTAssertEqual(journalAfterFull.count, Set(journalAfterFull).count)
         let successfulRefresh = Date(timeIntervalSince1970: 500)
+        let seenAfterRepair = Date(timeIntervalSince1970: 1_500)
         repaired.movementFetchedAt = successfulRefresh
+        // The first repaired chain may be unread because its native cards are
+        // newly discovered. Persist a read marker before testing stable refresh.
+        repaired.seenAt = seenAfterRepair
         try store.save()
+        assertUserData(recordSnapshot(repaired), addedAt: targetAddedAt,
+                       seenAt: seenAfterRepair,
+                       collections: ["Лукьянова", "Мои дела"])
 
         await moscow.fail([fixtures.moscowAppealURL])
         let partialTask = try XCTUnwrap(center.refresh(key: repaired.key))
         guard case .partial = await partialTask.value.outcome else {
-            return XCTFail("an unavailable Moscow appellate card must leave a partial snapshot")
+            XCTFail("an unavailable Moscow appellate card must leave a partial snapshot")
+            throw Issue322TestFailure.unexpectedRefreshOutcome
         }
         let partial = try XCTUnwrap(store.record(forKey: repaired.key))
-        assertFullChain(partial)
+        assertExactInstances(partial, expected: expectedTargetInstances)
+        assertExactInstances(control, expected: expectedControlInstances)
         XCTAssertEqual(partial.movementFetchedAt, successfulRefresh)
         XCTAssertEqual(partial.eventJournal?.events.map(\.id), journalAfterFull)
         let failedMoscowReads = await moscow.failedCardURLs()
         XCTAssertTrue(failedMoscowReads.contains(fixtures.moscowAppealURL))
-        await moscow.fail([])
-
-        let reopenedContainer = try SudrfModelContainerFactory.make(
-            inMemory: false, storeURL: storeURL)
-        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
-        let reopenedRepair = makeRepair(store: reopened,
-                                        sudrf: sudrf, moscow: moscow, defaults: defaults,
-                                        client: client)
-        let reopenedCenter = makeCenter(store: reopened, sudrf: sudrf,
-                                        moscow: moscow, repair: reopenedRepair, client: client)
-        let target = try XCTUnwrap(reopened.record(forLocator: cassationRecord.key))
-        let repeatTask = try XCTUnwrap(
-            reopenedCenter.refresh(key: target.key))
-        let repeatExecution = await repeatTask.value
-        guard case .partial = repeatExecution.outcome else {
-            return XCTFail("repeat refresh should continue preserving the Moscow chain")
-        }
-        XCTAssertEqual(reopened.record(forKey: target.key)?.movementFetchedAt,
-                       successfulRefresh)
-        XCTAssertEqual(reopened.all().count, 2)
-        let repeated = try XCTUnwrap(reopened.record(forLocator: cassationRecord.key))
-        assertFullChain(repeated)
-        XCTAssertEqual(repeated.eventJournal?.events.map(\.id), journalAfterFull)
-        XCTAssertEqual(Set(repeated.collectionNames), ["Лукьянова"])
-        let reopenedControl = try XCTUnwrap(reopened.record(forLocator: control.key))
-        XCTAssertEqual(reopenedControl.caseNumber, "3а-1318/2021")
+        let targetSnapshot = recordSnapshot(partial)
+        assertUserData(targetSnapshot, addedAt: targetAddedAt, seenAt: seenAfterRepair,
+                       collections: ["Лукьянова", "Мои дела"])
+        XCTAssertEqual(recordSnapshot(control), controlSeedSnapshot)
+        let partialRecords = recordSnapshots(store.all())
+        XCTAssertEqual(partialRecords.count, 2)
+        let transferRequests = await transferDirectory.requests()
+        XCTAssertTrue(transferRequests.isEmpty,
+                      "offline MovementService must never consult a live transfer directory")
 
         let moscowRequests = await moscow.searchRequests()
         XCTAssertTrue(moscowRequests.contains { $0.contains("alias=hamovnicheskij") })
         XCTAssertTrue(moscowRequests.contains { $0.contains("instance=2") })
         let sudrfSearches = await sudrf.searchRequests()
         XCTAssertTrue(sudrfSearches.contains { $0.contains("2kas.sudrf.ru") })
+        return Issue322PersistenceCheckpoint(
+            storePath: storeURL.path, defaultsSuiteName: suiteName,
+            targetLocator: cassationRecord.key, controlLocator: control.key,
+            records: partialRecords)
+    }
+
+    private func verifyKSOYUAfterColdReopen(
+        _ checkpoint: Issue322PersistenceCheckpoint) async throws {
+        let fixtures = try Issue322FixtureSet.load()
+        let cassationActText = "Исторический текст \(try XCTUnwrap(fixtures.cassation.caseNumber))"
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: URL(fileURLWithPath: checkpoint.storePath))
+        let reopened = try TrackedStore(container: container, prepared: true)
+        XCTAssertEqual(recordSnapshots(reopened.all()), checkpoint.records,
+                       "cold reopen must restore target and control before another refresh")
+        XCTAssertEqual(reopened.all().count, 2)
+        let target = try XCTUnwrap(reopened.record(forLocator: checkpoint.targetLocator))
+        let controlLocator = try XCTUnwrap(checkpoint.controlLocator)
+        let control = try XCTUnwrap(reopened.record(forLocator: controlLocator))
+        let expectedTargetInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "02а-0419/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowHamovURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.appeal.rawValue,
+                                     caseNumber: "33а-6088/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: fixtures.moscowAppealURL.absoluteString),
+            Issue322InstanceSnapshot(level: CaseInstance.Level.cassation.rawValue,
+                                     caseNumber: try XCTUnwrap(fixtures.cassation.caseNumber),
+                                     domain: "2kas.sudrf.ru",
+                                     sourceURL: fixtures.cassationURL.absoluteString)
+        ])
+        let expectedControlInstances = expectedInstances([
+            Issue322InstanceSnapshot(level: CaseInstance.Level.first.rawValue,
+                                     caseNumber: "3а-1318/2021",
+                                     domain: MosGorSudEndpoint.host,
+                                     sourceURL: nil)
+        ])
+        assertExactInstances(target, expected: expectedTargetInstances)
+        assertExactInstances(control, expected: expectedControlInstances)
+        assertRetainedActText(cassationActText,
+                              linkedToCaseNumber: "8а-7078/2022",
+                              sourceURL: fixtures.cassationURL, in: target)
+        let targetBeforeRepeat = recordSnapshot(target)
+        let controlBeforeRepeat = recordSnapshot(control)
+        XCTAssertEqual(targetBeforeRepeat, try XCTUnwrap(checkpoint.records.first {
+            $0.key == targetBeforeRepeat.key
+        }))
+        XCTAssertEqual(controlBeforeRepeat, try XCTUnwrap(checkpoint.records.first {
+            $0.key == controlBeforeRepeat.key
+        }))
+        assertUserData(targetBeforeRepeat, addedAt: Date(timeIntervalSince1970: 300),
+                       seenAt: Date(timeIntervalSince1970: 1_500),
+                       collections: ["Лукьянова", "Мои дела"])
+        assertUserData(controlBeforeRepeat, addedAt: Date(timeIntervalSince1970: 200),
+                       seenAt: Date(timeIntervalSince1970: 1_200),
+                       collections: ["Положительный контроль", "Мои дела"])
+
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: checkpoint.defaultsSuiteName))
+        let client = offlineClient()
+        let sudrf = try Issue322SudrfStub(fixtures: fixtures)
+        let moscow = Issue322MoscowStub(fixtures: fixtures)
+        let transferDirectory = Issue322TransferCourtDirectory()
+        let repair = makeRepair(store: reopened, sudrf: sudrf,
+                                moscow: moscow, defaults: defaults, client: client)
+        let center = makeCenter(store: reopened, sudrf: sudrf, moscow: moscow,
+                                repair: repair, client: client,
+                                transferDirectory: transferDirectory)
+        let repeatTask = try XCTUnwrap(center.refresh(key: target.key))
+        let repeatExecution = await repeatTask.value
+        guard case .partial = repeatExecution.outcome else {
+            return XCTFail("repeat refresh should continue preserving the Moscow chain")
+        }
+        let targetAfterRepeat = try XCTUnwrap(reopened.record(forLocator: checkpoint.targetLocator))
+        let controlAfterRepeat = try XCTUnwrap(reopened.record(forLocator: controlLocator))
+        assertExactInstances(targetAfterRepeat, expected: expectedTargetInstances)
+        assertExactInstances(controlAfterRepeat, expected: expectedControlInstances)
+        XCTAssertEqual(recordSnapshots(reopened.all()), checkpoint.records,
+                       "repeat refresh must preserve both target and control records")
+        XCTAssertEqual(recordSnapshot(targetAfterRepeat), targetBeforeRepeat)
+        XCTAssertEqual(recordSnapshot(controlAfterRepeat), controlBeforeRepeat)
+        let transferRequests = await transferDirectory.requests()
+        XCTAssertTrue(transferRequests.isEmpty,
+                      "offline MovementService must never consult a live transfer directory")
+
+    }
+
+    func testKSOYURefreshRestoresBothMoscowCardsWithoutJoiningPositiveControl() async throws {
+        let checkpoint = try await runKSOYUThroughPartialRefresh()
+        defer {
+            try? FileManager.default.removeItem(atPath:
+                URL(fileURLWithPath: checkpoint.storePath).deletingLastPathComponent().path)
+            UserDefaults(suiteName: checkpoint.defaultsSuiteName)?
+                .removePersistentDomain(forName: checkpoint.defaultsSuiteName)
+        }
+        try await verifyKSOYUAfterColdReopen(checkpoint)
     }
 }

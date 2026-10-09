@@ -228,3 +228,19 @@ The local Xcode project was regenerated after fetching the three immutable
 model assets through the existing manifest-checked script. Project generation
 does not build or launch the application. A local application build remains
 deferred because it would register the application with Launch Services.
+
+## Current continuation checkpoint
+
+On 9 October 2026, the author selected the **new hearing date** for sorting a
+reschedule row and its inclusion in the existing 7/45-day windows. Both former
+and new dates remain part of the proposed row; its visual presentation must
+still be approved before UI changes. The previously agreed migration rule is
+unchanged: the one reschedule event is read only when both legacy rows are read.
+
+The branch was rebased onto main `60d7c45316b7bb2965d752e29c3a5a3346fff1ad`,
+retaining the released #413 source-card fields. Compile-only validation with
+`swift build --build-tests` passed; no tests or application were executed.
+Build log SHA-256:
+`40ceb0366368ed625f8c2d8a30bff0624491184b0218ad0dac9a2058c5c1def5`.
+The production feed still uses the legacy projection, and reschedule shadow
+mapping remains the next implementation step. This is not evidence for cutover.

@@ -164,3 +164,15 @@ acceptance. Any further target changes require offline source review before a
 new live run. If a canary fails, first inspect the safe outcome and existing
 source fixtures; any new fixture must be reviewed and sanitized before it is
 committed. Do not copy raw unknown HTML into the workflow artifact.
+
+## Current-main checkpoint
+
+On 9 October 2026 the branch was rebased onto `60d7c45316b7bb2965d752e29c3a5a3346fff1ad`
+(0.64.4, build 256). The roadmap conflict retained current-main calendar release
+facts and this branch's diagnostic #65 result. No canary implementation or
+target was changed. All test targets compiled without execution (log SHA-256
+`f679506ab2d74ea9a1114f68e2f450d5944d328d97f5e1ccec3c858d3c157f42`).
+The offline URLProtocol-based canary profile passed 15/15, 0 failures (log SHA-256
+`ee189ea8ba8e9b48e52aa8dc7c772ec255f7f9c8b798572cf3b6fb19ebdc7469`).
+No new live GET or workflow dispatch was performed. The author's decision on
+CAPTCHA exit status and new-head CI remain pending.

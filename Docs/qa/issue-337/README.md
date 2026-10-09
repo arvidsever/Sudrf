@@ -95,3 +95,15 @@ the packaged FSSP eligibility file matched the source. Build log
 The generated legal registry passed `--check`. Full hosted CI remains pending.
 Release history and the recent-release table will be updated in this same PR
 when the final patch version is assigned after acceptance.
+
+## Current-main checkpoint
+
+On 9 October 2026 the branch was rebased onto `60d7c45316b7bb2965d752e29c3a5a3346fff1ad`
+(0.64.4, build 256). Only stale roadmap release/queue text conflicted; current
+main's release information was preserved. The implementation delta is unchanged.
+All App test targets compiled without execution (log SHA-256
+`22210bfc47b4dc4ee832fe4ef7272c540938fbbc5e24d9c1d71320383975c777`).
+The isolated pure layout profile then passed 22/22, 0 failures (log SHA-256
+`8286301273d44412df4c81334f279b7d476dd25b4c9d90cfff29b1d58f4216d7`).
+No application was launched. Native acceptance and new-head hosted CI remain
+required; earlier CI evidence applies only to its recorded commit.

@@ -339,7 +339,7 @@ final class Issue322AcceptanceTests: XCTestCase {
                 self.makeOfflineService(context: context, client: sudrf,
                                         moscow: moscow,
                                         transferDirectory: transferDirectory)
-            })
+            }, fsspAutoModelEnabled: false)
         center.repairBeforeRefresh = { key, force in
             let outcome = try await repair.repairIfNeeded(key: key, forceAttempt: force)
             afterRepair?(key, outcome.effectiveKey)

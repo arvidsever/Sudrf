@@ -180,7 +180,7 @@ struct OverviewView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(h.court + (h.room.isEmpty ? "" : " · \(h.room)"))
+                    Text(h.displayCourtLabel + (h.room.isEmpty ? "" : " · \(h.room)"))
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

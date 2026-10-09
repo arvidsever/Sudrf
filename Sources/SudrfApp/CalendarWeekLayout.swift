@@ -1,4 +1,5 @@
 import Foundation
+import SudrfKit
 
 struct CalendarWeekHearingLayoutInput: Identifiable, Equatable {
     var id: String
@@ -9,9 +10,29 @@ struct CalendarWeekHearingLayoutInput: Identifiable, Equatable {
     var secondaryLabel: String? = nil
     var parties: String
     var court: String
+    /// Presentation only. Conflict grouping continues to compare raw `court`.
+    var displayCourt: String? = nil
     var room: String
     var judge: String
     var time: String
+
+    var displayCourtLabel: String {
+        if let displayCourt, !displayCourt.isEmpty { return displayCourt }
+        let readable = CourtNamePresentation.readableCourtName(
+            domain: nil, savedTitle: court, fallbackTitle: court)
+        return readable == "Суд" ? "Суд не установлен" : readable
+    }
+}
+
+extension CalendarWeekHearingLayoutInput {
+    init(event: CalEvent) {
+        self.init(id: event.id, caseNumber: event.caseNumber ?? "",
+                  displayCaseNumber: event.displayCaseNumber,
+                  secondaryLabel: event.secondaryLabel,
+                  parties: event.parties, court: event.court,
+                  displayCourt: event.displayCourtLabel,
+                  room: event.room, judge: event.judge, time: event.time)
+    }
 }
 
 enum CalendarWeekBlockKind: Equatable {
@@ -133,9 +154,10 @@ enum CalendarWeekLayout {
 
     static func itemDetails(_ item: CalendarWeekHearingLayoutInput,
                             conflict: Bool,
-                            common: CalendarWeekHearingLayoutInput?) -> String {
+                            common: CalendarWeekHearingLayoutInput?,
+                            includeCourt: Bool = false) -> String {
         if conflict {
-            return [item.court,
+            return [item.displayCourtLabel,
                     item.room,
                     item.judge.isEmpty ? nil : "судья \(item.judge)"]
                 .compactMap { value in
@@ -145,9 +167,17 @@ enum CalendarWeekLayout {
                 .joined(separator: " · ")
         }
 
-        guard let common else { return "" }
-        let room = item.room != common.room && !item.room.isEmpty ? item.room : nil
-        return room ?? ""
+        guard let common else {
+            return includeCourt ? item.displayCourtLabel : ""
+        }
+        let court = includeCourt || item.displayCourtLabel != common.displayCourtLabel
+            ? item.displayCourtLabel : nil
+        let room = (includeCourt || item.room != common.room) && !item.room.isEmpty
+            ? item.room : nil
+        return [court, room].compactMap { value in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
     }
 
     static func itemJudge(_ item: CalendarWeekHearingLayoutInput,

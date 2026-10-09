@@ -753,6 +753,38 @@ enum MovementDerivation {
             domain: instance?.domain, savedTitle: savedTitle, fallbackTitle: title)
     }
 
+    /// Calendar court text belongs to the session's own source instance. Old
+    /// snapshots without `sourceCardID` use the same unique level/number/title
+    /// match as the rest of movement presentation. An absent or ambiguous
+    /// match keeps a readable session title, but never borrows the root court
+    /// to replace a technical/empty one.
+    static func calendarCourtLabel(for session: StoredSession,
+                                   movement: CaseMovement?,
+                                   context: MovementContext?) -> String {
+        if let movement,
+           let instance = sourceInstance(for: session, movement: movement, context: context) {
+            if let raw = courtLabel(session.court),
+               let title = displayedCourtLabel(raw, instance: instance, context: context),
+               title != "Суд" {
+                return title
+            }
+            let savedTitle = savedSourceCardTitle(for: instance, context: context)
+            let sourceTitle = CourtNamePresentation.readableCourtName(
+                domain: nil, savedTitle: savedTitle, fallbackTitle: instance.court)
+            if sourceTitle != "Суд" { return sourceTitle }
+            let directoryTitle = CourtNamePresentation.readableCourtName(
+                domain: instance.domain, savedTitle: instance.court, fallbackTitle: nil)
+            if directoryTitle != "Суд" { return directoryTitle }
+        }
+        guard let raw = courtLabel(session.court) else { return "Суд не установлен" }
+        guard !CourtNamePresentation.isTechnicalCourtTitle(raw) else {
+            return "Суд не установлен"
+        }
+        let savedTitle = CourtNamePresentation.readableCourtName(
+            domain: nil, savedTitle: raw, fallbackTitle: raw)
+        return savedTitle == "Суд" ? "Суд не установлен" : savedTitle
+    }
+
     private static func sourceInstance(for session: StoredSession,
                                        movement: CaseMovement,
                                        context: MovementContext?) -> CaseInstance? {

@@ -39,12 +39,37 @@ struct CalEvent: Identifiable {
     var deadlineId: String?
     var parties: String = ""
     var court: String = ""
+    /// Display-only; `court` remains the saved identity/overlap key.
+    var displayCourt: String? = nil
     var room: String = ""
     var judge: String = ""
     /// Вид срока («Апелляционная жалоба» и т. п.) — только у дедлайнов, для
     /// карточки месяца (issue #332): заголовок карточки без опоры на `title`,
     /// который уже включает номер дела.
     var what: String? = nil
+
+    var displayCourtLabel: String {
+        if let displayCourt, !displayCourt.isEmpty { return displayCourt }
+        let readable = CourtNamePresentation.readableCourtName(
+            domain: nil, savedTitle: court, fallbackTitle: court)
+        return readable == "Суд" ? "Суд не установлен" : readable
+    }
+
+    static func hearing(_ hearing: TrackedHearing, id: String) -> CalEvent {
+        let primaryCaseNumber = CaseNumberPresentation.primary(hearing.caseNumber)
+        let secondaryLabel = hearing.instanceLevel == .material ? hearing.secondaryLabel : nil
+        let displayCaseNumber = secondaryLabel == nil
+            ? hearing.reviewNumber ?? primaryCaseNumber
+            : primaryCaseNumber
+        return CalEvent(id: id, date: hearing.date, sortTime: hearing.time, kind: .hearing,
+            chip: "\(hearing.time) заседание · \(displayCaseNumber)", time: hearing.time,
+            heading: "ЗАСЕДАНИЕ", title: "№ \(displayCaseNumber) — \(hearing.parties)",
+            sub: "\(hearing.displayCourtLabel)" + (hearing.room.isEmpty ? "" : " · \(hearing.room)"),
+            caseNumber: hearing.caseNumber, displayCaseNumber: displayCaseNumber,
+            secondaryLabel: secondaryLabel, deadlineId: nil, parties: hearing.parties,
+            court: hearing.court, displayCourt: hearing.displayCourtLabel,
+            room: hearing.room, judge: hearing.judge)
+    }
 
     var accent: Color {
         switch kind {
@@ -173,20 +198,7 @@ struct CalendarScreen: View {
             return seen == 0 ? base : "\(base)#\(seen + 1)"
         }
         for h in router.calendarHearings {
-            let primaryCaseNumber = CaseNumberPresentation.primary(h.caseNumber)
-            let secondaryLabel = h.instanceLevel == .material ? h.secondaryLabel : nil
-            let displayCaseNumber = secondaryLabel == nil
-                ? h.reviewNumber ?? primaryCaseNumber
-                : primaryCaseNumber
-            out.append(CalEvent(id: uniqueID("hearing#\(h.id)"),
-                date: h.date, sortTime: h.time, kind: .hearing,
-                chip: "\(h.time) заседание · \(displayCaseNumber)", time: h.time, heading: "ЗАСЕДАНИЕ",
-                title: "№ \(displayCaseNumber) — \(h.parties)",
-                sub: "\(h.court)" + (h.room.isEmpty ? "" : " · \(h.room)"),
-                caseNumber: h.caseNumber, displayCaseNumber: displayCaseNumber,
-                secondaryLabel: secondaryLabel,
-                deadlineId: nil,
-                parties: h.parties, court: h.court, room: h.room, judge: h.judge))
+            out.append(CalEvent.hearing(h, id: uniqueID("hearing#\(h.id)")))
         }
         for d in router.deadlines + router.inactiveDeadlines {
             let kind: CalEventKind
@@ -337,8 +349,8 @@ struct CalendarScreen: View {
         var overlapDayList: [Date] = []                  // отсортированы — для «Накладки: N дней»
         var overlapByID: [String: CalendarMonthOverlap] = [:]
         var seriesByID: [String: (index: Int, total: Int)] = [:]
-        var courtShort: [String: String] = [:]           // сырой court заседания → короткое имя (с учётом коллизий)
-        var courtTier: [String: CourtTier?] = [:]        // сырой court заседания → звено
+        var courtShort: [String: String] = [:]           // подпись суда → короткое имя (с учётом коллизий)
+        var courtTier: [String: CourtTier?] = [:]        // подпись суда → звено
     }
 
     static func buildMonthModel(month: Date, events: [CalEvent]) -> MonthModel {
@@ -351,15 +363,22 @@ struct CalendarScreen: View {
 
         let courtRaws = Array(Set(allHearings.map(\.court)))
         let courtKeys = CourtNamePresentation.canonicalKeys(courtRaws)
-        let courtShorts = CourtNamePresentation.disambiguatedShortNames(courtRaws)
+        let courtLabels = Set(allHearings.map(\.displayCourtLabel))
+        let shortNames = CourtNamePresentation.disambiguatedShortNames(Array(courtLabels))
+        let courtShorts = Dictionary(uniqueKeysWithValues: courtLabels.map { label in
+            (label, shortNames[label] ?? label)
+        })
         var courtTier: [String: CourtTier?] = [:]
-        for raw in courtRaws { courtTier[raw] = CourtNamePresentation.display(raw).tier }
+        for label in courtLabels {
+            courtTier[label] = CourtNamePresentation.display(label).tier
+        }
 
         func input(_ ev: CalEvent) -> CalendarMonthHearingInput {
             CalendarMonthHearingInput(id: ev.id, date: ev.date, time: ev.time,
                                        caseNumber: ev.caseNumber ?? ev.id,
                                        courtKey: courtKeys[ev.court] ?? ev.court,
-                                       courtShort: courtShorts[ev.court] ?? ev.court)
+                                       courtShort: courtShorts[ev.displayCourtLabel]
+                                        ?? ev.displayCourtLabel)
         }
         // Накладка сравнивает суды — пустая строка суда не значит «другой суд»,
         // это просто отсутствие данных, поэтому такие заседания не участвуют
@@ -881,13 +900,13 @@ struct CalendarScreen: View {
     }
 
     private func hearingHelpText(_ ev: CalEvent, overlap: CalendarMonthOverlap?) -> String {
-        var s = "\(ev.time) · \(ev.parties)\n\(hearingNumberFullLabel(ev)) · \(ev.court)"
+        var s = "\(ev.time) · \(ev.parties)\n\(hearingNumberFullLabel(ev)) · \(ev.displayCourtLabel)"
         if let overlap { s += "\nНакладка: \(overlap.otherCourtShort) \(overlap.otherTime)" }
         return s
     }
 
     private func hearingAccessibilityLabel(_ ev: CalEvent, overlap: CalendarMonthOverlap?, seriesLabel: String?) -> String {
-        var s = "Заседание \(ev.time), \(ev.parties), \(hearingNumberFullLabel(ev)), \(ev.court)"
+        var s = "Заседание \(ev.time), \(ev.parties), \(hearingNumberFullLabel(ev)), \(ev.displayCourtLabel)"
         if let overlap {
             s += ". Накладка с заседанием в \(overlap.otherCourtShort) в \(overlap.otherTime)"
         } else if let seriesLabel {
@@ -934,10 +953,10 @@ struct CalendarScreen: View {
     @ViewBuilder
     private func hearingSecondLine(_ ev: CalEvent, model: MonthModel,
                                    overlap: CalendarMonthOverlap?, seriesLabel: String?) -> some View {
-        let tier = model.courtTier[ev.court] ?? nil
+        let tier = model.courtTier[ev.displayCourtLabel] ?? nil
         let recognized = tier != nil
         let color = CourtTierPalette.color(tier)
-        let courtShort = model.courtShort[ev.court] ?? ev.court
+        let courtShort = model.courtShort[ev.displayCourtLabel] ?? ev.displayCourtLabel
         let number = hearingNumberLabel(ev)
 
         let courtLast = courtText(courtShort, color: color).lineLimit(1).truncationMode(.tail)
@@ -972,7 +991,7 @@ struct CalendarScreen: View {
     }
 
     private func hearingCardTwoLine(_ ev: CalEvent, model: MonthModel) -> some View {
-        let tier = model.courtTier[ev.court] ?? nil
+        let tier = model.courtTier[ev.displayCourtLabel] ?? nil
         let color = CourtTierPalette.color(tier)
         let tint = CourtTierPalette.tint(tier)
         let overlap = model.overlapByID[ev.id]
@@ -1005,7 +1024,7 @@ struct CalendarScreen: View {
     }
 
     private func hearingCardOneLine(_ ev: CalEvent, model: MonthModel) -> some View {
-        let tier = model.courtTier[ev.court] ?? nil
+        let tier = model.courtTier[ev.displayCourtLabel] ?? nil
         let color = CourtTierPalette.color(tier)
         let tint = CourtTierPalette.tint(tier)
         let overlap = model.overlapByID[ev.id]
@@ -1439,13 +1458,7 @@ struct CalendarScreen: View {
     private func weekHearingInputs(on day: Date) -> [CalendarWeekHearingLayoutInput] {
         events(on: day).filter {
             $0.kind == .hearing && CalendarWeekLayout.isWithinWindow($0.time)
-        }.map { ev in
-            CalendarWeekHearingLayoutInput(id: ev.id, caseNumber: ev.caseNumber ?? "",
-                                           displayCaseNumber: ev.displayCaseNumber,
-                                           secondaryLabel: ev.secondaryLabel,
-                                           parties: ev.parties, court: ev.court,
-                                           room: ev.room, judge: ev.judge, time: ev.time)
-        }
+        }.map(CalendarWeekHearingLayoutInput.init(event:))
     }
 
     private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
@@ -1483,7 +1496,8 @@ struct CalendarScreen: View {
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            weekCardFooter(court: item.court, room: item.room, judge: item.judge, conflict: conflict)
+            weekCardFooter(court: item.displayCourtLabel, room: item.room,
+                           judge: item.judge, conflict: conflict)
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
         // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
@@ -1504,6 +1518,7 @@ struct CalendarScreen: View {
     private func weekStackCard(_ block: CalendarWeekBlock) -> some View {
         let conflict = block.isConflict
         let first = block.hearings.first
+        let displayCourtsVary = Set(block.hearings.map(\.displayCourtLabel)).count > 1
         return VStack(alignment: .leading, spacing: 7) {
             if let badge = block.badge {
                 Text(badge)
@@ -1531,7 +1546,9 @@ struct CalendarScreen: View {
                                 .foregroundStyle(Color.primary.opacity(0.60))
                                 .lineLimit(1)
                         }
-                        let details = CalendarWeekLayout.itemDetails(item, conflict: conflict, common: first)
+                        let details = CalendarWeekLayout.itemDetails(
+                            item, conflict: conflict, common: first,
+                            includeCourt: displayCourtsVary)
                         if !details.isEmpty {
                             Text(details)
                                 .font(.system(size: 9))
@@ -1554,8 +1571,8 @@ struct CalendarScreen: View {
                         .font(.system(size: 9.5))
                         .foregroundStyle(Color.primary.opacity(0.45))
                 }
-            } else if let first {
-                weekCardFooter(court: first.court, room: first.room, conflict: false)
+            } else if let first, !displayCourtsVary {
+                weekCardFooter(court: first.displayCourtLabel, room: first.room, conflict: false)
             }
         }
         .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))

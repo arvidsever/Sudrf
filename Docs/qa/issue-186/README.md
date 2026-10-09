@@ -73,12 +73,27 @@
   `Docs/qa/issue-324/build-ui.sh` заменены прежние частичные подстановки на
   подстановки точных YAML-ключей, чтобы суффикс Debug и схема продукта не
   просачивались в QA identity.
-- Сборка Xcode app после rebase не запускалась. Постобработка Xcode 27
+- На момент этой проверки сборка Xcode app после rebase не запускалась. Постобработка Xcode 27
   автоматически регистрирует собираемое macOS-приложение в LaunchServices, что
   затрагивает системное состояние. Поэтому unsigned build log выше относится к
   предыдущей базе и не служит доказательством свежей сборки после rebase.
   [SwiftPM compile log](</private/tmp/sudrf-186-post-rebase-swiftpm-build.log>),
   [isolated identity-test log](</private/tmp/sudrf-186-post-rebase-identity-test.log>).
+
+### Разрешённая сборка Sudrf Debug после возобновления работы
+
+9 октября 2026 года автор разрешил сборку и автоматическую регистрацию
+отдельного Sudrf Debug без запуска. XcodeGen и unsigned Xcode 27 Debug build
+на текущем checkpoint `035e340` завершились успешно. Собранный plist содержит
+`ru.sudrf.app.debug`, `Sudrf Debug` и только URL-схему `sudrf-debug`.
+Журнал подтверждает `RegisterWithLaunchServices` именно `Sudrf-Debug.app`.
+Три каталога CoreML совпали с tracked manifests; FSSP eligibility JSON
+побайтно совпал с исходным. Приложение не запускалось.
+
+Локальный журнал: `/private/tmp/sudrf-186-resume-debug-build.log`.
+SHA-256: `45ff7d5caf78d70f9c59f3fed83afc6855ee72050d76b7a2b85d65f5a4c22aa0`.
+Эта проверка снимает ограничение предыдущего build checkpoint, но не заменяет
+подписанную системную приёмку ниже и не подтверждает работу Spotlight.
 
 ## Приёмка остаётся открытой
 

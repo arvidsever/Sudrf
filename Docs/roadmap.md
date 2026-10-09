@@ -72,7 +72,7 @@
 | [#148](https://github.com/arvidsever/Sudrf/issues/148) | После event identity и сроков создать одностороннюю проекцию в Apple Calendar. |
 | [#149](https://github.com/arvidsever/Sudrf/issues/149) | После надёжности источников и журнала добавить backend/APNs с тем же event contract. |
 | [#164](https://github.com/arvidsever/Sudrf/issues/164) | Продолжить обучение KCAPTCHA после 500 уникальных проверенных картинок с трёх host. |
-| [#106](https://github.com/arvidsever/Sudrf/issues/106) | Подключить поиск мировых судей Москвы по проверенному reference. |
+| [#106](https://github.com/arvidsever/Sudrf/issues/106) | Первый этап КоАП: отдельные участки в нынешнем picker, поиск/карточка и согласованная цепочка обжалования с федеральными этапами. Один живой путь по УИД до найденной карточки подтверждён; полнота поиска, hosted disk-тесты и нативная приёмка ещё не завершены. [Доказательства](qa/issue-106-moscow-magistrate-directory/README.md). ГПК/КАС и вся issue остаются открытыми. |
 | [#108](https://github.com/arvidsever/Sudrf/issues/108) | После #106 вынести общий routing источников мировых судей. |
 | [#107](https://github.com/arvidsever/Sudrf/issues/107) | После #108 подключить мировых судей Санкт-Петербурга. |
 | [#165](https://github.com/arvidsever/Sudrf/issues/165) | Прямой уголовный поиск ВС РФ после точного номера и HTML fixture; #76 не блокирует. |

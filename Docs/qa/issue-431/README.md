@@ -21,10 +21,10 @@ temporary directory.
 The persisted regression removes `sourceCardID`, as in snapshots written before
 #155, while retaining the appeal number (saved since #211 / v0.51.0). A separate
 older-format test removes both identity fields and supplies two same-court
-appeals with the same event tuple; that ambiguous source remains
-`Суд не установлен` and never borrows the root court. This boundary is
-intentional: no court label proves which appeal produced an event when the
-saved identity is absent and the movement has multiple matching cards. A
+appeals with the same event tuple. Following the explicit user decision on
+9 October 2026, the common confirmed court is shown without choosing an
+appeal or filling missing identity fields. Different or unconfirmed courts
+still remain `Суд не установлен` and never borrow the root court. A
 separate exact-`sourceCardID` regression verifies that a blank saved court
 label can be restored from that source card's own court, including a readable
 saved district name on the shared Moscow portal host. A month/week projection
@@ -63,10 +63,10 @@ do not fit. No layout change was introduced for this fallback.
 The user accepted the four shown month/day/week/agenda screenshots on
 **9 октября 2026 года**: «Да, визуальная приёмка пройдена».
 
-A separate user decision is still pending for very old snapshots with neither
-production number nor source ID and multiple matching cards of the same court.
-The current code remains conservative; visual approval does not resolve that
-policy question. No claim about a live court response is made. The production
+A separate user decision was received on 9 October 2026: show the confirmed
+common court without attaching an old hearing to a specific registration.
+The supplemental implementation and regression are recorded below.
+No claim about a live court response is made. The production
 app, working database and TestFlight were not opened.
 
 ## Compatibility after rebase (9 October 2026)
@@ -78,6 +78,25 @@ without conflicts. Focused checks passed: `Issue431CalendarCourtLabelTests`
 generate` and the unsigned Xcode 27 Debug build succeeded; all three bundled
 CoreML models matched their manifests and the eligibility resource matched its
 fixture. The app was not launched. Native QA and UserActivity tests were not
-rerun; the visual acceptance above predates this rebase. The legacy ambiguous
-source policy remains pending, so the PR stays a draft and no release version
-is assigned here.
+rerun; the visual acceptance above predates this rebase. This checkpoint
+preceded the supplemental common-court implementation below; no release
+version was assigned at that checkpoint.
+
+## Agreed common-court fallback, 9 October 2026
+
+For sessions without both production number and source ID, multiple matching
+cards may provide one court title only when every candidate proves that court.
+Dedicated domains use the official directory. Moscow's shared portal requires
+each candidate's validated native card URL and own court alias; a KnownCard
+matched only by host and case number is insufficient. No registration is
+chosen and no raw session, number, source ID or hearing ID is changed.
+
+Independent review found a cross-district same-number counterexample. Its RED
+test reproduced one intended failure; after the native locator check, the
+same focused pure test passed (1/1). It also covers two confirmed different
+courts, a missing court, an unproved shared portal, and two same native aliases.
+Log: `/private/tmp/sudrf-431-resume-policy-green.log`;
+SHA-256: `019a8d046d8fc9ec663fc5d40abf21d513552760e1b0d27c3efae9ebc9be0065`.
+This pure method does not construct AppRouter, open a store or publish Spotlight.
+Independent Astra review accepted the corrected diff. New-SHA CI and the
+final Xcode build remain gates.

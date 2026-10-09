@@ -101,10 +101,61 @@ final class Issue431CalendarCourtLabelTests: XCTestCase {
             complaints: [:], acts: [])
         var legacyWithoutInstanceNumber = technical
         legacyWithoutInstanceNumber.caseNumber = nil
+        let unchangedLegacy = legacyWithoutInstanceNumber
         XCTAssertEqual(MovementDerivation.calendarCourtLabel(
             for: legacyWithoutInstanceNumber, movement: ambiguous, context: context),
-            "Суд не установлен",
-            "An old snapshot with neither source ID nor instance number must remain unknown when two same-court appeal cards match.")
+            "Московский областной суд",
+            "The court is proved for both candidates without choosing a registration.")
+        XCTAssertEqual(legacyWithoutInstanceNumber, unchangedLegacy)
+        XCTAssertNil(legacyWithoutInstanceNumber.caseNumber)
+        XCTAssertNil(legacyWithoutInstanceNumber.sourceCardID)
+
+        var otherCourt = duplicateReview
+        otherCourt.domain = "vs--komi.sudrf.ru"
+        var conflictingCourts = ambiguous
+        conflictingCourts.instances = [root, firstReview, otherCourt]
+        XCTAssertEqual(MovementDerivation.calendarCourtLabel(
+            for: legacyWithoutInstanceNumber, movement: conflictingCourts, context: context),
+            "Суд не установлен", "Matching raw labels do not prove a common court.")
+
+        otherCourt.domain = "unconfirmed.example"
+        conflictingCourts.instances = [root, firstReview, otherCourt]
+        XCTAssertEqual(MovementDerivation.calendarCourtLabel(
+            for: legacyWithoutInstanceNumber, movement: conflictingCourts, context: context),
+            "Суд не установлен", "One unproved candidate prevents the common-court fallback.")
+
+        var sharedPortalFirst = firstReview
+        sharedPortalFirst.court = "www.mos-gorsud.ru"
+        sharedPortalFirst.domain = "www.mos-gorsud.ru"
+        var sharedPortalSecond = sharedPortalFirst
+        sharedPortalSecond.caseNumber = duplicateReview.caseNumber
+        conflictingCourts.instances = [root, sharedPortalFirst, sharedPortalSecond]
+        var sharedPortalSession = legacyWithoutInstanceNumber
+        sharedPortalSession.court = "www.mos-gorsud.ru"
+        XCTAssertEqual(MovementDerivation.calendarCourtLabel(
+            for: sharedPortalSession, movement: conflictingCourts, context: context),
+            "Суд не установлен", "The shared portal host alone does not prove the own court.")
+
+        var sameNumberContext = context
+        sameNumberContext.knownCards = [KnownCard(
+            domain: "www.mos-gorsud.ru", courtTitle: "Дорогомиловский районный суд",
+            caseID: "district-a", caseUID: "synthetic-a", deloID: "g2", new: "0",
+            caseNumber: firstReview.caseNumber, levelRaw: CaseInstance.Level.appeal.rawValue)]
+        sharedPortalFirst.sourceURL = URL(string:
+            "https://www.mos-gorsud.ru/rs/dorogomilovskij/services/cases/appeal-admin/details/district-a")!
+        sharedPortalSecond.caseNumber = sharedPortalFirst.caseNumber
+        sharedPortalSecond.sourceURL = URL(string:
+            "https://www.mos-gorsud.ru/rs/hamovnicheskij/services/cases/appeal-admin/details/district-b")!
+        conflictingCourts.instances = [root, sharedPortalFirst, sharedPortalSecond]
+        XCTAssertEqual(MovementDerivation.calendarCourtLabel(
+            for: sharedPortalSession, movement: conflictingCourts, context: sameNumberContext),
+            "Суд не установлен", "A weak KnownCard number match must not hide different own court aliases.")
+        sharedPortalSecond.sourceURL = URL(string:
+            "https://www.mos-gorsud.ru/rs/dorogomilovskij/services/cases/appeal-admin/details/district-b")!
+        conflictingCourts.instances = [root, sharedPortalFirst, sharedPortalSecond]
+        XCTAssertEqual(MovementDerivation.calendarCourtLabel(
+            for: sharedPortalSession, movement: conflictingCourts, context: sameNumberContext),
+            "Дорогомиловский районный суд", "Two validated native aliases prove the common court.")
 
         var exactContext = self.context(number: "2-4461/2026",
                                         court: "Сыктывкарский городской суд Республики Коми",

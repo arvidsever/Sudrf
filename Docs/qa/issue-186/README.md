@@ -53,6 +53,33 @@
   Hosted Xcode 27 job без соответствующего Xcode пропускает сборку;
   локальная настоящая Xcode 27 сборка приведена выше.
 
+### Проверки после переноса на `main` `8403266` (9 октября 2026 года)
+
+- `swift build --scratch-path /private/tmp/sudrf-186-swiftpm-build
+  --target SudrfApp` завершился успешно. Это компиляция SwiftPM-продукта; она
+  не создаёт macOS app bundle.
+- `swift test --scratch-path /private/tmp/sudrf-186-swiftpm-build --filter
+  testAppIdentityKeepsDebugLinksAndKeychainSeparate` прошёл: 1 тест, 0 ошибок.
+  Проверены только чистые функции выбора bundle ID, URL scheme и Keychain
+  service, а также разбор ссылки.
+- Xcode 27 (`27A266a`) через `-showBuildSettings` подтвердил Debug-настройки:
+  `Sudrf-Debug.app`, `ru.sudrf.app.debug`, `Sudrf Debug`, `sudrf-debug`.
+  Для Release подтверждены `Sudrf.app`, `ru.sudrf.app`, `Sudrf` и `sudrf`.
+  XcodeGen завершился успешно на текущем `project.yml`; сгенерированный plist
+  сохраняет значения identity как build-setting references.
+- Генератор существующего QA-host для #324 проверен с текущим `project.yml`:
+  XcodeGen и `-showBuildSettings` дали `Sudrf324QA.app`,
+  `ru.sudrf.qa.issue324` и `sudrf-qa-324`. В
+  `Docs/qa/issue-324/build-ui.sh` заменены прежние частичные подстановки на
+  подстановки точных YAML-ключей, чтобы суффикс Debug и схема продукта не
+  просачивались в QA identity.
+- Сборка Xcode app после rebase не запускалась. Постобработка Xcode 27
+  автоматически регистрирует собираемое macOS-приложение в LaunchServices, что
+  затрагивает системное состояние. Поэтому unsigned build log выше относится к
+  предыдущей базе и не служит доказательством свежей сборки после rebase.
+  [SwiftPM compile log](</private/tmp/sudrf-186-post-rebase-swiftpm-build.log>),
+  [isolated identity-test log](</private/tmp/sudrf-186-post-rebase-identity-test.log>).
+
 ## Приёмка остаётся открытой
 
 Финальное доказательство требует signed Debug-сборки на отдельной macOS-

@@ -12,6 +12,84 @@ private func canonicalAcceptanceHost(_ host: String) -> String {
 
 final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
 
+    private struct LocatorComparison: Codable {
+        let parsed: Bool
+        let moduleHost: Bool
+        let caseID: Bool
+        let caseUID: Bool
+        let deloID: Bool
+        let resolvedNew: Bool
+        let srvNum: Bool
+        let port: Bool
+        let unknownQuery: Bool
+        let scheme: Bool
+
+        var identityMatches: Bool {
+            parsed && moduleHost && caseID && caseUID && deloID
+                && resolvedNew && srvNum && port && unknownQuery
+        }
+    }
+
+    private static func compareLocators(_ requested: URL, _ effective: URL?) -> LocatorComparison {
+        let lhs = try? SudrfCaseCardLink(url: requested)
+        let rhs = effective.flatMap { try? SudrfCaseCardLink(url: $0) }
+        let parsed = lhs != nil && rhs != nil
+        return LocatorComparison(
+            parsed: parsed,
+            moduleHost: parsed && lhs?.moduleHost == rhs?.moduleHost,
+            caseID: parsed && lhs?.caseID == rhs?.caseID,
+            caseUID: parsed && lhs?.caseUID == rhs?.caseUID,
+            deloID: parsed && lhs?.deloID == rhs?.deloID,
+            resolvedNew: parsed && lhs?.resolvedNew == rhs?.resolvedNew,
+            srvNum: parsed && lhs?.srvNum == rhs?.srvNum,
+            port: parsed && lhs?.url.port == rhs?.url.port,
+            unknownQuery: parsed && unknownQuery(lhs!.url) == unknownQuery(rhs!.url),
+            scheme: parsed && lhs?.url.scheme == rhs?.url.scheme)
+    }
+
+    private static func unknownQuery(_ url: URL) -> [URLQueryItem] {
+        let known: Set<String> = ["name", "name_op", "case_id", "_id", "case_uid", "_uid",
+                                  "delo_id", "_deloid", "new", "_new", "srv_num"]
+        return (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .filter { !known.contains($0.name.lowercased()) }
+    }
+
+    func testLocatorComparisonAcceptsCanonicalPublishedIdentity() throws {
+        let base = try XCTUnwrap(URL(string: "http://vos.spb.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=123&case_uid=abc&delo_id=42&srv_num=1&case_type=0&extra=a&extra=b"))
+        for new in ["", "&_new", "&_new=", "&_new=0"] {
+            let effective = try XCTUnwrap(URL(string: "https://vos--spb.sudrf.ru/modules.php?srv_num=1&_deloId=42&_uid=abc&_id=123&name_op=case&name=sud_delo" + new + "&case_type=0&extra=a&extra=b"))
+            let comparison = Self.compareLocators(base, effective)
+            XCTAssertTrue(comparison.identityMatches)
+            XCTAssertFalse(comparison.scheme)
+        }
+        XCTAssertTrue(Self.compareLocators(base, base).scheme)
+    }
+
+    func testLocatorComparisonRejectsChangedIdentityAndUnknownQuery() throws {
+        let text = "https://vos.spb.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=123&case_uid=abc&delo_id=42&new=0&srv_num=1&case_type=0&extra=a&extra=b&id=legacy&uid=legacy"
+        let base = try XCTUnwrap(URL(string: text))
+        let changes = [
+            text.replacingOccurrences(of: "vos.spb", with: "other.spb"),
+            text.replacingOccurrences(of: "case_id=123", with: "case_id=124"),
+            text.replacingOccurrences(of: "case_uid=abc", with: "case_uid=def"),
+            text.replacingOccurrences(of: "delo_id=42", with: "delo_id=43"),
+            text.replacingOccurrences(of: "new=0", with: "new=1"),
+            text.replacingOccurrences(of: "srv_num=1", with: "srv_num=2"),
+            text.replacingOccurrences(of: "sudrf.ru/", with: "sudrf.ru:8443/"),
+            text.replacingOccurrences(of: "case_type=0", with: "case_type=1"),
+            text.replacingOccurrences(of: "&extra=b", with: ""),
+            text.replacingOccurrences(of: "extra=a&extra=b", with: "extra=b&extra=a"),
+            text.replacingOccurrences(of: "id=legacy", with: "id=changed"),
+            text.replacingOccurrences(of: "uid=legacy", with: "uid=changed"),
+            text + "&_id=conflict",
+            text.replacingOccurrences(of: "https:", with: "ftp:")
+        ]
+        for changed in changes {
+            XCTAssertFalse(Self.compareLocators(base, try XCTUnwrap(URL(string: changed))).identityMatches)
+        }
+        XCTAssertFalse(Self.compareLocators(base, nil).identityMatches)
+    }
+
     private struct SolveSnapshot: Sendable {
         let callCount: Int
         let returnedTokenCount: Int
@@ -195,7 +273,8 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         let corpusDirectory = root.appendingPathComponent("captcha-corpus", isDirectory: true)
         for directory in [root, solverFailures, solverDiagnostics,
                           searchDiagnostics, corpusDirectory] {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
         }
         let previousSearchDiagnosticsDirectory = SearchDiagnostics.setDirForTesting(searchDiagnostics)
         defer { _ = SearchDiagnostics.setDirForTesting(previousSearchDiagnosticsDirectory) }
@@ -218,12 +297,41 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         let resolveMilliseconds = Self.elapsedMilliseconds(since: resolveStartedAt)
         let context = resolution.context
 
-        guard let cardURLString = context.cardURLString,
-              let resolvedCardURL = URL(string: cardURLString),
-              (try? SudrfCaseCardLink(url: resolvedCardURL))
-                == (try? SudrfCaseCardLink(url: Self.issue321CardURL)) else {
+        let effectiveURL = context.cardURLString.flatMap(URL.init(string:))
+        let comparison = Self.compareLocators(Self.issue321CardURL, effectiveURL)
+        let requested = try SudrfCaseCardLink(url: Self.issue321CardURL).sanitizedURL.absoluteString
+        let effective = effectiveURL.flatMap { try? SudrfCaseCardLink(url: $0) }?
+            .sanitizedURL.absoluteString
+        let fullDigest: (String) -> String = { value in
+            SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        struct LocatorDiagnostic: Encodable {
+            let runID: String
+            let utc: String
+            let requestedURL: String
+            let effectiveURL: String?
+            let requestedSHA256: String
+            let effectiveSHA256: String?
+            let comparison: LocatorComparison
+        }
+        let diagnostic = LocatorDiagnostic(
+            runID: runID, utc: ISO8601DateFormatter().string(from: Date()),
+            requestedURL: requested, effectiveURL: effective,
+            requestedSHA256: fullDigest(requested), effectiveSHA256: effective.map(fullDigest),
+            comparison: comparison)
+        let diagnosticURL = root.appendingPathComponent("locator-comparison.json")
+        let diagnosticData = try JSONEncoder().encode(diagnostic)
+        guard fileManager.createFile(atPath: diagnosticURL.path, contents: diagnosticData,
+                                     attributes: [.posixPermissions: 0o600]) else {
+            XCTFail("could not persist private locator diagnostic")
+            return
+        }
+        print("issue339_locator_identity_matches=\(comparison.identityMatches) "
+              + "issue339_locator_scheme_matches=\(comparison.scheme) "
+              + "issue339_locator_parsed=\(comparison.parsed)")
+        guard comparison.identityMatches else {
             XCTFail("resolved card must retain the supplied published locator identity")
-            throw LiveAcceptanceError.resolvedLocatorMismatch
+            return
         }
 
         let refresh = try await addAndAutoRefresh(
@@ -495,7 +603,6 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             + "&delo_id=1502001&case_type=0&new=0&srv_num=1")!
 
     private enum LiveAcceptanceError: Error {
-        case resolvedLocatorMismatch
         case autostartDidNotBegin
         case autostartTaskMissing
         case persistedRecordMissing

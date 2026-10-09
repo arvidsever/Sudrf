@@ -47,7 +47,9 @@ final class Issue339TestIsolation {
 
     func removePreferences() {
         userDefaults.removePersistentDomain(forName: suiteName)
-        try? FileManager.default.removeItem(at: supportDirectory)
+        if FileManager.default.fileExists(atPath: supportDirectory.path) {
+            try? FileManager.default.removeItem(at: supportDirectory)
+        }
     }
 }
 

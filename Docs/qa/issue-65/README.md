@@ -191,3 +191,13 @@ The seven-target count remains mandatory. This decision changes only workflow
 exit status, not classification or report contents. New-head CI remains pending.
 
 The updated offline profile passed 16 tests, 0 failures, on 9 October 2026 (log SHA-256 `280b7c13305cdb9c72ab1cfb6eaabdf7bd9e1c3986804f482eea03375e636e7a`). Independent review accepted the outcome-policy delta. No new live request or workflow dispatch was made. Final-head hosted CI is pending.
+
+## Accepted first-stage release scope, 10 October 2026
+
+The author selected CAPTCHA as a separate expected outcome without workflow failure. The 16-test offline profile passed (`/private/tmp/sudrf-65-captcha-policy-profile.log`, SHA-256 `280b7c13305cdb9c72ab1cfb6eaabdf7bd9e1c3986804f482eea03375e636e7a`). CI [37990541316](https://github.com/arvidsever/Sudrf/actions/runs/37990541316) succeeded on policy head `7930f858785a1d89548650bf513824d26e1bff6f`: 2032 XCTest, 20 skipped, 0 failures; 28 Swift Testing; 26 Python tests, 6 skipped. CI-log SHA-256 `6cf1d69c3ca368b742c7a94825d8d2ef07700f8119317b1e90aabf2e34613c58`. Hosted Xcode 27-specific build/test steps were skipped.
+
+Independent review: Ship for publication of this diagnostic stage with #65 open. A failing daily job from blocked redirects, TLS errors or unknown/oversize pages is an expected diagnostic result, not a PR gate or proof of a portal regression. No scheduled report has yet been produced from main. Redirect destinations are not retained, and target URLs were not changed by guessing.
+
+The branch was rebased onto release main `e9910a36b9d1af09d82de3f2eeaba246573a6cca`, preserving the canary implementation. Release 0.64.6 (258) is assigned to this developer-only stage; the final release commit must pass its own CI before merge.
+
+After rebase, the 16-test profile passed again: `/private/tmp/sudrf-65-release-profile.log`, SHA-256 `1165c843b114a0271a717ab294b7a780d09fe5022908017a5c5994a30e1d3a7f`. XcodeGen regenerated the app project and the unsigned Xcode 27 Debug build succeeded without launch. Product version 0.64.6 (258); build log `/private/tmp/sudrf-65-release-xcodebuild.log`, SHA-256 `f724ba0216cbd333dcd11eb9ab2b75c7e58c3e7ee9072d73375d8ec2cda8828c`. Registry `--check` passed.

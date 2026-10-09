@@ -86,6 +86,46 @@ struct CaseEventCourtBaseline: Codable, Equatable, Sendable {
         }
     }
 
+    mutating func normalizeMoscowOwnCourtFacts(
+        _ corrections: [MoscowOwnCourtCorrection],
+        linkedActCorrections: [String: MoscowOwnCourtCorrection]
+    ) {
+        for correction in corrections {
+            guard let semanticID = cards[correction.sourceCardID] else { continue }
+            for index in sessions.indices where sessions[index].sourceCardID == semanticID {
+                let oldCourt = sessions[index].court
+                guard oldCourt == correction.court
+                        || oldCourt == correction.previousCourt
+                        || MovementDerivation.isKnownMoscowDistrictComposite(oldCourt) else {
+                    continue
+                }
+                sessions[index].court = correction.court
+                if MovementDerivation.isKnownMoscowDistrictComposite(oldCourt),
+                   sessions[index].judge == oldCourt {
+                    sessions[index].judge = nil
+                }
+            }
+            for index in instances.indices where instances[index].sourceCardID == semanticID {
+                let oldCourt = instances[index].court
+                guard oldCourt == correction.court
+                        || oldCourt == correction.previousCourt
+                        || MovementDerivation.isKnownMoscowDistrictComposite(oldCourt) else {
+                    continue
+                }
+                instances[index].court = correction.court
+                if MovementDerivation.isKnownMoscowDistrictComposite(oldCourt),
+                   instances[index].judge == oldCourt {
+                    instances[index].judge = nil
+                }
+            }
+            for index in acts.indices where acts[index].sourceCardID == semanticID {
+                guard let actCorrection = linkedActCorrections[acts[index].sourceActID],
+                      actCorrection.sourceCardID == correction.sourceCardID else { continue }
+                acts[index].court = actCorrection.court
+            }
+        }
+    }
+
     /// Exact native locator continuity may change a projection's technical ID.
     /// Remap handled observations, never copy values from the display cache.
     func reidentified(using fresh: Self) -> Self {

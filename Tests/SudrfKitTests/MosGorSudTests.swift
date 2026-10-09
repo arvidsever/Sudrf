@@ -156,6 +156,9 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(card.caseNumber, "02-3501/2025")
         XCTAssertEqual(card.judge, "Дроздова С.А.")   // ключ «Cудья» с латинской C
         XCTAssertEqual(card.receiptDate, "11.12.2024")
+        XCTAssertEqual(card.result, "Обжаловано в кассации, 08.06.2026")
+        XCTAssertEqual(card.legalForceDate, "14.04.2026")
+        XCTAssertEqual(card.higherNumber, "33-13563/2026")
         XCTAssertEqual(card.category?.hasPrefix("219"), true)
         XCTAssertEqual(card.sessions.count, 5)
         let s0 = try XCTUnwrap(card.sessions.first)
@@ -189,6 +192,195 @@ final class MosGorSudTests: XCTestCase {
         ])
         XCTAssertEqual(Set(card.actLinks).count, 4)
         XCTAssertTrue(card.participants.contains { $0.hasPrefix("Административный истец:") })
+    }
+
+    func testIssue413OwnAppealFieldsAreNotTakenFromLowerInstance() throws {
+        for (name, number) in [("issue413-appeal-2020", "33-20562/2020"),
+                               ("issue413-appeal-2021", "33-6416/2021")] {
+            let card = try MosGorSudCardParser.parse(html: fixture(name))
+            XCTAssertEqual(card.uid, "77RS0032-01-2020-000111-11")
+            XCTAssertEqual(card.caseNumber, number)
+            XCTAssertNil(card.court, "source identity is not available to a context-free parse")
+            XCTAssertNil(card.judge, "lower-instance judge must not become the appeal judge")
+        }
+    }
+
+    func testIssue413LowerOnlyFieldsDoNotBecomeOwnFields() throws {
+        let html = """
+        <div class="row"><div class="left">Уникальный идентификатор дела</div><div class="right">77RS0032-01-2020-000111-11</div></div>
+        <div class="row"><div class="left">Номер дела в суде нижестоящей инстанции</div><div class="right">02-0001/2020</div></div>
+        <div class="row"><div class="left">Суд первой инстанции, судья</div><div class="right">Синтетический районный суд (Синтетический судья А.А.)</div></div>
+        """
+        let card = try MosGorSudCardParser.parse(html: html)
+        XCTAssertEqual(card.uid, "77RS0032-01-2020-000111-11")
+        XCTAssertNil(card.caseNumber)
+        XCTAssertNil(card.court)
+        XCTAssertNil(card.judge)
+    }
+
+    func testIssue413ExactJudgeFieldsKeepLatinAndCyrillicC() throws {
+        for label in ["Cудья", "Судья"] {
+            let html = """
+            <div class="row"><div class="left">Уникальный идентификатор дела</div><div class="right">77RS0032-01-2020-000111-11</div></div>
+            <div class="row"><div class="left">Номер жалобы ~ дела</div><div class="right">33-1/2026</div></div>
+            <div class="row"><div class="left">Суд первой инстанции, судья</div><div class="right">Синтетический районный суд (Синтетический судья А.А.)</div></div>
+            <div class="row"><div class="left">\(label)</div><div class="right">Собственный судья Б.Б.</div></div>
+            """
+            XCTAssertEqual(try MosGorSudCardParser.parse(html: html).judge, "Собственный судья Б.Б.")
+        }
+    }
+
+    func testIssue413KeepsDecisionFallbackWhenCurrentStateIsAbsent() throws {
+        let card = try MosGorSudCardParser.parse(html: """
+        <div class="left">Номер дела</div><div class="right">02-1/2026</div>
+        <div class="left">Решение первой инстанции</div><div class="right">Иск удовлетворён, 01.02.2026</div>
+        <div class="left">Дата вступления решения в силу</div><div class="right">12.02.2026</div>
+        <div class="left">Номер дела в суде вышестоящей инстанции</div><div class="right">33-2/2026</div>
+        """)
+        XCTAssertEqual(card.result, "Иск удовлетворён, 01.02.2026")
+        XCTAssertEqual(card.legalForceDate, "12.02.2026")
+        XCTAssertEqual(card.higherNumber, "33-2/2026")
+    }
+
+    func testIssue413DistrictOwnCourtMatchesShortAndFullDirectoryTitleOnly() throws {
+        let sourceURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/rs/cheremushkinskij/services/cases/first-civil/details/synthetic"))
+        for title in ["Черёмушкинский районный суд",
+                      "Черемушкинский районный суд города Москвы"] {
+            let card = try MosGorSudCardParser.parse(
+                html: """
+                <div class="left">Номер дела</div><div class="right">02-1/2026</div>
+                <div class="left">Наименование суда</div><div class="right">\(title)</div>
+                """,
+                sourceURL: sourceURL)
+            XCTAssertEqual(card.court, "Черёмушкинский районный суд")
+        }
+
+        for title in ["Тверской районный суд",
+                      "Черемушкинский районный суд города Твери"] {
+            XCTAssertThrowsError(try MosGorSudCardParser.parse(
+                html: """
+                <div class="left">Номер дела</div><div class="right">02-1/2026</div>
+                <div class="left">Наименование суда</div><div class="right">\(title)</div>
+                """,
+                sourceURL: sourceURL))
+        }
+    }
+
+    func testIssue413ForeignAppealSectionIsRejectedAtMovementBoundary() async throws {
+        let foreignURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/mgs/services/cases/appeal-criminal/details/foreign"))
+        let uid = "77RS0032-01-2020-000111-11"
+        let provider = MockMosGorSud(
+            searchByInstance: [MosGorSudInstance.appeal: [
+                MosGorSudResult(caseNumber: "33-6416/2021", uid: uid, cardURL: foreignURL),
+            ]],
+            cards: [
+                "synthetic-base": MosGorSudCard(uid: uid, caseNumber: "02-0001/2020",
+                                                 court: "Черёмушкинский районный суд"),
+                "foreign": MosGorSudCard(uid: uid, caseNumber: "33-6416/2021",
+                                          court: "Московский городской суд"),
+            ])
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [],
+                                      mosgorsud: provider)
+        let baseURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/rs/cheremushkinskij/services/cases/civil/details/synthetic-base"))
+        let base = MosGorSudResult(caseNumber: "02-0001/2020", uid: uid,
+                                   court: "Черёмушкинский районный суд", cardURL: baseURL)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+
+        let movement = try await service.moscowMovement(for: base, cartoteka: cartoteka)
+        XCTAssertFalse(movement.instances.contains { $0.level == .appeal })
+        assertMoscowAppealCoverageIsPartial(movement)
+    }
+
+    func testIssue413ParsedSourceFlowsThroughClientIntoMovement() async throws {
+        for (cardName, number) in [("issue413-appeal-2020", "33-20562/2020"),
+                                   ("issue413-appeal-2021", "33-6416/2021")] {
+            let movement = try await issue413Movement(
+                appealCardName: cardName, resultNumber: number,
+                resultUID: "77RS0032-01-2020-000111-11")
+            let first = try XCTUnwrap(movement.instances.first)
+            XCTAssertEqual(first.caseNumber, "02-0001/2020")
+            XCTAssertEqual(first.court, "Черёмушкинский районный суд")
+            XCTAssertEqual(first.judge, "Собственный районный судья")
+            let appeal = try XCTUnwrap(movement.instances.first { $0.level == .appeal })
+            XCTAssertEqual(appeal.caseNumber, number)
+            XCTAssertEqual(appeal.court, "Московский городской суд")
+            XCTAssertNil(appeal.judge)
+            XCTAssertNotEqual(first.caseNumber, appeal.caseNumber)
+        }
+    }
+
+    func testIssue413UpperCandidateIdentityMustMatchBeforeCoverage() async throws {
+        let wrongNumber = try await issue413Movement(
+            appealCardName: "issue413-appeal-2020",
+            resultNumber: "33-6416/2021",
+            resultUID: "77RS0032-01-2020-000111-11")
+        XCTAssertFalse(wrongNumber.instances.contains { $0.level == .appeal })
+        assertMoscowAppealCoverageIsPartial(wrongNumber)
+
+        let wrongUID = try await issue413Movement(
+            appealCardName: "issue413-appeal-2021",
+            resultNumber: "33-6416/2021",
+            resultUID: "77RS0032-01-2020-000112-12")
+        XCTAssertFalse(wrongUID.instances.contains { $0.level == .appeal })
+        assertMoscowAppealCoverageIsPartial(wrongUID)
+
+        let contradictoryCourtCard = try fixture("issue413-appeal-2021") + """
+        <div class="row"><div class="left">Наименование суда</div><div class="right">Синтетический другой суд</div></div>
+        """
+        let wrongCourt = try await issue413Movement(
+            appealCardName: "issue413-appeal-2021",
+            resultNumber: "33-6416/2021",
+            resultUID: "77RS0032-01-2020-000111-11",
+            appealCardOverride: contradictoryCourtCard)
+        XCTAssertFalse(wrongCourt.instances.contains { $0.level == .appeal })
+        assertMoscowAppealCoverageIsPartial(wrongCourt)
+    }
+
+    private func issue413Movement(appealCardName: String, resultNumber: String,
+                                  resultUID: String,
+                                  appealCardOverride: String? = nil) async throws -> CaseMovement {
+        let urlProtocol = MosGorSudFixtureURLProtocol.self
+        urlProtocol.install(
+            baseCard: """
+            <div class="row"><div class="left">Уникальный идентификатор дела</div><div class="right">77RS0032-01-2020-000111-11</div></div>
+            <div class="row"><div class="left">Номер дела ~ материала</div><div class="right">02-0001/2020</div></div>
+            <div class="row"><div class="left">Наименование суда</div><div class="right">Черёмушкинский районный суд</div></div>
+            <div class="row"><div class="left">Cудья</div><div class="right">Собственный районный судья</div></div>
+            """,
+            appealCard: try appealCardOverride ?? fixture(appealCardName),
+            appealURL: try XCTUnwrap(URL(string:
+                "https://mos-gorsud.ru/mgs/services/cases/appeal-civil/details/synthetic-appeal")),
+            resultNumber: resultNumber, resultUID: resultUID)
+        defer { urlProtocol.reset() }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.protocolClasses = [urlProtocol]
+        let client = MosGorSudClient(session: URLSession(configuration: configuration), minInterval: 0)
+        let service = MovementService(client: MockEmptyCase(), higherCourtDomains: [], mosgorsud: client)
+        let baseURL = try XCTUnwrap(URL(string:
+            "https://mos-gorsud.ru/rs/cheremushkinskij/services/cases/civil/details/synthetic-base"))
+        let base = MosGorSudResult(caseNumber: "02-0001/2020",
+                                  uid: "77RS0032-01-2020-000111-11",
+                                  court: "Черёмушкинский районный суд",
+                                  cardURL: baseURL)
+        let cartoteka = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        return try await service.moscowMovement(for: base, cartoteka: cartoteka)
+    }
+
+    private func assertMoscowAppealCoverageIsPartial(_ movement: CaseMovement,
+                                                     file: StaticString = #filePath,
+                                                     line: UInt = #line) {
+        let moscowCourt = movement.sourceRefreshCoverage?.first(where: {
+            $0.sourceFamily == "mosgorsud" && $0.courtKey == MosGorSudCourtDirectory.mgsAlias
+        })
+        XCTAssertEqual(moscowCourt?.kind, .partial, file: file, line: line)
+        XCTAssertTrue(moscowCourt?.loadedCardIdentities.isEmpty == true, file: file, line: line)
     }
 
     func testCardParserDropsUnsafePublishedActLinks() throws {
@@ -665,6 +857,82 @@ private final class MosGorSudHTTPFailureStub: URLProtocol {
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class MosGorSudFixtureURLProtocol: URLProtocol {
+    private struct Fixture {
+        let baseCard: Data
+        let appealCard: Data
+        let appealPath: String
+        let resultNumber: String
+        let resultUID: String
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var fixture: Fixture?
+
+    static func install(baseCard: String, appealCard: String, appealURL: URL,
+                        resultNumber: String = "33-6416/2021",
+                        resultUID: String = "77RS0032-01-2020-000111-11") {
+        lock.lock()
+        fixture = Fixture(baseCard: Data(baseCard.utf8), appealCard: Data(appealCard.utf8),
+                          appealPath: appealURL.path, resultNumber: resultNumber,
+                          resultUID: resultUID)
+        lock.unlock()
+    }
+
+    static func reset() {
+        lock.lock()
+        fixture = nil
+        lock.unlock()
+    }
+
+    private static func currentFixture() -> Fixture? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fixture
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, let fixture = Self.currentFixture() else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+
+        let body: Data
+        if url.path == "/search" {
+            let instance = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "instance" })?.value
+            let rows = instance == String(MosGorSudInstance.appeal)
+                ? "<tr data-href=\"\(fixture.appealPath)\"><td>\(fixture.resultNumber)</td><td>\(fixture.resultUID)</td><td></td><td></td><td></td></tr>"
+                : ""
+            body = Data("""
+            <table><thead><tr><th>№ дела</th><th>Стороны</th><th>Состояние</th><th>Категория</th><th>Судья</th></tr></thead>
+            <tbody>\(rows)</tbody></table>
+            """.utf8)
+        } else if url.path.hasSuffix("/synthetic-base") {
+            body = fixture.baseCard
+        } else if url.path == fixture.appealPath {
+            body = fixture.appealCard
+        } else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+
+        guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                             headerFields: ["Content-Type": "text/html; charset=utf-8"]) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
     }
 

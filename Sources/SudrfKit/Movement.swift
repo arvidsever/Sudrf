@@ -1766,7 +1766,7 @@ public actor MovementService: MovementProviding {
         return publishedCourt.court
     }
 
-    private static func sameCourtName(_ lhs: String, _ rhs: String) -> Bool {
+    static func sameCourtName(_ lhs: String, _ rhs: String) -> Bool {
         func words(_ text: String) -> [String] {
             let normalized = text.lowercased().replacingOccurrences(of: "ё", with: "е")
             return normalized.split { !$0.isLetter }.map(String.init)

@@ -104,7 +104,7 @@ enum ActJournalFeedProjection {
         legacyEntries: [FeedEntry]
     ) -> ActJournalFeedProjectionResult {
         let legacyActs = legacyEntries.filter { $0.kind == .act }
-        let rawLegacyIDCounts = Dictionary(grouping: legacyActs, by: \.id)
+        let rawLegacyIDCounts = Dictionary(grouping: legacyEntries, by: \.id)
         var legacyByKey = [ActKey: [FeedEntry]]()
         for row in legacyActs {
             guard let actID = row.actID else { continue }

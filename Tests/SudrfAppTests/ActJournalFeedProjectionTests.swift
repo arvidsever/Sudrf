@@ -347,6 +347,35 @@ final class ActJournalFeedProjectionTests: XCTestCase {
                        [.ambiguousAlias, .ambiguousAlias])
     }
 
+    func testCrossFamilyLegacyIDCollisionDoesNotTransferMarks() throws {
+        let fixture = try fixture(actID: "cross-family-act")
+        var snapshot = try XCTUnwrap(fixture.record.snapshot)
+        snapshot.sessions = [StoredSession(
+            dateRaw: fixture.currentAct.date, time: nil, room: nil,
+            event: fixture.currentAct.id, result: nil, court: fixture.owner.court,
+            levelRaw: fixture.owner.level.rawValue,
+            sourceCardID: fixture.sourceCardID)]
+        let record = input(
+            recordKey: fixture.record.recordKey, caseNumber: fixture.record.caseNumber,
+            client: fixture.record.client, acts: [fixture.currentAct],
+            instances: [fixture.owner], context: fixture.context, snapshot: snapshot)
+        let legacy = legacyProjection([record])
+        XCTAssertEqual(legacy.entries.map(\.kind), [.movement, .act])
+        let legacyID = try XCTUnwrap(legacy.entries.first?.id)
+        XCTAssertEqual(legacy.entries.map(\.id), [legacyID, legacyID])
+
+        let result = ActJournalFeedProjection.project(
+            records: [record], journalsByRecordKey: [record.recordKey: fixture.journal],
+            today: today, readIDs: [legacyID], knownIDs: [legacyID],
+            legacyEntries: legacy.entries)
+
+        XCTAssertTrue(result.aliases.isEmpty)
+        XCTAssertTrue(result.shadowReadIDs.isEmpty)
+        XCTAssertTrue(result.shadowKnownIDs.isEmpty)
+        XCTAssertEqual(result.unmappedEvents.map(\.reason), [.ambiguousAlias])
+        XCTAssertEqual(result.unmappedLegacyActs.map(\.reason), [.ambiguousAlias])
+    }
+
     func testDateConflictAndUnprovedActMirrorChangeStayUnmapped() throws {
         let oldDate = DateUtil.addDays(today, -1)
         let dateConflict = try fixture(actID: "date-conflict-act", currentDate: today,

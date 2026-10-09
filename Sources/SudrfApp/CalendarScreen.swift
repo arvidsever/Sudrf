@@ -165,6 +165,7 @@ struct CalendarNavigationBounds: PreferenceKey {
 
 struct CalendarScreen: View {
     @EnvironmentObject var router: AppRouter
+    @State private var selectedWeekDisclosureID: String?
     // Keep room for the capsule, period title, overlap counter and mode picker.
     // Only the remaining width participates in legend adaptation.
     private static let headerControlsReservedWidth: CGFloat = 800
@@ -185,6 +186,13 @@ struct CalendarScreen: View {
         .padding(EdgeInsets(top: NavChrome.contentInset, leading: 18, bottom: 18, trailing: 18))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .sudrfContent).ignoresSafeArea())
+        .onChange(of: router.calWeekStart) { _, _ in selectedWeekDisclosureID = nil }
+        .onChange(of: router.calMode) { _, mode in
+            if mode != .week { selectedWeekDisclosureID = nil }
+        }
+        .onChange(of: CalendarWeekLayout.disclosureContentKey(for: router.calendarHearings)) {
+            _, _ in selectedWeekDisclosureID = nil
+        }
     }
 
     // MARK: Сбор событий
@@ -1425,7 +1433,7 @@ struct CalendarScreen: View {
         ZStack(alignment: .topLeading) {
             weekColumnBackground(day, index: index, height: height)
             ForEach(blocks) { block in
-                weekBlockView(block)
+                weekBlockView(block, on: day)
                     .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .offset(y: CGFloat(block.top))
@@ -1461,123 +1469,65 @@ struct CalendarScreen: View {
         }.map(CalendarWeekHearingLayoutInput.init(event:))
     }
 
-    private func weekBlockView(_ block: CalendarWeekBlock) -> some View {
-        let height = CGFloat(block.height)
-        return Group {
-            if block.isSingle, let item = block.hearings.first {
-                Button { router.openCase(item.caseNumber) } label: {
-                    weekSingleCard(item, conflict: false, height: height)
-                }
-                .buttonStyle(.plain)
-            } else {
-                weekStackCard(block)
-            }
+    @ViewBuilder
+    private func weekBlockView(_ block: CalendarWeekBlock, on day: Date) -> some View {
+        if block.isSingle, let item = block.hearings.first {
+            weekSingleCard(item, block: block, on: day)
+        } else {
+            weekStackCard(block, on: day)
         }
     }
 
     private func weekSingleCard(_ item: CalendarWeekHearingLayoutInput,
-                                conflict: Bool,
-                                height: CGFloat) -> some View {
-        let displayCaseNumber = item.displayCaseNumber ?? CaseNumberPresentation.primary(item.caseNumber)
-        return VStack(alignment: .leading, spacing: 5) {
-            Text("№ \(displayCaseNumber)")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let label = item.secondaryLabel {
-                Text(label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text(item.parties)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(Color.primary.opacity(0.72))
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            weekCardFooter(court: item.displayCourtLabel, room: item.room,
-                           judge: item.judge, conflict: conflict)
-        }
-        .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        // Высота блока — пол, а не потолок: длинные стороны и двухстрочное имя
-        // суда карточку не обрезают. `fixedSize` обязателен — без него `Spacer`
-        // принимает высоту, которую предлагает ZStack дня, и карточка
-        // растягивается до конца временной сетки (#83).
-        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(weekCardBackground(conflict: conflict))
-        .overlay(weekCardBorder(conflict: conflict))
-        .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
-            .frame(width: 3), alignment: .leading)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
-        .contentShape(RoundedRectangle(cornerRadius: 10))
+                                block: CalendarWeekBlock,
+                                on day: Date) -> some View {
+        weekHearingDisclosureButton(item, block: block, on: day)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .frame(height: CGFloat(block.cardHeight), alignment: .topLeading)
+            .background(weekCardBackground(conflict: false))
+            .overlay(weekCardBorder(conflict: false))
+            .overlay(Rectangle().fill(Color.accentColor).frame(width: 3), alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
+            .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private func weekStackCard(_ block: CalendarWeekBlock) -> some View {
+    private func weekStackCard(_ block: CalendarWeekBlock, on day: Date) -> some View {
         let conflict = block.isConflict
-        let first = block.hearings.first
-        let displayCourtsVary = Set(block.hearings.map(\.displayCourtLabel)).count > 1
-        return VStack(alignment: .leading, spacing: 7) {
+        let visibleHearings = block.hearings.count > CalendarWeekLayout.visibleGroupRowLimit
+            ? Array(block.hearings.prefix(CalendarWeekLayout.visibleGroupRowLimit - 1))
+            : block.hearings
+        let hiddenCount = block.hearings.count - visibleHearings.count
+        return VStack(alignment: .leading, spacing: CGFloat(CalendarWeekLayout.compactGroupSpacing)) {
             if let badge = block.badge {
                 Text(badge)
                     .font(.system(size: 8.5, weight: .bold))
                     .foregroundStyle(conflict ? Palette.confirmed : Color(red: 0.04, green: 0.40, blue: 0.84))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill((conflict ? Palette.confirmed : Color.accentColor).opacity(0.14)))
-            }
-            ForEach(block.hearings) { item in
-                Button { router.openCase(item.caseNumber) } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        let displayCaseNumber = item.displayCaseNumber
-                            ?? CaseNumberPresentation.primary(item.caseNumber)
-                        let judge = CalendarWeekLayout.itemJudge(item, conflict: conflict)
-                        let judgePart = judge.isEmpty ? "" : " · \(judge)"
-                        Text("\(item.time) · № \(displayCaseNumber)\(judgePart) · \(item.parties)")
-                            .font(.system(size: 10.2, weight: .semibold))
-                            .foregroundStyle(conflict ? Palette.confirmed : .primary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let label = item.secondaryLabel {
-                            Text(label)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(Color.primary.opacity(0.60))
-                                .lineLimit(1)
-                        }
-                        let details = CalendarWeekLayout.itemDetails(
-                            item, conflict: conflict, common: first,
-                            includeCourt: displayCourtsVary)
-                        if !details.isEmpty {
-                            Text(details)
-                                .font(.system(size: 9))
-                                .foregroundStyle(Color.primary.opacity(0.42))
-                                .lineLimit(2)
-                        }
-                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
+                    .frame(height: CGFloat(CalendarWeekLayout.compactGroupBadgeHeight), alignment: .center)
+                    .accessibilityLabel(badge)
             }
-            Spacer(minLength: 0)
-            Divider().opacity(0.6)
+            ForEach(visibleHearings) { item in
+                weekHearingDisclosureButton(item, block: block, on: day)
+            }
+            if hiddenCount > 0 {
+                weekOverflowDisclosureButton(block, on: day, hiddenCount: hiddenCount)
+            }
             if conflict {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Успеть лично нельзя")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(Palette.confirmed)
-                    Text("ходатайство об отложении или второй представитель")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Color.primary.opacity(0.45))
-                }
-            } else if let first, !displayCourtsVary {
-                weekCardFooter(court: first.displayCourtLabel, room: first.room, conflict: false)
+                Text("Успеть лично нельзя")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(Palette.confirmed)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: CGFloat(CalendarWeekLayout.compactConflictWarningHeight), alignment: .center)
+                    .accessibilityLabel("Успеть лично нельзя. Ходатайство об отложении или второй представитель.")
             }
         }
-        .padding(EdgeInsets(top: 7, leading: 9, bottom: 8, trailing: 9))
-        .frame(maxWidth: .infinity, minHeight: CGFloat(block.height), alignment: .topLeading)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 6)
+        .padding(.vertical, CGFloat(CalendarWeekLayout.compactGroupVerticalPadding / 2))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: CGFloat(block.cardHeight), alignment: .topLeading)
         .background(weekCardBackground(conflict: conflict))
         .overlay(weekCardBorder(conflict: conflict))
         .overlay(Rectangle().fill(conflict ? Color(red: 0.839, green: 0.271, blue: 0.227) : Color.accentColor)
@@ -1586,24 +1536,195 @@ struct CalendarScreen: View {
         .shadow(color: .black.opacity(0.09), radius: 5, y: 1)
     }
 
-    private func weekCardFooter(court: String, room: String, judge: String = "", conflict: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Divider().opacity(0.6)
-            Text(court)
-                .font(.system(size: 10.5, weight: .bold))
-                .foregroundStyle(Color.primary.opacity(conflict ? 0.76 : 0.82))
-                .lineLimit(2)
-            let details = [room.nilIfEmpty, judge.nilIfEmpty.map { "судья \($0)" }]
-                .compactMap { $0 }
-                .joined(separator: " · ")
-            if !details.isEmpty {
-                Text(details)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(Color.primary.opacity(0.45))
-                    .lineLimit(2)
+    private func weekHearingDisclosureButton(_ item: CalendarWeekHearingLayoutInput,
+                                             block: CalendarWeekBlock,
+                                             on day: Date) -> some View {
+        let displayNumber = item.displayCaseNumber ?? CaseNumberPresentation.primary(item.caseNumber)
+        let disclosureID = "hearing:\(item.id)"
+        return Button {
+            toggleWeekDisclosure(disclosureID)
+        } label: {
+            HStack(spacing: 5) {
+                Text("\(item.time) · № \(displayNumber)")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .accessibilityHidden(true)
             }
+            .foregroundStyle(block.isConflict ? Palette.confirmed : Color.primary)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity)
+            .frame(height: CGFloat(CalendarWeekLayout.compactCardRowHeight))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .background(RoundedRectangle(cornerRadius: 6)
+                .fill((block.isConflict ? Palette.confirmed : Color.accentColor)
+                    .opacity(block.isConflict ? 0.12 : 0.07)))
         }
-        .padding(.top, 2)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Заседание \(item.time), дело № \(displayNumber)")
+        .accessibilityHint("Показать сведения о суде, сторонах, зале и судье")
+        .accessibilityValue(selectedWeekDisclosureID == disclosureID ? "Подробности открыты" : "")
+        .help("Показать сведения о заседании № \(displayNumber)")
+        .popover(isPresented: weekDisclosureBinding(for: disclosureID), arrowEdge: .trailing) {
+            weekHearingPopover(item, block: block, on: day)
+        }
+    }
+
+    private func weekHearingPopover(_ item: CalendarWeekHearingLayoutInput,
+                                    block: CalendarWeekBlock,
+                                    on day: Date) -> some View {
+        let displayNumber = item.displayCaseNumber ?? CaseNumberPresentation.primary(item.caseNumber)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("№ \(displayNumber)")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 8)
+                    Button {
+                        selectedWeekDisclosureID = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Закрыть сведения о заседании")
+                }
+                Text("\(DateUtil.weekday(day)), \(DateUtil.fullDate(day)) · \(item.time)")
+                    .font(.subheadline)
+                Divider()
+                Text(item.displayCourtLabel)
+                    .font(.system(size: 13, weight: .semibold))
+                if let label = item.secondaryLabel {
+                    Text(label).font(.system(size: 12, weight: .medium))
+                }
+                if !item.parties.isEmpty {
+                    Text("Стороны: \(item.parties)").font(.system(size: 12))
+                }
+                if !item.room.isEmpty {
+                    Text("Зал: \(item.room)").font(.system(size: 12))
+                }
+                if !item.judge.isEmpty {
+                    Text("Судья: \(item.judge)").font(.system(size: 12))
+                }
+                if block.hearings.count > 1 {
+                    Divider()
+                    if block.isConflict {
+                        Text("Успеть лично нельзя")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Palette.confirmed)
+                        Text("Ходатайство об отложении или второй представитель")
+                            .font(.system(size: 12))
+                    } else if let badge = block.badge {
+                        Text(badge).font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                Button {
+                    selectedWeekDisclosureID = nil
+                    router.openCase(item.caseNumber)
+                } label: {
+                    Label("Открыть дело", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(item.caseNumber.isEmpty)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 300, height: 310)
+    }
+
+    private func weekOverflowDisclosureButton(_ block: CalendarWeekBlock,
+                                              on day: Date,
+                                              hiddenCount: Int) -> some View {
+        let disclosureID = "group:\(block.id)"
+        let label = "+\(hiddenCount) " + DateUtil.plural(
+            hiddenCount, "заседание", "заседания", "заседаний")
+        return Button {
+            toggleWeekDisclosure(disclosureID)
+        } label: {
+            HStack(spacing: 5) {
+                Text(label).font(.system(size: 9, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(block.isConflict ? Palette.confirmed : Color.primary)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity)
+            .frame(height: CGFloat(CalendarWeekLayout.compactCardRowHeight))
+            .background(RoundedRectangle(cornerRadius: 6)
+                .fill((block.isConflict ? Palette.confirmed : Color.accentColor)
+                    .opacity(block.isConflict ? 0.12 : 0.07)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Показать ещё \(label)")
+        .accessibilityHint("Открыть полный список заседаний этой группы")
+        .popover(isPresented: weekDisclosureBinding(for: disclosureID), arrowEdge: .trailing) {
+            weekGroupPopover(block, on: day)
+        }
+    }
+
+    private func weekGroupPopover(_ block: CalendarWeekBlock, on day: Date) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(block.badge ?? "Заседания")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                Text("\(DateUtil.weekday(day)), \(DateUtil.fullDate(day))")
+                    .font(.subheadline)
+                if block.isConflict {
+                    Text("Успеть лично нельзя. Ходатайство об отложении или второй представитель.")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Palette.confirmed)
+                }
+                ForEach(block.hearings) { item in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("\(item.time) · № \(item.displayCaseNumber ?? CaseNumberPresentation.primary(item.caseNumber))")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(item.displayCourtLabel).font(.system(size: 12))
+                        if let label = item.secondaryLabel {
+                            Text(label).font(.system(size: 11, weight: .medium))
+                        }
+                        if !item.parties.isEmpty { Text("Стороны: \(item.parties)").font(.system(size: 11)) }
+                        if !item.room.isEmpty { Text("Зал: \(item.room)").font(.system(size: 11)) }
+                        if !item.judge.isEmpty { Text("Судья: \(item.judge)").font(.system(size: 11)) }
+                        Button("Открыть дело") {
+                            selectedWeekDisclosureID = nil
+                            router.openCase(item.caseNumber)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(item.caseNumber.isEmpty)
+                    }
+                    Divider()
+                }
+                Button("Закрыть") { selectedWeekDisclosureID = nil }
+                    .buttonStyle(.plain)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 320, height: 360)
+        .accessibilityLabel("Все заседания группы")
+    }
+
+    private func toggleWeekDisclosure(_ id: String) {
+        selectedWeekDisclosureID = selectedWeekDisclosureID == id ? nil : id
+    }
+
+    private func weekDisclosureBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { selectedWeekDisclosureID == id },
+            set: { isPresented in
+                if isPresented {
+                    selectedWeekDisclosureID = id
+                } else if selectedWeekDisclosureID == id {
+                    selectedWeekDisclosureID = nil
+                }
+            })
     }
 
     private func weekCardBackground(conflict: Bool) -> some ShapeStyle {

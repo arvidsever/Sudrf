@@ -47,7 +47,10 @@ struct CalendarWeekBlock: Identifiable, Equatable {
     var startMinutes: Int
     var endMinutes: Int
     var top: Double
+    /// The vertical time span reserved by the timeline for this cluster.
     var height: Double
+    /// The compact card's visible height inside that reserved time span.
+    var cardHeight: Double
     var badge: String?
     var hearings: [CalendarWeekHearingLayoutInput]
 
@@ -60,8 +63,31 @@ enum CalendarWeekLayout {
     static let endHour = 19
     static let hourHeight = 120.0
     static let defaultDurationMinutes = 60
+    static let compactCardRowHeight = 24.0
+    static let compactGroupBadgeHeight = 14.0
+    static let compactGroupVerticalPadding = 8.0
+    static let compactGroupSpacing = 3.0
+    static let compactConflictWarningHeight = 13.0
+    static let visibleGroupRowLimit = 3
     static var baseGridHeight: Double {
         Double(endHour - startHour) * hourHeight
+    }
+
+    static func disclosureContentKey(for hearings: [TrackedHearing]) -> [String] {
+        hearings.map { hearing in
+            [
+                hearing.id,
+                String(hearing.date.timeIntervalSinceReferenceDate.bitPattern),
+                hearing.time,
+                hearing.caseNumber,
+                hearing.reviewNumber ?? "",
+                hearing.secondaryLabel ?? "",
+                hearing.displayCourtLabel,
+                hearing.parties,
+                hearing.room,
+                hearing.judge,
+            ].joined(separator: "\u{1f}")
+        }
     }
 
     static func parseTime(_ value: String) -> Int? {
@@ -121,33 +147,39 @@ enum CalendarWeekLayout {
         let hearings = cluster.map(\.item)
         let sameStart = cluster.allSatisfy { $0.start == cluster[0].start }
         let sameCourt = cluster.allSatisfy { $0.item.court == cluster[0].item.court }
-        let samePlaceAndJudge = sameCourt && cluster.allSatisfy {
-            $0.item.room == cluster[0].item.room && $0.item.judge == cluster[0].item.judge
-        }
         let top = Double(start - startHour * 60) / 60.0 * hourHeight
         let id = hearings.map(\.id).joined(separator: "|")
+        let visibleRowCount = min(cluster.count, visibleGroupRowLimit)
+        let cardHeight: Double
+        if cluster.count == 1 {
+            cardHeight = 36
+        } else {
+            let elementCount = 1 + visibleRowCount + (sameCourt ? 0 : 1)
+            let spacing = Double(max(0, elementCount - 1)) * compactGroupSpacing
+            cardHeight = compactGroupVerticalPadding + compactGroupBadgeHeight
+                + Double(visibleRowCount) * compactCardRowHeight + spacing
+                + (sameCourt ? 0 : compactConflictWarningHeight)
+        }
+        let reservedHeight = max(durationHeight, cardHeight)
 
         if cluster.count == 1 {
             return CalendarWeekBlock(id: id, kind: .single,
                                      startMinutes: start, endMinutes: end,
-                                     top: top, height: max(durationHeight, 96),
+                                     top: top, height: reservedHeight, cardHeight: cardHeight,
                                      badge: nil, hearings: hearings)
         }
 
         if !sameCourt {
             return CalendarWeekBlock(id: id, kind: .conflict,
                                      startMinutes: start, endMinutes: end,
-                                     top: top,
-                                     height: max(durationHeight, Double(cluster.count * 66 + 96)),
+                                     top: top, height: reservedHeight, cardHeight: cardHeight,
                                      badge: "⚠ РАЗНЫЕ СУДЫ", hearings: hearings)
         }
 
         let count = "\(cluster.count) \(DateUtil.plural(cluster.count, "ДЕЛО", "ДЕЛА", "ДЕЛ"))"
         return CalendarWeekBlock(id: id, kind: .stack,
                                  startMinutes: start, endMinutes: end,
-                                 top: top,
-                                 height: max(durationHeight,
-                                             Double(cluster.count * (samePlaceAndJudge ? 34 : 52) + 96)),
+                                 top: top, height: reservedHeight, cardHeight: cardHeight,
                                  badge: count + (sameStart ? " · ПО ОЧЕРЕДИ" : " · НАКЛАДКА"),
                                  hearings: hearings)
     }

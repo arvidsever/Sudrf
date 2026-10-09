@@ -167,3 +167,11 @@ native journal identity contract; it does not claim a complete live refresh.
 Both App disk regressions remain compile-only pending hosted execution.
 The decision to release a limited stage or require completeness first remains
 pending the author's response.
+
+The follow-up test review corrected two compile-only oracles: persisted movement
+coverage is nil after standard stripping; first complete coverage quietly seeds
+the semantic baseline. The subsequent reschedule must create exactly one event,
+and the cold reopen/repeated refresh must preserve that journal. Final compile
+and 18/18 Kit movement log SHA-256:
+`838f2e8a0068df9f962870f80244a22d00f7bb359aae737da983819760f511b2`.
+Production stripping and quiet first-baseline behavior were not changed.

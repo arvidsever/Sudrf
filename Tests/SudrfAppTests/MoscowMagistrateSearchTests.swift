@@ -244,9 +244,15 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(first?.outcome, .refreshed)
             let saved = try XCTUnwrap(store.record(forKey: record.key))
             let events = try XCTUnwrap(saved.eventJournal).events
-            XCTAssertEqual(events.map(\.kind), [.hearingScheduled])
-            XCTAssertEqual(events.first?.evidence.sourceCardID, identity.id)
-            XCTAssertEqual(saved.movement?.sourceRefreshCoverage?.first?.kind, .usableSnapshot)
+            XCTAssertTrue(events.isEmpty, "An initial verified refresh seeds the journal quietly")
+            XCTAssertNil(saved.movement?.sourceRefreshCoverage,
+                         "Ephemeral movement coverage is not persisted")
+            XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .usableSnapshot)
+            let baseline = try XCTUnwrap(saved.eventJournal?.semanticBaselines?
+                .courts["moscow-magistrate-koap|425"])
+            XCTAssertEqual(baseline.cards, [identity.id: identity.id])
+            XCTAssertEqual(baseline.sessions.count, 1)
+            XCTAssertEqual(baseline.sessions.first?.sourceCardID, identity.id)
             baselineIDs = events.map(\.id)
         }
 
@@ -264,11 +270,11 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(changed?.outcome, .refreshed)
             let saved = try XCTUnwrap(store.record(forKey: loaded.key))
             let events = try XCTUnwrap(saved.eventJournal).events
-            XCTAssertEqual(events.count, 2)
-            XCTAssertEqual(events.map(\.kind), [.hearingScheduled, .hearingRescheduled])
+            XCTAssertEqual(events.count, 1)
+            XCTAssertEqual(events.map(\.kind), [.hearingRescheduled])
             XCTAssertEqual(events.filter { $0.kind == .hearingRescheduled }
                 .compactMap(\.evidence.sourceCardID), [identity.id])
-            XCTAssertEqual(Set(events.map(\.id)).count, 2)
+            XCTAssertEqual(Set(events.map(\.id)).count, 1)
             baselineIDs = events.map(\.id)
         }
 
@@ -342,13 +348,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(base.sourceURL, sourceURL)
             XCTAssertEqual(base.domain, "mos-sud.ru")
             XCTAssertEqual(base.court, context.courtTitle)
-            let coverage = try XCTUnwrap(saved.movement?.sourceRefreshCoverage?.first {
-                $0.sourceFamily == "moscow-magistrate-koap"
-            })
-            XCTAssertTrue(coverage.loadedCardIdentities.contains {
-                $0.courtKey == "425" && $0.sourceNativeID
-                    == "22222222-2222-4222-8222-222222222222"
-            })
+            XCTAssertNil(saved.movement?.sourceRefreshCoverage,
+                         "Per-refresh locator proofs are not persisted in the movement cache")
             journalIDs = try XCTUnwrap(saved.eventJournal).events.map(\.id)
             XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
         }

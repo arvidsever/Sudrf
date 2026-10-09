@@ -98,5 +98,13 @@ courts, a missing court, an unproved shared portal, and two same native aliases.
 Log: `/private/tmp/sudrf-431-resume-policy-green.log`;
 SHA-256: `019a8d046d8fc9ec663fc5d40abf21d513552760e1b0d27c3efae9ebc9be0065`.
 This pure method does not construct AppRouter, open a store or publish Spotlight.
-Independent Astra review accepted the corrected diff. New-SHA CI and the
-final Xcode build remain gates.
+Independent Astra review accepted the corrected diff. CI `37943610348` for
+`3c28f0919657662b660a1afd06470e8bd0c8e6dc` passed: 1,991 XCTest
+(20 skipped), 28 Swift Testing, and 26 Python tests (6 skipped), no failures.
+The hosted Xcode 27 lane skipped because its SDK was unavailable. The local
+unsigned Xcode 27 Debug build succeeded without launching the app.
+Build log: `/private/tmp/sudrf-431-resume-build.log`;
+SHA-256: `550b7e8d7198529cf937a8ef82a4fbe55ffcd42a6b20388d67cb4ea2d3454188`.
+CI log SHA-256: `4b196bebdfdae9e1d99fa725c5ab9cf1e96b7bda543a8df5bb996b77e3011c8b`.
+Version 0.64.2 (254) was assigned against main 0.64.1 (253). The final release
+commit CI and post-merge primary-folder build are still required gates.

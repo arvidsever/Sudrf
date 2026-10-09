@@ -793,7 +793,7 @@ final class AppRouter: ObservableObject {
         guard !values.isEmpty else { return "Ближайших заседаний нет." }
         return values.map {
             let material = $0.materialNumber.map { ", материал № \($0)" } ?? ""
-            return "\($0.dateLabel), \($0.time) — дело № \($0.caseNumber)\(material), \($0.court)"
+            return "\($0.dateLabel), \($0.time) — дело № \($0.caseNumber)\(material), \($0.displayCourtLabel)"
         }.joined(separator: "\n")
     }
 
@@ -2241,6 +2241,8 @@ final class AppRouter: ObservableObject {
                 return TrackedHearing(recordKey: rec.key, date: date,
                     time: session.time ?? "", caseNumber: rec.caseNumber,
                     parties: snap.partiesShort, court: session.court,
+                    displayCourt: MovementDerivation.calendarCourtLabel(
+                        for: session, movement: rec.movement, context: rec.context),
                     room: session.room ?? "", dateLabel: DateUtil.dateLabel(date),
                     judge: session.judge ?? material.instance?.judge ?? "",
                     identitySuffix: "\(session.event)#\(session.result ?? "")"

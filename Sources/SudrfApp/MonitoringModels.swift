@@ -305,6 +305,9 @@ struct TrackedHearing: Identifiable {
     var caseNumber: String
     var parties: String
     var court: String
+    /// Readable name from this hearing's uniquely matched source card. The raw
+    /// court remains the stable calendar identity and conflict key.
+    var displayCourt: String? = nil
     var room: String
     var dateLabel: String
     var judge: String = ""
@@ -319,6 +322,12 @@ struct TrackedHearing: Identifiable {
     /// Номер сохранённой отдельной предыдущей регистрации. Это transient
     /// проекция по sourceCardID; исходный level карточки не меняется.
     var previousRegistrationNumber: String? = nil
+    var displayCourtLabel: String {
+        if let displayCourt, !displayCourt.isEmpty { return displayCourt }
+        let readable = CourtNamePresentation.readableCourtName(
+            domain: nil, savedTitle: court, fallbackTitle: court)
+        return readable == "Суд" ? "Суд не установлен" : readable
+    }
     var reviewNumber: String? {
         guard instanceLevel != .material else { return nil }
         return CaseNumberPresentation.secondary(instanceCaseNumber, distinctFrom: caseNumber)

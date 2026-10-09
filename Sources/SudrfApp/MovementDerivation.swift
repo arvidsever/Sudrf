@@ -753,6 +753,69 @@ enum MovementDerivation {
             domain: instance?.domain, savedTitle: savedTitle, fallbackTitle: title)
     }
 
+    /// Calendar court text belongs to the session's own source instance. Old
+    /// snapshots without `sourceCardID` use the same unique level/number/title
+    /// match as the rest of movement presentation. An absent or ambiguous
+    /// match keeps a readable session title. Multiple cards may supply a common
+    /// proved court name without identifying a registration or borrowing the root.
+    static func calendarCourtLabel(for session: StoredSession,
+                                   movement: CaseMovement?,
+                                   context: MovementContext?) -> String {
+        if let movement,
+           let instance = sourceInstance(for: session, movement: movement, context: context) {
+            if let raw = courtLabel(session.court),
+               let title = displayedCourtLabel(raw, instance: instance, context: context),
+               title != "Суд" {
+                return title
+            }
+            let savedTitle = savedSourceCardTitle(for: instance, context: context)
+            let sourceTitle = CourtNamePresentation.readableCourtName(
+                domain: nil, savedTitle: savedTitle, fallbackTitle: instance.court)
+            if sourceTitle != "Суд" { return sourceTitle }
+            let directoryTitle = CourtNamePresentation.readableCourtName(
+                domain: instance.domain, savedTitle: instance.court, fallbackTitle: nil)
+            if directoryTitle != "Суд" { return directoryTitle }
+        }
+        if let movement, session.sourceCardID == nil, session.caseNumber == nil {
+            let candidates = sourceInstances(for: session, movement: movement, context: context)
+            var titles = Set<String>()
+            for candidate in candidates {
+                let title: String?
+                if MosGorSudRouting.isMosGorSud(domain: candidate.domain) {
+                    // Moscow's shared host and case number do not identify its court.
+                    guard let url = candidate.sourceURL,
+                          let section = MosGorSudRouting.section(fromCardURL: url),
+                          let cartoteka = CartotekaRegistry.sets(for: .subject).first(where: {
+                              MosGorSudRouting.sectionSegments(cartoteka: $0).contains(section)
+                          }),
+                          let locator = SourceNativeCardLocator.mosgorsud(url: url, cartoteka: cartoteka)
+                    else { titles.removeAll(); break }
+                    title = locator.courtKey == MosGorSudCourtDirectory.mgsAlias
+                        ? "Московский городской суд"
+                        : MosGorSudCourtDirectory.districtCourts.first {
+                            $0.alias == locator.courtKey
+                        }?.title
+                } else {
+                    title = CourtDirectory.court(forDomain: candidate.domain)?.title
+                }
+                guard let title = courtLabel(title),
+                      !CourtNamePresentation.isTechnicalCourtTitle(title) else {
+                    titles.removeAll()
+                    break
+                }
+                titles.insert(title)
+            }
+            if candidates.count > 1, titles.count == 1, let title = titles.first { return title }
+        }
+        guard let raw = courtLabel(session.court) else { return "Суд не установлен" }
+        guard !CourtNamePresentation.isTechnicalCourtTitle(raw) else {
+            return "Суд не установлен"
+        }
+        let savedTitle = CourtNamePresentation.readableCourtName(
+            domain: nil, savedTitle: raw, fallbackTitle: raw)
+        return savedTitle == "Суд" ? "Суд не установлен" : savedTitle
+    }
+
     private static func sourceInstance(for session: StoredSession,
                                        movement: CaseMovement,
                                        context: MovementContext?) -> CaseInstance? {

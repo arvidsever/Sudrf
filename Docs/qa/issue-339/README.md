@@ -60,3 +60,7 @@ The author approved the test-only activity, Spotlight and notification substitut
 `swift build --build-tests` completed successfully after the notification seam. Log: `/private/tmp/sudrf-339-notification-compile.log`; SHA-256 `3dfd34b4721566be30c51e405772d8862afb460e5cfacf637cabb562c60105b6`. Independent static review of this delta: Ship. No AppRouter-path test or live request was executed locally.
 
 The default `PublishedActSelection` cache only stores its directory URL at initialization. File-system reads/writes occur when an act is selected or saved; these harnesses do neither. The opt-in test's single auto-solver preference read belongs to the XCTest process, then suite-scoped settings are used. This checkpoint does not claim zero access to process defaults.
+
+## Current-main rebase checkpoint
+
+Rebased onto main `e9910a36b9d1af09d82de3f2eeaba246573a6cca` (0.64.5, build 257). The two conflict sites retain main's injected VSRF/import providers and the approved CAPTCHA token/solver seams together. All test targets compiled successfully without execution: `/private/tmp/sudrf-339-rebased-compile.log`, SHA-256 `e109692f1b459e4e62f0fa502cea061d92ac38b8f68698e22c2b43aa750826ac`. Runtime offline evidence must come from current-head CI and must show actual test execution rather than skips.

@@ -369,6 +369,10 @@ final class SpotlightPreferenceStore: @unchecked Sendable {
         defaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
     }
 
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
+    }
+
     func isEnabled() -> Bool {
         defaults.object(forKey: Self.key) == nil
             ? true

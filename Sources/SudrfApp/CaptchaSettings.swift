@@ -20,6 +20,8 @@ final class CaptchaSettings: ObservableObject {
     static let defaultMaxAttempts = 3
     static let maxAttemptsRange = 1...5
 
+    private let defaults: UserDefaults
+
     /// Принудительно выключает солвер независимо от настройки — для
     /// тестов, в которых нужен детерминированный «как без солвера»
     /// сценарий.
@@ -27,13 +29,13 @@ final class CaptchaSettings: ObservableObject {
 
     @Published var autoSolveEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(autoSolveEnabled, forKey: Self.enabledKey)
+            defaults.set(autoSolveEnabled, forKey: Self.enabledKey)
         }
     }
 
     @Published var minConfidence: Double {
         didSet {
-            UserDefaults.standard.set(minConfidence, forKey: Self.minConfidenceKey)
+            defaults.set(minConfidence, forKey: Self.minConfidenceKey)
         }
     }
 
@@ -47,7 +49,7 @@ final class CaptchaSettings: ObservableObject {
             if maxAttempts != normalized {
                 maxAttempts = normalized
             }
-            UserDefaults.standard.set(normalized, forKey: Self.maxAttemptsKey)
+            defaults.set(normalized, forKey: Self.maxAttemptsKey)
         }
     }
 
@@ -58,7 +60,7 @@ final class CaptchaSettings: ObservableObject {
     /// Vision возвращает conf=0.00 на сырых данных.
     @Published var preprocessorEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(preprocessorEnabled, forKey: Self.preprocessorEnabledKey)
+            defaults.set(preprocessorEnabled, forKey: Self.preprocessorEnabledKey)
         }
     }
 
@@ -68,7 +70,7 @@ final class CaptchaSettings: ObservableObject {
     /// без preprocess.
     @Published var preprocessorHosts: Set<String> {
         didSet {
-            UserDefaults.standard.set(Array(preprocessorHosts), forKey: Self.preprocessorHostsKey)
+            defaults.set(Array(preprocessorHosts), forKey: Self.preprocessorHostsKey)
         }
     }
 
@@ -84,8 +86,8 @@ final class CaptchaSettings: ObservableObject {
         autoSolveEnabled && !forceDisabled
     }
 
-    private init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         // Дефолт — true (opt-out). Если ключа нет в UserDefaults, читаем
         // registerDefaults с явным true — иначе первая установка покажет
         // «выключено» при `Bool()` от `nil`.

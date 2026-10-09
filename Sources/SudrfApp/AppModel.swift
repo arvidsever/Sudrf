@@ -176,9 +176,12 @@ final class AppRouter: ObservableObject {
     }
 
     private let store: TrackedStore
+    private let userDefaults: UserDefaults
     let modelContainer: ModelContainer
     let caseCatalog: CaseCatalog
     let spotlightIndexer: SpotlightIndexer
+    private let currentEntityActivityPublisher: @MainActor (NSUserActivity) -> Void
+    private let feedNotificationPublisher: @MainActor ([FeedEntry]) -> Void
     private let spotlightSearch = SpotlightSearchSession()
     private let directCaseLinkResolver: DirectCaseLinkResolver
     /// Один транспорт SUDRF на всё приложение: фоновые обновления, ремонт
@@ -205,20 +208,14 @@ final class AppRouter: ObservableObject {
     private var summaryOperationState = SummaryOperationState()
     private var summaryTask: Task<Void, Never>?
     private static let readFeedIDsKey = "overviewReadFeedIDs.v1"
-    private var readFeedIDs = Set((UserDefaults.standard.stringArray(forKey: readFeedIDsKey) ?? [])
-        .map(AppRouter.feedIDDroppingKind))
+    private var readFeedIDs = Set<String>()
     /// Уже виденные id ленты — чтобы уведомлять только о реально новых записях.
     /// Отдельно от readFeedIDs: то — «пользователь прочёл», это — «система знала».
     private static let knownFeedIDsKey = "notifiedFeedIDs.v1"
-    private var knownFeedIDs = Set((UserDefaults.standard.stringArray(forKey: knownFeedIDsKey) ?? [])
-        .map(AppRouter.feedIDDroppingKind))
+    private var knownFeedIDs = Set<String>()
     private static let materialFeedConsumedLegacyIDsKey = "materialFeedConsumedLegacyIDs.v1"
     private static let materialFeedPendingCountsKey = "materialFeedPendingCounts.v1"
-    private var materialFeedMigrationState = MaterialFeedMigrationState(
-        consumedLegacyIDs: Set(UserDefaults.standard.stringArray(
-            forKey: materialFeedConsumedLegacyIDsKey) ?? []),
-        pendingUnresolvedCounts: (UserDefaults.standard.dictionary(
-            forKey: materialFeedPendingCountsKey) ?? [:]).compactMapValues { $0 as? Int })
+    private var materialFeedMigrationState = MaterialFeedMigrationState()
     private var lifecyclePresentationCache = CaseLifecyclePresentationCache()
 
     var isRefreshingOpenCase: Bool {
@@ -407,13 +404,22 @@ final class AppRouter: ObservableObject {
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
          captchaCorpus: CorpusStore = .shared,
+         configuredCaptchaSolver suppliedCaptchaSolver: CaptchaSolver? = nil,
          refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil,
          importVSRFProvider: (any VSRFProviding)? = nil,
          importMosGorSudProvider: (any MosGorSudProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
-         trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil) throws {
+         trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil,
+         userDefaults suppliedUserDefaults: UserDefaults = .standard,
+         spotlightIndexerFactory: ((CaseCatalog) -> SpotlightIndexer)? = nil,
+         currentEntityActivityPublisher: @escaping @MainActor (NSUserActivity) -> Void = {
+             $0.becomeCurrent()
+         },
+         feedNotificationPublisher: @escaping @MainActor ([FeedEntry]) -> Void = {
+             FeedNotifier.shared.notify(newEntries: $0)
+         }) throws {
         let store: TrackedStore
         if let trackedStoreProjectionSynchronizer {
             store = try TrackedStore(
@@ -425,20 +431,33 @@ final class AppRouter: ObservableObject {
                                      prepared: modelContainerIsPrepared)
         }
         self.store = store
+        self.userDefaults = suppliedUserDefaults
+        self.readFeedIDs = Set((suppliedUserDefaults.stringArray(forKey: Self.readFeedIDsKey) ?? [])
+            .map(AppRouter.feedIDDroppingKind))
+        self.knownFeedIDs = Set((suppliedUserDefaults.stringArray(forKey: Self.knownFeedIDsKey) ?? [])
+            .map(AppRouter.feedIDDroppingKind))
+        self.materialFeedMigrationState = MaterialFeedMigrationState(
+            consumedLegacyIDs: Set(suppliedUserDefaults.stringArray(
+                forKey: Self.materialFeedConsumedLegacyIDsKey) ?? []),
+            pendingUnresolvedCounts: (suppliedUserDefaults.dictionary(
+                forKey: Self.materialFeedPendingCountsKey) ?? [:]).compactMapValues { $0 as? Int })
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
-        self.spotlightIndexer = SpotlightIndexer(catalog: self.caseCatalog)
+        self.spotlightIndexer = spotlightIndexerFactory?(self.caseCatalog)
+            ?? SpotlightIndexer(catalog: self.caseCatalog)
+        self.currentEntityActivityPublisher = currentEntityActivityPublisher
+        self.feedNotificationPublisher = feedNotificationPublisher
         self.directCaseLinkResolver = DirectCaseLinkResolver(client: client)
         self.summaryConfigurationProvider = summaryConfigurationProvider
         self.captchaCorpus = captchaCorpus
-        let savedSpotlightEnabled = UserDefaults.standard.object(
+        let savedSpotlightEnabled = suppliedUserDefaults.object(
             forKey: SpotlightPreferenceStore.key).map { _ in
-                UserDefaults.standard.bool(forKey: SpotlightPreferenceStore.key)
+                suppliedUserDefaults.bool(forKey: SpotlightPreferenceStore.key)
             } ?? true
         self.spotlightEnabled = savedSpotlightEnabled
         self.spotlightOnboardingDraft = savedSpotlightEnabled
-        self.spotlightOnboardingRequired = !UserDefaults.standard.bool(
+        self.spotlightOnboardingRequired = !suppliedUserDefaults.bool(
             forKey: SpotlightPreferenceStore.onboardingKey)
         let captchaSettings = suppliedCaptchaSettings ?? .shared
         let fsspClient = FSSPClient()
@@ -447,7 +466,8 @@ final class AppRouter: ObservableObject {
         let mosGorSudProvider = importMosGorSudProvider ?? MosGorSudClient()
         self.importVSRFProvider = vsrfProvider
         self.importMosGorSudProvider = mosGorSudProvider
-        let configuredSolver = CaptchaSolverFactory.make(settings: captchaSettings)
+        let configuredSolver = suppliedCaptchaSolver
+            ?? CaptchaSolverFactory.make(settings: captchaSettings)
         self.cardRecovery = CaseCardRecovery(provider: client)
         let originResolver = CaseOriginResolver(client: client)
         self.repairCoordinator = TrackedCaseRepairCoordinator(
@@ -595,7 +615,7 @@ final class AppRouter: ObservableObject {
         spotlightEnabled = enabled
         if spotlightOnboardingRequired {
             spotlightOnboardingDraft = enabled
-            SpotlightPreferenceStore().setEnabled(enabled)
+            SpotlightPreferenceStore(defaults: userDefaults).setEnabled(enabled)
             return
         }
         spotlightPreferenceRevision &+= 1
@@ -611,7 +631,7 @@ final class AppRouter: ObservableObject {
     }
 
     func completeSpotlightOnboarding() {
-        UserDefaults.standard.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+        userDefaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
         spotlightOnboardingRequired = false
         setSpotlightEnabled(spotlightOnboardingDraft)
     }
@@ -741,7 +761,7 @@ final class AppRouter: ObservableObject {
         }
         currentEntityActivity?.invalidate()
         currentEntityActivity = activity
-        activity.becomeCurrent()
+        currentEntityActivityPublisher(activity)
     }
 
     // MARK: App Intents bridge
@@ -969,7 +989,7 @@ final class AppRouter: ObservableObject {
     }
 
     private func saveReadFeedIDs() {
-        UserDefaults.standard.set(Array(readFeedIDs), forKey: Self.readFeedIDsKey)
+        userDefaults.set(Array(readFeedIDs), forKey: Self.readFeedIDsKey)
     }
 
     // MARK: Импорт из CSV (Файл → «Импортировать дела из CSV…»)
@@ -1147,7 +1167,7 @@ final class AppRouter: ObservableObject {
         }
         readFeedIDs = remap(readFeedIDs); saveReadFeedIDs()
         knownFeedIDs = remap(knownFeedIDs)
-        UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
+        userDefaults.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
         materialFeedMigrationState = Self.remappedMaterialFeedMigrationState(
             materialFeedMigrationState, keyRemaps: keyRemaps)
         saveMaterialFeedMigrationState()
@@ -2413,7 +2433,7 @@ final class AppRouter: ObservableObject {
             knownFeedIDs, transitions: transitionsToMigrate, currentIDs: currentFeedIDs)
         if migratedKnownIDs != knownFeedIDs {
             knownFeedIDs = migratedKnownIDs
-            UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
+            userDefaults.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
         }
         if materialFeedMigrationState != oldMigrationState {
             saveMaterialFeedMigrationState()
@@ -2456,12 +2476,12 @@ final class AppRouter: ObservableObject {
     private func reconcileFeed(notify: Bool) {
         if notify {
             let fresh = feed.filter { $0.isUnread && !knownFeedIDs.contains($0.id) }
-            if !fresh.isEmpty { FeedNotifier.shared.notify(newEntries: fresh) }
+            if !fresh.isEmpty { feedNotificationPublisher(fresh) }
         }
         let ids = Set(feed.map(\.id))
         if ids != knownFeedIDs {
             knownFeedIDs = ids
-            UserDefaults.standard.set(Array(ids), forKey: Self.knownFeedIDsKey)
+            userDefaults.set(Array(ids), forKey: Self.knownFeedIDsKey)
         }
         FeedNotifier.shared.setBadge(newBadge)
     }
@@ -3078,9 +3098,9 @@ final class AppRouter: ObservableObject {
     }
 
     private func saveMaterialFeedMigrationState() {
-        UserDefaults.standard.set(Array(materialFeedMigrationState.consumedLegacyIDs),
+        userDefaults.set(Array(materialFeedMigrationState.consumedLegacyIDs),
                                   forKey: Self.materialFeedConsumedLegacyIDsKey)
-        UserDefaults.standard.set(materialFeedMigrationState.pendingUnresolvedCounts,
+        userDefaults.set(materialFeedMigrationState.pendingUnresolvedCounts,
                                   forKey: Self.materialFeedPendingCountsKey)
     }
 
@@ -3253,8 +3273,8 @@ final class AppRouter: ObservableObject {
     /// Подборки, созданные пользователем (включая пустые), в порядке создания.
     private static let collectionsKey = "myCollections"
     private var knownCollections: [String] {
-        get { UserDefaults.standard.stringArray(forKey: Self.collectionsKey) ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: Self.collectionsKey) }
+        get { userDefaults.stringArray(forKey: Self.collectionsKey) ?? [] }
+        set { userDefaults.set(newValue, forKey: Self.collectionsKey) }
     }
     private func buildStageCounts(_ cs: [TrackedCase]) -> [(CaseStageKind, Int)] {
         let order: [CaseStageKind] = [.first, .appeal, .cassation, .supervisory, .done]

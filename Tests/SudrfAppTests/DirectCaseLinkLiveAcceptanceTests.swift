@@ -137,13 +137,10 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         let elapsedMilliseconds: Int
     }
 
-    private struct SavedCaptchaToken {
-        let domain: String
-        let token: CaptchaToken?
-    }
-
     @MainActor
     func testFactoryPassesSuppliedLoggerThroughUnchangedProviderSelection() throws {
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("issue-339-factory-log-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -154,7 +151,8 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             fileURL: directory.appendingPathComponent("solver.log"),
             failuresDir: directory.appendingPathComponent("failures", isDirectory: true),
             diagnosticsDir: directory.appendingPathComponent("diagnostics", isDirectory: true))
-        let solver = CaptchaSolverFactory.make(settings: CaptchaSettings.shared, log: logger)
+        let solver = CaptchaSolverFactory.make(
+            settings: isolation.makeCaptchaSettings(), log: logger)
 
         XCTAssertTrue(solver.log === logger,
                       "factory must use the requested log destination")
@@ -166,16 +164,26 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             XCTFail("live acceptance cannot run inside the production app process")
             return
         }
+        guard NSApp == nil else {
+            throw XCTSkip("live #339 acceptance must not update the test host's Dock badge")
+        }
         guard ProcessInfo.processInfo.environment["SUDRF_ISSUE339_LIVE_ACCEPTANCE"] == "1" else {
             throw XCTSkip("live #339 acceptance is opt-in and remains disabled by default")
         }
 
-        let settings = CaptchaSettings.shared
-        guard settings.isEffectivelyEnabled else {
+        let processDefaults = UserDefaults.standard
+        let autoSolveEnabled = processDefaults.object(forKey: "captcha.autoSolve").map { _ in
+            processDefaults.bool(forKey: "captcha.autoSolve")
+        } ?? true
+        guard autoSolveEnabled else {
             throw XCTSkip("automatic CAPTCHA solving is disabled in the test process")
         }
-        let restoreProcessPreferences = try isolateTestProcessPreferences()
-        defer { restoreProcessPreferences() }
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
+        let settings = isolation.makeCaptchaSettings()
+        settings.autoSolveEnabled = autoSolveEnabled
+        let captchaTokenStore = CaptchaTokenStore()
+        let notificationReceiver = Issue339NotificationReceiver()
 
         let fileManager = FileManager.default
         let runID = UUID().uuidString.lowercased()
@@ -199,98 +207,87 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         let solver = CaptchaSolverFactory.make(settings: settings, log: solverLog)
         let captchaCorpus = CorpusStore(baseDir: corpusDirectory)
         let observations = SolveObservations()
-        let client = Self.makeIsolatedClient()
+        let client = Self.makeIsolatedClient(captchaTokenStore: captchaTokenStore)
         await client.setMaxAttemptsForTesting(3)
 
-        var savedTokens = await captureAndClearCaptchaTokens(
-            domains: [Self.issue321CardURL.host ?? "vos.spb.sudrf.ru"])
-        do {
-            let resolver = DirectCaseLinkResolver(
-                client: client,
-                districtResolver: DistrictCourtResolver(client: client, cacheURL: nil))
-            let resolveStartedAt = Date()
-            let resolution = try await resolver.resolve(Self.issue321CardURL.absoluteString)
-            let resolveMilliseconds = Self.elapsedMilliseconds(since: resolveStartedAt)
-            let context = resolution.context
-            let additionalTokens = await captureAndClearCaptchaTokens(
-                domains: [context.searchDomain, context.displayDomain]
-                    + context.expandedHigherDomains(),
-                excluding: savedTokens)
-            savedTokens.append(contentsOf: additionalTokens)
+        let resolver = DirectCaseLinkResolver(
+            client: client,
+            districtResolver: DistrictCourtResolver(client: client, cacheURL: nil))
+        let resolveStartedAt = Date()
+        let resolution = try await resolver.resolve(Self.issue321CardURL.absoluteString)
+        let resolveMilliseconds = Self.elapsedMilliseconds(since: resolveStartedAt)
+        let context = resolution.context
 
-            guard let cardURLString = context.cardURLString,
-                  let resolvedCardURL = URL(string: cardURLString),
-                  (try? SudrfCaseCardLink(url: resolvedCardURL))
-                    == (try? SudrfCaseCardLink(url: Self.issue321CardURL)) else {
-                XCTFail("resolved card must retain the supplied published locator identity")
-                throw LiveAcceptanceError.resolvedLocatorMismatch
+        guard let cardURLString = context.cardURLString,
+              let resolvedCardURL = URL(string: cardURLString),
+              (try? SudrfCaseCardLink(url: resolvedCardURL))
+                == (try? SudrfCaseCardLink(url: Self.issue321CardURL)) else {
+            XCTFail("resolved card must retain the supplied published locator identity")
+            throw LiveAcceptanceError.resolvedLocatorMismatch
+        }
+
+        let refresh = try await addAndAutoRefresh(
+            context: context, client: client, solver: solver,
+            settings: settings, corpus: captchaCorpus,
+            observations: observations,
+            storeURL: root.appendingPathComponent("tracked.store"),
+            isolation: isolation, captchaTokenStore: captchaTokenStore,
+            notificationReceiver: notificationReceiver)
+        let reopenStartedAt = Date()
+        let reopened = try coldReopen(
+            storeURL: root.appendingPathComponent("tracked.store"),
+            key: refresh.persisted.recordKey)
+        let reopenMilliseconds = Self.elapsedMilliseconds(since: reopenStartedAt)
+        XCTAssertTrue(reopened == refresh.persisted,
+                      "disk cold reopen must preserve the captured record state")
+
+        let solveSnapshot = await observations.snapshot()
+        XCTAssertGreaterThan(solveSnapshot.callCount, 0,
+                             "the automatic solver must be invoked")
+        XCTAssertGreaterThan(solveSnapshot.returnedTokenCount, 0,
+                             "the on-device solver must return a CAPTCHA token")
+        let movementProof = try XCTUnwrap(solveSnapshot.latestMovementProof,
+                                          "movement refresh must produce fresh coverage evidence")
+        XCTAssertFalse(solveSnapshot.successfulHosts.isEmpty,
+                       "a returned token must identify the host whose retry is checked")
+        for host in solveSnapshot.successfulHosts {
+            guard let solveOrder = solveSnapshot.successfulSolveOrderByHost[host] else {
+                XCTFail("each successful host must have a recorded solve event")
+                continue
             }
-
-            let refresh = try await addAndAutoRefresh(
-                context: context, client: client, solver: solver,
-                settings: settings, corpus: captchaCorpus,
-                observations: observations,
-                storeURL: root.appendingPathComponent("tracked.store"))
-            let reopenStartedAt = Date()
-            let reopened = try coldReopen(
-                storeURL: root.appendingPathComponent("tracked.store"),
-                key: refresh.persisted.recordKey)
-            let reopenMilliseconds = Self.elapsedMilliseconds(since: reopenStartedAt)
-            XCTAssertTrue(reopened == refresh.persisted,
-                          "disk cold reopen must preserve the captured record state")
-
-            let solveSnapshot = await observations.snapshot()
-            XCTAssertGreaterThan(solveSnapshot.callCount, 0,
-                                 "the automatic solver must be invoked")
-            XCTAssertGreaterThan(solveSnapshot.returnedTokenCount, 0,
-                                 "the on-device solver must return a CAPTCHA token")
-            let movementProof = try XCTUnwrap(solveSnapshot.latestMovementProof,
-                                               "movement refresh must produce fresh coverage evidence")
-            XCTAssertFalse(solveSnapshot.successfulHosts.isEmpty,
-                           "a returned token must identify the host whose retry is checked")
-            for host in solveSnapshot.successfulHosts {
-                guard let solveOrder = solveSnapshot.successfulSolveOrderByHost[host] else {
-                    XCTFail("each successful host must have a recorded solve event")
-                    continue
-                }
-                XCTAssertGreaterThan(movementProof.eventOrder, solveOrder,
-                                     "a movement retry must follow the successful solve")
-                XCTAssertTrue(movementProof.freshCardHosts.contains(host)
-                                || movementProof.verifiedEmptyHosts.contains(host),
-                              "each solved host must return a confirmed card or verified empty listing")
-                XCTAssertFalse(movementProof.unresolvedHosts.contains(host),
-                               "a solved host must not retain a CAPTCHA or source failure")
-            }
-            XCTAssertTrue(refresh.outcome == "refreshed" || refresh.outcome == "partial",
-                          "the automatic refresh must resume to a usable result")
-            XCTAssertEqual(refresh.persisted.recordCount, 1,
-                           "the direct import must persist exactly one record")
-            XCTAssertGreaterThan(refresh.persisted.movementInstances.count, 0,
-                                 "the refresh result must persist movement")
+            XCTAssertGreaterThan(movementProof.eventOrder, solveOrder,
+                                 "a movement retry must follow the successful solve")
+            XCTAssertTrue(movementProof.freshCardHosts.contains(host)
+                            || movementProof.verifiedEmptyHosts.contains(host),
+                          "each solved host must return a confirmed card or verified empty listing")
+            XCTAssertFalse(movementProof.unresolvedHosts.contains(host),
+                           "a solved host must not retain a CAPTCHA or source failure")
+        }
+        XCTAssertTrue(refresh.outcome == "refreshed" || refresh.outcome == "partial",
+                      "the automatic refresh must resume to a usable result")
+        XCTAssertEqual(refresh.persisted.recordCount, 1,
+                       "the direct import must persist exactly one record")
+        XCTAssertGreaterThan(refresh.persisted.movementInstances.count, 0,
+                             "the refresh result must persist movement")
         XCTAssertTrue(refresh.persisted.sourceAttemptKind == .usableSnapshot
                             || refresh.persisted.sourceAttemptKind == .partial,
                           "the source outcome must be persisted")
 
-            await restoreCaptchaTokens(savedTokens)
-            let hostSummary = solveSnapshot.callsByHost.keys.sorted().map {
-                "\($0):\(solveSnapshot.callsByHost[$0] ?? 0)"
-            }.joined(separator: ",")
-            print("[issue339-live] run=\(String(runID.prefix(8))) "
-                  + "outcome=\(refresh.outcome) records=\(refresh.persisted.recordCount) "
-                  + "movement_instances=\(refresh.persisted.movementInstances.count) "
-                  + "solver_calls=\(solveSnapshot.callCount) "
-                  + "tokens_returned=\(solveSnapshot.returnedTokenCount) "
-                  + "solver_ms=\(solveSnapshot.milliseconds) "
-                  + "hosts=\(hostSummary) "
-                  + "stages_ms=resolve:\(resolveMilliseconds),refresh:\(refresh.elapsedMilliseconds),"
-                  + "cold_reopen:\(reopenMilliseconds) "
-                  + "locator_sha256=\(refresh.persisted.locatorDigest) "
-                  + "identity_sha256=\(Self.digest(refresh.persisted.recordKey)) "
-                  + "events_sha256=\(Self.digest(refresh.persisted.eventIDs.sorted().joined(separator: "\n")))")
-        } catch {
-            await restoreCaptchaTokens(savedTokens)
-            throw error
-        }
+        let hostSummary = solveSnapshot.callsByHost.keys.sorted().map {
+            "\($0):\(solveSnapshot.callsByHost[$0] ?? 0)"
+        }.joined(separator: ",")
+        print("[issue339-live] run=\(String(runID.prefix(8))) "
+              + "outcome=\(refresh.outcome) records=\(refresh.persisted.recordCount) "
+              + "movement_instances=\(refresh.persisted.movementInstances.count) "
+              + "solver_calls=\(solveSnapshot.callCount) "
+              + "tokens_returned=\(solveSnapshot.returnedTokenCount) "
+              + "solver_ms=\(solveSnapshot.milliseconds) "
+              + "hosts=\(hostSummary) "
+              + "stages_ms=resolve:\(resolveMilliseconds),refresh:\(refresh.elapsedMilliseconds),"
+              + "cold_reopen:\(reopenMilliseconds) "
+              + "locator_sha256=\(refresh.persisted.locatorDigest) "
+              + "identity_sha256=\(Self.digest(refresh.persisted.recordKey)) "
+              + "events_sha256=\(Self.digest(refresh.persisted.eventIDs.sorted().joined(separator: "\n")))")
     }
 
     @MainActor
@@ -301,7 +298,10 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         settings: CaptchaSettings,
         corpus: CorpusStore,
         observations: SolveObservations,
-        storeURL: URL
+        storeURL: URL,
+        isolation: Issue339TestIsolation,
+        captchaTokenStore: CaptchaTokenStore,
+        notificationReceiver: Issue339NotificationReceiver
     ) async throws -> LiveRefreshResult {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         var capturedStore: TrackedStore?
@@ -310,6 +310,7 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             modelContainer: container,
             modelContainerIsPrepared: true,
             captchaCorpus: corpus,
+            configuredCaptchaSolver: solver,
             refreshCenterFactory: { store, _ in
                 capturedStore = store
                 return RefreshCenter(
@@ -331,6 +332,7 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
                             elapsedMilliseconds: Self.elapsedMilliseconds(since: startedAt))
                         return result
                     },
+                    captchaTokenStore: captchaTokenStore,
                     serviceBuilder: { refreshContext in
                         Self.makeIsolatedMovementProvider(
                             context: refreshContext, client: client,
@@ -342,7 +344,11 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
                     fsspAutoModelEnabled: false,
                     fsspDiscover: { _ in .error("disabled in issue-339 acceptance harness") })
             },
-            trackedStoreProjectionSynchronizer: { _, _ in })
+            trackedStoreProjectionSynchronizer: { _, _ in },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
         router.refreshCenter.repairBeforeRefresh = nil
         router.refreshCenter.recoverCard = { _ in throw CancellationError() }
 
@@ -407,36 +413,6 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             sourceAttemptKind: record.sourceRefreshAttempt?.kind)
     }
 
-    private func isolateTestProcessPreferences() throws -> () -> Void {
-        guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
-            throw LiveAcceptanceError.productionProcess
-        }
-        let defaults = UserDefaults.standard
-        let key = SpotlightPreferenceStore.onboardingKey
-        let previous = defaults.object(forKey: key)
-        defaults.set(false, forKey: key)
-        return {
-            if let previous { defaults.set(previous, forKey: key) }
-            else { defaults.removeObject(forKey: key) }
-        }
-    }
-
-    @MainActor
-    private func captureAndClearCaptchaTokens(
-        domains: [String], excluding alreadySaved: [SavedCaptchaToken] = []
-    ) async -> [SavedCaptchaToken] {
-        var saved = [SavedCaptchaToken]()
-        var seenHosts = Set(alreadySaved.map { canonicalAcceptanceHost($0.domain) })
-        for domain in domains {
-            let host = canonicalAcceptanceHost(domain)
-            guard seenHosts.insert(host).inserted else { continue }
-            let token = await CaptchaTokenStore.shared.token(forDomain: domain)
-            await CaptchaTokenStore.shared.invalidate(domain: domain)
-            saved.append(SavedCaptchaToken(domain: domain, token: token))
-        }
-        return saved
-    }
-
     private static func makeIsolatedMovementProvider(
         context: MovementContext,
         client: SudrfClient,
@@ -463,17 +439,9 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             service: service, context: context, observations: observations)
     }
 
-    @MainActor
-    private func restoreCaptchaTokens(_ saved: [SavedCaptchaToken]) async {
-        for entry in saved {
-            await CaptchaTokenStore.shared.invalidate(domain: entry.domain)
-            if let token = entry.token {
-                await CaptchaTokenStore.shared.store(token, domain: entry.domain)
-            }
-        }
-    }
-
-    private static func makeIsolatedClient() -> SudrfClient {
+    private static func makeIsolatedClient(
+        captchaTokenStore: CaptchaTokenStore
+    ) -> SudrfClient {
         SudrfClient(
             sessionFactory: { delegate in
                 let configuration = URLSessionConfiguration.ephemeral
@@ -484,7 +452,7 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             minInterval: 1.5,
             trustCourtCertificates: true,
             variantStore: WorkingVariantStore(cacheURL: nil),
-            captchaStore: CaptchaTokenStore.shared)
+            captchaStore: captchaTokenStore)
     }
 
     private struct ObservingMovementProvider: MovementProviding {
@@ -527,7 +495,6 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             + "&delo_id=1502001&case_type=0&new=0&srv_num=1")!
 
     private enum LiveAcceptanceError: Error {
-        case productionProcess
         case resolvedLocatorMismatch
         case autostartDidNotBegin
         case autostartTaskMissing

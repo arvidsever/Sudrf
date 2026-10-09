@@ -157,6 +157,7 @@ final class RefreshCenter: ObservableObject {
     private let store: TrackedStore
     private let client: SudrfClient
     private let vsrfClient: any VSRFProviding
+    private let captchaTokenStore: CaptchaTokenStore
     private let mosGorSudClient = MosGorSudClient()
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
@@ -289,6 +290,7 @@ final class RefreshCenter: ObservableObject {
          captchaSettings: CaptchaSettings? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
+         captchaTokenStore: CaptchaTokenStore = .shared,
          serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil,
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
             -> EnforcementLookup)? = nil,
@@ -303,6 +305,7 @@ final class RefreshCenter: ObservableObject {
         self.client = client
         let vsrf = vsrfProvider ?? VSRFClient()
         self.vsrfClient = vsrf
+        self.captchaTokenStore = captchaTokenStore
         self.captchaSolver = captchaSolver
         self.captchaSettings = captchaSettings
         self.initialTimerDelay = initialTimerDelay
@@ -1369,10 +1372,11 @@ final class RefreshCenter: ObservableObject {
         let solve = autoSolve
         let c = client
         let solverSettings = settings.autoSolverSettings
+        let tokenStore = captchaTokenStore
         let task = Task {
             let result = await solve(formURL, c, solver, solverSettings)
             if let token = result.token {
-                await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+                await tokenStore.store(token, domain: formURL.host ?? "")
             }
             return result
         }

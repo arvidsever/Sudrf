@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import SudrfKit
 @testable import CaptchaSolver
 @testable import SudrfApp
@@ -103,8 +104,30 @@ final class DirectCaseLinkSheetTests: XCTestCase {
 
     @MainActor
     func testTrackReturnsPersistentKeyAndExactContextReusesIt() throws {
+        guard NSApp == nil else {
+            throw XCTSkip("offline #339 test must not update the test host's Dock badge")
+        }
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
+        let notificationReceiver = Issue339NotificationReceiver()
+        let captchaTokenStore = CaptchaTokenStore()
         let container = try SudrfModelContainerFactory.make(inMemory: true)
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try AppRouter(
+            captchaSettings: isolation.makeCaptchaSettings(),
+            modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: isolation.makeCaptchaCorpus(),
+            configuredCaptchaSolver: isolation.makeNoopCaptchaSolver(),
+            refreshCenterFactory: { store, client in
+                RefreshCenter(
+                    store: store, client: client,
+                    captchaTokenStore: captchaTokenStore,
+                    fsspAutoModelEnabled: false,
+                    initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600))
+            },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
         let context = context()
 
         let firstKey = try XCTUnwrap(router.track(context: context, movement: nil))
@@ -114,9 +137,110 @@ final class DirectCaseLinkSheetTests: XCTestCase {
     }
 
     @MainActor
+    func testDirectLinkUsesInjectedActivitySpotlightAndNotificationPublishers() async throws {
+        guard NSApp == nil else {
+            throw XCTSkip("offline #339 test requires no AppKit application instance")
+        }
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
+        let notificationReceiver = Issue339NotificationReceiver()
+        let captchaTokenStore = CaptchaTokenStore()
+        let captchaSettings = isolation.makeCaptchaSettings()
+        let captchaSolver = isolation.makeNoopCaptchaSolver()
+        let context = context()
+        let movement = CaseMovement(
+            uid: "", caseNumber: context.caseNumber, inForce: false,
+            instances: [CaseInstance(
+                level: .first, court: context.courtTitle,
+                caseNumber: context.caseNumber, judge: nil,
+                domain: context.searchDomain, foundByUID: false,
+                result: nil, sessions: [])],
+            complaints: [:], acts: [])
+        let service = LinkedCourtMovement([movement])
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("issue-339-publisher-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: directory.appendingPathComponent("test.store"))
+        var publishedActivityTypes: [String] = []
+        var injectedSpotlightIndexer: SpotlightIndexer?
+        let router = try AppRouter(
+            captchaSettings: captchaSettings,
+            modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: isolation.makeCaptchaCorpus(),
+            configuredCaptchaSolver: captchaSolver,
+            refreshCenterFactory: { store, client in
+                RefreshCenter(
+                    store: store, client: client,
+                    captchaSolver: captchaSolver,
+                    captchaSettings: captchaSettings,
+                    captchaTokenStore: captchaTokenStore,
+                    serviceBuilder: { _ in service },
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in .error("disabled in issue-339 offline test") },
+                    initialTimerDelay: .seconds(3_600),
+                    timerInterval: .seconds(3_600))
+            },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: {
+                let indexer = isolation.makeSpotlightIndexer(catalog: $0)
+                injectedSpotlightIndexer = indexer
+                return indexer
+            },
+            currentEntityActivityPublisher: {
+                publishedActivityTypes.append($0.activityType)
+            },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
+        XCTAssertTrue(router.spotlightOnboardingRequired)
+        let injectedIndexer = try XCTUnwrap(injectedSpotlightIndexer)
+        XCTAssertTrue(router.spotlightIndexer === injectedIndexer)
+        router.refreshCenter.repairBeforeRefresh = nil
+
+        guard NSApp == nil else {
+            throw XCTSkip("offline #339 test requires no AppKit application before import")
+        }
+        let key = try XCTUnwrap(router.addDirectCaseLink(context))
+        XCTAssertEqual(publishedActivityTypes, ["ru.sudrf.case"])
+
+        let refresh = await router.refreshCenter.refresh(key: key)?.value
+        XCTAssertEqual(refresh?.effectiveKey, key)
+        let serviceCalls = await service.calls
+        XCTAssertEqual(serviceCalls, 1)
+        XCTAssertEqual(router.cases.count, 1)
+        XCTAssertTrue(router.feed.isEmpty)
+        XCTAssertEqual(notificationReceiver.receivedEntryCount, 0)
+        try await router.spotlightIndexer.synchronize(scope: .cases([key]))
+        let indexCalls = await isolation.spotlightIndexCallCount()
+        XCTAssertEqual(indexCalls, 1)
+    }
+
+    @MainActor
     func testHigherCourtURLReusesSearchTrackedLogicalCaseByJudicialUID() throws {
+        guard NSApp == nil else {
+            throw XCTSkip("offline #339 test must not update the test host's Dock badge")
+        }
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
+        let notificationReceiver = Issue339NotificationReceiver()
+        let captchaTokenStore = CaptchaTokenStore()
         let container = try SudrfModelContainerFactory.make(inMemory: true)
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try AppRouter(
+            captchaSettings: isolation.makeCaptchaSettings(),
+            modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: isolation.makeCaptchaCorpus(),
+            configuredCaptchaSolver: isolation.makeNoopCaptchaSolver(),
+            refreshCenterFactory: { store, client in
+                RefreshCenter(
+                    store: store, client: client,
+                    captchaTokenStore: captchaTokenStore,
+                    fsspAutoModelEnabled: false,
+                    initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600))
+            },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
         var first = context()
         first.caseID = "first-card-id"
         first.caseUID = "first-card-guid"
@@ -154,14 +278,17 @@ final class DirectCaseLinkSheetTests: XCTestCase {
     @MainActor
     func testConfirmDirectLinkContinuesTwoCaptchasAfterSheetClosesAndSurvivesColdReopen()
         async throws {
+        guard NSApp == nil else {
+            throw XCTSkip("offline #339 test must not update the test host's Dock badge")
+        }
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("issue-339-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let storeURL = directory.appendingPathComponent("test.store")
-        let restoreTestDefaults = try isolateTestProcessPreferences()
-        defer { restoreTestDefaults() }
-        let settings = CaptchaSettings.shared
+        let settings = isolation.makeCaptchaSettings()
         guard settings.isEffectivelyEnabled else {
             throw XCTSkip("авторегистрация CAPTCHA отключена в тестовом домене")
         }
@@ -186,55 +313,53 @@ final class DirectCaseLinkSheetTests: XCTestCase {
             kind: .complaintRegistered, occurrence: ["issue-339-existing-event"],
             observedAt: Date(timeIntervalSinceReferenceDate: 1), evidence: .init())
         let seededSeenAt = Date(timeIntervalSinceReferenceDate: 42)
-        let savedTokens = await captureAndClearCaptchaTokens(
-            domains: [ctx.searchDomain, ctx.displayDomain] + ctx.expandedHigherDomains())
-        do {
-            let first = try await importAndRefreshBeforeColdReopen(
-                context: ctx, storeURL: storeURL, settings: settings,
-                service: service, seed: seed, seenAt: seededSeenAt)
+        let captchaTokenStore = CaptchaTokenStore()
+        let notificationReceiver = Issue339NotificationReceiver()
+        let first = try await importAndRefreshBeforeColdReopen(
+            context: ctx, storeURL: storeURL, settings: settings,
+            service: service, seed: seed, seenAt: seededSeenAt,
+            isolation: isolation, captchaTokenStore: captchaTokenStore,
+            notificationReceiver: notificationReceiver)
 
-            let firstCalls = await service.calls
-            XCTAssertEqual(firstCalls, 3)
-            XCTAssertEqual(first.count, 1)
-            XCTAssertEqual(first.context, ctx)
-            XCTAssertEqual(first.collections, ["Приёмка #339"])
-            XCTAssertEqual(first.seenAt, seededSeenAt)
-            XCTAssertEqual(first.eventIDs.filter { $0 == seed.id }.count, 1)
-            XCTAssertEqual(Set(first.eventIDs).count, first.eventIDs.count)
-            XCTAssertEqual(first.movementFetchedAt, nil)
-            XCTAssertEqual(first.sourceRefreshAttemptKind, .partial)
-            let firstSolveHosts = await service.autoSolveHosts
-            XCTAssertEqual(firstSolveHosts, [subjectDomain, cassationDomain])
-            let subjectSourceURL = subjectCardSourceURL(domain: subjectDomain).absoluteString
-            assertFinalMovement(
-                in: first, baseDomain: ctx.searchDomain,
-                subjectDomain: subjectDomain, cassationDomain: cassationDomain,
-                subjectSourceURL: subjectSourceURL)
+        let firstCalls = await service.calls
+        XCTAssertEqual(firstCalls, 3)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first.context, ctx)
+        XCTAssertEqual(first.collections, ["Приёмка #339"])
+        XCTAssertEqual(first.seenAt, seededSeenAt)
+        XCTAssertEqual(first.eventIDs.filter { $0 == seed.id }.count, 1)
+        XCTAssertEqual(Set(first.eventIDs).count, first.eventIDs.count)
+        XCTAssertEqual(first.movementFetchedAt, nil)
+        XCTAssertEqual(first.sourceRefreshAttemptKind, .partial)
+        let firstSolveHosts = await service.autoSolveHosts
+        XCTAssertEqual(firstSolveHosts, [subjectDomain, cassationDomain])
+        let subjectSourceURL = subjectCardSourceURL(domain: subjectDomain).absoluteString
+        assertFinalMovement(
+            in: first, baseDomain: ctx.searchDomain,
+            subjectDomain: subjectDomain, cassationDomain: cassationDomain,
+            subjectSourceURL: subjectSourceURL)
 
-            let reopened = try await coldReopenAndReimport(
-                context: ctx, storeURL: storeURL, settings: settings,
-                service: service, expected: first)
-            XCTAssertEqual(reopened.count, 1)
-            XCTAssertEqual(reopened.key, first.key)
-            XCTAssertEqual(reopened.context, first.context)
-            XCTAssertEqual(reopened.collections, first.collections)
-            XCTAssertEqual(reopened.eventIDs, first.eventIDs)
-            XCTAssertEqual(Set(reopened.eventIDs).count, reopened.eventIDs.count)
-            XCTAssertEqual(reopened.sourceRefreshAttemptKind, .partial)
-            assertFinalMovement(
-                in: reopened, baseDomain: ctx.searchDomain,
-                subjectDomain: subjectDomain, cassationDomain: cassationDomain,
-                subjectSourceURL: subjectSourceURL)
+        let reopened = try await coldReopenAndReimport(
+            context: ctx, storeURL: storeURL, settings: settings,
+            service: service, expected: first, isolation: isolation,
+            captchaTokenStore: captchaTokenStore,
+            notificationReceiver: notificationReceiver)
+        XCTAssertEqual(reopened.count, 1)
+        XCTAssertEqual(reopened.key, first.key)
+        XCTAssertEqual(reopened.context, first.context)
+        XCTAssertEqual(reopened.collections, first.collections)
+        XCTAssertEqual(reopened.eventIDs, first.eventIDs)
+        XCTAssertEqual(Set(reopened.eventIDs).count, reopened.eventIDs.count)
+        XCTAssertEqual(reopened.sourceRefreshAttemptKind, .partial)
+        assertFinalMovement(
+            in: reopened, baseDomain: ctx.searchDomain,
+            subjectDomain: subjectDomain, cassationDomain: cassationDomain,
+            subjectSourceURL: subjectSourceURL)
 
-            let repeatedCalls = await service.calls
-            XCTAssertEqual(repeatedCalls, 4)
-            let repeatedSolveHosts = await service.autoSolveHosts
-            XCTAssertEqual(repeatedSolveHosts, firstSolveHosts)
-        } catch {
-            await restoreCaptchaTokens(savedTokens)
-            throw error
-        }
-        await restoreCaptchaTokens(savedTokens)
+        let repeatedCalls = await service.calls
+        XCTAssertEqual(repeatedCalls, 4)
+        let repeatedSolveHosts = await service.autoSolveHosts
+        XCTAssertEqual(repeatedSolveHosts, firstSolveHosts)
     }
 
     @MainActor
@@ -244,26 +369,39 @@ final class DirectCaseLinkSheetTests: XCTestCase {
         settings: CaptchaSettings,
         service: LinkedCourtMovement,
         seed: CaseEvent,
-        seenAt: Date
+        seenAt: Date,
+        isolation: Issue339TestIsolation,
+        captchaTokenStore: CaptchaTokenStore,
+        notificationReceiver: Issue339NotificationReceiver
     ) async throws -> PersistedDirectLinkState {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         var capturedStore: TrackedStore?
         let router = try AppRouter(
+            captchaSettings: settings,
             modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: isolation.makeCaptchaCorpus(),
+            configuredCaptchaSolver: isolation.makeNoopCaptchaSolver(),
             refreshCenterFactory: { store, client in
                 capturedStore = store
                 return RefreshCenter(
                     store: store, client: client,
-                    captchaSolver: CaptchaSolverFactory.make(settings: settings),
+                    captchaSolver: isolation.makeNoopCaptchaSolver(),
                     captchaSettings: settings,
                     autoSolve: { url, _, _, _ in
                         await service.recordAutoSolve(host: url.host ?? "")
                         return AutoCaptchaSolver.SolveResult(
                             token: CaptchaToken(value: "12345", id: url.host ?? ""), png: nil)
                     },
-                    serviceBuilder: { _ in service })
+                    captchaTokenStore: captchaTokenStore,
+                    serviceBuilder: { _ in service },
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in .error("disabled in issue-339 offline test") })
             },
-            trackedStoreProjectionSynchronizer: { _, _ in })
+            trackedStoreProjectionSynchronizer: { _, _ in },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
         router.refreshCenter.repairBeforeRefresh = nil
 
         let key = try XCTUnwrap(router.addDirectCaseLink(ctx))
@@ -294,7 +432,10 @@ final class DirectCaseLinkSheetTests: XCTestCase {
         storeURL: URL,
         settings: CaptchaSettings,
         service: LinkedCourtMovement,
-        expected: PersistedDirectLinkState
+        expected: PersistedDirectLinkState,
+        isolation: Issue339TestIsolation,
+        captchaTokenStore: CaptchaTokenStore,
+        notificationReceiver: Issue339NotificationReceiver
     ) async throws -> PersistedDirectLinkState {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         let store = try TrackedStore(container: container, prepared: true)
@@ -302,20 +443,30 @@ final class DirectCaseLinkSheetTests: XCTestCase {
         XCTAssertEqual(beforeReimport, expected)
 
         let router = try AppRouter(
+            captchaSettings: settings,
             modelContainer: container, modelContainerIsPrepared: true,
+            captchaCorpus: isolation.makeCaptchaCorpus(),
+            configuredCaptchaSolver: isolation.makeNoopCaptchaSolver(),
             refreshCenterFactory: { store, client in
                 RefreshCenter(
                     store: store, client: client,
-                    captchaSolver: CaptchaSolverFactory.make(settings: settings),
+                    captchaSolver: isolation.makeNoopCaptchaSolver(),
                     captchaSettings: settings,
                     autoSolve: { url, _, _, _ in
                         await service.recordAutoSolve(host: url.host ?? "")
                         return AutoCaptchaSolver.SolveResult(
                             token: CaptchaToken(value: "12345", id: url.host ?? ""), png: nil)
                     },
-                    serviceBuilder: { _ in service })
+                    captchaTokenStore: captchaTokenStore,
+                    serviceBuilder: { _ in service },
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in .error("disabled in issue-339 offline test") })
             },
-            trackedStoreProjectionSynchronizer: { _, _ in })
+            trackedStoreProjectionSynchronizer: { _, _ in },
+            userDefaults: isolation.userDefaults,
+            spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { notificationReceiver.receive($0) })
         router.refreshCenter.repairBeforeRefresh = nil
 
         let repeatedImportStartedAt = Date()
@@ -401,51 +552,8 @@ final class DirectCaseLinkSheetTests: XCTestCase {
                        file: file, line: line)
     }
 
-    private struct SavedCaptchaToken {
-        let domain: String
-        let token: CaptchaToken?
-    }
-
-    @MainActor
-    private func captureAndClearCaptchaTokens(domains: [String]) async -> [SavedCaptchaToken] {
-        var saved = [SavedCaptchaToken]()
-        var seenHosts = Set<String>()
-        for domain in domains {
-            let host = SudrfHost.moduleHost(domain.lowercased())
-            guard seenHosts.insert(host).inserted else { continue }
-            let token = await CaptchaTokenStore.shared.token(forDomain: domain)
-            await CaptchaTokenStore.shared.invalidate(domain: domain)
-            saved.append(SavedCaptchaToken(domain: domain, token: token))
-        }
-        return saved
-    }
-
-    @MainActor
-    private func restoreCaptchaTokens(_ saved: [SavedCaptchaToken]) async {
-        for entry in saved {
-            await CaptchaTokenStore.shared.invalidate(domain: entry.domain)
-            if let token = entry.token {
-                await CaptchaTokenStore.shared.store(token, domain: entry.domain)
-            }
-        }
-    }
-
     private enum DirectLinkHarnessError: Error {
         case autostartDidNotBegin
-    }
-
-    private func isolateTestProcessPreferences() throws -> () -> Void {
-        guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
-            throw XCTSkip("test harness is forbidden in the production app process")
-        }
-        let defaults = UserDefaults.standard
-        let key = SpotlightPreferenceStore.onboardingKey
-        let previous = defaults.object(forKey: key)
-        defaults.set(false, forKey: key)
-        return {
-            if let previous { defaults.set(previous, forKey: key) }
-            else { defaults.removeObject(forKey: key) }
-        }
     }
 
     private func isPartial(_ outcome: CaseRefreshOutcome?) -> Bool {

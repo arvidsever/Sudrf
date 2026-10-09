@@ -2146,12 +2146,10 @@ final class AppRouter: ObservableObject {
         var calendarHearingIDs = Set<String>()
         var dls: [TrackedDeadline] = []
         var inactiveDls: [TrackedDeadline] = []
-        var feedItems: [FeedEntry] = []
-        var materialFeedTransitions = [String: Set<String>]()
-        var unresolvedMaterialFeedCounts = [String: Int]()
-        var materialFeedIDs = Set<String>()
-        var normalFeedIDs = Set<String>()
+        var legacyFeedRecords = [LegacyFeedRecordInput]()
         let readIDs = readFeedIDs
+        let knownIDs = knownFeedIDs
+        let oldMigrationState = materialFeedMigrationState
 
         for rec in recs {
             let snap = rec.snapshot
@@ -2168,72 +2166,20 @@ final class AppRouter: ObservableObject {
 
             let client = snap.map { clientName(rec: rec, snap: $0) } ?? rec.courtTitle
             let unreadByCase = rec.seenAt == nil
-            // История Казначейства хранит устойчивый RSS guid. Статус не входит
-            // в id: его переформулировка источником не должна воскрешать уже
-            // прочитанную строку как новое уведомление.
-            for record in rec.enforcementRecords where record.source == .treasury {
-                for event in record.events {
-                    guard let date = event.date ?? event.dateRaw.flatMap(DateUtil.parse) else { continue }
-                    guard let guid = event.guid?.trimmingCharacters(in: .whitespacesAndNewlines),
-                          !guid.isEmpty else { continue }
-                    let diff = DateUtil.daysBetween(date, today)
-                    guard diff >= 0 && diff <= 45 else { continue }
-                    let id = Self.enforcementFeedID(recordKey: rec.key, guid: guid)
-                    feedItems.append(FeedEntry(
-                        id: id, dayHead: nil, date: date, time: "—", recordKey: rec.key,
-                        caseNumber: rec.caseNumber, client: client, kind: .enforcement,
-                        text: event.text, actID: nil,
-                        isUnread: !readIDs.contains(id)))
-                }
-            }
+            let feedRecord = LegacyFeedRecordInput(
+                recordKey: rec.key, caseNumber: rec.caseNumber, client: client,
+                unreadByCase: unreadByCase, snapshot: snap,
+                movement: snap == nil ? nil : rec.movement,
+                context: snap == nil ? nil : rec.context,
+                enforcementRecords: rec.enforcementRecords)
+            legacyFeedRecords.append(feedRecord)
 
             guard let snap else { continue }
 
-            let materialInstancesBySourceID: [String: CaseInstance] = {
-                guard let movement = rec.movement, let context = rec.context else { return [:] }
-                return Self.materialInstancesBySourceID(movement: movement, context: context)
-            }()
-            let previousRegistrationsBySourceID: [String: CaseInstance] = {
-                guard let movement = rec.movement, let context = rec.context else { return [:] }
-                var grouped = [String: [CaseInstance]]()
-                for instance in movement.instances
-                    where instance.note == "Предыдущая регистрация" {
-                    guard let sourceID = Self.previousRegistrationSourceCardID(
-                        for: instance, context: context) else { continue }
-                    grouped[sourceID, default: []].append(instance)
-                }
-                return grouped.compactMapValues { $0.count == 1 ? $0[0] : nil }
-            }()
-
-            func materialSource(_ session: StoredSession) -> (instance: CaseInstance?, number: String?) {
-                guard session.level == .material else { return (nil, nil) }
-                let candidate = session.sourceCardID.flatMap { materialInstancesBySourceID[$0] }
-                let stored = CaseNumberPresentation.secondary(session.caseNumber, distinctFrom: "")
-                let current = candidate.flatMap(MovementDerivation.materialNumber)
-                if let stored, let current,
-                   CaseNumberPresentation.primary(stored)
-                    != CaseNumberPresentation.primary(current) {
-                    return (nil, nil)
-                }
-                return (candidate, stored ?? current)
-            }
-
-            func previousRegistrationSource(_ session: StoredSession)
-                -> (instance: CaseInstance, number: String, sourceID: String)? {
-                guard let sourceID = session.sourceCardID,
-                      let instance = previousRegistrationsBySourceID[sourceID] else { return nil }
-                let number = CaseNumberPresentation.secondary(
-                    session.caseNumber, distinctFrom: rec.caseNumber)
-                    ?? CaseNumberPresentation.secondary(
-                        instance.caseNumber, distinctFrom: rec.caseNumber)
-                guard let number else { return nil }
-                return (instance, number, sourceID)
-            }
-
             func trackedHearing(_ session: StoredSession) -> TrackedHearing? {
                 guard let date = session.date else { return nil }
-                let material = materialSource(session)
-                let previousRegistration = previousRegistrationSource(session)
+                let material = feedRecord.materialSource(session)
+                let previousRegistration = feedRecord.previousRegistrationSource(session)
                 let instanceNumber = previousRegistration?.number
                     ?? (session.level == .material ? material.number : session.caseNumber)
                 let sourceIdentity = session.level == .material
@@ -2267,7 +2213,8 @@ final class AppRouter: ObservableObject {
                 where stage != .done || s.level == .material {
                 if s.level == .material,
                    let sourceID = s.sourceCardID,
-                   let materialResult = materialInstancesBySourceID[sourceID]?.result,
+                   let materialResult = feedRecord.materialInstance(
+                       forSourceCardID: sourceID)?.result,
                    !CaseLifecycleResolver.isHearing(
                     event: s.event,
                     result: [s.result, materialResult].compactMap { $0 }.joined(separator: " ")) {
@@ -2292,129 +2239,21 @@ final class AppRouter: ObservableObject {
                 if dl.isActive { dls.append(tracked) }
                 else { inactiveDls.append(tracked) }
             }
-            // Лента: события движения за последние 45 дней.
-            for s in snap.sessions {
-                guard let d = s.date else { continue }
-                let diff = DateUtil.daysBetween(d, today)   // d в прошлом → diff>0
-                if diff >= 0 && diff <= 45 {
-                    let text = s.result ?? s.event
-                    let kind = feedKind(for: s)
-                    let legacyID = Self.feedID(recordKey: rec.key, date: d,
-                                               time: s.time ?? "—", text: text)
-                    let material = materialSource(s)
-                    let previousRegistration = previousRegistrationSource(s)
-                    let id: String
-                    if s.level == .material, let sourceCardID = s.sourceCardID {
-                        id = Self.materialFeedID(legacyID: legacyID,
-                                                 sourceCardID: sourceCardID)
-                        materialFeedTransitions[legacyID, default: []].insert(id)
-                    } else {
-                        id = legacyID
-                        if s.level == .material {
-                            unresolvedMaterialFeedCounts[legacyID, default: 0] += 1
-                        } else {
-                            normalFeedIDs.insert(legacyID)
-                        }
-                    }
-                    if s.level == .material, !materialFeedIDs.insert(id).inserted { continue }
-                    feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
-                        time: s.time ?? "—", recordKey: rec.key, caseNumber: rec.caseNumber,
-                        client: client, kind: kind, text: text, actID: nil,
-                        isUnread: unreadByCase && !readIDs.contains(id),
-                        instanceCaseNumber: previousRegistration?.number
-                            ?? (s.level == .material ? material.number : s.caseNumber),
-                        instanceLevel: s.level, sourceCardID: s.sourceCardID,
-                        sourceInstanceID: previousRegistration?.instance.id
-                            ?? material.instance?.id,
-                        previousRegistrationNumber: previousRegistration?.number))
-                }
-            }
-            // Опубликованные акты берём из полного кэша движения, когда он есть.
-            if let mv = rec.movement {
-                for act in mv.acts {
-                    guard let d = DateUtil.parse(act.date) else { continue }
-                    let diff = DateUtil.daysBetween(d, today)
-                    guard diff >= 0 && diff <= 45 else { continue }
-                    let text = "Опубликован судебный акт: \(act.title)"
-                    let legacyID = Self.feedID(recordKey: rec.key, date: d,
-                                               time: "—", text: act.id)
-                    let linked = mv.instances.filter { $0.linkedActIDs.contains(act.id) }
-                    let exactOwner = linked.count == 1 ? linked[0] : nil
-                    let sourceLevel = exactOwner?.level ?? act.instanceLevel
-                    let previousRegistrationNumber = exactOwner.flatMap { instance -> String? in
-                        guard instance.note == "Предыдущая регистрация" else { return nil }
-                        return CaseNumberPresentation.secondary(
-                            instance.caseNumber, distinctFrom: rec.caseNumber)
-                    }
-                    let linkedMaterial = exactOwner?.level == .material ? exactOwner : nil
-                    let sourceCardID = linkedMaterial.flatMap { instance in
-                        guard let context = rec.context else { return nil }
-                        return CaseSnapshotSourceIdentity.sourceCardID(
-                            for: instance, context: context)
-                    }.flatMap { sourceID in
-                        materialInstancesBySourceID[sourceID] == nil ? nil : sourceID
-                    }
-                    let material = sourceCardID.flatMap { materialInstancesBySourceID[$0] }
-                    let id: String
-                    if sourceLevel == .material, let sourceCardID {
-                        id = Self.materialFeedID(legacyID: legacyID,
-                                                 sourceCardID: sourceCardID)
-                        materialFeedTransitions[legacyID, default: []].insert(id)
-                    } else {
-                        id = legacyID
-                        if sourceLevel == .material {
-                            unresolvedMaterialFeedCounts[legacyID, default: 0] += 1
-                        } else {
-                            normalFeedIDs.insert(legacyID)
-                        }
-                    }
-                    if sourceLevel == .material,
-                       !materialFeedIDs.insert(id).inserted { continue }
-                    feedItems.append(FeedEntry(id: id, dayHead: nil, date: d,
-                        time: "—", recordKey: rec.key, caseNumber: rec.caseNumber,
-                        client: client, kind: .act, text: text, actID: act.id,
-                        isUnread: unreadByCase && !readIDs.contains(id),
-                        instanceCaseNumber: previousRegistrationNumber
-                            ?? (sourceLevel == .material
-                                ? material.flatMap(MovementDerivation.materialNumber)
-                                : Self.actReviewNumber(
-                                    for: act, instances: mv.instances,
-                                    baseCaseNumber: rec.caseNumber)),
-                        instanceLevel: sourceLevel, sourceCardID: sourceCardID,
-                        sourceInstanceID: exactOwner?.id ?? material?.id,
-                        previousRegistrationNumber: previousRegistrationNumber))
-                }
-            }
         }
 
-        let currentFeedIDs = Set(feedItems.map(\.id))
-        let oldMigrationState = materialFeedMigrationState
-        let currentMaterialLegacyIDs = Set(materialFeedTransitions.keys)
-            .union(unresolvedMaterialFeedCounts.keys)
-        materialFeedMigrationState.consumedLegacyIDs.formUnion(
-            normalFeedIDs.subtracting(currentMaterialLegacyIDs).filter {
-                readFeedIDs.contains($0) || knownFeedIDs.contains($0)
-            })
-        let transitionsToMigrate = Self.materialFeedTransitionsToMigrate(
-            transitions: materialFeedTransitions,
-            unresolvedCounts: unresolvedMaterialFeedCounts,
-            readIDs: readFeedIDs, knownIDs: knownFeedIDs,
-            state: &materialFeedMigrationState)
-        let migratedReadIDs = Self.migratedFeedIDs(
-            readFeedIDs, transitions: transitionsToMigrate, currentIDs: currentFeedIDs)
-        if migratedReadIDs != readFeedIDs {
-            readFeedIDs = migratedReadIDs
+        let projection = LegacyFeedProjection.project(
+            records: legacyFeedRecords, today: today,
+            readIDs: readIDs, knownIDs: knownIDs,
+            migrationState: oldMigrationState)
+        if projection.migratedReadIDs != readFeedIDs {
+            readFeedIDs = projection.migratedReadIDs
             saveReadFeedIDs()
         }
-        for index in feedItems.indices where migratedReadIDs.contains(feedItems[index].id) {
-            feedItems[index].isUnread = false
-        }
-        let migratedKnownIDs = Self.migratedFeedIDs(
-            knownFeedIDs, transitions: transitionsToMigrate, currentIDs: currentFeedIDs)
-        if migratedKnownIDs != knownFeedIDs {
-            knownFeedIDs = migratedKnownIDs
+        if projection.migratedKnownIDs != knownFeedIDs {
+            knownFeedIDs = projection.migratedKnownIDs
             UserDefaults.standard.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
         }
+        materialFeedMigrationState = projection.migrationState
         if materialFeedMigrationState != oldMigrationState {
             saveMaterialFeedMigrationState()
         }
@@ -2438,7 +2277,7 @@ final class AppRouter: ObservableObject {
         calendarHearings = calendarHs
         deadlines = dls
         inactiveDeadlines = inactiveDls
-        feed = buildFeed(feedItems)
+        feed = buildFeed(projection.entries)
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
         tierCounts = Self.buildTierCounts(cs)
@@ -2921,7 +2760,7 @@ final class AppRouter: ObservableObject {
     /// предикат — `isHearingEvent`, а не `isHearing`: лента историческая, и
     /// прошедшее заседание с уже наступившей законной силой должно остаться
     /// заседанием, а не превратиться в «движение».
-    private func feedKind(for session: StoredSession) -> FeedEntryKind {
+    nonisolated static func feedKind(for session: StoredSession) -> FeedEntryKind {
         CaseLifecycleResolver.isHearingEvent(event: session.event)
             ? .hearing : .movement
     }

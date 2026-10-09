@@ -1232,6 +1232,33 @@ final class MovementServiceTests: XCTestCase {
             CaseNumberPresentation.primary($0.caseNumber) == "М-2417/2026"
         })
     }
+
+    func testSameCourtMainCaseWithPreliminaryAliasInCardRemainsSeparateNativeRegistration()
+        async throws {
+        let mainNumber = "2а-5090/2026"
+        let compositeNumber = "2а-5090/2026 ~ М-2417/2026"
+        let card = CaseCard(rawText: "", actText: nil, uid: Self.uid,
+                            caseNumber: compositeNumber)
+        let row = CaseSearchResult(caseNumber: mainNumber,
+                                   caseID: "ordinary-main-round",
+                                   caseUID: "ordinary-main-guid")
+        let mock = MockClient(firstCardID: "base", firstCard: card,
+                              higherResults: [],
+                              higherCards: ["ordinary-main-round": card],
+                              sameCourtResults: [row])
+        let service = MovementService(client: mock)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "p1"))
+        let base = CaseSearchResult(caseNumber: mainNumber,
+                                    caseID: "base", caseUID: Self.linkGUID)
+
+        let movement = try await service.movement(
+            for: base, court: districtCourt(), cartoteka: cart)
+
+        XCTAssertTrue(movement.instances.contains {
+            $0.caseNumber == compositeNumber && $0.foundByUID
+                && $0.sourceURL?.absoluteString.contains("case_id=ordinary-main-round") == true
+        })
+    }
 }
 
 /// Мок клиента: отдаёт заранее заданные карточки и записывает значения поиска.

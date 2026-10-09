@@ -791,6 +791,17 @@ public actor MovementService: MovementProviding {
 
             @discardableResult
             func appendRegistration(_ loaded: LoadedRegistration) -> Bool {
+                let caseID = loaded.row.caseID
+                let caseUID = loaded.row.caseUID
+                let isAlreadyLoadedNativeCard = registrations.contains { existing in
+                    guard let caseID, !caseID.isEmpty,
+                          let caseUID, !caseUID.isEmpty else { return false }
+                    return SudrfHost.moduleHost(existing.court.domain)
+                            == SudrfHost.moduleHost(loaded.court.domain)
+                        && existing.row.caseID == caseID
+                        && existing.row.caseUID == caseUID
+                }
+                guard !isAlreadyLoadedNativeCard else { return false }
                 if let locator = nativeLocator(row: loaded.row, court: loaded.court,
                                                cartoteka: loaded.cartoteka,
                                                sourceURL: loaded.sourceURL) {
@@ -799,10 +810,6 @@ public actor MovementService: MovementProviding {
                     markCoveragePartial(loaded.court.domain)
                 }
                 let number = loaded.card.caseNumber ?? loaded.row.caseNumber
-                guard !Self.containsInstance(instances, domain: loaded.court.domain,
-                                              caseNumber: number,
-                                              usingCanonicalHost: false) else { return false }
-
                 let cardActs: [CaseActText]
                 if !loaded.card.acts.isEmpty {
                     cardActs = loaded.card.acts
@@ -915,13 +922,6 @@ public actor MovementService: MovementProviding {
                         markCoveragePartial(court.domain)
                         continue
                     }
-                    if (Self.sameDisplayedCaseNumber(row.caseNumber, base.caseNumber)
-                        && SudrfHost.moduleHost(rowCourt.domain) == SudrfHost.moduleHost(court.domain))
-                        || Self.containsInstance(instances, domain: rowCourt.domain,
-                                                 caseNumber: row.caseNumber,
-                                                 usingCanonicalHost: false) {
-                        continue
-                    }
                     let rowKeys = Self.cardSourceKeys(row: row, court: rowCourt,
                                                       cartoteka: sameCart)
                     guard seenSourceKeys.isDisjoint(with: rowKeys) else { continue }
@@ -962,6 +962,23 @@ public actor MovementService: MovementProviding {
                         markCoveragePartial(rowCourt.domain)
                         continue
                     }
+                    let confirmedNumber = card.caseNumber ?? row.caseNumber
+                    let isPreliminaryAliasOfLoadedCard =
+                        SudrfHost.moduleHost(rowCourt.domain)
+                            == SudrfHost.moduleHost(court.domain)
+                        && CaseIndexClassifier.classify(
+                            caseNumber: row.caseNumber, courtLevel: rowCourt.level,
+                            branch: branch)?.materialLinkPolicy == .mayBecomeMainCase
+                        && !Self.samePublishedCaseNumber(confirmedNumber, row.caseNumber)
+                        && registrations.contains {
+                            SudrfHost.moduleHost($0.court.domain)
+                                == SudrfHost.moduleHost(rowCourt.domain)
+                                && Self.samePublishedCaseNumber(
+                                $0.card.caseNumber ?? $0.row.caseNumber, confirmedNumber)
+                                && Self.sameDisplayedCaseNumber(
+                                    $0.card.caseNumber ?? $0.row.caseNumber, row.caseNumber)
+                        }
+                    guard !isPreliminaryAliasOfLoadedCard else { continue }
 
                     seenSourceKeys.formUnion(rowKeys)
                     if SudrfHost.moduleHost(rowCourt.domain) != SudrfHost.moduleHost(court.domain),
@@ -1713,16 +1730,16 @@ public actor MovementService: MovementProviding {
             }
             return searchCourt
         }
-        guard let searchRegion = CourtDirectory.regionCode(forDomain: searchCourt.domain),
-              let linkedRegion = CourtDirectory.regionCode(forDomain: link.host),
-              linkedRegion == searchRegion else {
-            throw SudrfError.parsing("несогласованная ссылка в выдаче по УИД")
+        guard let linkedRegion = CourtDirectory.regionCode(forDomain: link.host) else {
+            throw SudrfError.parsing("нельзя подтвердить регион суда в опубликованной ссылке")
+        }
+        guard let targetSubjectCode = CourtDirectory.subjectCode(forRegionSuffix: linkedRegion) else {
+            throw SudrfError.parsing("нельзя подтвердить регион суда в опубликованной ссылке")
         }
         guard JudicialUIDObservation.validity(of: judicialUID) == .valid else {
             throw SudrfError.parsing("нельзя подтвердить регион судебного УИД")
         }
-        let subjectCode = String(judicialUID.prefix(2))
-        let courts = try await transferCourts(subjectCode)
+        let courts = try await transferCourts(targetSubjectCode)
         guard let publishedCourt = courts.first(where: {
             SudrfHost.moduleHost($0.domain) == link.moduleHost
                 && Self.sameCourtName($0.title, title)

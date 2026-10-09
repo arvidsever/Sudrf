@@ -8,6 +8,51 @@
 парсеров, а не побайтовые копии полных ответов суда; SHA-256 относятся к
 опубликованным фрагментам.
 
+## Повторная офлайн-проверка — 10 октября 2026 года
+
+Ветка обновлена через rebase на `origin/main`
+`bd06f4ef19922f311ece19df3167296a80d26756`; проверенный код ветки —
+`459fb2b3eb6bc42eee71fc72738c836255067579`. В тестовом `makeCenter`
+явно передан `fsspAutoModelEnabled: false`: создание `RefreshCenter`
+не проверяет eligibility установленной FSSP-модели. Остальные границы
+изоляции описаны ниже.
+
+В отдельном процессе выполнена только команда:
+
+```sh
+swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter Issue322AcceptanceTests
+```
+
+Выполнены ровно `testKSOYURefreshRestoresBothMoscowCardsWithoutJoiningPositiveControl`
+и `testTwoAppealsRepairThroughRefreshAndRetainHistoryAcrossPartialFailureAndReopen`:
+2 XCTest, 0 ошибок, 0 пропусков; время тестов 0,713 секунды,
+сборки SwiftPM — 18,43 секунды. Другие test bundles получили тот же фильтр
+и выполнили 0 тестов. Лог проверки —
+`/private/tmp/sudrf-322-rebased-isolated-profile.log`, SHA-256:
+`1853bd44580491509821e6552ed513f5830ffe1e0065a9fbccd34c01c9519f72`.
+
+Также выполнены `xcodegen generate` и Debug-сборка Xcode без запуска:
+
+```sh
+xcodebuild -project Sudrf.xcodeproj -scheme Sudrf -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath /private/tmp/sudrf-322-rebased-xcode \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+```
+
+Результат — `BUILD SUCCEEDED`, без предупреждений и ошибок в логе.
+Derived Data изолированы во временном каталоге; автоматическая регистрация
+сборки средствами Xcode не означает запуска приложения. Отдельные команды
+LaunchServices не выполнялись. Лог —
+`/private/tmp/sudrf-322-rebased-xcodebuild.log`, SHA-256:
+`503ebf2d428e47bd6a43bc92bc23e7e83e821ca7c62de2bbc90ab090cbe6ce16`.
+
+`python3 Scripts/generate-legal-deadline-registry.py --check` подтверждает,
+что реестр сроков актуален. Полный набор тестов текущего исходного кода
+не запускался. Живая проверка, полный ответ порталов, приложение и UI,
+рабочая база, production bootstrap и TestFlight не использовались.
+Офлайн-профиль остаётся доказательством поведения на сохранённых фрагментах
+и синтетических данных; живая приёмка #322 остаётся незавершённой.
+
 ## Офлайн-профиль — 9 октября 2026 года
 
 Проверено на ветке `codex/moscow-chain-acceptance-322-post434`, основание —

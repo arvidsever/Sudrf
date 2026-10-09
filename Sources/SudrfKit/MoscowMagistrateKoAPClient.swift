@@ -4,7 +4,36 @@ import SwiftSoup
 enum MoscowMagistrateKoAPSource {
     static let host = "mos-sud.ru"
     static let family = "moscow-magistrate-koap"
+    static let homeURL = URL(string: "https://mos-sud.ru/")!
     static let searchURL = URL(string: "https://mos-sud.ru/search")!
+}
+
+/// Number equivalence specific to published Moscow magistrate KoAP cards.
+/// The unit and year remain identity components; padding in numeric segments
+/// is the only tolerated difference.
+public enum MoscowMagistrateKoAPNumber {
+    public static func matchesPublishedNumber(_ lhs: String, _ rhs: String) -> Bool {
+        func normalized(_ value: String) -> [Int]? {
+            var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.hasPrefix("№") {
+                value = String(value.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard let regex = try? NSRegularExpression(
+                pattern: #"^(\d+)-(\d+)/(\d+)/(\d{4})$"#),
+                  let match = regex.firstMatch(in: value,
+                                               range: NSRange(value.startIndex..., in: value)) else {
+                return nil
+            }
+            let components = (1...4).compactMap { index -> Int? in
+                guard let range = Range(match.range(at: index), in: value) else { return nil }
+                return Int(value[range])
+            }
+            return components.count == 4 ? components : nil
+        }
+
+        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
+        return left == right
+    }
 }
 
 enum MoscowMagistrateKoAPURLPolicy {
@@ -70,8 +99,6 @@ enum MoscowMagistrateKoAPResultsParser {
         }
         var results: [CaseSearchResult] = []
         var seenIdentities = Set<SourceNativeCardIdentity>()
-        let requestedNumber = CartotekaRegistry.normalizedNumber(requestedValue)
-
         for row in (try? doc.select("tr").array()) ?? [] {
             let cells = (try? row.select("td").array()) ?? []
             guard !cells.isEmpty else { continue }
@@ -100,7 +127,9 @@ enum MoscowMagistrateKoAPResultsParser {
             }.first
             switch field {
             case .caseNumber:
-                guard CartotekaRegistry.normalizedNumber(number) == requestedNumber else { continue }
+                guard MoscowMagistrateKoAPNumber.matchesPublishedNumber(number, requestedValue) else {
+                    continue
+                }
             case .uid:
                 if let cellUID,
                    cellUID.localizedCaseInsensitiveCompare(requestedValue) != .orderedSame {
@@ -216,6 +245,74 @@ public actor MoscowMagistrateKoAPClient: CaseProviding {
 
     public func search(court: Court, cartoteka: Cartoteka,
                        field: SearchField, value: String) async throws -> [CaseSearchResult] {
+        throw SudrfError.searchModuleUnavailable(domain: MoscowMagistrateKoAPSource.host)
+    }
+
+    /// Search results are global to the portal. The selected unit is supplied
+    /// explicitly and only rows whose native card locator names that unit are
+    /// returned; an empty scoped result stays partial until source completeness
+    /// is known.
+    public func searchForUnit(court: Court, cartoteka: Cartoteka,
+                              unitPathID: String, field: SearchField, value: String,
+                              operation: SourceOperation = .search) async throws
+        -> SourceOutcome<[CaseSearchResult]> {
+        let invalidAttempt = SourceAttempt(
+            kind: .parserFailure,
+            provenance: SourceProvenance(operation: operation,
+                                         sourceFamily: MoscowMagistrateKoAPSource.family,
+                                         host: MoscowMagistrateKoAPSource.host))
+        guard unitPathID.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil,
+              Int(unitPathID).map({ $0 > 0 }) == true,
+              court.level == .magistrate,
+              court.domain.caseInsensitiveCompare(MoscowMagistrateKoAPSource.host) == .orderedSame,
+              cartoteka.id == "adm" else {
+            return .parserFailure(message: "Не подтверждён выбранный участок мирового судьи Москвы.",
+                                  invalidAttempt)
+        }
+
+        do {
+            let rows = try await requestSearchRows(court: court, cartoteka: cartoteka,
+                                                   field: field, value: value)
+            let scopedRows = rows.filter { row in
+                guard let url = row.cardURL,
+                      let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                        url: url, cartoteka: cartoteka) else { return false }
+                return locator.courtKey == unitPathID
+            }
+            let attempt = SourceAttempt(
+                kind: .partial,
+                provenance: SourceProvenance(operation: operation,
+                                             sourceFamily: MoscowMagistrateKoAPSource.family,
+                                             host: MoscowMagistrateKoAPSource.host))
+            return .partial(scopedRows, attempt)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled || Task.isCancelled {
+            throw error
+        } catch SudrfError.captchaRequired(let formURL) {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: SudrfError.captchaRequired(formURL: formURL), operation: operation,
+                sourceFamily: MoscowMagistrateKoAPSource.family,
+                host: MoscowMagistrateKoAPSource.host)
+            return .captcha(formURL: formURL, attempt)
+        } catch {
+            let attempt = SourceOutcomeClassifier.attempt(
+                for: error, operation: operation,
+                sourceFamily: MoscowMagistrateKoAPSource.family,
+                host: MoscowMagistrateKoAPSource.host)
+            let message = (error as? SudrfError)?.description
+                ?? "Источник \(MoscowMagistrateKoAPSource.host) не ответил."
+            switch attempt.kind {
+            case .maintenance: return .maintenance(message: message, attempt)
+            case .transportFailure: return .transportFailure(message: message, attempt)
+            default: return .parserFailure(message: message, attempt)
+            }
+        }
+    }
+
+    private func requestSearchRows(court: Court, cartoteka: Cartoteka,
+                                   field: SearchField, value: String) async throws
+        -> [CaseSearchResult] {
         let url = try MoscowMagistrateKoAPSearchURL.make(
             court: court, cartoteka: cartoteka, field: field, value: value)
         let response = try await fetchDocument(url)
@@ -307,6 +404,15 @@ public actor MoscowMagistrateKoAPClient: CaseProviding {
             parties: parties,
             processKind: .koap)
         return SudrfCaseCardFetchResult(card: card, responseURL: response.finalURL)
+    }
+
+    func fetchDirectory() async throws -> String {
+        let response = try await fetchDocument(MoscowMagistrateKoAPSource.homeURL)
+        guard response.finalURL == MoscowMagistrateKoAPSource.homeURL,
+              MoscowMagistrateKoAPURLPolicy.allows(response.finalURL) else {
+            throw SudrfError.searchModuleUnavailable(domain: MoscowMagistrateKoAPSource.host)
+        }
+        return response.html
     }
 
     private func fetchDocument(_ startURL: URL) async throws -> HTMLCourtTransport.DownloadedHTML {

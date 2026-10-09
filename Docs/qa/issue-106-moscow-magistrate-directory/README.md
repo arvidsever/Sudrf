@@ -1,0 +1,169 @@
+# Issue #106: Moscow magistrate directory checkpoint
+
+This checkpoint adds a data-only parser for the official Moscow magistrate
+directory and routes subject code `77` through `MagistrateCourtResolver`.
+`moscowUnits()` returns active rows with the published `alias`, `code`, IDs,
+municipal title and canonical URL kept separately. `unitPathID` comes only from
+the numeric segment in that URL. The generic `MagistrateCourt.isSupported`
+check remains limited to `*.msudrf.ru`.
+
+## Source and fixture
+
+The parent task captured `https://mos-sud.ru/` once on 9 October 2026 at
+17:25:33 UTC. The response had 366,469 bytes; its SHA-256 is
+`ba1152d8dd64f9bf5cf4d3bf7c9e0d21b4b3afaaa3c53ad9a9a602bfc395474a`.
+The full response remains in the private diagnostic directory
+`/private/tmp/sudrf-106-directory/home.html` and is not checked into the
+repository.
+
+`Tests/SudrfKitTests/Fixtures/moscow_magistrate_directory.html` contains only
+the source page's published `courts` array, wrapped in a minimal script element
+for parser tests. It excludes the rest of the page, unrelated scripts, and
+session/user state. Fixture SHA-256:
+`610bba0358fb0a4f15932f58b67e9f8cc90605545bdd5cccb97c0e2d82c13b02`.
+The captured array contains 476 rows: 471 active and 5 canceled. `rsCourtId`
+repeats across many units; it is retained as metadata and never used as a row
+identity.
+
+The source demonstrates that the fields are not interchangeable. For example,
+one active record publishes alias `424`, classification code `77MS0424`, and
+URL path `/rs/424`. The returned `unitPathID` is read from that URL path; the
+parser does not infer it from the alias, code or row number. It also retains
+non-standard published codes such as `77MS02-388` unchanged.
+
+The directory home is not established as a search endpoint. Separate parent
+diagnostics found `/rs/424` redirects to the home page and `/424` has no current
+court or search form. This checkpoint does not issue a search or fetch a unit
+URL as a search request.
+
+## Verification
+
+Offline command:
+
+```sh
+swift test --package-path . --scratch-path /private/tmp/sudrf-106-spm --filter Magistrate
+```
+
+Result on 9 October 2026: 91 selected tests passed, 0 failures, including the
+5 directory tests, 16 Moscow movement tests and 15 Moscow client tests. The log
+is `/private/tmp/sudrf-106-directory-magistrate.log` (SHA-256
+`bd9113664fcadc9639979c17bd89a5d7be9913b30fc2afda29bce92c5dda32a7`). Resolver
+tests use an ephemeral `URLSession`, in-process `URLProtocol` responses and a
+temporary disk cache. They verify use of the exact home URL, replacement of
+stale Moscow cache entries, preservation of another region, and failure instead
+of returning an old aggregate when the directory response is malformed. The
+movement profile also checks that an external redirect is rejected by the
+strict directory transport.
+
+The offline coverage verifies fixture-backed directory parsing and resolver
+behavior. The separate one-case live smoke below verifies one current UID
+search and the card returned by that search. Neither establishes pagination,
+search completeness, general UI selection, or directory-wide availability.
+The app and production data were not opened.
+
+## One-case live smoke result
+
+Evidence types are kept separate:
+
+- The directory capture and checked-in reduced directory fixture above are
+  source-backed directory evidence.
+- The pinned private reference
+  magistrate KoAP HTML fixture and its directly associated test
+  supplies only the published UID and case number for an opt-in smoke input.
+  Its directly associated pinned test supplies native unit path ID `424`.
+  This old reference chooses a bounded test query; it does not show that a
+  current search or card endpoint is available.
+- The checked-in client and movement fixtures are synthetic and establish
+  parser, routing, and identity behavior only.
+- Two separately authorized live attempts were run after a stable source
+  checkpoint and isolation review. The second passed after correcting the
+  first test predicate. They cover only the pinned query and unit described
+  below; they do not establish general availability or result completeness.
+
+The opt-in test is
+`MoscowMagistrateKoAPLiveTests/testPinnedUIDSearchThenFetchReturnedNativeCard`.
+It is disabled unless `SUDRF_MOS_SUD_LIVE_INPUT` names a private JSON file with
+exactly `uid`, `unitPathID`, and `caseNumber`, protected as mode `0600`. The
+test performs one bounded search by the pinned UID within unit `424`, requires exactly one
+matching native result, then fetches only the card URL returned by that search.
+It does not use the pinned card URL as a result fallback. Ordinary test runs
+skip before constructing the client. Any live failure is a failed smoke gate;
+there is no automatic retry of the test or broader query; the second run
+required separate human authorization.
+
+The private opt-in input used for the attempts is at
+`/private/tmp/sudrf-106-live-smoke-20261009/input.json`; it is not part of the
+repository. On 9 October 2026, 18:18:18–18:19:20 UTC, the selected test reached
+the UID search and received a partial outcome with one candidate row. The
+test then failed its unique exact-result predicate, which at that time
+required the search row itself to publish the requested UID as well as the expected
+number and native-unit URL. It stopped before fetching any card. The private
+stdout log is `/private/tmp/sudrf-106-live-smoke-20261009/live-test.stdout.log`
+(SHA-256 `73b87d71095b29a61ca934d93f65dc464d7721fdec816a80605677d33cec34e3`);
+the sanitized result at `/private/tmp/sudrf-106-live-smoke-20261009/result.json`
+has SHA-256 `2f9292eac6ec4624c713b41500cbccc711c09ccfe7fb0bb38fce4f4b5909771f`.
+Both files are mode `0600`.
+
+The candidate's individual values were not retained in the log, so this
+attempt cannot identify which part of the combined predicate failed. The
+existing synthetic UID-search test explicitly allows `caseUID == nil` on a
+candidate row and prevents copying the query into that field. The harness has
+therefore been adjusted so a missing row UID does not reject an otherwise
+exact case-number/native-unit candidate; if a row does publish a UID, it must
+match. The fetched card must still publish the requested UID. This is a
+test-contract adjustment, not a finding that the source or search is
+unavailable. The first attempt remains failed under the original predicate.
+
+After the harness correction, the one authorized second attempt ran on
+9 October 2026, 18:21:37–18:22:14 UTC. The search returned one candidate with
+a card URL; the native route, unit, and case-number checks passed, and the row
+did not publish a UID. The returned URL was then fetched. Response native
+identity, unit, UID, case number, and useful session/result detail checks all
+passed. The selected test passed 1/1 with 0 failures. Its private stdout log
+is `/private/tmp/sudrf-106-live-smoke-20261009/retry-2/live-test.stdout.log`
+(SHA-256 `eae7c795e90f6b32b7cb373004b67bcd58050c22e32e2b474478f6f6c375db26`);
+the sanitized stage result at
+`/private/tmp/sudrf-106-live-smoke-20261009/retry-2/result.json` has SHA-256
+`f462a1b781e1b6174d84cb5d1922029177fca1dd0e710ff83f2dc684dbecc30c`. Both
+files are mode `0600`. This
+establishes one successful query-and-returned-card path for this pinned case
+and unit only; it is not a completeness or broader availability claim. No
+third attempt was made. The app and production data were not opened.
+
+## Integration checkpoint
+
+On 9 October 2026, the client profile passed 17/17 and the movement profile
+initially passed 16/16 with synthetic responses. After the review fixes, the
+movement profile passed 18/18 from a clean scratch directory. The client profile includes the shared
+unit/year-preserving number-padding comparison. The movement profile checks
+the district court, MGS lower-number relation and the separate federal provider.
+Client log SHA-256: `44a625d8db594a87ee9c44d9479301aba1b4d73db20000ae79a52d433b3f1661`.
+Movement log SHA-256: `2b03689deadf5ff74d5a8c9e03b11cdd1801bef9e12c367e202f1d0e6683db4f`.
+
+`SudrfAppTests` compiled but was not executed locally. The new disk regression
+creates its context through the selected-unit search, saves it, releases the
+container, reopens the disk store and refreshes through injected clients.
+It does not test CSV or direct-link import. Hosted execution remains required
+because the existing SearchModel initializer reads `CaptchaSettings.shared`.
+
+Independent review found missing native-source identity/admission branches
+in the journal and insufficient stale-anchor checks. Exact native identity
+mapping and saved UUID/UID contradiction guards have now been added. The final
+18-test movement log SHA-256 is
+`e5e0a951c4a7c3007a85b0240c421f870a89ceba8281579f04aba6bdb279f15e`.
+This checkpoint is not a completed review or release gate.
+
+The root source court remains partial until search completeness is established,
+while its exact fetched card identity is preserved as positive evidence.
+Fetching that one card does not qualify the whole unit for journal advancement.
+The source host stays in the attempt's affected sources even if all higher
+cards load. The existing court-wide admission policy from #262 is unchanged.
+
+The original disk assertion that two journal-ID arrays matched could pass
+with an empty journal. A separate temporary-disk regression now supplies
+explicitly synthetic complete coverage and checks baseline, an actual hearing
+addition, reopening and a repeated refresh without duplication. This tests the
+native journal identity contract; it does not claim a complete live refresh.
+Both App disk regressions remain compile-only pending hosted execution.
+The decision to release a limited stage or require completeness first remains
+pending the author's response.

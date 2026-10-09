@@ -65,4 +65,24 @@ final class MoscowCourtOptionTests: XCTestCase {
             XCTAssertFalse(court.alias.isEmpty)
         }
     }
+
+    @MainActor
+    func testMoscowMagistrateOptionKeepsPublishedTitleCodeAndNativeUnitIDSeparate() throws {
+        let data = Data(#"{"url":"https://mos-sud.ru/rs/424","name":"Участок 424","alias":"0424","courtFullNameWithMunicipal":"Участок мирового судьи № 424 (Синтетический район)","id":"11111111-1111-4111-8111-111111111111","code":"77MS0424","rsCourtId":"22222222-2222-4222-8222-222222222222","canceledAt":""}"#.utf8)
+        let unit = try JSONDecoder().decode(MoscowMagistrateUnit.self, from: data)
+        let option = try XCTUnwrap(SearchModel.moscowCourtOption(for: unit))
+
+        XCTAssertEqual(option.domain, "mos-sud.ru")
+        XCTAssertEqual(option.id, "mos-sud.ru#77MS0424")
+        XCTAssertEqual(option.code, "77MS0424")
+        XCTAssertEqual(option.title, unit.courtFullNameWithMunicipal)
+        XCTAssertNotEqual(option.title, unit.url)
+        XCTAssertEqual(option.moscowMagistrateUnitPathID, "424")
+        XCTAssertNil(option.mosGorSudAlias)
+        XCTAssertTrue(option.supportsSearch)
+
+        let canceled = Data(#"{"url":"https://mos-sud.ru/rs/424","name":"Участок 424","alias":"0424","courtFullNameWithMunicipal":"Участок мирового судьи № 424","id":"11111111-1111-4111-8111-111111111111","code":"77MS0424","rsCourtId":"22222222-2222-4222-8222-222222222222","canceledAt":"2026-01-01"}"#.utf8)
+        XCTAssertNil(SearchModel.moscowCourtOption(
+            for: try JSONDecoder().decode(MoscowMagistrateUnit.self, from: canceled)))
+    }
 }

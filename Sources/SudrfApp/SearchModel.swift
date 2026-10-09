@@ -144,6 +144,9 @@ final class SearchModel: ObservableObject {
         /// Код субъекта места нахождения суда. Для АСОЮ/КСОЮ он задан
         /// справочником явно и не выводится из территории подсудности.
         var seatRegionCode: String? = nil
+        /// Published `/rs/<id>` for a Moscow magistrate unit. This native ID
+        /// stays separate from the classification code used for routing.
+        var moscowMagistrateUnitPathID: String? = nil
         // Идентичность — по домену + коду: у судов Москвы домен один
         // (mos-gorsud.ru), различает их только код-алиас (tverskoj, …).
         var id: String { code.map { "\(domain)#\($0)" } ?? domain }
@@ -155,6 +158,19 @@ final class SearchModel: ObservableObject {
             Court(domain: CourtDirectory.dashVariant(of: domain) ?? domain,
                   title: title, level: level)
         }
+    }
+
+    static func moscowCourtOption(for unit: MoscowMagistrateUnit) -> CourtOption? {
+        guard unit.isActive,
+              let unitPathID = unit.unitPathID,
+              !unit.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !unit.courtFullNameWithMunicipal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return CourtOption(domain: MoscowMagistrateDirectoryParser.host,
+                           title: unit.courtFullNameWithMunicipal,
+                           level: .magistrate, code: unit.code,
+                           moscowMagistrateUnitPathID: unitPathID)
     }
 
     /// Порядок судов в списке звена. Нумерованные суды (КСОЮ, апелляционные
@@ -275,6 +291,7 @@ final class SearchModel: ObservableObject {
     private let resolver: DistrictCourtResolver
     private let magistrateResolver: MagistrateCourtResolver
     private let client: SudrfClient
+    private let moscowMagistrateClient: MoscowMagistrateKoAPClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
     private let vsrfClient = VSRFClient()
     private let mosGorSudClient: any MosGorSudProviding
@@ -313,6 +330,7 @@ final class SearchModel: ObservableObject {
          resolver: DistrictCourtResolver? = nil,
          magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
+         moscowMagistrateClient: MoscowMagistrateKoAPClient = MoscowMagistrateKoAPClient(),
          movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
@@ -331,6 +349,7 @@ final class SearchModel: ObservableObject {
         self.magistrateResolver = magistrateResolver
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
+        self.moscowMagistrateClient = moscowMagistrateClient
         self.movementServiceFactory = movementServiceFactory
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.autoSolve = autoSolve ?? { url, client, solver, settings in
@@ -349,7 +368,12 @@ final class SearchModel: ObservableObject {
         if let movementServiceFactory {
             return movementServiceFactory(court, base)
         }
-        let provider: any CaseProviding = court.level == .magistrate ? magistrateClient : client
+        let provider: any CaseProviding
+        if court.moscowMagistrateUnitPathID != nil {
+            provider = moscowMagistrateClient
+        } else {
+            provider = court.level == .magistrate ? magistrateClient : client
+        }
         let baseLevel = MovementContext.instanceLevel(
             cartotekaID: cartoteka.id, courtLevel: court.level)
         return MovementService(client: provider,
@@ -385,7 +409,9 @@ final class SearchModel: ObservableObject {
     }
 
     var usesRegion: Bool { searchDimensions.usesRegion }
-    var uidSearchEnabled: Bool { searchDimensions.supportsUID }
+    var uidSearchEnabled: Bool {
+        searchDimensions.supportsUID || selectedCourt?.moscowMagistrateUnitPathID != nil
+    }
 
     private var synchronizesRegionAndCourt: Bool {
         branch == .general && [.subject, .appeal, .cassation].contains(tier)
@@ -534,17 +560,23 @@ final class SearchModel: ObservableObject {
             var resolvedMagistrateDistrictCourts: [DistrictCourt] = []
             switch (requestedBranch, requestedTier) {
             case (.general, .magistrate):
-                let magistrates = try await magistrateResolver.courts(forSubjectCode: requestedRegion)
                 resolvedMagistrateDistrictCourts =
                     ((try? await resolver.courts(forSubjectCode: requestedRegion)) ?? [])
-                list = magistrates.map { m in
-                    CourtOption(domain: m.domain,
-                                title: m.isSupported ? m.title : m.title + " — портал не подключён",
-                                level: .magistrate,
-                                code: m.code,
-                                supportsSearch: m.isSupported,
-                                unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.",
-                                number: m.number)
+                if CourtDirectory.normalizedSubjectCode(requestedRegion)
+                    == MoscowMagistrateDirectoryParser.subjectCode {
+                    list = try await magistrateResolver.moscowUnits()
+                        .compactMap(Self.moscowCourtOption(for:))
+                } else {
+                    let magistrates = try await magistrateResolver.courts(forSubjectCode: requestedRegion)
+                    list = magistrates.map { m in
+                        CourtOption(domain: m.domain,
+                                    title: m.isSupported ? m.title : m.title + " — портал не подключён",
+                                    level: .magistrate,
+                                    code: m.code,
+                                    supportsSearch: m.isSupported,
+                                    unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.",
+                                    number: m.number)
+                    }
                 }
             case (.general, .district):
                 // Единственная ступень с пикером региона. Районные суды Москвы
@@ -679,6 +711,53 @@ final class SearchModel: ObservableObject {
         hasSearched = false
         defer {
             if isCurrentSearch(generation) { searching = false }
+        }
+
+        if let unitPathID = selected.moscowMagistrateUnitPathID {
+            let primary: (SearchField, String) = !uid.isEmpty ? (.uid, uid)
+                : !num.isEmpty ? (.caseNumber, num) : (.name, name)
+            do {
+                let outcome = try await moscowMagistrateClient.searchForUnit(
+                    court: court, cartoteka: cart, unitPathID: unitPathID,
+                    field: primary.0, value: primary.1)
+                guard isCurrentSearch(generation) else { return }
+                func publishRows(_ scopedRows: [CaseSearchResult]) {
+                    let filtered = scopedRows.filter { row in
+                        (num.isEmpty || primary.0 == .caseNumber
+                            || MoscowMagistrateKoAPNumber.matchesPublishedNumber(
+                                row.caseNumber, num))
+                            && (name.isEmpty || primary.0 == .name
+                                || (row.essence ?? "").localizedCaseInsensitiveContains(name))
+                    }
+                    results = filtered
+                    hasSearched = true
+                    if filtered.isEmpty {
+                        status = scopedRows.isEmpty
+                            ? "Нельзя подтвердить отсутствие дел по выбранному участку."
+                            : "Нельзя подтвердить карточку выбранного участка в этой выдаче."
+                    } else {
+                        status = "Найдено: \(filtered.count) (выдача неполная)"
+                    }
+                }
+                switch outcome {
+                case .partial(let rows, _): publishRows(rows ?? [])
+                case .usableSnapshot(let rows, _): publishRows(rows)
+                case .honestZero:
+                    results = []
+                    hasSearched = true
+                    status = "Нельзя подтвердить отсутствие дел по пустой выдаче."
+                case .captcha:
+                    status = "Поиск требует дополнительной проверки; продолжение пока недоступно."
+                case .maintenance, .transportFailure, .parserFailure:
+                    status = "Не удалось подтвердить выдачу. Попробуйте позже."
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isCurrentSearch(generation) else { return }
+                status = "Не удалось подтвердить выдачу. Попробуйте позже."
+            }
+            return
         }
 
         // Суды Москвы — отдельный портал mos-gorsud.ru: свой /search (без капчи,
@@ -874,6 +953,40 @@ final class SearchModel: ObservableObject {
               let cart = cartoteka,
               let court = selectedCourt?.searchCourt else { return }
         let r = results[index]
+
+        if let unitPathID = selectedCourt?.moscowMagistrateUnitPathID {
+            guard cart.id == "adm", let url = r.cardURL,
+                  let requested = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart),
+                  requested.courtKey == unitPathID else {
+                status = "Ссылка не подтверждает карточку выбранного участка Москвы."
+                return
+            }
+            selectedResultID = r.stableID
+            clearActPreview()
+            let generation = beginCardLoad()
+            defer { finishCardLoad(generation, resultID: r.stableID) }
+            do {
+                let fetched = try await moscowMagistrateClient.fetchCardWithResponseURL(url: url)
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                guard let response = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: fetched.responseURL, cartoteka: cart),
+                      response.identity == requested.identity,
+                      let number = fetched.card.caseNumber,
+                      MoscowMagistrateKoAPNumber.matchesPublishedNumber(number, r.caseNumber) else {
+                    throw SudrfError.caseCardTemporarilyUnavailable
+                }
+                let text = Self.publishedActText(from: fetched.card)
+                actMissing = text == nil
+                actText = text ?? ""
+                cardPDFMetadata = Self.makeCardPDFMetadata(
+                    fetched.card, caseNumber: r.caseNumber, courtName: selectedCourt?.title ?? court.title)
+            } catch {
+                reportCardLoadFailure(error, prefix: "Ошибка карточки мирового участка Москвы:",
+                                      generation: generation, resultID: r.stableID)
+            }
+            return
+        }
 
         // Карточка портала mos-gorsud — по ссылке из выдачи (case_id/case_uid
         // у портала нет); тексты актов публикуются вложениями, не инлайном.
@@ -1153,6 +1266,15 @@ final class SearchModel: ObservableObject {
         guard pendingPickerChanges == 0 else { return }
         guard let index = currentIndex(for: result),
               let cart = cartoteka, let option = selectedCourt else { return }
+        if let unitPathID = option.moscowMagistrateUnitPathID {
+            guard cart.id == "adm", let url = results[index].cardURL,
+                  let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart),
+                  locator.courtKey == unitPathID else {
+                status = "Ссылка не подтверждает карточку выбранного участка Москвы."
+                return
+            }
+        }
         let court = option.searchCourt
         let base = results[index]
         invalidateCardLoad()

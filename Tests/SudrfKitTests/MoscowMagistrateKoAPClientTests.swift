@@ -68,6 +68,26 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         XCTAssertEqual(units, Set(["424", "425"]))
     }
 
+    func testCaseNumberPaddingMatchesOnlyTheSameUnitAndYear() throws {
+        XCTAssertTrue(MoscowMagistrateKoAPNumber.matchesPublishedNumber(
+            "05-0042/424/2026", "5-42/424/2026"))
+        XCTAssertFalse(MoscowMagistrateKoAPNumber.matchesPublishedNumber(
+            "05-0042/424/2026", "5-42/425/2026"))
+        XCTAssertFalse(MoscowMagistrateKoAPNumber.matchesPublishedNumber(
+            "05-0042/424/2026", "5-42/424/2025"))
+
+        let html = """
+        <table><tbody>
+          <tr><td><a href="/424/cases/admin/details/11111111-1111-4111-8111-111111111111">05-0042/424/2026</a></td><td>Подтверждённый тот же участок</td></tr>
+          <tr><td><a href="/425/cases/admin/details/22222222-2222-4222-8222-222222222222">05-0042/425/2026</a></td><td>Другой участок</td></tr>
+          <tr><td><a href="/424/cases/admin/details/33333333-3333-4333-8333-333333333333">05-0042/424/2025</a></td><td>Другой год</td></tr>
+        </tbody></table>
+        """
+        let rows = try MoscowMagistrateKoAPResultsParser.parse(
+            html: html, field: .caseNumber, requestedValue: "5-42/424/2026")
+        XCTAssertEqual(rows.map(\.caseNumber), ["05-0042/424/2026"])
+    }
+
     func testRedirectTaskDelegateRejectsUnsafeTargetsBeforeFollowing() throws {
         let taskDelegate: URLSessionTaskDelegate = MoscowMagistrateKoAPSessionDelegate()
         let sourceURL = URL(string: "https://mos-sud.ru/search")!
@@ -153,15 +173,21 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
 
-        let uidRows = try await client.search(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let uidOutcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .uid, value: "77MS0424-01-2026-000042-10")
+        guard case .partial(let uidRows?, _) = uidOutcome else {
+            return XCTFail("Scoped UID search remains partial")
+        }
         XCTAssertEqual(uidRows.count, 1)
         XCTAssertNil(uidRows[0].caseUID,
                      "A query value is not copied into a source-published UID field")
-        let participantRows = try await client.search(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let participantOutcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .name, value: "Синтетический участник")
+        guard case .partial(let participantRows?, _) = participantOutcome else {
+            return XCTFail("Scoped participant search remains partial")
+        }
         XCTAssertEqual(participantRows.count, 1)
 
         let requests = MoscowMagistrateKoAPStub.requests
@@ -174,13 +200,47 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
                        [URLQueryItem(name: "participant", value: "Синтетический участник")])
     }
 
+    func testScopedSearchFiltersByNativeUnitAndWrongUnitStaysPartial() async throws {
+        let html = """
+        <table><tbody>
+          <tr><td><a href="/424/cases/admin/details/11111111-1111-4111-8111-111111111111">05-0042/424/2026</a></td><td>Синтетический участник</td><td>Рассмотрено</td></tr>
+          <tr><td><a href="/425/cases/admin/details/22222222-2222-4222-8222-222222222222">05-0042/425/2026</a></td><td>Синтетический участник</td><td>Рассмотрено</td></tr>
+        </tbody></table>
+        """
+        MoscowMagistrateKoAPStub.enqueue(body: html)
+        MoscowMagistrateKoAPStub.enqueue(body: html)
+        let client = MoscowMagistrateKoAPClient(session: session)
+        let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
+
+        let selected = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "425",
+            field: .name, value: "Синтетический участник")
+        guard case .partial(let rows?, let attempt) = selected else {
+            return XCTFail("Search completeness is not established by the portal response")
+        }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(SourceNativeCardLocator.moscowMagistrateKoAP(
+            url: try XCTUnwrap(rows.first?.cardURL), cartoteka: adm)?.courtKey, "425")
+        XCTAssertEqual(attempt.kind, .partial)
+
+        let wrongUnit = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "426",
+            field: .name, value: "Синтетический участник")
+        guard case .partial(let wrongRows?, let wrongAttempt) = wrongUnit else {
+            return XCTFail("No matching native unit is unknown, not a confirmed zero")
+        }
+        XCTAssertTrue(wrongRows.isEmpty)
+        XCTAssertEqual(wrongAttempt.kind, .partial)
+        XCTAssertFalse(wrongUnit.isConfirmedEmpty)
+    }
+
     func testSearchUsesFixedRefererAndReturnsTypedPartialRows() async throws {
         MoscowMagistrateKoAPStub.enqueue(body: try fixture("mos_sud_koap_search_synthetic"))
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
 
-        let outcome = try await client.searchOutcome(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .caseNumber, value: "05-0042/424/2026", operation: .search)
         guard case .partial(let rows, let attempt) = outcome else {
             return XCTFail("Search output without completeness proof must be partial")
@@ -206,8 +266,12 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
 
-        let rows = try await client.search(court: moscowMagistrateCourt, cartoteka: adm,
-                                           field: .caseNumber, value: "05-0042/424/2026")
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
+            field: .caseNumber, value: "05-0042/424/2026")
+        guard case .partial(let rows?, _) = outcome else {
+            return XCTFail("Scoped search remains partial")
+        }
         XCTAssertEqual(rows.count, 1)
         let requests = MoscowMagistrateKoAPStub.requests
         XCTAssertEqual(requests.count, 2)
@@ -226,8 +290,8 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         """)
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
-        let outcome = try await client.searchOutcome(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .caseNumber, value: "05-0042/424/2026", operation: .search)
         guard case .parserFailure(let message, let attempt) = outcome else {
             return XCTFail("An external meta-refresh target must fail closed")
@@ -244,8 +308,8 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
             finalURL: URL(string: "https://elsewhere.example/search")!)
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
-        let outcome = try await client.searchOutcome(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .caseNumber, value: "05-0042/424/2026", operation: .search)
         guard case .parserFailure = outcome else {
             return XCTFail("A response outside the source host must fail closed")
@@ -259,8 +323,8 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
 
-        let outcome = try await client.searchOutcome(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .caseNumber, value: "05-0042/424/2026", operation: .search)
         guard case .parserFailure = outcome else {
             return XCTFail("Exceeding the configured meta-refresh safety bound must fail closed")
@@ -344,8 +408,8 @@ final class MoscowMagistrateKoAPClientTests: XCTestCase {
         MoscowMagistrateKoAPStub.enqueue(status: 403, body: "blocked")
         let client = MoscowMagistrateKoAPClient(session: session)
         let adm = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
-        let outcome = try await client.searchOutcome(
-            court: moscowMagistrateCourt, cartoteka: adm,
+        let outcome = try await client.searchForUnit(
+            court: moscowMagistrateCourt, cartoteka: adm, unitPathID: "424",
             field: .caseNumber, value: "05-0042/424/2026", operation: .search)
         guard case .transportFailure(_, let attempt) = outcome else {
             return XCTFail("HTTP status must remain a typed transport failure")

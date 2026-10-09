@@ -91,15 +91,31 @@ enum HearingJournalFeedProjection {
     private struct ProjectedEvent {
         let record: LegacyFeedRecordInput
         let event: CaseEvent
-        let occurrenceKey: OccurrenceKey
-        let legacyID: String
+        let legacyRows: [LegacyHearingIdentity]
         let entry: FeedEntry
+    }
+
+    private struct LegacyHearingIdentity {
+        let id: String
+        let date: Date
+        let time: String
+        let text: String
+        let level: CaseInstance.Level
+        let sourceCardID: String?
+
+        func matches(_ entry: FeedEntry) -> Bool {
+            entry.id == id && entry.date == date && entry.time == time
+                && entry.text == text && entry.instanceLevel == level
+                && entry.sourceCardID == sourceCardID
+        }
     }
 
     private struct CandidateAlias {
         let alias: HearingJournalFeedAlias
         let legacy: FeedEntry
         let projected: ProjectedEvent
+        // A reschedule keeps the former row only as a mark-migration alias.
+        let comparesPresentation: Bool
     }
 
     private struct ValidationFailure: Error {
@@ -164,6 +180,22 @@ enum HearingJournalFeedProjection {
                 }
             }
 
+            func recordRescheduledFailure(_ reason: HearingJournalFeedUnmappedReason) {
+                unmappedEvents.append(UnmappedHearingJournalEvent(
+                    recordKey: record.recordKey, eventID: event.id,
+                    occurrenceKey: evidence.occurrenceKey, reason: reason))
+                let affectedKeys = Set([evidence.occurrenceKey,
+                                        evidence.relatedOccurrenceKey].compactMap { $0 })
+                for session in record.snapshot?.sessions ?? []
+                    where affectedKeys.contains(CaseEventDeriver.hearingKey(session)) {
+                    if let legacyID = HearingJournalFeedProjection.legacyID(
+                        recordKey: record.recordKey, session: session) {
+                        blockedLegacyReasons[LegacyRowKey(
+                            recordKey: record.recordKey, legacyID: legacyID)] = reason
+                    }
+                }
+            }
+
             if event.kind == .hearingRescheduled {
                 let relevantDates = [evidence.previousDateRaw, evidence.dateRaw]
                     .compactMap { $0.flatMap(DateUtil.parse) }
@@ -175,23 +207,20 @@ enum HearingJournalFeedProjection {
                     continue
                 }
                 guard !event.id.isEmpty else {
-                    recordFailure(.missingEventID)
+                    recordRescheduledFailure(.missingEventID)
                     continue
                 }
                 guard !duplicateEventIDs.contains(event.id) else {
-                    recordFailure(.duplicateEventID)
+                    recordRescheduledFailure(.duplicateEventID)
                     continue
                 }
-                recordFailure(.rescheduledOccurrenceUnproven)
-                let affectedKeySet = Set(affectedKeys)
-                for session in record.snapshot?.sessions ?? []
-                    where affectedKeySet.contains(CaseEventDeriver.hearingKey(session)) {
-                    if let legacyID = HearingJournalFeedProjection.legacyID(
-                        recordKey: record.recordKey, session: session) {
-                        blockedLegacyReasons[LegacyRowKey(
-                            recordKey: record.recordKey, legacyID: legacyID)] =
-                            .rescheduledOccurrenceUnproven
-                    }
+                do {
+                    projected.append(try projectRescheduledEvent(
+                        record: record, event: event, today: today))
+                } catch let failure as ValidationFailure {
+                    recordRescheduledFailure(failure.reason)
+                } catch {
+                    recordRescheduledFailure(.rescheduledOccurrenceUnproven)
                 }
                 continue
             }
@@ -278,56 +307,16 @@ enum HearingJournalFeedProjection {
                     throw ValidationFailure(reason: .resultConflict)
                 }
 
-                let observations = record.snapshot?.instanceObservations?.filter {
-                    $0.sourceCardID == sourceCardID
-                } ?? []
-                guard !observations.isEmpty else {
-                    throw ValidationFailure(reason: .missingCurrentObservation)
+                _ = try validatedCurrentOwner(record: record, sourceCardID: sourceCardID,
+                                              levelRaw: evidenceLevel)
+                guard let legacyRow = legacyHearingIdentity(
+                    recordKey: record.recordKey, session: session) else {
+                    throw ValidationFailure(reason: .missingLegacyHearing)
                 }
-                guard observations.count == 1, let observation = observations.first else {
-                    throw ValidationFailure(reason: .duplicateCurrentObservation)
-                }
-                guard observation.levelRaw == evidenceLevel else {
-                    throw ValidationFailure(reason: .levelConflict)
-                }
-                guard let context = record.context else {
-                    throw ValidationFailure(reason: .missingCurrentOwner)
-                }
-                let owners = record.instances.filter {
-                    CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
-                        == sourceCardID
-                }
-                guard !owners.isEmpty else {
-                    throw ValidationFailure(reason: .missingCurrentOwner)
-                }
-                guard owners.count == 1, let owner = owners.first else {
-                    throw ValidationFailure(reason: .ambiguousCurrentOwner)
-                }
-                guard owner.level.rawValue == evidenceLevel else {
-                    throw ValidationFailure(reason: .levelConflict)
-                }
-
-                let text = session.result ?? session.event
-                let legacyID = HearingJournalFeedProjection.legacyID(
-                    recordKey: record.recordKey, session: session)
-                    ?? AppRouter.feedID(recordKey: record.recordKey, date: evidenceDate,
-                                        time: session.time ?? "—", text: text)
-                let material = record.materialSource(session)
-                let previousRegistration = record.previousRegistrationSource(session)
-                let entry = FeedEntry(
-                    id: event.id, dayHead: nil, date: evidenceDate,
-                    time: session.time ?? "—", recordKey: record.recordKey,
-                    caseNumber: record.caseNumber, client: record.client,
-                    kind: AppRouter.feedKind(for: session), text: text, actID: nil,
-                    isUnread: record.unreadByCase,
-                    instanceCaseNumber: previousRegistration?.number
-                        ?? (session.level == .material ? material.number : session.caseNumber),
-                    instanceLevel: session.level, sourceCardID: session.sourceCardID,
-                    sourceInstanceID: previousRegistration?.instance.id ?? material.instance?.id,
-                    previousRegistrationNumber: previousRegistration?.number)
                 projected.append(ProjectedEvent(
-                    record: record, event: event,
-                    occurrenceKey: key, legacyID: legacyID, entry: entry))
+                    record: record, event: event, legacyRows: [legacyRow],
+                    entry: feedEntry(record: record, session: session,
+                                     eventID: event.id, date: evidenceDate)))
             } catch let failure as ValidationFailure {
                 recordFailure(failure.reason, session: session)
             } catch {
@@ -338,6 +327,54 @@ enum HearingJournalFeedProjection {
 
         var candidateAliases = [CandidateAlias]()
         for value in projected {
+            if value.event.kind == .hearingRescheduled {
+                var matched = [CandidateAlias]()
+                var mappingFailure: HearingJournalFeedUnmappedReason?
+                for expected in value.legacyRows {
+                    let rowKey = LegacyRowKey(
+                        recordKey: value.record.recordKey, legacyID: expected.id)
+                    if let priorFailure = blockedLegacyReasons[rowKey] {
+                        mappingFailure = priorFailure
+                        break
+                    }
+                    let exactRows = legacyHearings.filter {
+                        $0.recordKey == value.record.recordKey && $0.id == expected.id
+                    }
+                    guard !exactRows.isEmpty else {
+                        mappingFailure = .missingLegacyHearing
+                        break
+                    }
+                    guard exactRows.count == 1, let legacy = exactRows.first else {
+                        mappingFailure = .ambiguousLegacyHearing
+                        break
+                    }
+                    guard expected.matches(legacy) else {
+                        mappingFailure = .legacyIDMismatch
+                        break
+                    }
+                    matched.append(CandidateAlias(
+                        alias: HearingJournalFeedAlias(
+                            legacyID: legacy.id, eventID: value.event.id),
+                        legacy: legacy, projected: value,
+                        comparesPresentation: expected.id == value.legacyRows.last?.id))
+                }
+                if let mappingFailure {
+                    unmappedEvents.append(UnmappedHearingJournalEvent(
+                        recordKey: value.record.recordKey, eventID: value.event.id,
+                        occurrenceKey: value.event.evidence.occurrenceKey,
+                        reason: mappingFailure))
+                    for expected in value.legacyRows {
+                        blockedLegacyReasons[LegacyRowKey(
+                            recordKey: value.record.recordKey, legacyID: expected.id)] =
+                            mappingFailure
+                    }
+                } else {
+                    candidateAliases += matched
+                }
+                continue
+            }
+
+            guard let expected = value.legacyRows.first else { continue }
             let identityRows = legacyHearings.filter {
                 $0.recordKey == value.record.recordKey
                     && $0.date == value.entry.date
@@ -347,7 +384,7 @@ enum HearingJournalFeedProjection {
                     && $0.sourceCardID == value.entry.sourceCardID
             }
             let exactRows = legacyHearings.filter {
-                $0.recordKey == value.record.recordKey && $0.id == value.legacyID
+                $0.recordKey == value.record.recordKey && $0.id == expected.id
             }
             let matchingRows = exactRows.isEmpty ? identityRows : exactRows
             guard !matchingRows.isEmpty else {
@@ -356,7 +393,7 @@ enum HearingJournalFeedProjection {
                     occurrenceKey: value.event.evidence.occurrenceKey,
                     reason: .missingLegacyHearing))
                 blockedLegacyReasons[LegacyRowKey(
-                    recordKey: value.record.recordKey, legacyID: value.legacyID)] =
+                    recordKey: value.record.recordKey, legacyID: expected.id)] =
                     .missingLegacyHearing
                 continue
             }
@@ -366,11 +403,11 @@ enum HearingJournalFeedProjection {
                     occurrenceKey: value.event.evidence.occurrenceKey,
                     reason: .ambiguousLegacyHearing))
                 blockedLegacyReasons[LegacyRowKey(
-                    recordKey: value.record.recordKey, legacyID: value.legacyID)] =
+                    recordKey: value.record.recordKey, legacyID: expected.id)] =
                     .ambiguousLegacyHearing
                 continue
             }
-            guard legacy.id == value.legacyID else {
+            guard legacy.id == expected.id else {
                 unmappedEvents.append(UnmappedHearingJournalEvent(
                     recordKey: value.record.recordKey, eventID: value.event.id,
                     occurrenceKey: value.event.evidence.occurrenceKey,
@@ -381,44 +418,65 @@ enum HearingJournalFeedProjection {
             }
             candidateAliases.append(CandidateAlias(
                 alias: HearingJournalFeedAlias(legacyID: legacy.id, eventID: value.event.id),
-                legacy: legacy, projected: value))
+                legacy: legacy, projected: value, comparesPresentation: true))
         }
 
         let candidateLegacyIDCounts = Dictionary(grouping: candidateAliases, by: { $0.alias.legacyID })
-        let candidateEventIDCounts = Dictionary(grouping: candidateAliases, by: { $0.alias.eventID })
+        let candidateAliasesByEventID = Dictionary(grouping: candidateAliases,
+                                                    by: { $0.alias.eventID })
+        let acceptedEventIDs = Set<String>(candidateAliasesByEventID.compactMap {
+            (eventID, candidates) -> String? in
+            guard let projected = candidates.first?.projected else { return nil }
+            let expectedIDs = projected.legacyRows.map(\.id)
+            let candidateIDs = candidates.map { $0.alias.legacyID }
+            guard expectedIDs.count == candidateIDs.count,
+                  Set(expectedIDs).count == expectedIDs.count,
+                  Set(candidateIDs) == Set(expectedIDs),
+                  candidates.allSatisfy({ candidate in
+                      rawLegacyIDCounts[candidate.alias.legacyID]?.count == 1
+                          && candidateLegacyIDCounts[candidate.alias.legacyID]?.count == 1
+                  }) else { return nil }
+            return eventID
+        })
         let aliases = candidateAliases.filter {
-            rawLegacyIDCounts[$0.alias.legacyID]?.count == 1
-                && candidateLegacyIDCounts[$0.alias.legacyID]?.count == 1
-                && candidateEventIDCounts[$0.alias.eventID]?.count == 1
+            acceptedEventIDs.contains($0.alias.eventID)
         }
-        let acceptedEventIDs = Set(aliases.map { $0.alias.eventID })
         let acceptedLegacyIDs = Set(aliases.map { $0.alias.legacyID })
-        for candidate in candidateAliases where !acceptedEventIDs.contains(candidate.alias.eventID) {
+        for (eventID, candidates) in candidateAliasesByEventID
+            where !acceptedEventIDs.contains(eventID) {
+            guard let candidate = candidates.first else { continue }
             unmappedEvents.append(UnmappedHearingJournalEvent(
                 recordKey: candidate.projected.record.recordKey,
-                eventID: candidate.alias.eventID,
+                eventID: eventID,
                 occurrenceKey: candidate.projected.event.evidence.occurrenceKey,
                 reason: .ambiguousAlias))
-            blockedLegacyReasons[LegacyRowKey(
-                recordKey: candidate.legacy.recordKey, legacyID: candidate.legacy.id)] = .ambiguousAlias
+            for candidate in candidates {
+                blockedLegacyReasons[LegacyRowKey(
+                    recordKey: candidate.legacy.recordKey,
+                    legacyID: candidate.legacy.id)] = .ambiguousAlias
+            }
         }
 
         var shadowReadIDs = Set<String>()
         var shadowKnownIDs = Set<String>()
         var fieldMismatches = [HearingJournalFeedFieldMismatch]()
-        var entries = projected.map(\.entry)
-        for candidate in aliases {
-            if readIDs.contains(candidate.alias.legacyID) {
-                shadowReadIDs.insert(candidate.alias.eventID)
+        var entries = projected.filter {
+            $0.event.kind != .hearingRescheduled || acceptedEventIDs.contains($0.event.id)
+        }.map(\.entry)
+        for (eventID, eventAliases) in Dictionary(grouping: aliases, by: { $0.alias.eventID }) {
+            if eventAliases.allSatisfy({ readIDs.contains($0.alias.legacyID) }) {
+                shadowReadIDs.insert(eventID)
             }
-            if knownIDs.contains(candidate.alias.legacyID) {
-                shadowKnownIDs.insert(candidate.alias.eventID)
+            if eventAliases.count == 1, let alias = eventAliases.first,
+               knownIDs.contains(alias.alias.legacyID) {
+                shadowKnownIDs.insert(eventID)
             }
         }
         for index in entries.indices where shadowReadIDs.contains(entries[index].id) {
             entries[index].isUnread = false
         }
         for candidate in aliases {
+            guard candidate.comparesPresentation else { continue }
             guard let shadow = entries.first(where: { $0.id == candidate.alias.eventID }) else {
                 continue
             }
@@ -444,10 +502,169 @@ enum HearingJournalFeedProjection {
         }
 
         return HearingJournalFeedProjectionResult(
-            entries: entries, aliases: aliases.map(\.alias),
+            entries: entries, aliases: aliases.map { $0.alias },
             shadowReadIDs: shadowReadIDs, shadowKnownIDs: shadowKnownIDs,
             unmappedLegacyHearings: unmappedLegacy, unmappedEvents: unmappedEvents,
             fieldMismatches: fieldMismatches)
+    }
+
+    private static func projectRescheduledEvent(
+        record: LegacyFeedRecordInput, event: CaseEvent, today: Date
+    ) throws -> ProjectedEvent {
+        let evidence = event.evidence
+        guard let oldOccurrence = evidence.occurrenceKey, !oldOccurrence.isEmpty,
+              let newOccurrence = evidence.relatedOccurrenceKey, !newOccurrence.isEmpty,
+              oldOccurrence != newOccurrence else {
+            throw ValidationFailure(reason: .rescheduledOccurrenceUnproven)
+        }
+        guard let previousDateRaw = evidence.previousDateRaw,
+              !previousDateRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let dateRaw = evidence.dateRaw,
+              !dateRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ValidationFailure(reason: .missingEvidenceDate)
+        }
+        guard let previousDate = DateUtil.parse(previousDateRaw),
+              let newDate = DateUtil.parse(dateRaw) else {
+            throw ValidationFailure(reason: .invalidEvidenceDate)
+        }
+        guard isInWindow(newDate, today: today) else {
+            throw ValidationFailure(reason: .rescheduledOccurrenceUnproven)
+        }
+        guard let sourceCardID = evidence.sourceCardID, !sourceCardID.isEmpty else {
+            throw ValidationFailure(reason: .missingSourceCardID)
+        }
+        guard let levelRaw = evidence.instanceLevelRaw, !levelRaw.isEmpty else {
+            throw ValidationFailure(reason: .missingEvidenceLevel)
+        }
+        guard let eventName = evidence.event else {
+            throw ValidationFailure(reason: .missingEvidenceEvent)
+        }
+
+        let sessions = record.snapshot?.sessions ?? []
+        let oldSessions = sessions.filter { CaseEventDeriver.hearingKey($0) == oldOccurrence }
+        let newSessions = sessions.filter { CaseEventDeriver.hearingKey($0) == newOccurrence }
+        guard !oldSessions.isEmpty, !newSessions.isEmpty else {
+            throw ValidationFailure(reason: .missingCurrentSession)
+        }
+        guard oldSessions.count == 1, newSessions.count == 1,
+              let oldSession = oldSessions.first, let newSession = newSessions.first else {
+            throw ValidationFailure(reason: .duplicateCurrentSession)
+        }
+        guard CaseLifecycleResolver.isHearingEvent(event: oldSession.event),
+              CaseLifecycleResolver.isHearingEvent(event: newSession.event) else {
+            throw ValidationFailure(reason: .currentSessionIsNotHearing)
+        }
+        guard oldSession.sourceCardID == sourceCardID,
+              newSession.sourceCardID == sourceCardID else {
+            throw ValidationFailure(reason: .sourceConflict)
+        }
+        guard oldSession.levelRaw == levelRaw, newSession.levelRaw == levelRaw else {
+            throw ValidationFailure(reason: .levelConflict)
+        }
+        guard oldSession.date == previousDate, newSession.date == newDate else {
+            throw ValidationFailure(reason: .dateConflict)
+        }
+        // The reschedule event stores the prior postponed result, not an
+        // outcome for the target occurrence. A later target result needs its
+        // own persisted evidence before this event can claim the row or marks.
+        guard newSession.result == nil else {
+            throw ValidationFailure(reason: .rescheduledOccurrenceUnproven)
+        }
+        guard evidence.previousTime == nil || evidence.previousTime == oldSession.time,
+              evidence.time == newSession.time else {
+            throw ValidationFailure(reason: .timeConflict)
+        }
+        guard eventName == oldSession.event, eventName == newSession.event else {
+            throw ValidationFailure(reason: .eventConflict)
+        }
+        guard let oldResult = oldSession.result, evidence.value == oldResult else {
+            throw ValidationFailure(reason: .resultConflict)
+        }
+
+        _ = try validatedCurrentOwner(record: record, sourceCardID: sourceCardID,
+                                      levelRaw: levelRaw)
+        guard let oldRow = legacyHearingIdentity(recordKey: record.recordKey,
+                                                 session: oldSession),
+              let newRow = legacyHearingIdentity(recordKey: record.recordKey,
+                                                 session: newSession) else {
+            throw ValidationFailure(reason: .missingLegacyHearing)
+        }
+        guard oldRow.id != newRow.id else {
+            throw ValidationFailure(reason: .rescheduledOccurrenceUnproven)
+        }
+
+        return ProjectedEvent(
+            record: record, event: event, legacyRows: [oldRow, newRow],
+            entry: feedEntry(record: record, session: newSession,
+                             eventID: event.id, date: newDate))
+    }
+
+    private static func validatedCurrentOwner(record: LegacyFeedRecordInput,
+                                              sourceCardID: String,
+                                              levelRaw: String) throws -> CaseInstance {
+        let observations = record.snapshot?.instanceObservations?.filter {
+            $0.sourceCardID == sourceCardID
+        } ?? []
+        guard !observations.isEmpty else {
+            throw ValidationFailure(reason: .missingCurrentObservation)
+        }
+        guard observations.count == 1, let observation = observations.first else {
+            throw ValidationFailure(reason: .duplicateCurrentObservation)
+        }
+        guard observation.levelRaw == levelRaw else {
+            throw ValidationFailure(reason: .levelConflict)
+        }
+        guard let context = record.context else {
+            throw ValidationFailure(reason: .missingCurrentOwner)
+        }
+        let owners = record.instances.filter {
+            CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context) == sourceCardID
+        }
+        guard !owners.isEmpty else {
+            throw ValidationFailure(reason: .missingCurrentOwner)
+        }
+        guard owners.count == 1, let owner = owners.first else {
+            throw ValidationFailure(reason: .ambiguousCurrentOwner)
+        }
+        guard owner.level.rawValue == levelRaw else {
+            throw ValidationFailure(reason: .levelConflict)
+        }
+        return owner
+    }
+
+    private static func feedEntry(record: LegacyFeedRecordInput, session: StoredSession,
+                                  eventID: String, date: Date) -> FeedEntry {
+        let material = record.materialSource(session)
+        let previousRegistration = record.previousRegistrationSource(session)
+        return FeedEntry(
+            id: eventID, dayHead: nil, date: date, time: session.time ?? "—",
+            recordKey: record.recordKey, caseNumber: record.caseNumber, client: record.client,
+            kind: AppRouter.feedKind(for: session), text: session.result ?? session.event,
+            actID: nil, isUnread: record.unreadByCase,
+            instanceCaseNumber: previousRegistration?.number
+                ?? (session.level == .material ? material.number : session.caseNumber),
+            instanceLevel: session.level, sourceCardID: session.sourceCardID,
+            sourceInstanceID: previousRegistration?.instance.id ?? material.instance?.id,
+            previousRegistrationNumber: previousRegistration?.number)
+    }
+
+    private static func legacyHearingIdentity(recordKey: String,
+                                              session: StoredSession)
+        -> LegacyHearingIdentity? {
+        guard let date = session.date else { return nil }
+        let baseID = AppRouter.feedID(
+            recordKey: recordKey, date: date, time: session.time ?? "—",
+            text: session.result ?? session.event)
+        let id: String
+        if session.level == .material, let sourceCardID = session.sourceCardID {
+            id = AppRouter.materialFeedID(legacyID: baseID, sourceCardID: sourceCardID)
+        } else {
+            id = baseID
+        }
+        return LegacyHearingIdentity(
+            id: id, date: date, time: session.time ?? "—",
+            text: session.result ?? session.event, level: session.level,
+            sourceCardID: session.sourceCardID)
     }
 
     private static func isInWindow(_ date: Date, today: Date) -> Bool {

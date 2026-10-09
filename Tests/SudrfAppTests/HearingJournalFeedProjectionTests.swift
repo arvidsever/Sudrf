@@ -132,43 +132,383 @@ final class HearingJournalFeedProjectionTests: XCTestCase {
         ])
     }
 
-    func testRescheduledEvidenceIsReportedWithoutGuessingEitherOccurrence() throws {
-        let before = try session(date: DateUtil.parse("09.09.2026")!,
-                                 time: "10:00", event: "Судебное заседание")
-        let initial = try fixture(recordKey: "rescheduled/2-4/2026",
-                                  date: DateUtil.parse("09.09.2026")!, time: "10:00",
-                                  event: "Судебное заседание")
-        let postponed = try withCurrentSession(initial, result: "Заседание отложено")
-        let next = try session(date: DateUtil.parse("14.09.2026")!,
-                               time: "12:00", event: "Судебное заседание",
-                               sourceCardID: initial.sourceCardID,
-                               caseNumber: initial.session.caseNumber)
-        let rescheduled = try withCurrentSessions(postponed, [postponed.session, next])
-        var old = before
-        old.sourceCardID = initial.sourceCardID
-        old.caseNumber = initial.session.caseNumber
-        let journal = try journal(for: rescheduled, before: [old],
-                                  observedAt: DateUtil.parse("08.09.2026")!)
-        XCTAssertEqual(journal.events.map(\.kind), [.hearingRescheduled])
+    func testRescheduledEventProjectsOnceAtNewDateWithTwoExactAliases() throws {
+        let oldDate = DateUtil.addDays(today, -4)
+        let newDate = DateUtil.addDays(today, -2)
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled/2-4/2026", oldDate: oldDate, newDate: newDate)
+        let event = try XCTUnwrap(rescheduled.journal.events.first)
+        XCTAssertEqual(rescheduled.journal.events.map(\.kind), [.hearingRescheduled])
+        XCTAssertEqual(event.evidence.previousDateRaw, rawDate(oldDate))
+        XCTAssertEqual(event.evidence.dateRaw, rawDate(newDate))
+        XCTAssertEqual(event.evidence.occurrenceKey,
+                       CaseEventDeriver.hearingKey(rescheduled.fixture.session))
+        XCTAssertEqual(event.evidence.relatedOccurrenceKey,
+                       CaseEventDeriver.hearingKey(rescheduled.newSession))
+        XCTAssertEqual(event.evidence.value, rescheduled.fixture.session.result)
+        XCTAssertNil(rescheduled.newSession.result,
+                     "The derived reschedule event does not carry a target result.")
 
-        let (legacy, shadow) = project(rescheduled.record, journal: journal)
-        XCTAssertEqual(legacy.entries.map(\.text), ["Заседание отложено"])
+        let legacy = legacyProjection([rescheduled.fixture.record])
+        let oldID = try XCTUnwrap(legacy.entries.first { $0.date == oldDate }?.id)
+        let newID = try XCTUnwrap(legacy.entries.first { $0.date == newDate }?.id)
+        XCTAssertEqual(legacy.entries.count, 2)
+        XCTAssertNotEqual(oldID, newID)
+
+        let shadow = project(rescheduled.fixture.record, journal: rescheduled.journal).1
+        XCTAssertEqual(shadow.entries.count, 1)
+        XCTAssertEqual(shadow.entries.first?.id, event.id)
+        XCTAssertEqual(shadow.entries.first?.date, newDate)
+        XCTAssertEqual(shadow.entries.first?.time, rescheduled.newSession.time)
+        XCTAssertEqual(shadow.entries.first?.text, rescheduled.newSession.event)
+        XCTAssertEqual(Set(shadow.aliases.map(\.legacyID)), Set([oldID, newID]))
+        XCTAssertEqual(Set(shadow.aliases.map(\.eventID)), [event.id])
+        XCTAssertEqual(shadow.unmappedEvents, [])
+        XCTAssertEqual(shadow.unmappedLegacyHearings, [])
+    }
+
+    func testRescheduledTargetOutcomeWithoutJournalEvidenceFailsClosed() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-target-result/2-4/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let event = try XCTUnwrap(rescheduled.journal.events.first)
+        var changedTarget = rescheduled.newSession
+        changedTarget.result = "Постановление отменено"
+        let changed = try withCurrentSessions(
+            rescheduled.fixture, [rescheduled.fixture.session, changedTarget])
+
+        let legacy = legacyProjection([changed.record])
+        XCTAssertEqual(legacy.entries.count, 2)
+        XCTAssertTrue(legacy.entries.contains {
+            $0.date == changedTarget.date && $0.text == changedTarget.result
+        })
+
+        let shadow = HearingJournalFeedProjection.project(
+            records: [changed.record],
+            journalsByRecordKey: [changed.record.recordKey: rescheduled.journal],
+            today: today,
+            readIDs: Set(legacy.entries.map(\.id)),
+            knownIDs: [],
+            legacyEntries: legacy.entries)
+
         XCTAssertTrue(shadow.entries.isEmpty)
         XCTAssertTrue(shadow.aliases.isEmpty)
+        XCTAssertTrue(shadow.shadowReadIDs.isEmpty)
+        XCTAssertEqual(shadow.unmappedEvents.map(\.eventID), [event.id])
         XCTAssertEqual(shadow.unmappedEvents.map(\.reason), [.rescheduledOccurrenceUnproven])
-        XCTAssertEqual(shadow.unmappedLegacyHearings.map(\.reason), [
+        XCTAssertEqual(Set(shadow.unmappedLegacyHearings.map(\.reason)),
+                       [.rescheduledOccurrenceUnproven])
+    }
+
+    func testRescheduledReadTransfersOnlyWhenBothLegacyRowsAreRead() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-read/2-4a/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let legacy = legacyProjection([rescheduled.fixture.record])
+        let ids = legacy.entries.map(\.id)
+        XCTAssertEqual(ids.count, 2)
+
+        for mask in 0..<4 {
+            let selected = Set(ids.enumerated().compactMap { index, id in
+                mask & (1 << index) == 0 ? nil : id
+            })
+            let shadow = HearingJournalFeedProjection.project(
+                records: [rescheduled.fixture.record],
+                journalsByRecordKey: [rescheduled.fixture.record.recordKey: rescheduled.journal],
+                today: today, readIDs: selected, knownIDs: [], legacyEntries: legacy.entries)
+            let eventID = try XCTUnwrap(rescheduled.journal.events.first?.id)
+            let isRead = selected.count == 2
+            XCTAssertEqual(shadow.shadowReadIDs.contains(eventID), isRead,
+                           "read mask \(mask)")
+            XCTAssertEqual(try XCTUnwrap(shadow.entries.first).isUnread, !isRead,
+                           "read mask \(mask)")
+            XCTAssertEqual(shadow.entries.count, 1)
+            XCTAssertEqual(Set(shadow.aliases.map(\.legacyID)), Set(ids))
+        }
+    }
+
+    func testRescheduledEntryUsesNewDateForSevenAndFortyFiveDayWindows() throws {
+        for offset in [0, 6, 7, 44] {
+            let newDate = DateUtil.addDays(today, -offset)
+            let oldDate = DateUtil.addDays(newDate, -1)
+            let rescheduled = try rescheduledFixture(
+                recordKey: "rescheduled-window-\(offset)/2-4/2026",
+                oldDate: oldDate, newDate: newDate)
+            let (legacy, shadow) = project(
+                rescheduled.fixture.record, journal: rescheduled.journal)
+            XCTAssertEqual(legacy.entries.count, 2)
+            XCTAssertEqual(shadow.entries.map(\.date), [newDate])
+            XCTAssertEqual(AppRouter.recentFeedEntries(shadow.entries, today: today, days: 7)
+                .count, offset < 7 ? 1 : 0)
+        }
+
+        let missingOld = try rescheduledFixture(
+            recordKey: "rescheduled-missing-old/2-4b/2026",
+            oldDate: DateUtil.addDays(today, -46), newDate: DateUtil.addDays(today, -45))
+        let (boundaryLegacy, boundaryShadow) = project(
+            missingOld.fixture.record, journal: missingOld.journal)
+        XCTAssertEqual(boundaryLegacy.entries.count, 1)
+        XCTAssertTrue(boundaryShadow.entries.isEmpty)
+        XCTAssertTrue(boundaryShadow.aliases.isEmpty)
+        XCTAssertEqual(boundaryShadow.unmappedEvents.map(\.reason), [.missingLegacyHearing])
+
+        var outsideNewEvidence = try XCTUnwrap(missingOld.journal.events.first).evidence
+        outsideNewEvidence.dateRaw = rawDate(DateUtil.addDays(today, -46))
+        let outsideNewEvent = replacing(
+            try XCTUnwrap(missingOld.journal.events.first), evidence: outsideNewEvidence)
+        let outsideNew = project(
+            missingOld.fixture.record, journal: makeJournal([outsideNewEvent])).1
+        XCTAssertTrue(outsideNew.entries.isEmpty)
+        XCTAssertTrue(outsideNew.aliases.isEmpty)
+        XCTAssertEqual(outsideNew.unmappedEvents.map(\.reason), [
             .rescheduledOccurrenceUnproven
+        ])
+    }
+
+    func testRescheduledEvidenceMustMatchBothCurrentRows() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-evidence/2-4c/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let event = try XCTUnwrap(rescheduled.journal.events.first)
+
+        var wrongSource = event.evidence
+        wrongSource.sourceCardID = "sudrf|other-host|g1|foreign"
+        var wrongLevel = event.evidence
+        wrongLevel.instanceLevelRaw = CaseInstance.Level.appeal.rawValue
+        var wrongOldDate = event.evidence
+        wrongOldDate.previousDateRaw = rawDate(DateUtil.addDays(today, -5))
+        var wrongNewDate = event.evidence
+        wrongNewDate.dateRaw = rawDate(DateUtil.addDays(today, -1))
+        var wrongOldTime = event.evidence
+        wrongOldTime.previousTime = "09:00"
+        var wrongNewTime = event.evidence
+        wrongNewTime.time = "15:00"
+        var wrongResult = event.evidence
+        wrongResult.value = "Иной результат"
+        var missingNewOccurrence = event.evidence
+        missingNewOccurrence.relatedOccurrenceKey = nil
+
+        let cases: [(CaseEventEvidence, HearingJournalFeedUnmappedReason)] = [
+            (wrongSource, .sourceConflict),
+            (wrongLevel, .levelConflict),
+            (wrongOldDate, .dateConflict),
+            (wrongNewDate, .dateConflict),
+            (wrongOldTime, .timeConflict),
+            (wrongNewTime, .timeConflict),
+            (wrongResult, .resultConflict),
+            (missingNewOccurrence, .rescheduledOccurrenceUnproven)
+        ]
+
+        for (evidence, reason) in cases {
+            let altered = replacing(event, evidence: evidence)
+            let shadow = project(rescheduled.fixture.record,
+                                 journal: makeJournal([altered])).1
+            XCTAssertTrue(shadow.entries.isEmpty, "\(reason)")
+            XCTAssertTrue(shadow.aliases.isEmpty, "\(reason)")
+            XCTAssertEqual(shadow.unmappedEvents.map(\.reason), [reason], "\(reason)")
+        }
+    }
+
+    func testRescheduledAliasesFailClosedForDuplicateJournalOrCurrentRows() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-unique/2-4d/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let event = try XCTUnwrap(rescheduled.journal.events.first)
+
+        let duplicateEvent = project(
+            rescheduled.fixture.record,
+            journal: makeJournal([event, event])).1
+        XCTAssertTrue(duplicateEvent.entries.isEmpty)
+        XCTAssertTrue(duplicateEvent.aliases.isEmpty)
+        XCTAssertEqual(duplicateEvent.unmappedEvents.map(\.reason), [
+            .duplicateEventID, .duplicateEventID
+        ])
+        XCTAssertEqual(Set(duplicateEvent.unmappedLegacyHearings.map(\.reason)),
+                       [.duplicateEventID])
+
+        let duplicateNewRow = try withCurrentSessions(
+            rescheduled.fixture,
+            [rescheduled.fixture.session, rescheduled.newSession, rescheduled.newSession])
+        let duplicateOccurrence = project(duplicateNewRow.record,
+                                          journal: rescheduled.journal).1
+        XCTAssertTrue(duplicateOccurrence.entries.isEmpty)
+        XCTAssertTrue(duplicateOccurrence.aliases.isEmpty)
+        XCTAssertEqual(duplicateOccurrence.unmappedEvents.map(\.reason), [
+            .duplicateCurrentSession
         ])
 
-        var outOfWindowEvidence = journal.events[0].evidence
-        outOfWindowEvidence.previousDateRaw = rawDate(DateUtil.addDays(today, 1))
-        outOfWindowEvidence.dateRaw = rawDate(DateUtil.addDays(today, -46))
-        let staleEvidence = replacing(journal.events[0], evidence: outOfWindowEvidence)
-        let staleResult = project(rescheduled.record, journal: makeJournal([staleEvidence])).1
-        XCTAssertEqual(staleResult.unmappedEvents.map(\.reason), [
-            .rescheduledOccurrenceUnproven
+        let fullLegacy = legacyProjection([rescheduled.fixture.record])
+        let incompleteLegacy = fullLegacy.entries.filter { $0.date == rescheduled.fixture.session.date }
+        let missingAlias = HearingJournalFeedProjection.project(
+            records: [rescheduled.fixture.record],
+            journalsByRecordKey: [rescheduled.fixture.record.recordKey: rescheduled.journal],
+            today: today, readIDs: [], knownIDs: [], legacyEntries: incompleteLegacy)
+        XCTAssertTrue(missingAlias.entries.isEmpty)
+        XCTAssertTrue(missingAlias.aliases.isEmpty)
+        XCTAssertEqual(missingAlias.unmappedEvents.map(\.reason), [.missingLegacyHearing])
+    }
+
+    func testRescheduledAliasCollisionWithAnotherLegacyFamilyIsAmbiguous() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-collision/2-4e/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        var duplicateIDMovement = rescheduled.fixture.session
+        duplicateIDMovement.event = "Дело передано"
+        duplicateIDMovement.result = "Заседание отложено"
+        let collided = try withCurrentSessions(
+            rescheduled.fixture,
+            [rescheduled.fixture.session, rescheduled.newSession, duplicateIDMovement])
+        let legacy = legacyProjection([collided.record])
+
+        XCTAssertEqual(legacy.entries.count, 3)
+        XCTAssertEqual(legacy.entries.map(\.id).uniqued().count, 2)
+        XCTAssertEqual(Set(legacy.entries.map(\.kind)), [.hearing, .movement])
+
+        let shadow = project(collided.record, journal: rescheduled.journal).1
+        XCTAssertTrue(shadow.entries.isEmpty)
+        XCTAssertTrue(shadow.aliases.isEmpty)
+        XCTAssertTrue(shadow.shadowReadIDs.isEmpty)
+        XCTAssertTrue(shadow.shadowKnownIDs.isEmpty)
+        XCTAssertEqual(shadow.unmappedEvents.map(\.reason), [.ambiguousAlias])
+        XCTAssertEqual(Set(shadow.unmappedLegacyHearings.map(\.reason)), [.ambiguousAlias])
+    }
+
+    func testRescheduledProjectionKeepsMaterialIdentityAndCodableReplayStable() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-material/2-4f/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2),
+            level: .material, caseNumber: "13-2471/2026")
+        let unmarkedLegacy = legacyProjection([rescheduled.fixture.record])
+        let ids = Set(unmarkedLegacy.entries.map(\.id))
+        XCTAssertEqual(ids.count, 2)
+        let legacy = legacyProjection([rescheduled.fixture.record], readIDs: ids)
+
+        let original = HearingJournalFeedProjection.project(
+            records: [rescheduled.fixture.record],
+            journalsByRecordKey: [rescheduled.fixture.record.recordKey: rescheduled.journal],
+            today: today, readIDs: ids, knownIDs: [], legacyEntries: legacy.entries)
+        let entry = try XCTUnwrap(original.entries.first)
+        let eventID = try XCTUnwrap(rescheduled.journal.events.first?.id)
+        XCTAssertEqual(original.entries.count, 1)
+        XCTAssertEqual(original.shadowReadIDs, [eventID])
+        XCTAssertEqual(entry.instanceLevel, .material)
+        XCTAssertEqual(entry.instanceCaseNumber, "13-2471/2026")
+        XCTAssertEqual(entry.sourceCardID, rescheduled.fixture.sourceCardID)
+        XCTAssertEqual(entry.sourceInstanceID, rescheduled.fixture.owner.id)
+        XCTAssertEqual(Set(original.aliases.map(\.legacyID)), ids)
+        XCTAssertTrue(original.fieldMismatches.isEmpty)
+
+        let encoded = try JSONEncoder().encode(rescheduled.journal)
+        var reopened = try JSONDecoder().decode(CaseEventJournal.self, from: encoded)
+        XCTAssertEqual(reopened, rescheduled.journal)
+        let replay = HearingJournalFeedProjection.project(
+            records: [rescheduled.fixture.record],
+            journalsByRecordKey: [rescheduled.fixture.record.recordKey: reopened],
+            today: today, readIDs: ids, knownIDs: [], legacyEntries: legacy.entries)
+        XCTAssertEqual(replay.entries.map(\.id), original.entries.map(\.id))
+        XCTAssertEqual(replay.entries.map(\.date), original.entries.map(\.date))
+        XCTAssertEqual(replay.aliases, original.aliases)
+        XCTAssertEqual(replay.shadowReadIDs, original.shadowReadIDs)
+        XCTAssertEqual(replay.unmappedEvents, original.unmappedEvents)
+        XCTAssertEqual(replay.fieldMismatches, original.fieldMismatches)
+
+        let repeated = refresh(
+            reopened, snapshot: try XCTUnwrap(rescheduled.fixture.record.snapshot),
+            admittedCourts: admitted(rescheduled.fixture), observedAt: today,
+            complete: true)
+        XCTAssertTrue(repeated.derivation.events.isEmpty)
+        reopened.semanticBaselines = repeated.baselines
+        try reopened.append(reopened.identifyingOccurrences(
+            repeated.derivation.events, originKey: rescheduled.fixture.record.recordKey))
+        XCTAssertEqual(reopened.events.map(\.id), rescheduled.journal.events.map(\.id))
+    }
+
+    func testPartialOwnSourceRescheduleSurvivesFullRefreshAndCodableReplay() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-partial/2-4h/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let current = try XCTUnwrap(rescheduled.fixture.record.snapshot)
+        let before = try snapshot(for: rescheduled.fixture, sessions: [rescheduled.before])
+        var journal = CaseEventJournal()
+        let seed = refresh(
+            journal, snapshot: before, admittedCourts: admitted(rescheduled.fixture),
+            observedAt: DateUtil.addDays(rescheduled.before.date!, -1), complete: true)
+        journal.semanticBaselines = seed.baselines
+
+        let partial = refresh(
+            journal, snapshot: current, admittedCourts: admitted(rescheduled.fixture),
+            observedAt: DateUtil.addDays(rescheduled.before.date!, 1), complete: false)
+        XCTAssertEqual(partial.derivation.events.map(\.kind), [.hearingRescheduled])
+        journal.semanticBaselines = partial.baselines
+        try journal.append(journal.identifyingOccurrences(
+            partial.derivation.events, originKey: rescheduled.fixture.record.recordKey))
+        let eventID = try XCTUnwrap(journal.events.first?.id)
+
+        let full = refresh(
+            journal, snapshot: current, admittedCourts: admitted(rescheduled.fixture),
+            observedAt: DateUtil.addDays(rescheduled.before.date!, 2), complete: true)
+        XCTAssertTrue(full.derivation.events.isEmpty)
+        journal.semanticBaselines = full.baselines
+        try journal.append(journal.identifyingOccurrences(
+            full.derivation.events, originKey: rescheduled.fixture.record.recordKey))
+        XCTAssertEqual(journal.events.map(\.id), [eventID])
+
+        let legacy = legacyProjection([rescheduled.fixture.record])
+        let firstProjection = HearingJournalFeedProjection.project(
+            records: [rescheduled.fixture.record],
+            journalsByRecordKey: [rescheduled.fixture.record.recordKey: journal],
+            today: today, readIDs: [], knownIDs: [], legacyEntries: legacy.entries)
+        XCTAssertEqual(firstProjection.entries.map(\.date),
+                       [try XCTUnwrap(rescheduled.newSession.date)])
+        XCTAssertEqual(Set(firstProjection.aliases.map(\.legacyID)),
+                       Set(legacy.entries.map(\.id)))
+        XCTAssertEqual(Set(firstProjection.aliases.map(\.eventID)), [eventID])
+
+        let encoded = try JSONEncoder().encode(journal)
+        let reopened = try JSONDecoder().decode(CaseEventJournal.self, from: encoded)
+        let replay = HearingJournalFeedProjection.project(
+            records: [rescheduled.fixture.record],
+            journalsByRecordKey: [rescheduled.fixture.record.recordKey: reopened],
+            today: today, readIDs: [], knownIDs: [], legacyEntries: legacy.entries)
+        XCTAssertEqual(reopened.events.map(\.id), [eventID])
+        XCTAssertEqual(replay.entries.map(\.id), firstProjection.entries.map(\.id))
+        XCTAssertEqual(replay.aliases, firstProjection.aliases)
+        XCTAssertEqual(replay.unmappedEvents, firstProjection.unmappedEvents)
+    }
+
+    func testChainedReschedulesDoNotChooseOneLegacyAliasOwner() throws {
+        let first = try rescheduledFixture(
+            recordKey: "rescheduled-chain/2-4g/2026",
+            oldDate: DateUtil.addDays(today, -5), newDate: DateUtil.addDays(today, -3))
+        let old = first.fixture.session
+        var middle = first.newSession
+        middle.result = "Заседание отложено"
+        var final = first.newSession
+        final.dateRaw = rawDate(DateUtil.addDays(today, -1))
+        final.time = "14:00"
+        final.result = nil
+        let chainedFixture = try withCurrentSessions(
+            first.fixture, [old, middle, final])
+        let transition = refresh(
+            first.journal, snapshot: try XCTUnwrap(chainedFixture.record.snapshot),
+            admittedCourts: admitted(chainedFixture), observedAt: today, complete: true)
+        XCTAssertEqual(transition.derivation.events.map(\.kind), [.hearingRescheduled])
+        var journal = first.journal
+        journal.semanticBaselines = transition.baselines
+        try journal.append(journal.identifyingOccurrences(
+            transition.derivation.events, originKey: chainedFixture.record.recordKey))
+        XCTAssertEqual(journal.events.map(\.kind), [.hearingRescheduled, .hearingRescheduled])
+
+        let (legacy, shadow) = project(chainedFixture.record, journal: journal)
+        XCTAssertEqual(legacy.entries.count, 3)
+        XCTAssertTrue(shadow.entries.isEmpty)
+        XCTAssertTrue(shadow.aliases.isEmpty)
+        XCTAssertTrue(shadow.shadowReadIDs.isEmpty)
+        XCTAssertTrue(shadow.shadowKnownIDs.isEmpty)
+        XCTAssertEqual(shadow.unmappedEvents.map(\.reason), [
+            .rescheduledOccurrenceUnproven, .rescheduledOccurrenceUnproven
         ])
-        XCTAssertEqual(staleResult.unmappedLegacyHearings.map(\.reason), [
+        XCTAssertEqual(Set(shadow.unmappedLegacyHearings.map(\.reason)), [
             .rescheduledOccurrenceUnproven
         ])
     }
@@ -539,6 +879,39 @@ final class HearingJournalFeedProjectionTests: XCTestCase {
         let session: StoredSession
         let owner: CaseInstance
         let context: MovementContext
+    }
+
+    private struct RescheduledFixture {
+        let fixture: Fixture
+        let before: StoredSession
+        let newSession: StoredSession
+        let journal: CaseEventJournal
+    }
+
+    private func rescheduledFixture(
+        recordKey: String,
+        oldDate: Date,
+        newDate: Date,
+        oldTime: String = "10:00",
+        newTime: String = "12:00",
+        level: CaseInstance.Level = .first,
+        caseNumber: String? = nil
+    ) throws -> RescheduledFixture {
+        let postponed = try fixture(
+            recordKey: recordKey, date: oldDate, time: oldTime,
+            event: "Судебное заседание", result: "Заседание отложено", level: level,
+            caseNumber: caseNumber)
+        var before = postponed.session
+        before.result = nil
+        var next = postponed.session
+        next.dateRaw = rawDate(newDate)
+        next.time = newTime
+        next.result = nil
+        let current = try withCurrentSessions(postponed, [postponed.session, next])
+        let journal = try self.journal(
+            for: current, before: [before], observedAt: DateUtil.addDays(oldDate, -1))
+        return RescheduledFixture(fixture: current, before: before,
+                                  newSession: next, journal: journal)
     }
 
     private func fixture(

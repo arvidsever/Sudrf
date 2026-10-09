@@ -1,8 +1,8 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
 This note records **stage 1** (legacy renderer extraction), **stage 2** (published-act
-shadow), and **stage 3** (hearing-family shadow); none passes the full downstream shadow
-gate or authorizes cutover.
+shadow), and **stage 3** (hearing-family shadow, including a narrow reschedule projection);
+none passes the full downstream shadow gate or authorizes cutover.
 `AppRouter.reload` prepares ordered value-only inputs and calls
 `LegacyFeedProjection.project`; the focused renderer tests call that same pure function
 and assert the current legacy output. Stage 2 compares only the published-act family.
@@ -58,9 +58,9 @@ does not establish corpus-wide parity or authorize cutover.
 
 ## Stage 3: hearing journal shadow
 
-This layer projects only persisted `hearingScheduled` and `hearingPostponed`
-events; it reports `hearingRescheduled` only as an explicit diagnostic gap. It
-does not create a shadow entry from a current snapshot by itself.
+This layer projects persisted `hearingScheduled`, `hearingPostponed`, and
+`hearingRescheduled` events. It does not create a shadow entry from a current
+snapshot by itself.
 An event is projected only when its occurrence key matches exactly one current
 stored hearing and its source card, level, date, time, event text, result, own
 instance observation, and own movement instance all agree. The existing
@@ -76,27 +76,55 @@ the case unread flag and material/previous-registration navigation fields
 remain part of the projected row. The history boundary is the process date's
 inclusive 0–45-day window; `observedAt` does not change it. Rows and events
 outside that window are quiet unless an event occurrence key points to a
-current stored hearing inside the window. Such an event stays in scope and an
-out-of-window evidence date is reported as a date conflict. Competing persisted
-events for that occurrence are counted before date filtering, so a stale event
-cannot let another event claim the legacy alias or read/known marks. A
-rescheduled event remains a gap when its affected occurrence keys point to a
-current in-window hearing, even if its stored date fields are outside the
-window.
+current stored hearing inside the window. A scheduled or postponed event stays
+in scope and an out-of-window evidence date is reported as a date conflict.
+Competing persisted events for that occurrence are counted before date
+filtering, so a stale event cannot let another event claim the legacy alias or
+read/known marks. A
+rescheduled event remains relevant when its affected occurrence keys point to
+a current in-window hearing, even if its stored date fields are outside the
+window; it is validated and reported as unproven instead of being quietly
+skipped.
 
 Multiple persisted events matching one current occurrence are reported as
-unmapped rather than choosing one. Rescheduled events are explicitly reported
-as unproven because their evidence carries both the prior and next occurrence.
-Quiet legacy hearing rows without a journal event remain unmapped. These are
-intentional diagnostic gaps, not claimed parity. Tests use synthetic records
-and events derived by `CaseEventBaselineTransition` / `CaseEventDeriver`, then
-compare against the actual `LegacyFeedProjection` output.
+unmapped rather than choosing one. For a reschedule, the synthetic checks
+require both exact current hearing occurrences, one source card and level,
+matching prior/new date and time evidence, the prior result, and two distinct
+legacy aliases from the full `LegacyFeedProjection` output. The shadow creates
+one row at the new hearing date; the former date stays in event evidence. The
+tests include day 0, 6, 7, and 44, and exercise day 45 with an absent former
+legacy alias, which correctly prevents partial migration. Both
+aliases must be unique across the complete raw feed before either can be
+accepted. A missing or out-of-window alias, a cross-family ID collision, a
+chained reschedule that gives one legacy row two event owners, or a target
+session result absent from the reschedule evidence fails closed. Both legacy
+rows remain in the actual legacy projection. The shadow emits one row at the
+new date and retains the former row's alias only for identity and mark-migration
+checks; presentation is compared against the new/current row. The existing feed
+date and recent-entry helpers exercise the new date's
+0–45-day scope and 7-day inclusion behavior.
+
+Read state moves to the one reschedule event only if both former legacy IDs are
+read. The transfer of a known/notified mark remains unresolved pending the
+user's choice and is intentionally not asserted for reschedules. Quiet legacy
+hearing rows without a journal event remain unmapped. Tests use synthetic
+records and events derived by `CaseEventBaselineTransition` /
+`CaseEventDeriver`, then compare against the actual `LegacyFeedProjection`
+output. Material source identity/navigation and Codable replay are checked;
+repeating the same refresh does not append a second event.
+
+The legacy case-level `unreadByCase` flag remains an independent suppression
+rule: when it is false, legacy and shadow entries are not unread regardless of
+per-item read IDs. The two-alias read-transfer matrix keeps this flag true and
+tests explicit read IDs; an existing projection check covers the case-level
+rule.
 
 This layer does not change feed, notification, badge, persistence, or UI callers.
 
 The focused tests use isolated fixed synthetic data. They do not instantiate `AppRouter`,
 read SwiftData or persisted preferences, make network calls, launch the app, or deliver
-system notifications.
+system notifications. The projection remains diagnostic-only; production feed, known
+mark, notification, badge, and UI callers are not switched.
 
 ## Not established here
 
@@ -216,6 +244,26 @@ the earlier count and exact date/session validation already exclude every
 competing occurrence. This is still a synthetic pure-component gate, not real
 source-corpus acceptance, a local app/system run, or authorization for cutover.
 
+The reschedule continuation focused run on **9 October 2026** passed **44 XCTest
+cases, 0 failures**: 23 hearing-shadow, 11 act-shadow, 5 legacy-renderer, and 5
+feed-compatibility cases. It used the isolated scratch tree
+`/private/tmp/sudrf-179-reschedule-scratch` with:
+
+```sh
+swift test --package-path . \
+  --scratch-path /private/tmp/sudrf-179-reschedule-scratch \
+  --filter 'HearingJournalFeedProjectionTests|CaseEventFeedCompatibilityTests|LegacyFeedProjectionTests|ActJournalFeedProjectionTests'
+```
+
+Log `/private/tmp/sudrf-179-reschedule-final-20261009.log` SHA-256:
+`0d4b3ec912621a0f3043223c2ff019119a12ffe84c983ac8b548371b9d4299fb`. The cases
+cover all four read-mark combinations, new-date filtering, exact two-row aliases,
+wrong source/level/date/time/result, duplicate event/current rows, missing and
+cross-family aliases, target-result drift after rescheduling, chained
+reschedules, a partial-own-court to full-refresh replay, material identity, and
+Codable/repeated-refresh replay. This remains a synthetic focused SwiftPM
+check, not full-suite, CI, real-corpus, application, or cutover evidence.
+
 The earlier act-collision commit `7d478980f32f03a0f53a502306763186b75d3b12`
 passed [CI run 37886437956](https://github.com/arvidsever/Sudrf/actions/runs/37886437956):
 2,009 XCTest cases, 20 skipped, 0 failures; 28 Swift Testing cases passed;
@@ -236,11 +284,15 @@ reschedule row and its inclusion in the existing 7/45-day windows. Both former
 and new dates remain part of the proposed row; its visual presentation must
 still be approved before UI changes. The previously agreed migration rule is
 unchanged: the one reschedule event is read only when both legacy rows are read.
+Whether a known/notified mark should migrate across both aliases remains pending
+the user's decision.
 
 The branch was rebased onto main `60d7c45316b7bb2965d752e29c3a5a3346fff1ad`,
 retaining the released #413 source-card fields. Compile-only validation with
 `swift build --build-tests` passed; no tests or application were executed.
 Build log SHA-256:
 `40ceb0366368ed625f8c2d8a30bff0624491184b0218ad0dac9a2058c5c1def5`.
-The production feed still uses the legacy projection, and reschedule shadow
-mapping remains the next implementation step. This is not evidence for cutover.
+The production feed still uses the legacy projection. The synthetic shadow
+checkpoint now covers one reschedule and fails closed on unsupported target
+results; the known-mark decision and downstream gate remain open. This is not
+evidence for cutover.

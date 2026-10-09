@@ -37,5 +37,34 @@ The generated Xcode project, derived data, and app bundle are isolated under
 review for native-window acceptance. No bitmap rendering is used as visual
 acceptance evidence.
 
-The native visual acceptance has not yet been performed. No claim about a live
-court response is made.
+## Verification on 9 October 2026
+
+The final production checkpoint `604030f` is based on `3381809`. Independent
+Astra review returned Ship after the per-hearing month labels, mixed week
+queue details, and room preservation findings were resolved.
+
+The strict full suite passed: 721 SudrfKit XCTest, 1,161 SudrfApp XCTest
+(15 skipped), 10 FSSPCaptchaLab XCTest, and 75 CaptchaSolver XCTest
+(5 skipped), all without failures, plus 28 Swift Testing tests. Registry
+validation and XcodeGen passed. The unsigned Xcode 27 Debug build contains
+all three CoreML model folders and the eligibility manifest. The isolated
+QA app also built successfully.
+
+Logs: `/private/tmp/sudrf-431/final-full-strict.log`,
+`/private/tmp/sudrf-431/final-xcode-main.log`, and
+`/private/tmp/sudrf-431/xcode-qa/build.log`.
+
+The root task launched only the isolated QA app through native computer use.
+Month, day panel, week, agenda and both app-specific appearances were observed;
+the day accessibility label contains the correct full court. The existing
+narrow-card width fallback still prioritizes the number when court plus number
+do not fit. No layout change was introduced for this fallback.
+
+The user accepted the four shown month/day/week/agenda screenshots on
+**9 октября 2026 года**: «Да, визуальная приёмка пройдена».
+
+A separate user decision is still pending for very old snapshots with neither
+production number nor source ID and multiple matching cards of the same court.
+The current code remains conservative; visual approval does not resolve that
+policy question. No claim about a live court response is made. The production
+app, working database and TestFlight were not opened.

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftData
 import XCTest
@@ -31,11 +32,16 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let url = request.url else {
+        guard let url = request.url, request.httpMethod == "GET" else {
+            XCTFail("Unexpected request outside the #241 fixture contract")
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
         }
-        let reply = Self.reply(for: url)
+        guard let reply = Self.reply(for: url) else {
+            XCTFail("Unexpected request outside the #241 fixture contract")
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
         Self.recorded.append((url, reply.kind))
         let response = HTTPURLResponse(
             url: url, statusCode: 200, httpVersion: "HTTP/1.1",
@@ -48,10 +54,25 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 
-    private static func reply(for url: URL) -> Reply {
+    private static func reply(for url: URL) -> Reply? {
+        guard url.scheme == "https", url.path == "/modules.php",
+              url.port == nil, url.user == nil, url.password == nil else { return nil }
         let host = url.host?.lowercased() ?? ""
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let operation = items.first { $0.name == "name_op" }?.value
+        guard items.first(where: { $0.name == "name" })?.value == "sud_delo" else { return nil }
+        if operation == "case" {
+            guard let link = try? SudrfCaseCardLink(url: url) else { return nil }
+            switch host {
+            case issue241RootDomain:
+                guard link.caseID == "issue241-root-card", link.caseUID == "issue241-root-guid",
+                      link.deloID == "1540005", link.resolvedNew == "0", link.srvNum == "1" else { return nil }
+            case issue241CassationDomain:
+                guard link.caseID == "issue241-synthetic-3kas-card", link.caseUID == "issue241-synthetic-3kas-guid",
+                      link.deloID == "2800001", link.resolvedNew == "2800001", link.srvNum == "2" else { return nil }
+            default: return nil
+            }
+        }
         let key = url.absoluteString
         let count = counts[key, default: 0] + 1
         counts[key] = count
@@ -94,13 +115,12 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
             default: break
             }
         }
-        return Reply(body: emptyHTML, kind: "empty")
+        return nil
     }
 
     private static let maintenanceHTML =
         "<main>Информация временно недоступна. Попробуйте обратиться позже.</main>"
     private static let rejectedHTML = "<main>Неверно указан проверочный код с картинки</main>"
-    private static let emptyHTML = "<main>Данных по запросу не обнаружено</main>"
     private static let formHTML = "<html><body><form id='search-form'></form></body></html>"
 
     private static let rootSearchResultsHTML = """
@@ -152,6 +172,13 @@ private final class Issue241FlappingURLProtocol: URLProtocol {
         """
 }
 
+private actor Issue241TransferCourtDirectory {
+    func courts(for subjectCode: String) throws -> [DistrictCourt] {
+        XCTFail("Unexpected transfer directory request in #241 fixture profile")
+        throw URLError(.unsupportedURL)
+    }
+}
+
 @MainActor
 final class Issue241AcceptanceTests: XCTestCase {
     private let rootNumber = "2-241/2026"
@@ -161,6 +188,14 @@ final class Issue241AcceptanceTests: XCTestCase {
     private let publishedActText = "Синтетический опубликованный акт #241."
 
     func testFlappingCassationSearchAndCardPreserveCacheThenRecoverAfterCaptchaRejection() async throws {
+        guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
+            XCTFail("#241 acceptance cannot run inside the production app")
+            return
+        }
+        guard NSApp == nil else {
+            throw XCTSkip("#241 fixture acceptance requires no AppKit application instance")
+        }
+        let transferDirectory = Issue241TransferCourtDirectory()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("issue-241-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -261,7 +296,9 @@ final class Issue241AcceptanceTests: XCTestCase {
                 captchaStore: captchaStore)
             let center = RefreshCenter(
                 store: store, client: client,
-                serviceBuilder: { ctx in ctx.makeService(client: client) },
+                serviceBuilder: { ctx in
+                    self.makeOfflineService(context: ctx, client: client, transferDirectory: transferDirectory)
+                },
                 fsspAutoModelEnabled: false)
 
             // Three maintenance replies to one unchanged 3KSOU search URL must not
@@ -431,7 +468,9 @@ final class Issue241AcceptanceTests: XCTestCase {
                 captchaStore: CaptchaTokenStore())
             let center = RefreshCenter(
                 store: reopened, client: client,
-                serviceBuilder: { ctx in ctx.makeService(client: client) },
+                serviceBuilder: { ctx in
+                    self.makeOfflineService(context: ctx, client: client, transferDirectory: transferDirectory)
+                },
                 fsspAutoModelEnabled: false)
             Issue241FlappingURLProtocol.configure(.steady)
             let beforeRepeat = try XCTUnwrap(reopened.record(forKey: key))
@@ -454,6 +493,23 @@ final class Issue241AcceptanceTests: XCTestCase {
         XCTAssertEqual(reopened.record(forKey: key)?.movement?.instances.first {
             $0.domain == issue241CassationDomain && $0.caseNumber == cassationNumber
         }?.sessions, successfulSessions, "repeat must preserve movement")
+    }
+
+    private func makeOfflineService(context: MovementContext, client: SudrfClient,
+                                    transferDirectory: Issue241TransferCourtDirectory) -> MovementService {
+        let targets = context.higherCourtTargets ?? context.cartoteka.flatMap {
+            MovementTargetBuilder.targets(
+                branch: context.branch, courtLevel: context.courtLevel, baseCartoteka: $0,
+                caseNumber: context.caseNumber, judicialUID: context.judicialUID,
+                courtTitle: context.courtTitle, courtCode: context.courtCode,
+                region: context.region, displayDomain: context.displayDomain)
+        }
+        return MovementService(
+            client: client, higherCourtDomains: context.expandedHigherDomains(),
+            higherCourtTargets: targets, knownCards: context.knownCards ?? [],
+            baseInstanceLevel: context.baseInstanceLevel,
+            judicialUID: context.judicialUID, branch: context.branch,
+            transferCourts: { subjectCode in try await transferDirectory.courts(for: subjectCode) })
     }
 
     private func makeContext(rootURL: URL) -> MovementContext {

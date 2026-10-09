@@ -148,3 +148,33 @@ refresh и после успеха. Он не является исходным 
 опубликованный акт для reference B, полное обновление, повторное полное
 обновление и точное дисковое открытие без потери актов/журнала. Новые запросы,
 рабочая база, приложение, UI и TestFlight не использовались.
+
+### Подготовка test-only изоляции
+
+После аудита добавлены entry guards в offline и opt-in live методы: production
+bundle отклоняется, наличие `NSApp` даёт пропуск до каталогов, settings и clients.
+Оба offline service builder теперь создают `MovementService` по тем же параметрам
+`MovementContext`: expanded higher domains, exact targets либо штатный target
+builder, known cards, base level, УИД и branch. Единственная дополнительная
+граница — actor-backed `transferCourts`: любой вызов завершает тест ошибкой
+и бросает ошибку, не возвращая выдуманный пустой список. Default directory
+resolver в offline service больше не создаётся.
+
+HTTP fixture contract ограничен GET по HTTPS `/modules.php` без credentials
+или явного port, двумя существующими synthetic hosts, `name=sud_delo` и
+операциями `sf`/`r`/`case`. Для `case` проверяются опубликованные fixture
+case ID, GUID, register, `new` и server instance каждого из двух hosts.
+Неизвестный URL, host, операция, locator или метод дают `XCTFail` и transport
+error; прежний общий ответ «данных нет» удалён. Разрешённые hosts и операции
+не расширены. Существующие assertions #262/#434 не ослаблялись.
+
+Выполнена только `swift build --build-tests`: успешно, 2,60 секунды,
+без warnings/errors. Выполненных сценариев — 0; runtime-проверка ограничений
+в этой редакции не заявляется. Лог `/private/tmp/sudrf-241-isolation-prep-compile.log`,
+SHA-256 `536aeffda897d82fd094b9f43d51a16692b802107cc94ffec927d8d3df044e6e`. Production-файлы не менялись.
+
+Ленивая инициализация `SearchDiagnostics` из #339 остаётся зависимостью перед
+offline runtime. В live всё ещё pending собственные suite `CaptchaSettings`,
+`CaptchaTokenStore`, directory providers и private permissions. Эти подмены
+не сделаны через перенос production-кода #339; opt-in/live и solver не запускались.
+Новые network-запросы и запуск приложения отсутствуют.

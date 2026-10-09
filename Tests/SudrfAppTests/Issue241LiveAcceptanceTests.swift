@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CryptoKit
 import XCTest
@@ -17,6 +18,13 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
     }
 
     func testLiveUIDDiscoveryCardActAndDiskReopen() async throws {
+        guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
+            XCTFail("#241 acceptance cannot run inside the production app")
+            return
+        }
+        guard NSApp == nil else {
+            throw XCTSkip("#241 live acceptance requires no AppKit application instance")
+        }
         let env = ProcessInfo.processInfo.environment
         guard env["SUDRF_241_LIVE"] == "1" else {
             throw XCTSkip("#241 live acceptance is opt-in")

@@ -35,10 +35,12 @@ case criteria, open case cards, solve CAPTCHA, or retain parsed case rows.
   classification.
 - Existing SUDRF, magistrate, VSRF, and MosGorSud classifiers/parsers are used
   in memory. Parsed rows are reduced to a success/failure outcome and discarded.
-- A success is a recognized search form or a listing recognized by its
-  existing source parser. CAPTCHA, maintenance, unknown pages, decode/parser
-  failures, HTTP failures, and unexpected empty listings remain distinct
-  non-success outcomes.
+- A recognized search form or source-parsed listing remains an expected
+  outcome. A recognized CAPTCHA is also an expected *diagnostic* outcome: it
+  is recorded distinctly and does not fail the workflow, but it does not prove
+  parser or source health. The canary does not solve CAPTCHA. Maintenance,
+  unknown pages, decode/parser failures, transport/HTTP failures, and empty
+  listings remain non-success outcomes.
 
 ## Report and artifacts
 
@@ -64,12 +66,13 @@ swift run sudrf-cli portal-canary --live \
 ```
 
 Without `--live`, the command refuses to run. It issues all seven checks once
-before returning a failing exit status if any source did not meet the
-recognized-form/listing contract.
+before returning a failing exit status if any source has an unexpected outcome.
+Recognized forms, parsed listings, and recognized CAPTCHA challenges are
+expected workflow outcomes; other outcomes remain failures.
 
 ## Offline evidence and remaining acceptance
 
-The fifteen CLI tests use stubbed responses only. They verify seven queryless
+The sixteen CLI tests use stubbed responses only. They verify seven queryless
 HTTPS targets, the VNKOD directory and legacy URL/form contract, redirect
 rejection, the body-size cap, single-request HTTP failure reporting, and
 removal of text, case-like values, card IDs, UIDs, and tokens from reports.
@@ -174,5 +177,17 @@ target was changed. All test targets compiled without execution (log SHA-256
 `f679506ab2d74ea9a1114f68e2f450d5944d328d97f5e1ccec3c858d3c157f42`).
 The offline URLProtocol-based canary profile passed 15/15, 0 failures (log SHA-256
 `ee189ea8ba8e9b48e52aa8dc7c772ec255f7f9c8b798572cf3b6fb19ebdc7469`).
-No new live GET or workflow dispatch was performed. The author's decision on
-CAPTCHA exit status and new-head CI remain pending.
+No new live GET or workflow dispatch was performed.
+
+## CAPTCHA exit policy
+
+The author chose to treat a recognized CAPTCHA as an expected canary outcome,
+separate from an error that fails GitHub Actions. The command still records
+`captcha` in the report; the CAPTCHA is not solved and the result is not a
+parser-health pass. A mixed report containing CAPTCHA and a network failure
+still fails, as do unknown pages, parser/decode errors, maintenance, redirects,
+HTTP failures, body-limit failures, non-HTML responses, and empty listings.
+The seven-target count remains mandatory. This decision changes only workflow
+exit status, not classification or report contents. New-head CI remains pending.
+
+The updated offline profile passed 16 tests, 0 failures, on 9 October 2026 (log SHA-256 `280b7c13305cdb9c72ab1cfb6eaabdf7bd9e1c3986804f482eea03375e636e7a`). Independent review accepted the outcome-policy delta. No new live request or workflow dispatch was made. Final-head hosted CI is pending.

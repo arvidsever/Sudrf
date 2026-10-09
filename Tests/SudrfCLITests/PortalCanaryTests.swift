@@ -4,6 +4,40 @@ import SudrfKit
 @testable import sudrf_cli
 
 final class PortalCanaryTests: XCTestCase {
+    func testRecognizedCaptchaIsExpectedButOtherOutcomesStillFailWorkflow() {
+        func report(_ outcomes: [PortalCanaryOutcome]) -> PortalCanaryReport {
+            let requests = zip(PortalCanaryFamily.allCases, outcomes).map { family, outcome in
+                PortalCanaryReportRow(family: family, host: "example.invalid", outcome: outcome,
+                                      stage: "test", httpStatus: nil, bytes: nil, sha256: nil,
+                                      declaredCharset: "unspecified", decodedCharset: nil,
+                                      safeDOM: nil)
+            }
+            return PortalCanaryReport(generatedAt: .distantPast, requests: requests)
+        }
+
+        let expected = [PortalCanaryOutcome.captcha, .parsedListing] +
+            Array(repeating: .searchForm, count: PortalCanaryFamily.allCases.count - 2)
+        XCTAssertTrue(report(expected).satisfiesWorkflowOutcomePolicy)
+
+        var mixedFailure = expected
+        mixedFailure[1] = .networkFailure
+        XCTAssertFalse(report(mixedFailure).satisfiesWorkflowOutcomePolicy)
+
+        let stillUnexpected: [PortalCanaryOutcome] = [
+            .emptyListing, .maintenance, .parserContractFailure, .unknownPage,
+            .redirectBlocked, .httpFailure, .bodyTooLarge, .nonHTMLResponse,
+            .decodeFailure, .networkFailure
+        ]
+        for outcome in stillUnexpected {
+            var results = Array(repeating: PortalCanaryOutcome.searchForm,
+                                count: PortalCanaryFamily.allCases.count)
+            results[0] = outcome
+            XCTAssertFalse(report(results).satisfiesWorkflowOutcomePolicy, "\(outcome)")
+        }
+
+        XCTAssertFalse(report(Array(expected.dropLast())).satisfiesWorkflowOutcomePolicy)
+    }
+
     func testLiveSessionDoesNotPersistOrReuseCookiesCredentialsOrCache() {
         let session = PortalCanaryRunner.makeLiveSession()
         defer { session.invalidateAndCancel() }

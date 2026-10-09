@@ -83,6 +83,13 @@ struct PortalCanaryReportRow: Codable, Sendable {
 struct PortalCanaryReport: Codable, Sendable {
     let generatedAt: Date
     let requests: [PortalCanaryReportRow]
+
+    var satisfiesWorkflowOutcomePolicy: Bool {
+        guard requests.count == PortalCanaryFamily.allCases.count else { return false }
+        return requests.allSatisfy {
+            $0.outcome == .searchForm || $0.outcome == .parsedListing || $0.outcome == .captcha
+        }
+    }
 }
 
 enum PortalCanaryTargets {
@@ -536,8 +543,7 @@ extension SudrfCLI {
                 let status = item.httpStatus.map { String($0) } ?? "—"
                 print("\(item.family.rawValue) host=\(item.host) stage=\(item.stage) outcome=\(item.outcome.rawValue) http=\(status)")
             }
-            if report.requests.count != PortalCanaryFamily.allCases.count
-                || report.requests.contains(where: { $0.outcome != .searchForm && $0.outcome != .parsedListing }) {
+            if !report.satisfiesWorkflowOutcomePolicy {
                 throw ExitCode.failure
             }
         }

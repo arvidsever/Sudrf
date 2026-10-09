@@ -27,6 +27,24 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks.first?.hearings.first?.displayCaseNumber, "77-762/2024")
     }
 
+    func testDisclosureContentKeyTracksHearingUpdatesAndRemoval() {
+        let date = DateUtil.parse("21.10.2026")!
+        let hearing = TrackedHearing(
+            recordKey: "synthetic-disclosure", date: date, time: "11:00",
+            caseNumber: "2-4461/2026", parties: "Сторона А · сторона Б",
+            court: "OBLSUD--MO.SUDRF.RU", displayCourt: "Московский областной суд",
+            room: "Зал 4", dateLabel: DateUtil.dateLabel(date), judge: "Судья А. А.",
+            identitySuffix: "appeal", instanceCaseNumber: "33-42895/2026",
+            instanceLevel: .appeal)
+        let original = CalendarWeekLayout.disclosureContentKey(for: [hearing])
+        XCTAssertEqual(original, CalendarWeekLayout.disclosureContentKey(for: [hearing]))
+
+        var updated = hearing
+        updated.room = "Зал 5"
+        XCTAssertNotEqual(original, CalendarWeekLayout.disclosureContentKey(for: [updated]))
+        XCTAssertNotEqual(original, CalendarWeekLayout.disclosureContentKey(for: []))
+    }
+
     func testMaterialCaptionSurvivesWeekLayout() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("2-8236/2025", time: "09:30",
@@ -44,7 +62,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertNil(blocks.first?.hearings.first?.secondaryLabel)
     }
 
-    func testSingleHearingUsesGridPositionAndMinimumHeight() {
+    func testSingleHearingUsesGridSlotAndCompactCardHeight() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("2-1/2026", time: "09:30")
         ])
@@ -54,6 +72,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].startMinutes, 9 * 60 + 30)
         XCTAssertEqual(blocks[0].top, 180)
         XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertEqual(blocks[0].cardHeight, 36)
     }
 
     func testNonOverlappingHearingsRemainSeparate() {
@@ -79,7 +98,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].badge, "3 ДЕЛА · ПО ОЧЕРЕДИ")
     }
 
-    func testGroupedRowsKeepJudgeInsideEveryCaseRow() {
+    func testCompactGroupsKeepJudgeFieldsForDisclosure() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("5-1/2026", time: "09:30"),
             hearing("5-2/2026", time: "09:30")
@@ -87,10 +106,9 @@ final class CalendarWeekLayoutTests: XCTestCase {
 
         guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
         XCTAssertEqual(block.kind, .stack)
-        XCTAssertEqual(block.height, 164) // unchanged compact geometry
-        XCTAssertEqual(block.hearings.map {
-            CalendarWeekLayout.itemJudge($0, conflict: false)
-        }, ["судья Колосова Н. Е.", "судья Колосова Н. Е."])
+        XCTAssertEqual(block.height, 120) // reserve the one-hour timeline interval
+        XCTAssertEqual(block.cardHeight, 76) // badge + two compact rows
+        XCTAssertEqual(block.hearings.map(\.judge), ["Колосова Н. Е.", "Колосова Н. Е."])
     }
 
     func testGroupedJudgeLabelsPreserveFollowingHourPosition() {
@@ -101,21 +119,20 @@ final class CalendarWeekLayoutTests: XCTestCase {
         ])
 
         XCTAssertEqual(blocks.count, 2)
-        XCTAssertEqual(blocks[0].height, 164)
+        XCTAssertEqual(blocks[0].height, 120)
+        XCTAssertLessThanOrEqual(blocks[0].top + blocks[0].height, blocks[1].top)
         XCTAssertEqual(blocks[1].top, 240)
     }
 
-    func testGroupedRowsWithoutDetailsKeepCompactHeight() {
+    func testGroupedRowsWithoutJudgeKeepCompactHeight() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("5-1/2026", time: "09:30", judge: ""),
             hearing("5-2/2026", time: "09:30", judge: "")
         ])
 
         guard let block = blocks.first else { return XCTFail("Expected a grouped block") }
-        XCTAssertEqual(block.height, 164) // 2 × 34 + 96; no empty detail line
-        XCTAssertTrue(block.hearings.allSatisfy {
-            CalendarWeekLayout.itemDetails($0, conflict: false, common: block.hearings.first).isEmpty
-        })
+        XCTAssertEqual(block.cardHeight, 76) // compact rows remain a fixed height
+        XCTAssertTrue(block.hearings.allSatisfy { $0.judge.isEmpty })
     }
 
     func testOverlappingSameCourtDifferentStartBecomesOverlapStack() {
@@ -142,7 +159,7 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].badge, "⚠ РАЗНЫЕ СУДЫ")
     }
 
-    func testConflictRowsKeepCourtRoomAndJudgeDetails() {
+    func testConflictRowsKeepTheirOwnDisclosureFields() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("5-1/2026", time: "12:00",
                     court: "Сыктывкарский городской суд", room: "каб. 605", judge: "Иванов И. И."),
@@ -151,11 +168,9 @@ final class CalendarWeekLayoutTests: XCTestCase {
         ])
 
         guard let block = blocks.first else { return XCTFail("Expected a conflict block") }
-        XCTAssertEqual(block.hearings.map {
-            CalendarWeekLayout.itemDetails($0, conflict: true, common: block.hearings.first)
-        }, [
-            "Сыктывкарский городской суд · каб. 605 · судья Иванов И. И.",
-            "Арбитражный суд Республики Коми · зал 2 · судья Петров П. П."
+        XCTAssertEqual(block.hearings.map { "\($0.displayCourtLabel) · \($0.room) · \($0.judge)" }, [
+            "Сыктывкарский городской суд · каб. 605 · Иванов И. И.",
+            "Арбитражный суд Республики Коми · зал 2 · Петров П. П."
         ])
     }
 
@@ -183,11 +198,8 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarWeekLayout.gridHeight(for: [blocks]), 1380)
     }
 
-    /// Контракт, на который опирается вид (#83): блок 10:00 заканчивается ровно
-    /// там, где начинается следующий, и `height` — это высота слота, которую
-    /// карточка берёт за нижнюю границу. Сам баг жил в SwiftUI-геометрии
-    /// `weekSingleCard` и этим тестом не ловится — здесь закреплены только
-    /// входные данные вида.
+    /// Compact card geometry must fit inside the one-hour time interval so its
+    /// text and hit target never spill into the next block.
     func testAdjacentBlocksMeetExactlyAtHourBoundary() {
         let blocks = CalendarWeekLayout.blocks(for: [
             hearing("2-3685/2026", time: "10:00"),
@@ -201,10 +213,55 @@ final class CalendarWeekLayoutTests: XCTestCase {
         XCTAssertEqual(blocks[0].height, 120)
         XCTAssertEqual(blocks[0].top + blocks[0].height, blocks[1].top)
         XCTAssertLessThan(blocks[0].top + blocks[0].height, gridHeight)
-        // Конфликтная группа получает высоту по числу заседаний, а не по остатку дня.
         XCTAssertEqual(blocks[1].kind, .conflict)
-        XCTAssertEqual(blocks[1].height, 228)   // 2 × 66 + 96
+        XCTAssertEqual(blocks[1].height, 120)
+        XCTAssertEqual(blocks[1].cardHeight, 92)
         XCTAssertLessThan(blocks[1].top + blocks[1].height, gridHeight)
+    }
+
+    func testIssue337CompactConflictAndMaterialCardsDoNotOverlap() {
+        let blocks = CalendarWeekLayout.blocks(for: [
+            hearing("1-146/2026", time: "11:00", court: "Московский областной суд"),
+            hearing("66а-757/2026", time: "11:00", court: "Верховный суд Республики Коми"),
+            hearing("2-9143/2025", time: "12:00", court: "Сыктывкарский городской суд",
+                    secondaryLabel: "Материал № 13-3241/2026")
+        ])
+
+        XCTAssertEqual(blocks.count, 2)
+        let conflict = blocks[0]
+        let material = blocks[1]
+        XCTAssertEqual(conflict.kind, .conflict)
+        XCTAssertEqual(Set(conflict.hearings.map(\.caseNumber)),
+                       Set(["1-146/2026", "66а-757/2026"]))
+        XCTAssertEqual(material.startMinutes, 12 * 60)
+        XCTAssertEqual(material.hearings.first?.secondaryLabel, "Материал № 13-3241/2026")
+        XCTAssertEqual(conflict.top, 3 * CalendarWeekLayout.hourHeight)
+        XCTAssertEqual(material.top, 4 * CalendarWeekLayout.hourHeight)
+        XCTAssertLessThanOrEqual(conflict.top + conflict.cardHeight, material.top)
+        XCTAssertLessThanOrEqual(conflict.top + conflict.height, material.top)
+        XCTAssertLessThanOrEqual(conflict.cardHeight, CalendarWeekLayout.hourHeight)
+
+    }
+
+    func testDenseConflictPreservesAllHearingsWithoutOverlappingNextHour() {
+        let numbers = ["33-1234567890/2026", "33-1002/2026", "33-1003/2026",
+                       "33-1004/2026", "33-1005/2026"]
+        let group = numbers.enumerated().map { index, number in
+            hearing(number, time: "11:00",
+                    court: index.isMultiple(of: 2)
+                        ? "Московский областной суд" : "Верховный суд Республики Коми")
+        }
+        let blocks = CalendarWeekLayout.blocks(for: group + [
+            hearing("13-3241/2026", time: "12:00")
+        ])
+        XCTAssertEqual(blocks.count, 2)
+        let conflict = blocks[0]
+        XCTAssertEqual(conflict.kind, .conflict)
+        XCTAssertEqual(Set(conflict.hearings.map(\.caseNumber)), Set(numbers))
+        XCTAssertEqual(conflict.hearings.count, 5)
+        XCTAssertEqual(conflict.cardHeight, 119)
+        XCTAssertLessThanOrEqual(conflict.top + conflict.cardHeight, blocks[1].top)
+        XCTAssertLessThanOrEqual(conflict.top + conflict.height, blocks[1].top)
     }
 
     func testWeekTitleWithinMonthIncludesItsOwnYear() {

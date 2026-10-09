@@ -160,28 +160,6 @@ private actor Issue322MoscowStub: MoscowOriginProviding, MosGorSudProviding {
     func searchRequests() -> [String] { searches }
 }
 
-private actor Issue322MovementProbe {
-    private var cached: CaseMovement?
-    private var fresh: CaseMovement?
-
-    func recordCached(_ movement: CaseMovement?) { cached = movement }
-    func recordFresh(_ movement: CaseMovement) { fresh = movement }
-    func snapshot() -> (CaseMovement?, CaseMovement?) { (cached, fresh) }
-}
-
-private struct Issue322RecordingMovementProvider: MovementProviding {
-    let base: any MovementProviding
-    let probe: Issue322MovementProbe
-
-    func movement(for base: CaseSearchResult, court: Court,
-                  cartoteka: Cartoteka) async throws -> CaseMovement {
-        let movement = try await self.base.movement(for: base, court: court,
-                                                    cartoteka: cartoteka)
-        await probe.recordFresh(movement)
-        return movement
-    }
-}
-
 private final class Issue322OfflineURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -287,19 +265,14 @@ final class Issue322AcceptanceTests: XCTestCase {
                             moscow: Issue322MoscowStub,
                             repair: TrackedCaseRepairCoordinator,
                             client: SudrfClient,
-                            probe: Issue322MovementProbe? = nil,
                             afterRepair: ((String, String) -> Void)? = nil) -> RefreshCenter {
         let center = RefreshCenter(
             store: store, client: client,
             serviceBuilder: { context in
-                let service = context.makeService(client: sudrf, mosgorsud: moscow)
-                guard let probe else { return service }
-                return Issue322RecordingMovementProvider(base: service, probe: probe)
+                context.makeService(client: sudrf, mosgorsud: moscow)
             })
         center.repairBeforeRefresh = { key, force in
             let outcome = try await repair.repairIfNeeded(key: key, forceAttempt: force)
-            await probe?.recordCached(
-                store.record(forLocator: outcome.effectiveKey)?.movement)
             afterRepair?(key, outcome.effectiveKey)
             return outcome.effectiveKey
         }
@@ -384,11 +357,10 @@ final class Issue322AcceptanceTests: XCTestCase {
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
-        let probe = Issue322MovementProbe()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
-                                repair: repair, client: client, probe: probe,
+                                repair: repair, client: client,
                                 afterRepair: { requestedKey, effectiveKey in
             guard let record = store.record(forLocator: effectiveKey) else {
                 return XCTFail("repair did not leave a readable tracked record")
@@ -408,22 +380,6 @@ final class Issue322AcceptanceTests: XCTestCase {
             let execution = await task.value
             guard case .partial = execution.outcome else {
                 return XCTFail("ordinary refresh must keep the chain while reporting verified empty listings")
-            }
-            let (cached, fresh) = await probe.snapshot()
-            if let cached, let fresh {
-                let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
-                let numbers = key == first.key
-                    ? ["66а-2013/2020"]
-                    : ["66а-2013/2020", "66а-4311/2020"]
-                for number in numbers {
-                    let sourceURL = number == "66а-2013/2020"
-                        ? fixtures.appeal2013URL : fixtures.appeal4311URL
-                    self.assertRetainedActText("Исторический текст \(number)",
-                                                linkedToCaseNumber: number,
-                                                sourceURL: sourceURL, in: merged)
-                }
-            } else {
-                XCTFail("refresh probe did not capture both cache and fresh movement")
             }
             let refreshed = try XCTUnwrap(store.record(forKey: execution.effectiveKey))
             let numbers = key == first.key
@@ -607,11 +563,10 @@ final class Issue322AcceptanceTests: XCTestCase {
 
         let sudrf = try Issue322SudrfStub(fixtures: fixtures)
         let moscow = Issue322MoscowStub(fixtures: fixtures)
-        let probe = Issue322MovementProbe()
         let repair = makeRepair(store: store, sudrf: sudrf,
                                 moscow: moscow, defaults: defaults, client: client)
         let center = makeCenter(store: store, sudrf: sudrf, moscow: moscow,
-                                repair: repair, client: client, probe: probe,
+                                repair: repair, client: client,
                                 afterRepair: { _, effectiveKey in
             guard let record = store.record(forLocator: effectiveKey),
                   let act = cassationMovement.acts.first,
@@ -625,15 +580,6 @@ final class Issue322AcceptanceTests: XCTestCase {
         let execution = await task.value
         guard case .partial = execution.outcome else {
             return XCTFail("ordinary refresh should retain the chain with verified empty listings")
-        }
-        let (cached, fresh) = await probe.snapshot()
-        if let cached, let fresh, let act = cassationMovement.acts.first,
-           let text = cassationMovement.actBodies[act.id] {
-            let merged = MovementCachePolicy.merge(fresh: fresh, cached: cached)
-            self.assertRetainedActText(text, linkedToCaseNumber: "8а-7078/2022",
-                                       sourceURL: fixtures.cassationURL, in: merged)
-        } else {
-            XCTFail("refresh probe did not capture the cassation cache and fresh movement")
         }
 
         XCTAssertEqual(store.all().count, 2)

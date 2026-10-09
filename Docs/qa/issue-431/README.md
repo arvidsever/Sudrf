@@ -68,3 +68,16 @@ production number nor source ID and multiple matching cards of the same court.
 The current code remains conservative; visual approval does not resolve that
 policy question. No claim about a live court response is made. The production
 app, working database and TestFlight were not opened.
+
+## Compatibility after rebase (9 October 2026)
+
+The branch was rebased from `3381809` onto `8403266` (`main`, v0.64.1/253)
+without conflicts. Focused checks passed: `Issue431CalendarCourtLabelTests`
+3/3, `MovementDerivationTests` 107/107, and
+`python3 Scripts/generate-legal-deadline-registry.py --check`. `xcodegen
+generate` and the unsigned Xcode 27 Debug build succeeded; all three bundled
+CoreML models matched their manifests and the eligibility resource matched its
+fixture. The app was not launched. Native QA and UserActivity tests were not
+rerun; the visual acceptance above predates this rebase. The legacy ambiguous
+source policy remains pending, so the PR stays a draft and no release version
+is assigned here.

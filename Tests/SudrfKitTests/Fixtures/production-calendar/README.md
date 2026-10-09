@@ -9,3 +9,12 @@ Minimal table-and-totals extracts captured on 9 September 2026 from:
 - `consultant-2027-project.html`: https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2027/ (raw SHA-256 `2755d46ec51cd775ac37d4a56fbf485f211ed884239225991af3ac728c9c77ed`)
 
 The extracts preserve the original `h1`, all twelve calendar tables, monthly totals, and annual totals. They omit navigation and unrelated editorial text.
+
+`consultant-2027.html` was extracted from the approved calendar received on
+9 October 2026 at 15:02:51 UTC from the same exact 2027 URL (HTTP 200,
+no redirect). Raw response SHA-256:
+`f31ac571377f35fe57b36ba302931fa2a165958a09c56ecf7bb282263a1ec18b`.
+Extract SHA-256:
+`890f825bbceef667952bec502389905258e4c762d0db26140599c42aa62488cb`.
+The earlier draft remains a negative fixture; approval is established separately
+by the decree and normative verification recorded in `Docs/qa/federal-calendar-2027/`.

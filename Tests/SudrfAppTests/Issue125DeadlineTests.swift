@@ -119,9 +119,16 @@ final class Issue125DeadlineTests: XCTestCase {
             decisionDate: "31.12.2025"))
         XCTAssertEqual(yearEnd.deadlines.first?.date, DateUtil.parse("30.01.2026"))
 
-        let outsideCoverage = try evaluate(example(
+        let newlyCovered = try evaluate(example(
             code: "GPK", event: "Определение о прекращении производства по делу",
             decisionDate: "04.01.2027"))
+        XCTAssertEqual(newlyCovered.deadlines.first?.date, DateUtil.parse("29.01.2027"))
+        XCTAssertEqual(newlyCovered.deadlines.first?.provenance?.calendarTrace?.revisions.map(\.year),
+                       [2027])
+
+        let outsideCoverage = try evaluate(example(
+            code: "GPK", event: "Определение о прекращении производства по делу",
+            decisionDate: "04.01.2028"))
         XCTAssertTrue(outsideCoverage.deadlines.isEmpty)
         XCTAssertEqual(outsideCoverage.assessments.first(where: {
             $0.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"

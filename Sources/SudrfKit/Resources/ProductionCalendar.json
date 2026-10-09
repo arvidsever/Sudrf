@@ -184,6 +184,14 @@
         "special-2021-595"
       ],
       "title" : "Нерабочие дни с 30 октября по 7 ноября 2021 года"
+    },
+    {
+      "id" : "transfer-2027",
+      "sourceIDs" : [
+        "transfer-2027-official",
+        "transfer-2027-official-pdf"
+      ],
+      "title" : "Перенос выходных дней в 2027 году"
     }
   ],
   "revisions" : [
@@ -77930,6 +77938,5502 @@
         "year" : 2026
       },
       "year" : 2026
+    },
+    {
+      "calendarSourceID" : "consultant-calendar-2027",
+      "days" : [
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 1,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : true,
+          "kind" : "transferredWorkingDay",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "transfer-2027",
+            "transferred-shortened"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "transfer-2027"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 2,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 3,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 4,
+            "year" : 2027
+          },
+          "isShortened" : true,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-95-shortened"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-transfer"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-transfer"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 5,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : true,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-95-shortened"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-transfer"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 6,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 7,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 8,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 9,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 10,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : true,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-95-shortened"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "holiday",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "tk-112-holiday"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "transfer-2027"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 11,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 1,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 2,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 3,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 4,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 5,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 6,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 7,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 8,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 9,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 10,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 11,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 12,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 13,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 14,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 15,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 16,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 17,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 18,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 19,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 20,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 21,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 22,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 23,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 24,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 25,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 26,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "weekend",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "five-day-week"
+          ]
+        },
+        {
+          "date" : {
+            "day" : 27,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 28,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 29,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 30,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "working",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+
+          ]
+        },
+        {
+          "date" : {
+            "day" : 31,
+            "month" : 12,
+            "year" : 2027
+          },
+          "isShortened" : false,
+          "kind" : "transferredDayOff",
+          "proceduralRules" : [
+
+          ],
+          "reasonIDs" : [
+            "transfer-2027"
+          ]
+        }
+      ],
+      "revision" : 1,
+      "sourceHash" : "f31ac571377f35fe57b36ba302931fa2a165958a09c56ecf7bb282263a1ec18b",
+      "sourceIDs" : [
+        "consultant-calendar-2027",
+        "transfer-2027-official",
+        "transfer-2027-official-pdf",
+        "shortened-transfer-588-text",
+        "tk-official-2027-verification"
+      ],
+      "verifiedOn" : {
+        "day" : 9,
+        "month" : 10,
+        "year" : 2026
+      },
+      "year" : 2027
     }
   ],
   "schemaVersion" : 1,
@@ -78432,6 +83936,54 @@
       "sha256" : "f00d8789ca7112830b6e2a0b28025bc2180fc300995b59f7c0591b2db354a6a5",
       "title" : "Ответ Президиума Верховного Суда РФ от 26.10.2021",
       "url" : "https://www.vsrf.ru/files/30468/"
+    },
+    {
+      "id" : "consultant-calendar-2027",
+      "sha256" : "f31ac571377f35fe57b36ba302931fa2a165958a09c56ecf7bb282263a1ec18b",
+      "title" : "Производственный календарь К+ на 2027 год",
+      "url" : "https://www.consultant.ru/law/ref/calendar/proizvodstvennye/2027/"
+    },
+    {
+      "document" : "Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "documentDate" : {
+        "day" : 17,
+        "month" : 9,
+        "year" : 2026
+      },
+      "id" : "transfer-2027-official",
+      "sha256" : "759d0bf5d8a7d5605bdf5c016ea5b7665719e0a04e649fea03818b975ab0a1d7",
+      "title" : "Официальное опубликование: Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "url" : "http://publication.pravo.gov.ru/document/0001202609180037"
+    },
+    {
+      "document" : "Постановление Правительства РФ от 17 сентября 2026 года № 1187",
+      "documentDate" : {
+        "day" : 17,
+        "month" : 9,
+        "year" : 2026
+      },
+      "id" : "transfer-2027-official-pdf",
+      "sha256" : "432c4340910bd96e0f93d5c67fe3a87d220746ab1c452f2b7e5a75b737a08ac2",
+      "title" : "Официальный PDF постановления Правительства РФ от 17 сентября 2026 года № 1187",
+      "url" : "http://publication.pravo.gov.ru/file/pdf?eoNumber=0001202609180037"
+    },
+    {
+      "document" : "Приказ Минздравсоцразвития РФ от 13 августа 2009 года № 588н; зарегистрирован в Минюсте 28 сентября 2009 года № 14900",
+      "documentDate" : {
+        "day" : 13,
+        "month" : 8,
+        "year" : 2009
+      },
+      "id" : "shortened-transfer-588-text",
+      "sha256" : "c11f78191cefc84e02ca23f439a12190f3564925707d879ae8c0c3ceddc12232",
+      "title" : "Приказ Минздравсоцразвития РФ от 13 августа 2009 года № 588н, пункт 1; текст на К+",
+      "url" : "https://www.consultant.ru/document/cons_doc_LAW_92167/a47abe7162ac502a7d7e253908900038d89071f6/"
+    },
+    {
+      "id" : "tk-official-2027-verification",
+      "sha256" : "6ccc7e5b92ce000ef974ed19068730a6c77388f656c9a36e26ce4bbf2a11d05a",
+      "title" : "Трудовой кодекс РФ, официальный текст при сверке статей 95, 111 и 112 для 2027 года",
+      "url" : "http://pravo.gov.ru/proxy/ips/?doc_itself=&nd=102074279&page=1&rdk=192&link_id=0"
     }
   ]
 }

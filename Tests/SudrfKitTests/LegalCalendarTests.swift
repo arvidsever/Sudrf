@@ -3,12 +3,12 @@ import XCTest
 @testable import SudrfKit
 
 final class LegalCalendarTests: XCTestCase {
-    func testPackagedArchiveCoversEveryDateFrom2013Through2026() throws {
+    func testPackagedArchiveCoversEveryDateFrom2013Through2027() throws {
         let calendar = try LegalCalendar.load()
-        XCTAssertEqual(calendar.archive.revisions.map(\.year).sorted(), Array(2013...2026))
-        XCTAssertEqual(calendar.archive.revisions.reduce(0) { $0 + $1.days.count }, 5_113)
+        XCTAssertEqual(calendar.archive.revisions.map(\.year).sorted(), Array(2013...2027))
+        XCTAssertEqual(calendar.archive.revisions.reduce(0) { $0 + $1.days.count }, 5_478)
 
-        for year in 2013...2026 {
+        for year in 2013...2027 {
             let revision = try XCTUnwrap(calendar.revision(for: year))
             XCTAssertEqual(revision.calendarSourceID, "consultant-calendar-\(year)")
             XCTAssertEqual(revision.days.filter { $0.kind == .holiday }.count, 14,
@@ -57,12 +57,40 @@ final class LegalCalendarTests: XCTestCase {
         XCTAssertEqual(january.date, date(2026, 1, 13))
         XCTAssertEqual(january.trace.revisions.map(\.year), [2025, 2026])
         XCTAssertTrue(january.trace.skipped.contains(date(2026, 1, 9)))
+        XCTAssertEqual(calendar.addingWorkingDays(
+            1, to: date(2026, 12, 30), forCode: "GPK")?.date, date(2027, 1, 11))
+        XCTAssertEqual(calendar.movingToNextWorkingDay(
+            date(2026, 12, 31), forCode: "GPK")?.date, date(2027, 1, 11))
         XCTAssertNil(calendar.addingWorkingDays(
-            1, to: date(2026, 12, 30), forCode: "GPK"))
-        XCTAssertNil(calendar.movingToNextWorkingDay(
-            date(2026, 12, 31), forCode: "GPK"))
+            1, to: date(2027, 12, 30), forCode: "GPK"))
         XCTAssertNil(calendar.movingToNextWorkingDay(
             date(2012, 12, 31), forCode: "GPK"))
+    }
+
+    func test2027NormativeReasonsAndWorkingDayTrace() throws {
+        let calendar = try LegalCalendar.load()
+        let revision = try XCTUnwrap(calendar.revision(for: 2027))
+        XCTAssertEqual(revision.revision, 1)
+        XCTAssertEqual(revision.verifiedOn, date(2026, 10, 9))
+        XCTAssertTrue(revision.sourceIDs.contains("shortened-transfer-588-text"))
+        let saturday = try XCTUnwrap(calendar.day(on: date(2027, 2, 20)))
+        XCTAssertEqual(saturday.kind, .transferredWorkingDay)
+        XCTAssertTrue(saturday.isShortened)
+        XCTAssertEqual(saturday.proceduralStatus(for: "GPK"), .working)
+        XCTAssertEqual(saturday.reasonIDs, ["transfer-2027", "transferred-shortened"])
+        for day in [date(2027, 2, 22), date(2027, 11, 5), date(2027, 12, 31)] {
+            XCTAssertEqual(calendar.day(on: day)?.reasonIDs, ["transfer-2027"])
+        }
+        for day in [date(2027, 5, 3), date(2027, 5, 10), date(2027, 6, 14)] {
+            XCTAssertEqual(calendar.day(on: day)?.reasonIDs, ["tk-112-transfer"])
+        }
+        let result = try XCTUnwrap(calendar.addingWorkingDays(
+            2, to: date(2027, 2, 19), forCode: "KAS"))
+        XCTAssertEqual(result.date, date(2027, 2, 24))
+        XCTAssertTrue(result.trace.skipped.contains(date(2027, 2, 22)))
+        XCTAssertTrue(result.trace.skipped.contains(date(2027, 2, 23)))
+        XCTAssertEqual(result.trace.revisions.map(\.year), [2027])
+        XCTAssertNil(calendar.movingToNextWorkingDay(date(2028, 1, 1), forCode: "GPK"))
     }
 
     func testEndDateMovesAcrossHolidaysButKeepsWorkingSaturday() throws {

@@ -11,7 +11,8 @@ enum CaptchaSolverFactory {
         CoreMLModelDiscovery.discoverEligibleFSSPURL() != nil
     }
 
-    static func make(settings: CaptchaSettings) -> CaptchaSolver {
+    static func make(settings: CaptchaSettings,
+                     log: CaptchaSolverLog = .shared) -> CaptchaSolver {
         var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
         // `preprocessingProvider` — именно замыкание, а не снятое здесь значение
         // (v0.38.4, v0.38.7): флаг читается на каждом вызове `solver.solve`,
@@ -61,6 +62,6 @@ enum CaptchaSolverFactory {
             enabledKinds.insert(.fsspDigits)
         }
 
-        return CaptchaSolver(provider: provider, enabledKinds: enabledKinds)
+        return CaptchaSolver(provider: provider, enabledKinds: enabledKinds, log: log)
     }
 }

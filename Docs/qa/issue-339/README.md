@@ -1,12 +1,32 @@
 # Issue #339: acceptance status
 
+## Current result — 10 October 2026
+
+Issue #339 remains open and PR #446 remains draft. The offline AppRouter path is now executed, not only compiled: hosted run [37994371778](https://github.com/arvidsever/Sudrf/actions/runs/37994371778) on `752cfc0ad7e30ed71d3466ab63b1a861fd8c4f92` passed all six focused `DirectCaseLinkSheetTests`, with zero skips and zero failures, in a fresh process. The unchanged full suite passed 2,038 XCTest cases (25 skips, zero failures), 28 Swift Testing cases and 26 Python cases (six skips). The full-suite skips do not replace the separate six-test gate.
+
+Hosted log SHA-256: `142a67c4506c35b206704a80da86a193b7195b0257b831bb6a42821f95b8bcd8`. Own Xcode 27 build on the same head succeeded without launch; log SHA-256: `45ca6a047724e6c9ef0092fc5660a9858dde9905a9df82f7775eb8ce4619e986`. The registry generator reported the checked-in resource current.
+
+Before local live execution, independent review found eager creation of the production diagnostics directory when installing a test override. Commit `717ffbd78f4ce73b913c80ba00cda489b9996fc5` changes initialization to URL-only and creates the selected directory at write time. Eight focused SearchDiagnostics tests passed without skips; log SHA-256: `36a89fe9c8191ea7f4a2812367a8f3b28f14f17c693407492077a5ac946b14d0`. Independent review: Ship for one selected opt-in live method.
+
+One local live attempt on that head ran from 21:54:34 UTC to 21:54:58 UTC on 9 October 2026 (10 October in Moscow), taking 24.679 seconds. It stopped **before add/refresh** at the harness assertion comparing the requested and effective card locators. The assertion compares the entire `SudrfCaseCardLink`, including URL spelling. The effective locator was not retained in this attempt, so the cause of the mismatch is **not established**: neither a transport-only redirect nor changed source identity is proven. CAPTCHA continuation, refreshed movement and cold reopen were not reached. The local log SHA-256 is `44d27d407012f1b6f9165ef39c8fc933a4f3509f07c7290b191c501d8a3002c5`; raw logs and diagnostic files are not published.
+
+A second, separately identified diagnostic attempt on `5cfd85c7eee0b442d100d2fc4f095ec6fc193564` completed successfully: one selected test, zero failures and zero skips, 467.365 seconds. Its private locator record was written at 22:01:30 UTC on 9 October 2026. This **second response** upgraded HTTP to HTTPS while preserving every compared source identity field and the ordered unknown query parameters; it does not establish what happened in the unsaved first response.
+
+The unchanged production solver ran twice and returned two tokens, one each for `sankt-peterburgsky--spb.sudrf.ru` and `3kas.sudrf.ru`. For each host, the test required later confirmed native-card coverage or verified empty search, without residual CAPTCHA/source failure at that host. One record and two movement instances persisted; cold reopen compared the saved state exactly. Overall outcome was `.partial`, so this is evidence for the two CAPTCHA continuations and persistence, **not a complete-chain success**. Timings: resolver 24,319 ms; refresh 443,017 ms; solver 73,877 ms; cold reopen 2 ms. No automatic third live attempt was made.
+
+Second run log SHA-256: `de380c54c99fb4e91e1a0985b45c2fe30693d075620c6b5d2f78b3bd72de4854`. Private locator diagnostic SHA-256: `80103bcb3db1dfced00f82611c5c0b7df81bee6d74527d3261e544e8d4ca215a`; observed directory mode `0700`, file mode `0600`. Requested/effective URLs, CAPTCHA values, tokens, cookies and raw responses are not published. Two pure test-only locator comparison tests passed before this attempt, including identity conflicts and unknown parameter preservation; log SHA-256 `00ce4aeedc0f9fe1689a939eec3f622f37081d50c23f6171108bb31c69548592`. The production link parser/equality and resolver were not changed.
+
+Own Xcode 27 build after the diagnostics writer fix passed without launch; log SHA-256 `cb50a3fd69e4f40e424af5bdc46af450dfa3bcc03318eb0e1e2822c83913935e`. The subsequent locator change is test-only. Current-head hosted CI is required before any merge.
+
+Native SwiftUI sheet, pasteboard and visual acceptance remain pending. No ordinary application, TestFlight or working store was opened. The sections below retain the harness contract and earlier checkpoints; their compile-only holds describe earlier stages, not the current six-test result.
+
 ## Test-only system publication boundaries
 
 The approved test seam leaves normal `AppRouter` behavior unchanged: its defaults still publish `NSUserActivity` with `becomeCurrent()` and send feed notifications through `FeedNotifier.shared`. The #339 harnesses inject a test activity publisher, a count-only notification receiver, and a `SpotlightIndexer` backed by a no-op writer and suite-scoped stores. No system notification is delivered by those harnesses.
 
 `FeedNotifier.setBadge` remains a separate Dock side effect. Every #339 test that constructs `AppRouter` now skips unless `NSApp == nil`; the app lifecycle hook that configures `UNUserNotificationCenter` is not invoked. The offline test also uses suite-scoped preferences, a temporary CAPTCHA corpus and log paths, and an instance-local token store.
 
-This is code-level test isolation, not runtime acceptance. AppRouter-path tests and live acceptance have not been run after adding the notification receiver.
+The six offline AppRouter tests have now executed in the isolated hosted process described above. Live and native UI acceptance remain separate criteria.
 
 ## Offline verification
 
@@ -16,15 +36,15 @@ The first import uses a temporary on-disk store. The test asserts that adding a 
 
 Before the repeated import, the reopened store must match the full saved state, including collection membership, `seenAt`, movement instances, source-attempt kind, and exact journal event IDs. Reopening an already tracked case through `addDirectCaseLink` intentionally marks it seen; the test captures that timestamp immediately after import and checks that the repeated refresh preserves it and the exact event journal. The refresh after this cached reopen is explicit because opening a record with saved movement does not auto-start another refresh.
 
-The approved harness preserves the real add-and-refresh path while replacing its activity, Spotlight, and notification publication sinks. The current local gate is compile-only; do not run the AppRouter-path tests as part of this checkpoint.
+The approved harness preserves the real add-and-refresh path while replacing its activity, Spotlight, and notification publication sinks. The earlier compile-only checkpoint has been superseded by the six-test isolated hosted execution gate above.
 
 ```sh
 swift test --filter DirectCaseLinkSheetTests
 ```
 
-## Opt-in live acceptance: prepared, not run
+## Opt-in live harness and boundaries
 
-No live request has been made from this branch. The live test is skipped unless `SUDRF_ISSUE339_LIVE_ACCEPTANCE=1` is present in the XCTest process. It fails immediately if the process bundle identifier is `ru.sudrf.app`, skips if `NSApp` is available, and skips if automatic CAPTCHA solving is disabled in the test process.
+The first attempt and its unresolved locator criterion are recorded above. The live test is skipped unless `SUDRF_ISSUE339_LIVE_ACCEPTANCE=1` is present in the XCTest process. It fails immediately if the process bundle identifier is `ru.sudrf.app`, skips if `NSApp` is available, and skips if automatic CAPTCHA solving is disabled in the test process.
 
 The live path uses the existing sanitized #321 locator with `DirectCaseLinkResolver`, then calls `AppRouter.addDirectCaseLink` and joins the refresh task that this method must already have started. The test uses the production `CaptchaSolverFactory` and its unchanged provider selection. The factory now accepts an internal logger argument defaulting to `.shared`; live tests inject a temporary `CaptchaSolverLog`, and a focused test asserts that the factory returns a solver holding that exact logger.
 

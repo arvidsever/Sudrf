@@ -46,7 +46,6 @@ public enum SearchDiagnostics {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dir = support.appendingPathComponent("Sudrf", isDirectory: true)
             .appendingPathComponent("diagnostics", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }())
 
@@ -123,6 +122,7 @@ public enum SearchDiagnostics {
             "\(safeHost)_\(timestampSafe())_\(kind).html"
         )
         do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
             // best-effort: ошибка записи не должна ломать основной поток

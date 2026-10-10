@@ -34,11 +34,24 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         let attempt = try XCTUnwrap(env["SUDRF_241_ATTEMPT"].flatMap(Int.init))
         XCTAssertTrue((1...3).contains(attempt))
         guard (1...3).contains(attempt) else { return }
-        let directory = URL(fileURLWithPath: outputPath).appendingPathComponent("run-\(attempt)")
+        let outputRoot = URL(fileURLWithPath: outputPath)
+        try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let rootPermissions = try FileManager.default.attributesOfItem(atPath: outputRoot.path)
+        guard (rootPermissions[.posixPermissions] as? NSNumber)?.intValue == 0o700 else {
+            return XCTFail("#241 requires a private output root with permissions 0700")
+        }
+        let directory = outputRoot.appendingPathComponent("run-\(attempt)")
         guard !FileManager.default.fileExists(atPath: directory.path) else {
             return XCTFail("#241 requires a fresh evidence directory for each attempt")
         }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let permissions = try FileManager.default.attributesOfItem(atPath: directory.path)
+        guard (permissions[.posixPermissions] as? NSNumber)?.intValue == 0o700 else {
+            return XCTFail("#241 requires a private run directory with permissions 0700")
+        }
         let references = try JSONDecoder().decode([Reference].self,
             from: Data(contentsOf: URL(fileURLWithPath: referencePath)))
         guard references.count == 2, Set(references.map(\.label)) == Set(["A", "B"]),
@@ -47,9 +60,12 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         }
         let oldDiagnostics = SearchDiagnostics.setDirForTesting(directory)
         defer { SearchDiagnostics.setDirForTesting(oldDiagnostics) }
-        let tokens = CaptchaTokenStore.shared // RefreshCenter's native continuation uses this process-only actor.
-        await tokens.invalidate(domain: "3kas.sudrf.ru")
-        defer { Task { await tokens.invalidate(domain: "3kas.sudrf.ru") } }
+        let oldEnabled = SearchDiagnostics.setEnabledForTesting(true)
+        defer { SearchDiagnostics.setEnabledForTesting(oldEnabled) }
+        let tokens = CaptchaTokenStore()
+        let suite = "ru.sudrf.tests.issue241.\(UUID().uuidString)"
+        let privateDefaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { privateDefaults.removePersistentDomain(forName: suite) }
         let client = SudrfClient(sessionFactory: { delegate in
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = SudrfClient.requestTimeout
@@ -58,7 +74,8 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         }, trustCourtCertificates: true, variantStore: WorkingVariantStore(cacheURL: nil),
            captchaStore: tokens)
         let solver = try makeSolver(directory: directory)
-        let settings = CaptchaSettings.shared // XCTest process domain, never ru.sudrf.app preferences.
+        let settings = CaptchaSettings(defaults: privateDefaults)
+        let directoryResolver = DistrictCourtResolver(client: client, cacheURL: nil)
         guard settings.isEffectivelyEnabled else {
             return XCTFail("#241 requires native automatic CAPTCHA solving")
         }
@@ -106,9 +123,11 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                                              collections: ["Изолированная приёмка"])
                 try store.save()
                 let center = RefreshCenter(store: store, client: client, captchaSolver: solver,
-                                           captchaSettings: settings,
-                                           serviceBuilder: { ctx in ctx.makeService(client: client) },
+                                           captchaSettings: settings, captchaTokenStore: tokens,
+                                           serviceBuilder: { ctx in self.makeService(context: ctx, client: client,
+                                                                                   directoryResolver: directoryResolver) },
                                            treasuryDiscover: { _, _, _ in throw LiveFailure.enforcementDisabled },
+                                           vsrfProvider: Issue241DisabledVSRF(),
                                            fsspAutoModelEnabled: false,
                                            fsspDiscover: { _ in throw LiveFailure.enforcementDisabled })
                 let refreshed = await center.refresh(key: record.key)?.value
@@ -170,8 +189,11 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
                 // Refresh the saved production through the same native service/client path.
                 let reopenedRecord = try XCTUnwrap(reopened.record(forKey: record.key))
                 let reopenedCenter = RefreshCenter(store: reopened, client: client, captchaSolver: solver,
-                    captchaSettings: settings, serviceBuilder: { ctx in ctx.makeService(client: client) },
+                    captchaSettings: settings, captchaTokenStore: tokens,
+                    serviceBuilder: { ctx in self.makeService(context: ctx, client: client,
+                                                             directoryResolver: directoryResolver) },
                     treasuryDiscover: { _, _, _ in throw LiveFailure.enforcementDisabled },
+                    vsrfProvider: Issue241DisabledVSRF(),
                     fsspAutoModelEnabled: false,
                     fsspDiscover: { _ in throw LiveFailure.enforcementDisabled })
                 let repeated = await reopenedCenter.refresh(key: reopenedRecord.key)?.value
@@ -215,6 +237,25 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         case enforcementDisabled
     }
 
+    private func makeService(context: MovementContext, client: SudrfClient,
+                             directoryResolver: DistrictCourtResolver) -> MovementService {
+        let targets = context.higherCourtTargets ?? context.cartoteka.flatMap {
+            MovementTargetBuilder.targets(
+                branch: context.branch, courtLevel: context.courtLevel, baseCartoteka: $0,
+                caseNumber: context.caseNumber, judicialUID: context.judicialUID,
+                courtTitle: context.courtTitle, courtCode: context.courtCode,
+                region: context.region, displayDomain: context.displayDomain)
+        }
+        return MovementService(
+            client: client, higherCourtDomains: context.expandedHigherDomains(),
+            higherCourtTargets: targets, knownCards: context.knownCards ?? [],
+            baseInstanceLevel: context.baseInstanceLevel,
+            judicialUID: context.judicialUID, branch: context.branch,
+            transferCourts: { subjectCode in
+                try await directoryResolver.allCourts(forSubjectCode: subjectCode)
+            })
+    }
+
     private func makeSolver(directory: URL) throws -> CaptchaSolver {
         // Native production providers, default threshold, with only logging redirected.
         let vision = VisionOCRStrategy()
@@ -236,5 +277,15 @@ final class Issue241LiveAcceptanceTests: XCTestCase {
         return CaptchaSolver(provider: provider, log: CaptchaSolverLog(
             fileURL: directory.appendingPathComponent("captcha-private.log"),
             failuresDir: directory, diagnosticsDir: directory))
+    }
+}
+
+struct Issue241DisabledVSRF: VSRFProviding {
+    func search(uniqueNumber: String?, oldCaseNumber: String?,
+                keywords: String?) async throws -> VSRFSearchResults {
+        throw SudrfError.parsing("#241 VSRF access disabled")
+    }
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        throw SudrfError.parsing("#241 VSRF access disabled")
     }
 }

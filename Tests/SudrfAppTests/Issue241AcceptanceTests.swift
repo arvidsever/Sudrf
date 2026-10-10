@@ -188,6 +188,8 @@ final class Issue241AcceptanceTests: XCTestCase {
     private let publishedActText = "Синтетический опубликованный акт #241."
 
     func testFlappingCassationSearchAndCardPreserveCacheThenRecoverAfterCaptchaRejection() async throws {
+        let priorDiagnosticsEnabled = SearchDiagnostics.setEnabledForTesting(false)
+        defer { SearchDiagnostics.setEnabledForTesting(priorDiagnosticsEnabled) }
         guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
             XCTFail("#241 acceptance cannot run inside the production app")
             return
@@ -299,7 +301,10 @@ final class Issue241AcceptanceTests: XCTestCase {
                 serviceBuilder: { ctx in
                     self.makeOfflineService(context: ctx, client: client, transferDirectory: transferDirectory)
                 },
-                fsspAutoModelEnabled: false)
+                treasuryDiscover: { _, _, _ in throw URLError(.unsupportedURL) },
+                vsrfProvider: Issue241DisabledVSRF(),
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw URLError(.unsupportedURL) })
 
             // Three maintenance replies to one unchanged 3KSOU search URL must not
             // replace the saved instance, act, snapshot, or last-success timestamp.
@@ -471,7 +476,10 @@ final class Issue241AcceptanceTests: XCTestCase {
                 serviceBuilder: { ctx in
                     self.makeOfflineService(context: ctx, client: client, transferDirectory: transferDirectory)
                 },
-                fsspAutoModelEnabled: false)
+                treasuryDiscover: { _, _, _ in throw URLError(.unsupportedURL) },
+                vsrfProvider: Issue241DisabledVSRF(),
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw URLError(.unsupportedURL) })
             Issue241FlappingURLProtocol.configure(.steady)
             let beforeRepeat = try XCTUnwrap(reopened.record(forKey: key))
             let beforeRepeatJournal = beforeRepeat.eventJournal

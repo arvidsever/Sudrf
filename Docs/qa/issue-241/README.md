@@ -1,5 +1,109 @@
 # #241 — приёмка обновления 3 КСОЮ
 
+## Подготовка нового изолированного цикла — 10 октября 2026 года
+
+Согласованы отдельные `CaptchaSettings` и `CaptchaTokenStore`, изолированный
+transfer-directory, cookies, диагностика и права private evidence directory.
+Клиент использует ephemeral session и `WorkingVariantStore(cacheURL: nil)`;
+один private token store передаётся клиенту и обоим `RefreshCenter`.
+Настройки создаются в отдельном UserDefaults suite. Resolver каталога получает
+тот же клиент и `cacheURL: nil`; `MovementService` получает его через существующий
+`transferCourts`. Штатные правила targets, known cards, branch и UID сохранены.
+
+Когда переданы service/enforcement closures, `RefreshCenter` не создаёт
+неиспользуемые московский, magistrate, Treasury и FSSP клиенты. VSRF заменён
+провайдером, завершающим неожиданный вызов ошибкой. Обычные defaults сохранены.
+`SearchDiagnostics` создаёт выбранную папку только при записи; private override
+enabled исключает чтение общей настройки. OCR log, failures и candidates уже
+направлены в private run directory. Output root и run directory проверяются на
+права `0700` до обращений к источникам.
+
+Профильная локальная проверка выполнена без live opt-in:
+
+```sh
+swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter 'Issue241AcceptanceTests|Issue241LiveAcceptanceTests|SearchDiagnosticsTests'
+```
+
+Результат: 10 XCTest, один штатный пропуск live, 0 ошибок. Из них восемь
+проверяют диагностику (включая создание только выбранного каталога при записи),
+один — синтетическое восстановление #241. Лог —
+`/private/tmp/sudrf-241-isolation-profile.log`, SHA-256:
+`edea9ef4e14cbd6a9afe359a30ab8c5a8b198228495319470feb9c3f02bc27ed`.
+После усиления проверки прав output root финальный live harness отдельно
+пересобран с теми же concurrency flags и фильтром `Issue241LiveAcceptanceTests`:
+один штатный пропуск, 0 ошибок, сетевых запросов не было. Лог —
+`/private/tmp/sudrf-241-final-harness-build.log`, SHA-256:
+`9aa28bcb923e2b2addfde4334ac32a0a9b368506b99039d8e976c50223d0ffa0`.
+Это не выполнение private-path или живых ветвей opt-in профиля.
+
+Независимый review восьми изменённых файлов не обнаружил блокирующих замечаний.
+Пользователь явно согласовал сетевую область: «Штатный справочник и опубликованные
+связанные карточки». Разрешён новый цикл не более трёх последовательных прогонов
+с остановкой при полном успехе, без подмены параметров ссылок. Этот цикл выполнен;
+после третьей попытки новые обращения не выполняются.
+
+### Новый живой цикл — 10 октября 2026 года
+
+[Санитизированные результаты](live-2026-10-10.json) относятся к трём отдельным
+прогонам с 15:53:12 до 15:55:54 по Москве. База исходников —
+`fda4833ddb59438b9719b70c8d74f3a85d2808f7` с рассмотренным локальным diff;
+SHA-256 private manifest файлов —
+`a247ab2b94a5b9f8501a0c22222e3b4803c8268c9ec5a9687c8091e9e58b3e62`.
+Модели numeric и numeric-specialist сверены с tracked manifest этой ветки;
+хеш минимальных references совпал с прежним. Каталог результатов имеет права
+`0700`, логи создавались с `umask 077`; исходники ответов остаются локально.
+
+В каждом прогоне A прошёл распознавание CAPTCHA и обнаружение по УИД,
+B — обнаружение по УИД. Ни один не прошёл `completeRefresh`: после частичного
+обновления A имеет четыре события без актов, B — без движения и актов.
+Фактические ссылки выдачи использовались без замены параметров. Это не
+приёмка карточки, опубликованного уголовного акта, повторного полного
+обновления или дискового открытия успешного живого снимка.
+
+Дополнительные диагностические GET, выполняемые harness после отказа,
+по-прежнему отделены от исходных ответов refresh. Причина неполного ответа
+этим результатом не установлена. После трёх попыток сетевой цикл остановлен;
+активных тестовых процессов не осталось. #241 остаётся открытой, PR #404 —
+draft; версия и выпуск не назначаются. Рабочая база, настройки установленного
+приложения и TestFlight не использовались. Прежние отчёты ниже сохранены.
+
+### Final offline verification before commit - 10 October 2026
+
+Live opt-in and private-path environment variables were explicitly removed.
+The focused profile executed 10 XCTest: synthetic acceptance and eight diagnostic
+checks passed; the live method was skipped as expected, with no failures.
+The full offline suite passed: 2038 XCTest, 23 expected skips, 0 failures;
+28 Swift Testing, 0 failures. Python gate: 26 tests, 6 skips, 0 failures.
+The legal-deadline registry is current.
+
+The Xcode project was regenerated and the local Debug app build passed without
+launching. All three bundled models and FSSP eligibility match their tracked
+manifests. DI preserves existing defaults; the live service retains targets,
+known cards, base level, branch and UID with its own resolver. #262 baseline
+and journal assertions were preserved.
+
+All three safe reports match private evidence hashes, stages, timestamps, status,
+instance/session/act counts and file counts. Private directories have mode 0700.
+This verifies the report of three partial results; full live acceptance remains
+unpassed. No new court requests were made. Main localization was read for its
+hash only and was not edited. Hosted current-commit CI remains a separate gate.
+
+Isolation boundary for the full suite: it used the ordinary XCTest process,
+without intercepting UserDefaults.standard or replacing its home directory.
+CalendarDeadlineVisualTests and the #128/#372 visual methods were skipped at
+their opt-in guards before preference writes. SearchDiagnosticsTests uses the
+private diagnostic override; SudrfClientCaptchaTests still reads and writes the
+standard diagnostic toggle, restoring its prior Bool in teardown, which does
+not restore a previously absent key. Other full-suite standard preference
+accesses were not exhaustively audited. The statement about no installed app
+settings use describes the three isolated live runs, not this full suite.
+
+Verification logs (SHA-256):
+- `/private/tmp/sudrf-241-final-offline-profile.log`: `0f00bd43b4281481c863d0219d83be00ee5003a5ddfca1b3d86919431a40181a`.
+- `/private/tmp/sudrf-241-final-offline-full.log`: `5e7bc26298cbc6cde76c65e430a259c4cb49ee6000a0243a217e98335962dcde`.
+- `/private/tmp/sudrf-241-final-script-tests.log`: `9e02bbb429e8c5e1a83534f3649827ef28e6bde8e7d1bcef8675297c42412544`.
+- `/private/tmp/sudrf-241-final-xcodebuild.log`: `802feeb95202d9903e3d17c323d17fc4e0c4ca6e3ee40b0869c61cdda44f1b04`.
+
 ## Возобновление 8 октября 2026 года
 
 Существующая ветка PR #404 обновлена на `origin/main` `836bea9`, версия 0.62.9 (246). В Xcode подтверждена запущенная собственная сборка этой версии; распознавание CAPTCHA в её консоли не является доказательством получения карточки или акта.

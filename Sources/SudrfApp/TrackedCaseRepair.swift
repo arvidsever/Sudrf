@@ -1228,6 +1228,7 @@ final class TrackedCaseRepairCoordinator {
                             saveChanges: Bool = true) throws -> [String: String] {
         do {
         let all = [survivor] + duplicates
+        for record in all { try store.ensureLegacyFeedHistory(for: record) }
         let oldKeys = all.map(\.key)
         let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
         var context = canonicalContext

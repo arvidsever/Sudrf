@@ -1676,6 +1676,7 @@ final class AppRouter: ObservableObject {
         if let record = store.record(forKey: caseKey) {
             do {
                 try store.commit(projection: { _ in .cases([caseKey]) }) {
+                    try store.ensureLegacyFeedHistory(for: record)
                     record.movement = MovementCachePolicy.stripped(forPersist: updated)
                 }
             } catch {
@@ -2078,6 +2079,7 @@ final class AppRouter: ObservableObject {
         if let key = openedKey, let rec = store.record(forKey: key), let mctx = rec.context {
             do {
                 try store.commit(projection: { _ in .cases([key]) }) {
+                    try store.ensureLegacyFeedHistory(for: rec)
                     let oldSnapshot = rec.snapshot
                     rec.movement = MovementCachePolicy.stripped(forPersist: updated)
                     let newSnapshot = MovementDerivation.preservingConfirmedDeadlines(
@@ -2148,6 +2150,7 @@ final class AppRouter: ObservableObject {
               }) else { return false }
         do {
             try store.commit {
+                try store.ensureLegacyFeedHistory(for: rec)
                 let oldSnapshot = snap
                 change(&snap.deadlines[idx])
                 rec.snapshot = snap

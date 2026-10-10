@@ -1742,6 +1742,7 @@ final class RefreshCenter: ObservableObject {
                            projectionKeys: Set<String>,
                            keyRemaps: [String: String],
                            publishedMovement: CaseMovement) in
+            try store.ensureLegacyFeedHistory(for: rec)
             let persisted: TrackedCaseRecord
             let projectionKeys: Set<String>
             let keyRemaps: [String: String]

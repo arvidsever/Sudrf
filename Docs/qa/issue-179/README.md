@@ -1,5 +1,37 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Quiet history persistence — 10 October 2026
+
+The existing store transaction now imports each original record's full dated
+published session/act history before preparation normalizers, source replacement
+or atomic dossier merge. Incoming records receive the same versioned import
+receipt in their insert commit, including empty history. Treasury remains its
+separate GUID journal. Original journal bytes are captured before bootstrap and
+restored last after Treasury/Moscow rollback; mutation imports retain their
+original bytes until the existing save succeeds. No extra save boundary exists.
+
+Nine dedicated private disk tests cover preparation/reopen and repeat imports,
+raw published Moscow session provenance before normalization, unchanged
+baselines/seenAt/fetch date, retained-object and disk save rollback,
+unprepared update, incoming insert, each merge origin, actual RefreshCenter
+commit with an injected movement provider, and append/encoding/save failure after
+import. Present snapshot, movement and context payloads are decoded with throws
+before a completion receipt; malformed bytes preserve the old journal and source
+on retained objects and disk, and repaired data can then import successfully.
+Empty context data remains the existing explicit absence representation. Together with eight pure importer and ten reviewed isolated Treasury
+cases, **27 XCTest tests passed, zero failures, zero skips**.
+Log `/private/tmp/sudrf-179-persistence-compatibility.log`, SHA-256
+`f4a8a6f530910249ccf2889f01367186a8a19f9e791ea54100fc9a460ad73111`.
+The refresh uses a private settings suite, guarded offline client and explicit
+provider overrides; it does not enter the shared CAPTCHA token path. Disk stores
+are generated temporary fixtures and removed afterward. No live request or
+application launch occurred. Independent review and final current-head CI remain
+pending at this preparation checkpoint.
+
+The existing feed, read/known preferences, badges and notification consumers
+remain unchanged. Import is quiet persistence, not event delivery or full #179
+cutover. Runtime projection and mark replay remain a separate required stage.
+
 ## Released-prerequisite integration — 10 October 2026
 
 The pure import contract now includes released `main` `f0f0d5a` (#454,
@@ -11,7 +43,9 @@ The integrated private profile passed 32 XCTest tests and 28 Swift Testing tests
 with no failures or skips, including all ten Treasury persistence/notifier tests.
 Local log `/private/tmp/sudrf-179-history-import-integrated-tests.log`, SHA-256
 `445e45675e6263d845fa1332c81bbdc1ce318d55b2db3cdd0571416830c55c1d`.
-No production history import, mark replay or feed cutover is connected yet.
+At that earlier checkpoint no production history import, mark replay or feed
+cutover was connected. Quiet import is now connected as described above; mark
+replay and feed cutover remain pending.
 
 ## Pure history-import contract — 10 October 2026
 

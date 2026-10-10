@@ -98,6 +98,39 @@ not restore a previously absent key. Other full-suite standard preference
 accesses were not exhaustively audited. The statement about no installed app
 settings use describes the three isolated live runs, not this full suite.
 
+Follow-up audit of direct standard preference accesses (before any full rerun):
+
+- ActPresentationTests/testRapidSelectionUsesExactStoredSnapshotEndToEnd and
+  CorrectivePassTests/testBootstrapPublishesReadyOnlyAfterPreparedContainerArrives
+  executed and save/restore the original onboarding object or key absence.
+- MyCasesModelTests/testDeleteCollectionKeepsCasesAndRefreshesCounters and
+  testRefreshCallbackRemapsOpenedAliasToSurvivor executed and restore their
+  original collection/feed/onboarding objects or absent keys.
+- CaseLifecyclePresentationCacheTests' four direct-default methods executed;
+  their onboarding and repair-completion object restoration is explicit.
+- CaseOpeningSeenStateTests uses isolateFeedDefaults with deferred restoration
+  of original feed/material/collection objects or key absence.
+- CalendarMonthViewTests temporarily modifies the argument volatile domain and
+  restores that domain. Its native tests create and close XCTest-owned windows
+  and activate NSApplication, so a blanket claim of no UI is not supported.
+  The standalone installed Sudrf app was not launched by these commands.
+- The opt-in calendar/#128/#222/#372/private-complaint visual methods and opening
+  benchmark were skipped before preference writes.
+- Issue79CanonicalResponseURLTests had the same pre-existing diagnostic Bool
+  restoration gap as SudrfClientCaptchaTests. Both now use the existing private
+  diagnostic override. Their fixture clients now use cacheURL:nil and own token
+  stores, avoiding the previous shared working-variant cache path.
+
+The previously recorded full-suite pass predates these final test-only fixes.
+No normal user preferences or caches were restored without a known baseline.
+No full suite was repeated after discovering these boundaries. Independent
+Astra review of the final three-file isolation diff passed; current-SHA hosted
+gates remain pending for this follow-up.
+
+The final private Kit profile executed 15 tests (8 diagnostics, 4 captcha
+client, 3 canonical-response URL), all passed. Log: `/private/tmp/sudrf-241-diagnostic-isolation-private-followup.log`,
+SHA-256 `31defa76ab8049d08b71d482bff40acb40d27dce973afae729e52c019434a496`.
+
 Verification logs (SHA-256):
 - `/private/tmp/sudrf-241-final-offline-profile.log`: `0f00bd43b4281481c863d0219d83be00ee5003a5ddfca1b3d86919431a40181a`.
 - `/private/tmp/sudrf-241-final-offline-full.log`: `5e7bc26298cbc6cde76c65e430a259c4cb49ee6000a0243a217e98335962dcde`.

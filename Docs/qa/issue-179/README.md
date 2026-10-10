@@ -121,10 +121,12 @@ rule.
 
 This layer does not change feed, notification, badge, persistence, or UI callers.
 
-The focused tests use isolated fixed synthetic data. They do not instantiate `AppRouter`,
-read SwiftData or persisted preferences, make network calls, launch the app, or deliver
-system notifications. The projection remains diagnostic-only; production feed, known
-mark, notification, badge, and UI callers are not switched.
+The original pure-component tests use fixed synthetic data without SwiftData or
+persisted preferences. The disk-reopen continuation below additionally uses an
+explicit temporary store and a unique preferences suite. Neither path instantiates
+`AppRouter`, makes network calls, launches the app, or delivers system notifications.
+The projection remains diagnostic-only; production feed, known-mark, notification,
+badge, and UI callers are not switched.
 
 ## Not established here
 
@@ -296,3 +298,41 @@ The production feed still uses the legacy projection. The synthetic shadow
 checkpoint now covers one reschedule and fails closed on unsupported target
 results; the known-mark decision and downstream gate remain open. This is not
 evidence for cutover.
+
+## Disk-reopen continuation — 10 October 2026
+
+After rebasing onto main `bd06f4ef19922f311ece19df3167296a80d26756`, one
+integration test closes a gap in the earlier JSON-only journal round trips.
+It persists synthetic context, movement, snapshot, journal events and semantic
+baselines through the real store commit/append path, then creates a new container
+for the same explicit temporary disk URL. Projection inputs are read from the
+reopened record. Legacy read marks use a unique `UserDefaults` suite under the
+existing `overviewReadFeedIDs.v1` key; no production suite is accessed.
+
+Two scenarios preserve the agreed BOTH rule: both legacy rows read, or only the
+new row read. The previous hearing is eight days old and its new date six days
+old; the one reschedule entry uses the new date and enters the seven-day window.
+The test checks the preserved event/source identity, baselines, two exact aliases,
+and unchanged record bytes and marks after repeated projection. `knownIDs` stays
+empty, leaving the pending known/notified migration decision unresolved.
+
+In the new-only scenario, the comparator correctly retains exactly one diagnostic
+`isUnread` difference (`legacy: false`, `shadow: true`): legacy read marks apply to
+individual rows, while the approved shadow rule requires both. All other fields
+must match. An initial overstrict no-mismatch assertion failed; it was replaced
+with this exact expected diagnostic without changing production code or filtering
+diagnostics. Full legacy parity is not claimed.
+
+The single disk test passed (1 test, 0 failures), followed by all four focused
+classes (45 tests, 0 failures, no skips: 24 hearing, 11 act, 5 renderer, 5
+compatibility). Scratch directory: `/private/tmp/sudrf-179-hearing-reopen-build`.
+
+| Local log | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-179-hearing-reopen-red-profile.log` | `41401b2af8123bd1db0ee0588710aef8743830a4a2e0c6faccc906278a5325c8` |
+| `/private/tmp/sudrf-179-hearing-reopen-final-profile.log` | `f66c7260564aa5344676044868bc4d3272868adbbab28457f57c12df7940779d` |
+| `/private/tmp/sudrf-179-four-classes-final-profile.log` | `46abfd1c0097278e790b99361cccc61bccae4247383d1e30d5af617072a03a19` |
+
+This is same-process disk reopen, not cold-process preferences recovery or proof
+of atomicity across SwiftData and preferences. No application, working database,
+TestFlight, full-suite run, new CI run or cutover is represented by this check.

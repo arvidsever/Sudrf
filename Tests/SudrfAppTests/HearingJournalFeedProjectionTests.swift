@@ -227,6 +227,108 @@ final class HearingJournalFeedProjectionTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testRescheduledReadAndNewDateSurviveDiskReopenWithoutProjectionMutation() throws {
+        for bothRead in [true, false] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("issue179-hearing-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let suiteName = "Issue179Hearing." + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let marksKey = "overviewReadFeedIDs.v1"
+            let storeURL = directory.appendingPathComponent("test.store")
+            let key = context(caseNumber: baseCaseNumber, nativeCardID: "seed", knownCards: []).key
+            let rescheduled = try rescheduledFixture(recordKey: key,
+                oldDate: DateUtil.addDays(today, -8), newDate: DateUtil.addDays(today, -6))
+            let event = try XCTUnwrap(rescheduled.journal.events.first)
+            var savedMovement = CaseMovement(uid: "", caseNumber: baseCaseNumber, inForce: false,
+                instances: [rescheduled.fixture.owner], complaints: [:], acts: [])
+            let snapshot = try XCTUnwrap(rescheduled.fixture.record.snapshot)
+            savedMovement.instances[0].sessions = snapshot.sessions.map {
+                CaseSession(date: $0.dateRaw, time: $0.time, event: $0.event, result: $0.result)
+            }
+            do {
+                let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+                let store = try TrackedStore(container: container, prepared: true)
+                let record = try store.commit {
+                    let record = try store.reconcileAndUpsert(context: rescheduled.fixture.context,
+                        snapshot: snapshot, movement: savedMovement, collections: [], saveChanges: false)
+                    XCTAssertEqual(record.key, key)
+                    // Keep the fixture's real baseline and identified source occurrence.
+                    record.eventJournal = CaseEventJournal()
+                    try store.appendCaseEvents(rescheduled.journal.events, to: record,
+                        derivationVersion: rescheduled.journal.derivationVersion,
+                        semanticBaselines: rescheduled.journal.semanticBaselines)
+                    return record
+                }
+                let input = LegacyFeedRecordInput(recordKey: record.key, caseNumber: record.caseNumber,
+                    client: rescheduled.fixture.record.client, unreadByCase: record.seenAt == nil,
+                    snapshot: record.snapshot, movement: record.movement, context: record.context,
+                    enforcementRecords: record.enforcementRecords)
+                let legacy = legacyProjection([input])
+                XCTAssertEqual(legacy.entries.count, 2)
+                let readIDs = legacy.entries.filter { bothRead || $0.date == rescheduled.newSession.date }.map(\.id)
+                XCTAssertEqual(readIDs.count, bothRead ? 2 : 1)
+                defaults.set(readIDs, forKey: marksKey)
+            }
+            do {
+                let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
+                let store = try TrackedStore(container: container, prepared: true)
+                let record = try XCTUnwrap(store.record(forKey: key))
+                let journal = try XCTUnwrap(record.eventJournal)
+                XCTAssertEqual(journal.events, rescheduled.journal.events)
+                XCTAssertEqual(journal.semanticBaselines, rescheduled.journal.semanticBaselines)
+                XCTAssertEqual(journal.events.first?.occurrence?.originRecordKey, key)
+                XCTAssertEqual(journal.events.first?.evidence.sourceCardID, rescheduled.fixture.sourceCardID)
+                let reopenedDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+                let marks = try XCTUnwrap(reopenedDefaults.stringArray(forKey: marksKey))
+                let input = LegacyFeedRecordInput(recordKey: record.key, caseNumber: record.caseNumber,
+                    client: record.courtTitle, unreadByCase: record.seenAt == nil,
+                    snapshot: record.snapshot, movement: record.movement, context: record.context,
+                    enforcementRecords: record.enforcementRecords)
+                let legacy = legacyProjection([input], readIDs: Set(marks))
+                let bytes = (record.contextData, record.snapshotData, record.movementData, record.eventJournalData)
+                let hadChanges = container.mainContext.hasChanges
+                for _ in 0..<2 {
+                    let shadow = HearingJournalFeedProjection.project(records: [input],
+                        journalsByRecordKey: [record.key: journal], today: today,
+                        readIDs: legacy.migratedReadIDs, knownIDs: [], legacyEntries: legacy.entries)
+                    let entry = try XCTUnwrap(shadow.entries.first)
+                    XCTAssertEqual(shadow.entries.count, 1)
+                    XCTAssertEqual(entry.id, event.id)
+                    XCTAssertEqual(entry.date, rescheduled.newSession.date)
+                    XCTAssertEqual(AppRouter.recentFeedEntries(shadow.entries, today: today, days: 7).map(\.id), [event.id])
+                    XCTAssertEqual(entry.time, rescheduled.newSession.time)
+                    XCTAssertEqual(entry.sourceCardID, rescheduled.fixture.sourceCardID)
+                    XCTAssertEqual(entry.isUnread, !bothRead)
+                    XCTAssertEqual(shadow.shadowReadIDs, bothRead ? Set([event.id]) : [])
+                    XCTAssertTrue(shadow.shadowKnownIDs.isEmpty)
+                    XCTAssertEqual(Set(shadow.aliases.map(\.legacyID)), Set(legacy.entries.map(\.id)))
+                    XCTAssertEqual(shadow.aliases.count, 2)
+                    XCTAssertTrue(shadow.unmappedEvents.isEmpty)
+                    XCTAssertTrue(shadow.unmappedLegacyHearings.isEmpty)
+                    if bothRead {
+                        XCTAssertTrue(shadow.fieldMismatches.isEmpty)
+                    } else {
+                        // BOTH preserves unread when only the new legacy row was read.
+                        let target = try XCTUnwrap(legacy.entries.first { $0.date == rescheduled.newSession.date })
+                        XCTAssertEqual(shadow.fieldMismatches, [HearingJournalFeedFieldMismatch(
+                            recordKey: record.key, legacyID: target.id, eventID: event.id,
+                            field: "isUnread", legacyValue: "false", shadowValue: "true")])
+                    }
+                }
+                XCTAssertEqual(record.contextData, bytes.0)
+                XCTAssertEqual(record.snapshotData, bytes.1)
+                XCTAssertEqual(record.movementData, bytes.2)
+                XCTAssertEqual(record.eventJournalData, bytes.3)
+                XCTAssertEqual(reopenedDefaults.stringArray(forKey: marksKey), marks)
+                XCTAssertEqual(container.mainContext.hasChanges, hadChanges)
+            }
+        }
+    }
+
     func testRescheduledEntryUsesNewDateForSevenAndFortyFiveDayWindows() throws {
         for offset in [0, 6, 7, 44] {
             let newDate = DateUtil.addDays(today, -offset)

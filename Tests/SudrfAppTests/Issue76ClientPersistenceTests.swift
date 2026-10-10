@@ -31,7 +31,7 @@ final class Issue76ClientPersistenceTests: XCTestCase {
         _ = await center.refresh(key: record.key)?.value
         XCTAssertEqual(record.movement?.instances[2].level, .material)
         XCTAssertEqual(record.seenAt, seenAt)
-        XCTAssertEqual(record.eventJournal?.events, [])
+        XCTAssertEqual(semanticJournalEvents(record.eventJournal), [])
     }
 
     func testNativeClientRefreshAndReopenPreserveRouteAndLegacyFactsWithoutNewEvents() async throws {
@@ -102,7 +102,7 @@ final class Issue76ClientPersistenceTests: XCTestCase {
             XCTAssertEqual(record.movementFetchedAt, originalSuccess,
                            "Unavailable/empty search cannot renew the last full-chain success")
             XCTAssertEqual(record.seenAt, seenAt)
-            XCTAssertEqual(record.eventJournal?.events, [])
+            XCTAssertEqual(semanticJournalEvents(record.eventJournal), [])
             XCTAssertNil(saved.sourceRefreshCoverage)
         }
         let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(

@@ -83,7 +83,7 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(repairedFromEvidence.movement?.acts.first?.date, "—")
         XCTAssertEqual(repairedFromEvidence.snapshot?.semanticProjectionVersion, 6)
         XCTAssertEqual(repairedFromEvidence.eventJournal?.derivationVersion, 6)
-        XCTAssertEqual(repairedFromEvidence.eventJournal?.events.count, 1)
+        XCTAssertEqual(semanticJournalEvents(repairedFromEvidence.eventJournal)?.count, 1)
 
         let service = AppealDispositionMovements(full: full, partial: partial)
         let center = RefreshCenter(store: store, client: SudrfClient(),
@@ -136,7 +136,7 @@ final class Issues285286289RefreshIntegrationTests: XCTestCase {
             XCTAssertEqual(record.collectionNames, ["Регрессия 285-286-289"])
             XCTAssertEqual(record.snapshot?.semanticProjectionVersion, 6)
             XCTAssertEqual(record.eventJournal?.derivationVersion, 6)
-            XCTAssertEqual(record.eventJournal?.events.count, 1)
+            XCTAssertEqual(semanticJournalEvents(record.eventJournal)?.count, 1)
             XCTAssertEqual(record.snapshot?.deadlines.first {
                 $0.occurrenceKey == "\(number)-manual"
             }?.status, .confirmed)

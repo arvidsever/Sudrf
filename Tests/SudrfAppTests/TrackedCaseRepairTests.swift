@@ -449,7 +449,7 @@ final class TrackedCaseRepairTests: XCTestCase {
                                    correctedDeadline.provenance?.trigger)
                     XCTAssertEqual(active.status, userStatus)
                     XCTAssertEqual(active.date, DateUtil.parse("20.10.2026"))
-                    XCTAssertEqual(Set(merged.eventJournal?.events.map(\.id) ?? []),
+                    XCTAssertEqual(Set(semanticJournalEvents(merged.eventJournal)?.map(\.id) ?? []),
                                    existingEventIDs)
                     XCTAssertEqual(snapshot.deadlines.filter(\.isActive).count, 1)
                     XCTAssertTrue(snapshot.deadlines.contains {

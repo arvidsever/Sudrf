@@ -121,7 +121,7 @@ final class Issue224Calendar2027PersistenceTests: XCTestCase {
         assertPreservedFacts(afterRefresh, seed: seeded, act: seedAct, summary: seedSummary)
         assert2027Deadline(in: afterRefresh.snapshot)
         XCTAssertGreaterThan(try XCTUnwrap(afterRefresh.movementFetchedAt), fetchedAt)
-        XCTAssertEqual(afterRefresh.journal?.events.map(\.id), seedJournalIDs,
+        XCTAssertEqual(semanticJournalEvents(afterRefresh.journal)?.map(\.id), seedJournalIDs,
                        "первое подтверждение календарного года не публикует старые судебные события")
 
         let secondRefresh = try await refreshStore(at: storeURL, movement: movement)
@@ -129,7 +129,7 @@ final class Issue224Calendar2027PersistenceTests: XCTestCase {
         let afterRepeat = try persistedFacts(at: storeURL)
         assertPreservedFacts(afterRepeat, seed: seeded, act: seedAct, summary: seedSummary)
         assert2027Deadline(in: afterRepeat.snapshot)
-        XCTAssertEqual(afterRepeat.journal?.events.map(\.id), seedJournalIDs,
+        XCTAssertEqual(semanticJournalEvents(afterRepeat.journal)?.map(\.id), seedJournalIDs,
                        "повторный полный refresh не дублирует исторические события")
         XCTAssertEqual(afterRepeat.movement?.acts, movement.acts)
         XCTAssertEqual(afterRepeat.movement?.actBodies, movement.actBodies)
@@ -282,7 +282,7 @@ final class Issue224Calendar2027PersistenceTests: XCTestCase {
                            seed.snapshot?.deadlines.first { $0.occurrenceKey == key },
                            "deadline \(key) must survive storage transitions", file: file, line: line)
         }
-        XCTAssertEqual(actual.journal?.events.map(\.id), seed.journal?.events.map(\.id),
+        XCTAssertEqual(semanticJournalEvents(actual.journal)?.map(\.id), seed.journal?.events.map(\.id),
                        file: file, line: line)
     }
 

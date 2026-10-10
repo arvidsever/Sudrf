@@ -104,7 +104,7 @@ final class Issue309RefreshIntegrationTests: XCTestCase {
         let record = try XCTUnwrap(store.record(forKey: key))
         XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.cassation.rawValue)
         XCTAssertEqual(record.snapshot?.statusText, "Назначено заседание")
-        XCTAssertEqual(record.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(record.eventJournal), [seed])
         XCTAssertEqual(record.collectionNames, ["Регрессия #309"])
         XCTAssertEqual(record.movement?.instances.filter {
             $0.caseNumber == reviewNumber

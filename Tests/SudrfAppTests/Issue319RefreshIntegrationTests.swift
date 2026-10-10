@@ -99,7 +99,7 @@ final class Issue319RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(record.snapshot?.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(record.snapshot?.semanticProjectionVersion, 6)
         XCTAssertEqual(record.eventJournal?.derivationVersion, 6)
-        XCTAssertEqual(record.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(record.eventJournal), [seed])
         XCTAssertEqual(record.collectionNames, ["Регрессия #319"])
         XCTAssertEqual(record.snapshot?.deadlines.first {
             $0.provenance?.ruleID == "GPK-PRIVATE-COMPLAINT-GENERAL"

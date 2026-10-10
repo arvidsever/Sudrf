@@ -69,12 +69,14 @@ final class Issue406RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(repaired.movementData, oldMovement)
         try assertSyntheticAct(in: store, record: repaired, key: record.key,
                                expectedDocument: expectedActDocument)
-        XCTAssertEqual(repaired.eventJournalData, oldJournal)
+        assertSemanticJournalEqual(repaired.eventJournal, try oldJournal.map { try JSONDecoder().decode(CaseEventJournal.self, from: $0) })
+        let importedJournalData = repaired.eventJournalData
         XCTAssertEqual(repaired.movementFetchedAt, oldFetchedAt)
         XCTAssertEqual(repaired.seenAt, oldSeenAt)
         XCTAssertEqual(repaired.collectionNames, oldCollections)
         XCTAssertFalse(try TrackedStorePreparation.prepare(
             context: store.container.mainContext, today: today))
+        XCTAssertEqual(repaired.eventJournalData, importedJournalData)
     }
 
     func testFullPartialRefreshAndRestartKeepJoinedOutcomeManualDeadlineAndHistory()
@@ -174,7 +176,7 @@ final class Issue406RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(record.movement?.instances, movement.instances)
         try assertSyntheticAct(in: store, record: record, key: key,
                                expectedDocument: expectedActDocument)
-        XCTAssertEqual(record.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(record.eventJournal), [seed])
         XCTAssertEqual(record.seenAt, seenAt)
         XCTAssertEqual(record.collectionNames, ["Регрессия #406"])
     }

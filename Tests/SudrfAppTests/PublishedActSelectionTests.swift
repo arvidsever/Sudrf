@@ -1,13 +1,64 @@
 import CryptoKit
 import Foundation
+import SwiftData
 import XCTest
 import SudrfKit
+import CaptchaSolver
 @testable import SudrfApp
 
 @MainActor
 final class PublishedActSelectionTests: XCTestCase {
     private let sourceURL = URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000001")!
     private let caseNumber = "3-ИКАД25-3-А2"
+
+    private actor NoopSpotlightWriter: SpotlightIndexWriting {
+        func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {}
+        func delete(caseIDs: [String], actIDs: [String]) async throws {}
+        func deleteAll() async throws {}
+    }
+
+    private actor OfflineVSRFProvider: VSRFProviding {
+        func search(uniqueNumber: String?, oldCaseNumber: String?,
+                    keywords: String?) async throws -> VSRFSearchResults {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(productionID: String,
+                       section: VSRFCardSection) async throws -> VSRFCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineMosGorSudProvider: MosGorSudProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineMoscowOriginProvider: MoscowOriginProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineMovementProvider: MovementProviding {
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw CancellationError()
+        }
+    }
 
     func testScanOnlyPDFIsCachedAndReopenedWithoutFetchingAgain() async throws {
         let data = try pdfData()
@@ -196,10 +247,15 @@ final class PublishedActSelectionTests: XCTestCase {
         let data = try pdfData()
         let file = publishedFile(data: data, text: "Текст опубликованного решения")
         let cache = try fileCache()
-        let fetcher = FetchStub(file: file)
+        let fetcher = SuspendedFetchStub(file: file)
         let selection = PublishedActSelection(cache: cache) { url, number in
             try await fetcher.fetch(url: url, productionNumber: number)
         }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("published-act-router-profile-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let container = try SudrfModelContainerFactory.make(inMemory: true)
         let store = try TrackedStore(container: container, prepared: true)
         let context = MovementContext(
@@ -220,22 +276,92 @@ final class PublishedActSelectionTests: XCTestCase {
             context: context,
             snapshot: MovementDerivation.snapshot(from: movement, context: context),
             movement: movement, collections: [])
-        let journalBefore = try XCTUnwrap(record.eventJournal)
-        let router = try AppRouter(modelContainer: container,
-                                   modelContainerIsPrepared: true,
-                                   selectedPublishedAct: selection)
+        let suite = "Sudrf.PublishedActSelectionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let router = try makePrivateRouter(container: container, directory: directory,
+                                           defaults: defaults, suite: suite,
+                                           selectedAct: selection)
 
         router.openCase(key: record.key)
+        await wait { await fetcher.hasStarted }
+        let journalBeforeFileApply = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal)
+        let semanticBaselineBeforeFileApply = journalBeforeFileApply.semanticBaselines
+        await fetcher.release()
         await wait { !selection.isLoading && router.liveMovement?.actBodies[act.id] != nil }
 
         XCTAssertEqual(router.selectedActID, act.id)
         XCTAssertEqual(router.liveMovement?.actBodies[act.id], file.text)
         XCTAssertEqual(router.liveMovement?.acts.first?.fileProvenance, file.provenance)
         XCTAssertEqual(store.record(forKey: record.key)?.movement?.actBodies[act.id], file.text)
-        XCTAssertEqual(record.eventJournal, journalBefore,
-                       "Fetching an act must not create historical case events.")
+        let journalAfterFileApply = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal)
+        XCTAssertEqual(journalAfterFileApply, journalBeforeFileApply,
+                       "Applying the file must not alter the journal captured after router setup and case opening.")
+        XCTAssertEqual(journalAfterFileApply.events.map(\.id), journalBeforeFileApply.events.map(\.id))
+        XCTAssertEqual(journalAfterFileApply.semanticBaselines, semanticBaselineBeforeFileApply)
         let fetchCount = await fetcher.count
         XCTAssertEqual(fetchCount, 1)
+    }
+
+    @MainActor
+    private func makePrivateRouter(container: ModelContainer, directory: URL,
+                                   defaults: UserDefaults, suite: String,
+                                   selectedAct: PublishedActSelection) throws -> AppRouter {
+        let client = TestNetworkGuard.sudrfClient()
+        let tokens = CaptchaTokenStore()
+        let settings = CaptchaSettings(defaults: defaults)
+        let vsrf = OfflineVSRFProvider()
+        let moscow = OfflineMosGorSudProvider()
+        return try AppRouter(
+            captchaSettings: settings,
+            modelContainer: container,
+            modelContainerIsPrepared: true,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("captcha")),
+            refreshCenterFactory: { store, privateClient in
+                RefreshCenter(store: store, client: privateClient,
+                    captchaSettings: settings, captchaTokenStore: tokens,
+                    serviceBuilder: { _ in OfflineMovementProvider() },
+                    treasuryDiscover: { _, _, _ in throw CancellationError() },
+                    vsrfProvider: vsrf, mosGorSudProvider: moscow,
+                    moscowMagistrateProvider: privateClient,
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in throw CancellationError() },
+                    initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600),
+                    walkDiagnostics: .disabled)
+            },
+            importVSRFProvider: vsrf,
+            importMosGorSudProvider: moscow,
+            selectedPublishedAct: selectedAct,
+            summaryConfigurationProvider: { throw CancellationError() },
+            userDefaults: defaults,
+            client: client,
+            captchaTokenStore: tokens,
+            directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(
+                fetchCard: { _ in throw CancellationError() },
+                districtCourts: { _ in throw CancellationError() }) },
+            spotlightIndexerFactory: { catalog in
+                SpotlightIndexer(catalog: catalog, writer: NoopSpotlightWriter(),
+                    manifestStore: SpotlightManifestStore(suiteName: suite),
+                    preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+            },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { _ in },
+            feedBadgePublisher: { _ in },
+            notificationOpenInstaller: { _ in },
+            intentInstaller: { _ in },
+            captchaSolverFactory: { _ in nil },
+            repairCoordinatorFactory: { store, privateClient in
+                let district = DistrictCourtResolver(client: privateClient, cacheURL: nil)
+                let magistrate = MagistrateCourtResolver(
+                    client: privateClient, cacheURL: nil, moscowDirectoryClient: nil)
+                let origin = CaseOriginResolver(client: privateClient,
+                    districtResolver: district, magistrateResolver: magistrate,
+                    regularProvider: privateClient, magistrateProvider: privateClient,
+                    moscowProvider: OfflineMoscowOriginProvider())
+                return TrackedCaseRepairCoordinator(store: store, client: privateClient,
+                    originResolver: origin, defaults: defaults,
+                    anchorCardResolver: { _ in throw CancellationError() })
+            })
     }
 
     func testPublishedActSurvivesStoreAndAppRestartOffline() async throws {
@@ -409,6 +535,27 @@ private actor FetchStub {
     func fetch(url: URL, productionNumber: String?) async throws -> PublishedActFile {
         count += 1
         return file
+    }
+}
+
+private actor SuspendedFetchStub {
+    private let file: PublishedActFile
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var count = 0
+    private(set) var hasStarted = false
+
+    init(file: PublishedActFile) { self.file = file }
+
+    func fetch(url: URL, productionNumber: String?) async throws -> PublishedActFile {
+        count += 1
+        hasStarted = true
+        await withCheckedContinuation { continuation = $0 }
+        return file
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 

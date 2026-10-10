@@ -176,8 +176,7 @@ final class Issue370CardLinkTests: XCTestCase {
         let record = try XCTUnwrap(store.record(forKey: key))
         XCTAssertEqual(record.collectionNames, ["Проверка #370"])
         XCTAssertEqual(record.seenAt, seenAt)
-        XCTAssertEqual(record.eventJournal, CaseEventJournal(events: [seedEvent]),
-                       "refresh не должен добавлять повторные/старые события")
+        assertSemanticJournalEqual(record.eventJournal, CaseEventJournal(events: [seedEvent]))
 
         let manual = try XCTUnwrap(record.snapshot?.deadlines.first {
             $0.occurrenceKey == manualDeadlineKey

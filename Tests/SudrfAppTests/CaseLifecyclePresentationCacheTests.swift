@@ -1,10 +1,123 @@
 import XCTest
 import Foundation
 import Combine
+import SwiftData
 import SudrfKit
+import CaptchaSolver
 @testable import SudrfApp
 
 final class CaseLifecyclePresentationCacheTests: XCTestCase {
+
+    private actor NoopLifecycleSpotlightWriter: SpotlightIndexWriting {
+        func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {}
+        func delete(caseIDs: [String], actIDs: [String]) async throws {}
+        func deleteAll() async throws {}
+    }
+
+    private actor OfflineLifecycleVSRFProvider: VSRFProviding {
+        func search(uniqueNumber: String?, oldCaseNumber: String?,
+                    keywords: String?) async throws -> VSRFSearchResults {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(productionID: String,
+                       section: VSRFCardSection) async throws -> VSRFCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineLifecycleMosGorSudProvider: MosGorSudProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineLifecycleMoscowOriginProvider: MoscowOriginProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineLifecycleMovementProvider: MovementProviding {
+        func movement(for base: CaseSearchResult, court: Court,
+                      cartoteka: Cartoteka) async throws -> CaseMovement {
+            throw CancellationError()
+        }
+    }
+
+    @MainActor
+    private func makePrivateRouter(container: ModelContainer, directory: URL,
+                                   defaults: UserDefaults, suite: String) throws -> AppRouter {
+        let client = TestNetworkGuard.sudrfClient()
+        let tokens = CaptchaTokenStore()
+        let settings = CaptchaSettings(defaults: defaults)
+        let vsrf = OfflineLifecycleVSRFProvider()
+        let moscow = OfflineLifecycleMosGorSudProvider()
+        return try AppRouter(
+            captchaSettings: settings,
+            modelContainer: container,
+            modelContainerIsPrepared: true,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("captcha")),
+            refreshCenterFactory: { store, privateClient in
+                RefreshCenter(store: store, client: privateClient,
+                    captchaSettings: settings, captchaTokenStore: tokens,
+                    serviceBuilder: { _ in OfflineLifecycleMovementProvider() },
+                    treasuryDiscover: { _, _, _ in throw CancellationError() },
+                    vsrfProvider: vsrf, mosGorSudProvider: moscow,
+                    moscowMagistrateProvider: privateClient,
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in throw CancellationError() },
+                    initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600),
+                    walkDiagnostics: .disabled)
+            },
+            importVSRFProvider: vsrf,
+            importMosGorSudProvider: moscow,
+            selectedPublishedAct: PublishedActSelection(
+                cache: ActFileCache(directory: directory.appendingPathComponent("acts")),
+                fetch: { _, _ in throw CancellationError() }),
+            summaryConfigurationProvider: { throw CancellationError() },
+            userDefaults: defaults,
+            client: client,
+            captchaTokenStore: tokens,
+            directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(
+                fetchCard: { _ in throw CancellationError() },
+                districtCourts: { _ in throw CancellationError() }) },
+            spotlightIndexerFactory: { catalog in
+                SpotlightIndexer(catalog: catalog, writer: NoopLifecycleSpotlightWriter(),
+                    manifestStore: SpotlightManifestStore(suiteName: suite),
+                    preferenceStore: SpotlightPreferenceStore(suiteName: suite))
+            },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { _ in },
+            feedBadgePublisher: { _ in },
+            notificationOpenInstaller: { _ in },
+            intentInstaller: { _ in },
+            captchaSolverFactory: { _ in nil },
+            repairCoordinatorFactory: { store, privateClient in
+                let district = DistrictCourtResolver(client: privateClient, cacheURL: nil)
+                let magistrate = MagistrateCourtResolver(
+                    client: privateClient, cacheURL: nil, moscowDirectoryClient: nil)
+                let origin = CaseOriginResolver(client: privateClient,
+                    districtResolver: district, magistrateResolver: magistrate,
+                    regularProvider: privateClient, magistrateProvider: privateClient,
+                    moscowProvider: OfflineLifecycleMoscowOriginProvider())
+                return TrackedCaseRepairCoordinator(store: store, client: privateClient,
+                    originResolver: origin, defaults: defaults,
+                    anchorCardResolver: { _ in throw CancellationError() })
+            })
+    }
 
     private struct PublishedProjection: Equatable {
         var cases: [String]
@@ -422,13 +535,21 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
     @MainActor
     func testOldMaterialFeedRowsEnrichFromExactCachedSourcesAndKeepDistinctIDs() throws {
         let fixedToday = try XCTUnwrap(DateUtil.parse("10.09.2026"))
+        let suite = "Sudrf.CaseLifecyclePresentationCacheTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("case-lifecycle-profile-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
         let container = try SudrfModelContainerFactory.make(inMemory: true)
         let rec = try completedCaseWithMaterials(
             today: fixedToday, sameSchedule: true, duplicateFirstMaterialSession: true)
         container.mainContext.insert(rec)
         try container.mainContext.save()
 
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try makePrivateRouter(container: container, directory: directory,
+                                           defaults: defaults, suite: suite)
         router.reload(today: fixedToday)
         let materials = router.feed.filter { $0.instanceLevel == .material }
 
@@ -436,10 +557,46 @@ final class CaseLifecyclePresentationCacheTests: XCTestCase {
         XCTAssertEqual(Set(materials.map(\.id)).count, 2)
         XCTAssertEqual(Set(materials.compactMap(\.secondaryLabel)),
                        ["Материал № 13-2471/2026", "Материал № 13-3241/2026"])
-        XCTAssertTrue(materials.allSatisfy {
-            $0.id.contains("#material#") && $0.sourceCardID != nil
-                && $0.sourceInstanceID != nil
+        let journal = try XCTUnwrap(TrackedStore(container: container, prepared: true)
+            .record(forKey: rec.key)?.eventJournal)
+        let context = try XCTUnwrap(rec.context)
+        let owners = try XCTUnwrap(rec.movement?.instances.filter { $0.level == .material })
+        let ownerIDs = Dictionary(uniqueKeysWithValues: owners.compactMap { owner in
+            CaseSnapshotSourceIdentity.sourceCardID(for: owner, context: context)
+                .map { ($0, owner.id) }
         })
+        XCTAssertEqual(Set(materials.compactMap(\.sourceCardID)), Set(ownerIDs.keys))
+        XCTAssertEqual(Set(materials.compactMap(\.sourceInstanceID)), Set(ownerIDs.values))
+
+        let materialGroups = JournalFeedProjection.historyDisplayGroups(journal: journal).filter {
+            $0.first?.evidence.legacyFeedHistory?.instanceLevelRaw
+                == CaseInstance.Level.material.rawValue
+        }
+        XCTAssertEqual(materialGroups.map(\.count).sorted(), [1, 2],
+                       "three immutable raw rows belong to two exact materials")
+        XCTAssertEqual(Set(materialGroups.compactMap { $0.first?.id }), Set(materials.map(\.id)),
+                       "each displayed ID points to its persisted source-history group")
+        for entry in materials {
+            let event = try XCTUnwrap(journal.events.first { $0.id == entry.id })
+            let history = try XCTUnwrap(event.evidence.legacyFeedHistory)
+            guard case .session(let source) = history.source else {
+                return XCTFail("material history retains the original session payload")
+            }
+            XCTAssertEqual(entry.sourceCardID, history.sourceCardID)
+            XCTAssertEqual(entry.sourceInstanceID, history.sourceInstanceID)
+            XCTAssertEqual(source.sourceCardID, entry.sourceCardID)
+            XCTAssertEqual(source.levelRaw, CaseInstance.Level.material.rawValue)
+            let owner = try XCTUnwrap(owners.first {
+                $0.id == entry.sourceInstanceID
+                    && CaseSnapshotSourceIdentity.sourceCardID(for: $0, context: context)
+                        == entry.sourceCardID
+            })
+            XCTAssertEqual(entry.instanceCaseNumber, owner.caseNumber)
+            XCTAssertTrue(owner.sessions.contains {
+                $0.date == source.dateRaw && $0.time == source.time
+                    && $0.event == source.event && $0.result == source.result
+            }, "displayed journal history is backed by its exact native source row")
+        }
     }
 
     @MainActor

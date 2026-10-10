@@ -201,7 +201,7 @@ final class Issue434CachedActRetentionTests: XCTestCase {
         let fullSuccess = try XCTUnwrap(afterFull.movementFetchedAt)
         XCTAssertGreaterThan(fullSuccess, previousSuccess)
         let fullJournalIDs = try XCTUnwrap(afterFull.eventJournal?.events.map(\.id))
-        XCTAssertEqual(fullJournalIDs, [priorEvent.id],
+        XCTAssertEqual(try XCTUnwrap(semanticJournalEvents(afterFull.eventJournal)).map(\.id), [priorEvent.id],
                        "refresh must not invent journal history for an unchanged fixture")
 
         let partialCenter = center(store: store, source: source, partial: true)

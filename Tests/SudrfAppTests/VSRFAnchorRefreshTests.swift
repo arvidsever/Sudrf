@@ -15,6 +15,7 @@ private struct VSRFPersistedState: Equatable {
     let movementFetchedAt: Date?
     let sourceRefreshAttempt: SourceAttempt?
     let eventJournalIDs: [String]
+    let eventJournal: CaseEventJournal
 
     init(record: TrackedCaseRecord) throws {
         let identity = TrackedCaseIdentity.state(for: record)
@@ -30,7 +31,8 @@ private struct VSRFPersistedState: Equatable {
         movement = record.movement
         movementFetchedAt = record.movementFetchedAt
         sourceRefreshAttempt = record.sourceRefreshAttempt
-        eventJournalIDs = try XCTUnwrap(record.eventJournal).events.map(\.id)
+        eventJournal = try XCTUnwrap(record.eventJournal)
+        eventJournalIDs = eventJournal.events.map(\.id)
     }
 }
 
@@ -59,6 +61,20 @@ final class VSRFAnchorRefreshTests: XCTestCase {
         }
 
         func failNext() { failNextFetch = true }
+    }
+
+    private actor OfflineMosGorSudProvider: MosGorSudProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+            throw URLError(.notConnectedToInternet)
+        }
     }
 
     func testCSVVSRFAnchorRefreshReopensRepeatsAndKeepsCacheOnTransientFailure() async throws {
@@ -91,14 +107,23 @@ final class VSRFAnchorRefreshTests: XCTestCase {
         let storeURL = directory.appendingPathComponent("fixture.store")
         let key = planned.context.key
         let provider = Provider(card: card)
+        let captchaTokens = CaptchaTokenStore()
+        let privateClient = TestNetworkGuard.sudrfClient()
         let afterFirstState: VSRFPersistedState
         do {
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
             let store = try TrackedStore(container: container, prepared: true)
             _ = try store.upsert(context: planned.context, snapshot: nil,
                                  movement: nil, collections: ["CSV", "Пользовательская"])
-            let center = RefreshCenter(store: store, client: TestNetworkGuard.sudrfClient(),
-                                       vsrfProvider: provider)
+            let center = RefreshCenter(
+                store: store, client: privateClient,
+                captchaTokenStore: captchaTokens,
+                treasuryDiscover: { _, _, _ in throw CancellationError() },
+                vsrfProvider: provider,
+                mosGorSudProvider: OfflineMosGorSudProvider(),
+                moscowMagistrateProvider: privateClient,
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw CancellationError() })
 
             let first = await center.refresh(key: key, manually: true)?.value
             XCTAssertEqual(first?.outcome, .refreshed)
@@ -106,10 +131,25 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             XCTAssertEqual(afterFirst.context?.cardURLString, sourceURL)
             XCTAssertEqual(afterFirst.movement?.instances.map(\.sourceURL), [card.productions[0].cardURL])
             XCTAssertEqual(afterFirst.collectionNames.sorted(), ["CSV", "Пользовательская"])
-            XCTAssertEqual(try XCTUnwrap(afterFirst.eventJournal).events, [],
-                           "первый refresh не создаёт исторические события")
+            let initialJournal = try XCTUnwrap(afterFirst.eventJournal)
+            XCTAssertTrue(semanticJournalEvents(initialJournal)?.isEmpty == true,
+                          "первый refresh не создаёт семантических переходов")
+            let quietRows = try XCTUnwrap(assertQuietSourceRowPublications(
+                initialJournal, expectedCount: 1))
+            let publication = try XCTUnwrap(quietRows.first)
+            let binding = try XCTUnwrap(publication.evidence.sourceRowBinding)
+            XCTAssertTrue(binding.nativeCardID.hasSuffix("|\(cardID)"))
+            XCTAssertEqual(publication.evidence.sourceCardID, binding.sourceCardID)
+            let history = try XCTUnwrap(publication.evidence.legacyFeedHistory)
+            guard case .session(let session) = history.source else {
+                return XCTFail("VS РФ publication must retain its original session row")
+            }
+            XCTAssertEqual(session.sourceCardID, binding.sourceCardID)
+            XCTAssertEqual(session.dateRaw, "15.10.2025")
+            XCTAssertEqual(session.event, "Определение вынесено")
             afterFirstState = try VSRFPersistedState(record: afterFirst)
-            XCTAssertEqual(afterFirstState.eventJournalIDs, [])
+            XCTAssertEqual(afterFirstState.eventJournal, initialJournal)
+            XCTAssertEqual(afterFirstState.eventJournalIDs, [publication.id])
             XCTAssertNotNil(afterFirstState.movementFetchedAt)
             let firstFetchCount = await provider.fetchCount
             XCTAssertEqual(firstFetchCount, 1)
@@ -123,8 +163,15 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             let loaded = try XCTUnwrap(reopened.record(forKey: key))
             XCTAssertEqual(try VSRFPersistedState(record: loaded), afterFirstState)
 
-            let center = RefreshCenter(store: reopened, client: TestNetworkGuard.sudrfClient(),
-                                       vsrfProvider: provider)
+            let center = RefreshCenter(
+                store: reopened, client: privateClient,
+                captchaTokenStore: captchaTokens,
+                treasuryDiscover: { _, _, _ in throw CancellationError() },
+                vsrfProvider: provider,
+                mosGorSudProvider: OfflineMosGorSudProvider(),
+                moscowMagistrateProvider: privateClient,
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw CancellationError() })
             let repeated = await center.refresh(key: key, manually: true)?.value
             XCTAssertEqual(repeated?.outcome, .refreshed)
             let afterRepeat = try XCTUnwrap(reopened.record(forKey: key))
@@ -135,10 +182,10 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             XCTAssertEqual(repeatedState.collections, afterFirstState.collections)
             XCTAssertEqual(repeatedState.addedAt, afterFirstState.addedAt)
             XCTAssertEqual(repeatedState.context, afterFirstState.context)
+            XCTAssertEqual(repeatedState.eventJournal, afterFirstState.eventJournal)
             XCTAssertEqual(afterRepeat.movement?.instances.count, 1,
                            "повторный refresh не дублирует production")
             XCTAssertEqual(repeatedState.eventJournalIDs, afterFirstState.eventJournalIDs)
-            XCTAssertEqual(repeatedState.eventJournalIDs, [])
             let repeatedFetchCount = await provider.fetchCount
             XCTAssertEqual(repeatedFetchCount, 2)
 
@@ -155,8 +202,9 @@ final class VSRFAnchorRefreshTests: XCTestCase {
             XCTAssertEqual(afterFailure.movementFetchedAt, successfulFetchedAt,
                            "ошибка не продлевает срок свежести кэша")
             XCTAssertEqual(afterFailure.sourceRefreshAttempt?.kind, .transportFailure)
-            XCTAssertEqual(try XCTUnwrap(afterFailure.eventJournal).events.map(\.id), [],
-                           "временный сбой не добавляет события в журнал")
+            XCTAssertEqual(try XCTUnwrap(afterFailure.eventJournal),
+                           afterFirstState.eventJournal,
+                           "временный сбой не добавляет и не теряет исходные строки журнала")
             XCTAssertNil(afterFailure.seenAt)
             let failureFetchCount = await provider.fetchCount
             XCTAssertEqual(failureFetchCount, 3)

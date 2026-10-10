@@ -82,7 +82,7 @@ final class Issue237IndependentHigherCourtRefreshTests: XCTestCase {
         let saved = try XCTUnwrap(reopened.record(forKey: stableKey))
         XCTAssertNotEqual(saved.movementFetchedAt, previousSuccess)
         XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .usableSnapshot)
-        XCTAssertEqual(saved.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(saved.eventJournal), [seed])
         XCTAssertEqual(saved.collectionNames, ["Регрессия #237"])
         XCTAssertEqual(saved.movement?.instances.filter {
             $0.caseNumber == "8Г-237/2026"
@@ -99,7 +99,7 @@ final class Issue237IndependentHigherCourtRefreshTests: XCTestCase {
         XCTAssertEqual(store.all().count, 1)
         XCTAssertEqual(saved.movementFetchedAt, previousSuccess)
         XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .partial)
-        XCTAssertEqual(saved.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(saved.eventJournal), [seed])
         XCTAssertEqual(saved.collectionNames, ["Регрессия #237"])
         XCTAssertEqual(saved.movement?.instances.first {
             $0.domain == "syktsud--komi.sudrf.ru"

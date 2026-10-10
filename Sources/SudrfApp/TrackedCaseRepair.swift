@@ -1228,6 +1228,7 @@ final class TrackedCaseRepairCoordinator {
                             saveChanges: Bool = true) throws -> [String: String] {
         do {
         let all = [survivor] + duplicates
+        for record in all { try store.ensureLegacyFeedHistory(for: record) }
         let oldKeys = all.map(\.key)
         let oldLocators = all.flatMap { [$0.key] + $0.legacyKeyAliases }
         var context = canonicalContext
@@ -1239,7 +1240,20 @@ final class TrackedCaseRepairCoordinator {
                let source = Self.knownCard(from: old) { known.append(source) }
         }
         context.knownCards = Self.dedupKnown(known)
-        let journals = try all.map { try store.requiredEventJournal(for: $0) }
+        var journals = try all.map { try store.requiredEventJournal(for: $0) }
+        if journals.contains(where: { $0.feedState != nil }) {
+            // Once authority exists, preserve each incoming record's own seen
+            // state before merge removes that record. Unknown flat marks are
+            // not reconstructed from another origin's migration receipt.
+            for index in journals.indices where journals[index].feedState == nil {
+                let original = all[index]
+                journals[index].feedState = JournalFeedState.initial(
+                    recordKey: original.key, journal: journals[index],
+                    legacyReadIDs: [], legacyKnownIDs: [],
+                    recordKeyAliases: Set(original.legacyKeyAliases),
+                    unreadByCase: original.seenAt == nil)
+            }
+        }
         var legacyCardIDs = Set<String>()
         var ambiguousLegacyCards = false
         var hasLegacyFacts = false

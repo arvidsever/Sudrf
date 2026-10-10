@@ -151,7 +151,7 @@ final class Issue262LegacyMergeTests: XCTestCase {
         let changedResult = await center(store: store, movements: [changedA])
             .refresh(key: rootRecord.key)?.value
         XCTAssertEqual(changedResult?.outcome, .refreshed)
-        let existingEvents = try XCTUnwrap(rootRecord.eventJournal?.events)
+        let existingEvents = try XCTUnwrap(semanticJournalEvents(rootRecord.eventJournal))
         XCTAssertEqual(existingEvents.map(\.kind), [.judgeChanged])
         XCTAssertEqual(existingEvents.first?.evidence.previousValue, "Судья A0")
         XCTAssertEqual(existingEvents.first?.evidence.value, "Судья A1")
@@ -195,7 +195,7 @@ final class Issue262LegacyMergeTests: XCTestCase {
             store: store, survivor: rootRecord, duplicates: [legacyRecord],
             canonicalContext: rootContext, canonicalCard: nil)
         XCTAssertEqual(store.all().count, 1)
-        XCTAssertEqual(rootRecord.eventJournal?.events, existingEvents)
+        XCTAssertEqual(semanticJournalEvents(rootRecord.eventJournal), existingEvents)
         let mergedBaselines = try XCTUnwrap(rootRecord.eventJournal?.semanticBaselines)
         let rootIdentity = try contextIdentity(rootContext)
         let rootScope = rootIdentity.sourceFamily + "|" + rootIdentity.courtKey
@@ -206,13 +206,13 @@ final class Issue262LegacyMergeTests: XCTestCase {
         let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(
             inMemory: false, storeURL: storeURL), prepared: true)
         let saved = try XCTUnwrap(reopened.record(forKey: rootRecord.key))
-        XCTAssertEqual(saved.eventJournal?.events, existingEvents)
+        XCTAssertEqual(semanticJournalEvents(saved.eventJournal), existingEvents)
 
         let fresh = try movement(rootJudge: "Судья A1", legacyJudge: "Судья B legacy")
         let refreshed = await center(store: reopened, movements: [fresh])
             .refresh(key: saved.key)?.value
         XCTAssertEqual(refreshed?.outcome, .refreshed)
-        XCTAssertEqual(reopened.record(forKey: saved.key)?.eventJournal?.events, existingEvents,
+        XCTAssertEqual(semanticJournalEvents(reopened.record(forKey: saved.key)?.eventJournal), existingEvents,
                        "the first fresh observation seeds B without replaying legacy display facts")
         let seeded = try XCTUnwrap(reopened.record(forKey: saved.key)?.eventJournal?
             .semanticBaselines?.courts[rootScope])

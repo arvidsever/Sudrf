@@ -51,6 +51,76 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
     }
 }
 
+// SwiftData rollback can leave held model values stale on supported macOS.
+// Capture before preparation or the first mutation; restore the journal last.
+private struct ImportCheckpoint {
+    let record: TrackedCaseRecord
+    let key: String
+    let logicalCaseID: UUID?
+    let identityStateData: Data?
+    let legacyKeyAliases: [String]
+    let addedAt: Date
+    let seenAt: Date?
+    let folderName: String
+    let collectionNames: [String]
+    let caseNumber: String
+    let courtTitle: String
+    let displayDomain: String
+    let judicialUID: String?
+    let contextData: Data
+    let snapshotData: Data?
+    let movementData: Data?
+    let movementFetchedAt: Date?
+    let sourceRefreshAttemptData: Data?
+    let enforcementData: Data?
+    let eventJournalData: Data?
+
+    init(_ record: TrackedCaseRecord) {
+        self.record = record
+        key = record.key
+        logicalCaseID = record.logicalCaseID
+        identityStateData = record.identityStateData
+        legacyKeyAliases = record.legacyKeyAliases
+        addedAt = record.addedAt
+        seenAt = record.seenAt
+        folderName = record.folderName
+        collectionNames = record.collectionNames
+        caseNumber = record.caseNumber
+        courtTitle = record.courtTitle
+        displayDomain = record.displayDomain
+        judicialUID = record.judicialUID
+        contextData = record.contextData
+        snapshotData = record.snapshotData
+        movementData = record.movementData
+        movementFetchedAt = record.movementFetchedAt
+        sourceRefreshAttemptData = record.sourceRefreshAttemptData
+        enforcementData = record.enforcementData
+        eventJournalData = record.eventJournalData
+    }
+
+    func restore() {
+        record.key = key
+        record.logicalCaseID = logicalCaseID
+        record.identityStateData = identityStateData
+        record.legacyKeyAliases = legacyKeyAliases
+        record.addedAt = addedAt
+        record.seenAt = seenAt
+        record.folderName = folderName
+        record.collectionNames = collectionNames
+        record.caseNumber = caseNumber
+        record.courtTitle = courtTitle
+        record.displayDomain = displayDomain
+        record.judicialUID = judicialUID
+        record.contextData = contextData
+        record.snapshotData = snapshotData
+        record.movementData = movementData
+        record.movementFetchedAt = movementFetchedAt
+        record.sourceRefreshAttemptData = sourceRefreshAttemptData
+        record.enforcementData = enforcementData
+        record.eventJournalData = eventJournalData
+    }
+}
+
 /// Общая реализация подготовки store. Она не привязана к mainContext и может
 /// выполняться как production bootstrap в actor с собственным ModelContext.
 enum TrackedStorePreparation {
@@ -63,12 +133,15 @@ enum TrackedStorePreparation {
         var paragraphSnapshots: [(record: CourtActRecord, version: Int, data: Data)] = []
         var moscowSnapshots: [(record: TrackedCaseRecord, snapshot: Data?, movement: Data?, journal: Data?)] = []
         var treasurySnapshots: [(record: TrackedCaseRecord, journal: Data?)] = []
+        let originalJournals = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
+            .map { ImportCheckpoint($0) }
         do {
             try migrateFolders(context: context)
             try migrateJudicialUIDs(context: context)
             try migrateMoscowKeyAliases(context: context)
             try bootstrapPersistentIdentity(context: context)
             try bootstrapEventJournals(context: context)
+            for original in originalJournals { try importLegacyHistory(original.record) }
             try backfillTreasuryEvents(context: context, rollbackSnapshots: &treasurySnapshots)
             try normalizeMoscowOwnCourtCache(
                 context: context, rollbackSnapshots: &moscowSnapshots)
@@ -98,6 +171,7 @@ enum TrackedStorePreparation {
             for snapshot in treasurySnapshots {
                 snapshot.record.eventJournalData = snapshot.journal
             }
+            for original in originalJournals { original.restore() }
             context.rollback()
             throw error
         }
@@ -248,6 +322,29 @@ enum TrackedStorePreparation {
         for record in records where record.eventJournalData == nil {
             record.eventJournal = CaseEventJournal()
         }
+    }
+
+    static func importLegacyHistory(_ record: TrackedCaseRecord, importedAt: Date = .now) throws {
+        let existing: CaseEventJournal
+        if record.eventJournalData == nil { existing = CaseEventJournal() }
+        else if let journal = record.eventJournal { existing = journal }
+        else { throw TrackedStoreCommitError.corruptedEventJournal(key: record.key) }
+        guard existing.legacyFeedImportVersion == nil else { return }
+        let decoder = JSONDecoder()
+        let snapshot = try record.snapshotData.map { try decoder.decode(CaseSnapshot.self, from: $0) }
+        let movement = try record.movementData.map { try decoder.decode(CaseMovement.self, from: $0) }
+        let sourceContext = record.contextData.isEmpty ? nil
+            : try decoder.decode(MovementContext.self, from: record.contextData)
+        let input = LegacyFeedRecordInput(recordKey: record.key, caseNumber: record.caseNumber,
+            client: record.courtTitle, unreadByCase: record.seenAt == nil,
+            snapshot: snapshot, movement: movement, context: sourceContext,
+            enforcementRecords: record.enforcementRecords,
+            recordKeyAliases: Set(record.legacyKeyAliases),
+            canUseRecordKeyAliases: TrackedCaseIdentity.persistedState(for: record) != nil)
+        let journal = try LegacyFeedHistoryImport.journal(record: input,
+            logicalCaseID: TrackedCaseIdentity.ensuredLogicalCaseID(for: record),
+            existing: existing, importedAt: importedAt)
+        record.eventJournalData = try JSONEncoder().encode(journal)
     }
 
     private static func backfillTreasuryEvents(
@@ -902,6 +999,7 @@ final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
     private let projectionSynchronizer: ProjectionSynchronizer
+    private var originalImportJournals: [ImportCheckpoint] = []
     /// Test seam for the rollback path used by the atomic identity merge.
     var failNextSaveForTesting = false
     /// Test seams for journal failures before the SwiftData save.
@@ -984,12 +1082,26 @@ final class TrackedStore {
         return journal
     }
 
+    func ensureLegacyFeedHistory(for record: TrackedCaseRecord) throws {
+        if !originalImportJournals.contains(where: { $0.record === record }) {
+            originalImportJournals.append(ImportCheckpoint(record))
+        }
+        guard try requiredEventJournal(for: record).legacyFeedImportVersion == nil else { return }
+        try TrackedStorePreparation.importLegacyHistory(record)
+    }
+
+    private func restoreOriginalImportJournals() {
+        for original in originalImportJournals { original.restore() }
+        originalImportJournals.removeAll()
+    }
+
     @discardableResult
     func applyEnforcementUpdates(forLocator locator: String,
                                  updates: [EnforcementRecord],
                                  openedKey: String?) throws -> String? {
         try commit {
             guard let record = try recordForMutation(forLocator: locator) else { return nil }
+            try ensureLegacyFeedHistory(for: record)
             let previous = record.enforcementRecords
             let documents = record.movement?.executionDocuments ?? []
             let current = Self.reconciledEnforcementRecords(
@@ -1009,11 +1121,17 @@ final class TrackedStore {
     func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord,
                           derivationVersion: Int? = nil,
                           originKey: String? = nil,
-                          semanticBaselines: CaseEventBaselines? = nil) throws {
-        guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil else { return }
-        var journal = try requiredEventJournal(for: record)
+                          semanticBaselines: CaseEventBaselines? = nil,
+                          sourceRowContinuities: [String: String]? = nil,
+                          feedState: JournalFeedState? = nil) throws {
+        guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil
+                || sourceRowContinuities != nil || feedState != nil else { return }
+        let originalJournal = try requiredEventJournal(for: record)
+        var journal = originalJournal
         if let derivationVersion { journal.derivationVersion = derivationVersion }
         if let semanticBaselines { journal.semanticBaselines = semanticBaselines }
+        if let sourceRowContinuities { journal.sourceRowContinuities = sourceRowContinuities }
+        if let feedState { journal.feedState = feedState }
         do {
             if failNextJournalAppendForTesting {
                 failNextJournalAppendForTesting = false
@@ -1021,6 +1139,16 @@ final class TrackedStore {
             }
             try journal.append(journal.identifyingOccurrences(
                 events, originKey: originKey ?? record.key))
+            if journal.feedState != nil {
+                let input = LegacyFeedRecordInput(recordKey: record.key, caseNumber: record.caseNumber,
+                    client: record.courtTitle, unreadByCase: record.seenAt == nil,
+                    snapshot: record.snapshot, movement: record.movement, context: record.context,
+                    enforcementRecords: record.enforcementRecords,
+                    recordKeyAliases: Set(record.legacyKeyAliases),
+                    canUseRecordKeyAliases: TrackedCaseIdentity.persistedState(for: record) != nil)
+                journal.feedState = try JournalFeedProjection.synchronize(record: input,
+                    journal: journal, legacyReadIDs: [], legacyKnownIDs: [])
+            }
         } catch {
             storeLog.error("Не удалось дополнить журнал событий: \(error, privacy: .public)")
             throw TrackedStoreCommitError.eventJournalAppend(details: error.localizedDescription)
@@ -1030,7 +1158,10 @@ final class TrackedStore {
                 failNextJournalEncodingForTesting = false
                 throw TestJournalEncodingFailure.forced
             }
-            record.eventJournalData = try JSONEncoder().encode(journal)
+            // Preserve the original bytes when a refresh adds no journal changes.
+            if record.eventJournalData == nil || journal != originalJournal {
+                record.eventJournalData = try JSONEncoder().encode(journal)
+            }
         } catch {
             storeLog.error("Не удалось закодировать журнал событий: \(error, privacy: .public)")
             throw TrackedStoreCommitError.eventJournalEncoding(details: error.localizedDescription)
@@ -1223,6 +1354,7 @@ final class TrackedStore {
                                   saveChanges: Bool = true) throws -> TrackedCaseRecord? {
         guard let record = try recordForMutation(forLocator: locator) else { return nil }
         guard expectedActiveContext == nil || record.context == expectedActiveContext else { return nil }
+        try ensureLegacyFeedHistory(for: record)
         var identity = TrackedCaseIdentity.state(for: record)
         if let originalContext,
            let originalObservation = TrackedCaseIdentity.observation(
@@ -1504,6 +1636,7 @@ final class TrackedStore {
                         movementFetchedAt: Date?,
                         updatesMovementFetchedAt: Bool,
                         saveChanges: Bool = true) throws {
+        try ensureLegacyFeedHistory(for: record)
         let oldCaseNumber = record.caseNumber
         let oldJudicialUID = record.judicialUID
         if adoptPresentation {
@@ -1575,6 +1708,7 @@ final class TrackedStore {
             TrackedCaseIdentity.persist(TrackedCaseIdentity.state(for: record), to: record)
         }
         context.insert(record)
+        try ensureLegacyFeedHistory(for: record)
         if saveChanges {
             try save(projection: movement == nil ? .none : .cases([record.key]))
         }
@@ -1601,12 +1735,16 @@ final class TrackedStore {
         do {
             try projectionSynchronizer(context, projection)
         } catch {
+            restoreOriginalImportJournals()
             context.rollback()
             storeLog.error("Не удалось обновить проекцию актов: \(error, privacy: .public)")
             throw TrackedStoreCommitError.projectionSynchronization(
                 details: error.localizedDescription)
         }
-        guard context.hasChanges else { return }
+        guard context.hasChanges else {
+            originalImportJournals.removeAll()
+            return
+        }
         try saveContext()
     }
 
@@ -1626,6 +1764,7 @@ final class TrackedStore {
     /// Restores a mutation that failed before `save()`, including journal work
     /// performed by identity repair.
     func rollbackAfterFailure(_ error: Error) throws -> Never {
+        restoreOriginalImportJournals()
         context.rollback()
         switch error {
         case is CaseEventJournalError:
@@ -1681,7 +1820,9 @@ final class TrackedStore {
                 throw TestSaveFailure.forced
             }
             try context.save()
+            originalImportJournals.removeAll()
         } catch {
+            restoreOriginalImportJournals()
             context.rollback()
             storeLog.error("Не удалось сохранить хранилище: \(error, privacy: .public)")
             throw TrackedStoreCommitError.contextSave(details: error.localizedDescription)
@@ -1693,6 +1834,7 @@ final class TrackedStore {
         do {
             return try context.fetch(descriptor)
         } catch {
+            restoreOriginalImportJournals()
             context.rollback()
             storeLog.error("Не удалось выполнить \(operation, privacy: .public): \(error, privacy: .public)")
             throw TrackedStoreCommitError.contextSave(

@@ -455,6 +455,23 @@ enum DeadlineRuleEngine {
                 return .ambiguous(ruleID: expectedRule)
             }
         }
+        if isForeignDecisionForm(trigger) { return .provenFalse(ruleID: expectedRule) }
+        if case .decision(let decision) = currentFirstInstanceAct(in: first) {
+            switch decisionFormMembership(trigger, decision: decision, in: first) {
+            case .foreign:
+                let value = normalized(trigger.event + " " + (trigger.result ?? ""))
+                if value.contains("определен") && !value.contains("решен") {
+                    return .provenFalse(ruleID: expectedRule)
+                }
+                return .ambiguous(ruleID: expectedRule)
+            case .own:
+                if case .missing = finalForm(in: first, decision: decision) {
+                    return .ambiguous(ruleID: expectedRule)
+                }
+                return .none
+            case .irrelevant, .unknown: break
+            }
+        }
         if CaseLifecycleResolver.isFinalActAnnouncement(event: trigger.event, result: trigger.result)
             || blockingDisposition(normalized(trigger.event + " " + (trigger.result ?? ""))) != nil {
             return .none
@@ -738,9 +755,8 @@ enum DeadlineRuleEngine {
                 return insufficient(rule, binding: binding, [.finalAct, .actType, .finalForm])
             }
             switch currentFirstInstanceAct(in: first) {
-            case .decision:
-                triggerResult = finalForm(in: first).map(TriggerExtraction.found)
-                    ?? .missing([.finalForm])
+            case .decision(let decision):
+                triggerResult = finalForm(in: first, decision: decision)
             case .missing:
                 triggerResult = .missing([.finalAct, .actType, .finalForm])
             case .unsupported, .blockingDetermination:
@@ -1492,6 +1508,11 @@ enum DeadlineRuleEngine {
             guard let date = DateUtil.parse(session.date) else { return nil }
             var trigger = provenance(for: session, in: instance)
             let value = normalized(session.event + " " + (session.result ?? ""))
+            let heading = normalized(session.event)
+            if isDecisionManufactureOnly(heading) {
+                // A published form row may copy the disposition without announcing another decision.
+                return nil
+            }
             let sessionDisposition = blockingDisposition(value)
             let sourceOutcomeOnThisDate = sourceSupportsBlocking
                 && sourceDate.map { DateUtil.startOfDay($0) == DateUtil.startOfDay(date) } == true
@@ -1780,13 +1801,90 @@ enum DeadlineRuleEngine {
         return DateUtil.cal.date(bySettingHour: hour, minute: minute, second: 0, of: day)
     }
 
-    private static func finalForm(in instance: CaseInstance) -> DeadlineTriggerProvenance? {
-        latestSession(in: instance) { session in
-            let value = normalized(session.event + " " + (session.result ?? ""))
-            return value.contains("окончательн") && value.contains("форм")
-                || value.contains("изготов") && value.contains("мотивирован")
-                    && value.contains("решен")
+    private enum DecisionFormMembership {
+        case own, foreign, irrelevant, unknown
+    }
+
+    private static func isDecisionManufactureOnly(_ heading: String) -> Bool {
+        (heading.contains("изготов") || heading.contains("составлен"))
+            && heading.range(of: #"(?:вынесено|принято|объявлено) (?:дополнительное )?решение"#,
+                             options: .regularExpression) == nil
+    }
+
+    private static func isNonOwnDecisionFormStatement(_ value: String) -> Bool {
+        value.range(of: #"\bне\s+(?:изготов|состав|принят)|не в окончательн|будет|предстоит|со слов|цитат|согласно|в соответствии|ранее|нижестоящ|вышестоящ"#,
+                    options: .regularExpression) != nil
+    }
+
+    private static func isForeignDecisionForm(_ row: DeadlineTriggerProvenance) -> Bool {
+        let value = normalized(row.event + " " + (row.result ?? ""))
+        return !isNonOwnDecisionFormStatement(value) && value.contains("определен") && !value.contains("решен")
+            && value.contains("окончательн") && value.contains("форм")
+    }
+
+    private static func decisionFormMembership(_ row: DeadlineTriggerProvenance,
+                                               decision: DeadlineTriggerProvenance,
+                                               in instance: CaseInstance) -> DecisionFormMembership {
+        let value = normalized(row.event + " " + (row.result ?? ""))
+        guard value.contains("окончательн") && value.contains("форм")
+                || value.contains("изготов") && value.contains("мотивирован") else { return .unknown }
+        guard !isNonOwnDecisionFormStatement(value) else { return .irrelevant }
+        if value.contains("определен") && !value.contains("решен") { return .foreign }
+        guard let date = DateUtil.parse(row.dateRaw),
+              let decisionDate = DateUtil.parse(decision.dateRaw) else { return .unknown }
+        if row == decision { return .own }
+        let selectedAdditional = normalized(decision.event + " " + (decision.result ?? "")).contains("дополнительн")
+        guard value.contains("дополнительн") == selectedAdditional else { return .foreign }
+        if isFinalDecisionWording(value), !isDecisionManufactureOnly(normalized(row.event)),
+           date != decisionDate { return .foreign }
+        let ownHeading = #"^(?:мотивированное |дополнительное |мотивированное дополнительное )?решение\b|^(?:изготовлено|составлено) (?:мотивированное |дополнительное |мотивированное дополнительное )?решение\b"#
+        guard [normalized(row.event), normalized(row.result)].contains(where: {
+            $0.range(of: ownHeading, options: .regularExpression) != nil
+        }), !normalized(row.event).hasPrefix("определение") else { return .unknown }
+        let pattern = #"(?:мотивированное |дополнительное |мотивированное дополнительное )?решение\s+от\s+\d{1,2}[./]\d{1,2}[./]\d{4}"#
+        let expression = try! NSRegularExpression(pattern: pattern)
+        let references = expression.matches(in: value, range: NSRange(value.startIndex..., in: value))
+        if !references.isEmpty {
+            let dates = Set(references.flatMap { match -> [Date] in
+                guard let range = Range(match.range, in: value) else { return [] }
+                return Array(CaseLifecycleResolver.explicitActDates(in: String(value[range])))
+            })
+            guard dates.count == 1 else { return .unknown }
+            guard dates.first == decisionDate else { return .foreign }
+            return date >= decisionDate ? .own : .unknown
         }
+        let decisionDates = Set(instance.sessions.compactMap { session -> Date? in
+            let text = normalized(session.event + " " + (session.result ?? ""))
+            let heading = normalized(session.event)
+            guard isFinalDecisionWording(text), text.contains("дополнительн") == selectedAdditional,
+                  !isDecisionManufactureOnly(heading) else { return nil }
+            return DateUtil.parse(session.date)
+        })
+        guard date >= decisionDate, decisionDates.count == 1 else { return .unknown }
+        return .own
+    }
+
+    private static func finalForm(in instance: CaseInstance,
+                                  decision: DeadlineTriggerProvenance) -> TriggerExtraction {
+        var candidates: [DeadlineTriggerProvenance] = []
+        var uncertain = false
+        for session in instance.sessions {
+            let row = provenance(for: session, in: instance)
+            let value = normalized(session.event + " " + (session.result ?? ""))
+            guard value.contains("окончательн") && value.contains("форм")
+                    || value.contains("изготов") && value.contains("мотивирован") else { continue }
+            switch decisionFormMembership(row, decision: decision, in: instance) {
+            case .own: candidates.append(row)
+            case .foreign, .irrelevant: break
+            case .unknown: uncertain = true
+            }
+        }
+        let dates = Set(candidates.compactMap { DateUtil.parse($0.dateRaw) })
+        guard dates.count <= 1 else { return .missing([.finalForm, .conflictingDates]) }
+        guard !uncertain, let candidate = candidates.sorted(by: {
+            ($0.dateRaw, $0.event, $0.result ?? "") < ($1.dateRaw, $1.event, $1.result ?? "")
+        }).first else { return .missing([.finalForm]) }
+        return .found(candidate)
     }
 
     private static func motivatedAppealDetermination(in instance: CaseInstance, movement: CaseMovement)

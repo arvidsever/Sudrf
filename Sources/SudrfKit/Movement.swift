@@ -443,7 +443,10 @@ public actor MovementService: MovementProviding {
     let branch: CourtBranch
     /// УИД, сохранённый в фоне из ранее подтверждённой карточки. Он нужен
     /// только как безопасный якорь для временного fallback базовой карточки:
-    /// живая интерактивная ветка этот параметр не передаёт.
+    /// живая обычная ветка этот параметр не передаёт. Для московского KoAP
+    /// запроса поле также несёт runtime-ожидание UID, полученное из UID-поиска;
+    /// оно проверяется по карточке до запросов вышестоящих инстанций и не
+    /// переносится в результат или сохранённый контекст.
     let judicialUID: String?
     /// Клиент второй кассации (ВС РФ). nil — вторая кассация не запрашивается.
     let vsrf: (any VSRFProviding)?
@@ -487,9 +490,11 @@ public actor MovementService: MovementProviding {
     /// movement aggregation. The legacy throwing shape remains inside this
     /// adapter so existing captcha/transient recovery paths stay unchanged.
     func discoveryRowsOutcome(court: Court, cartoteka: Cartoteka,
-                              field: SearchField, value: String) async throws
+                              field: SearchField, value: String,
+                              using provider: (any CaseProviding)? = nil) async throws
         -> DiscoveryRows {
-        switch try await client.searchOutcome(court: court, cartoteka: cartoteka,
+        let source = provider ?? client
+        switch try await source.searchOutcome(court: court, cartoteka: cartoteka,
                                               field: field, value: value,
                                               operation: .discovery) {
         case .usableSnapshot(let rows, _):
@@ -524,6 +529,12 @@ public actor MovementService: MovementProviding {
     public func movement(for base: CaseSearchResult,
                          court: Court,
                          cartoteka: Cartoteka) async throws -> CaseMovement {
+        if MoscowMagistrateKoAPSource.host.caseInsensitiveCompare(court.domain) == .orderedSame,
+           court.level == .magistrate, cartoteka.id == "adm" {
+            return try await moscowMagistrateKoAPMovement(
+                for: base, court: court, cartoteka: cartoteka,
+                expectedJudicialUID: judicialUID)
+        }
         // Суды Москвы — отдельный портал mos-gorsud.ru (см. MosGorSudMovement).
         // Ветка нужна и живому поиску, и перезапросу отслеживаемого дела
         // (RefreshCenter идёт через этот же метод по MovementProviding).
@@ -2304,31 +2315,33 @@ extension MovementService {
     /// Точная ссылка строки сохраняет фактические `delo_id` / `new` / `srv_num`.
     /// Обычная выдача без колонки «Суд» сохраняет прежний fallback по своим
     /// идентификаторам; подтверждённая межсудебная выдача его не допускает.
-    func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka) async throws -> CaseCard {
+    func fetchCard(row: CaseSearchResult, court: Court, cartoteka: Cartoteka,
+                   using provider: (any CaseProviding)? = nil) async throws -> CaseCard {
+        let source = provider ?? client
         if let url = row.cardURL, SudrfHost.isMSudrfHost(url.host ?? "") {
             guard let locator = SourceNativeCardLocator.msudrf(url: url, cartoteka: cartoteka),
                   locator.courtKey == SudrfHost.moduleHost(court.domain),
                   row.caseID == nil || row.caseID == locator.sourceNativeID else {
                 throw SudrfError.parsing("ссылка базовой карточки мирового судьи не соответствует делу")
             }
-            return try await (magistrate ?? client).fetchCard(url: url)
+            return try await (magistrate ?? source).fetchCard(url: url)
         }
         if let url = row.cardURL, let link = try? SudrfCaseCardLink(url: url) {
             if link.moduleHost == SudrfHost.moduleHost(court.domain) {
-                return try await client.fetchCard(url: link.sanitizedURL)
+                return try await source.fetchCard(url: link.sanitizedURL)
             }
             if row.courtTitle != nil {
                 throw SudrfError.parsing("ссылка выдачи относится к другому суду")
             }
         }
         if let id = row.caseID, let uid = row.caseUID {
-            return try await client.fetchCard(court: court, caseID: id, caseUID: uid,
+            return try await source.fetchCard(court: court, caseID: id, caseUID: uid,
                                               deloID: cartoteka.deloID, new: cartoteka.new)
         }
         guard let url = row.cardURL else {
             throw SudrfError.parsing("у записи нет ни идентификаторов, ни ссылки на карточку")
         }
-        return try await client.fetchCard(url: url)
+        return try await source.fetchCard(url: url)
     }
 
     /// Сохранённая ссылка может вести в районный суд, а не только в вышестоящий.

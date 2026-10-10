@@ -30,8 +30,18 @@ import Synchronization
 public enum SearchDiagnostics {
 
     public static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+        get { enabledOverride.withLock { $0 } ?? (UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true) }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+    }
+    private static let enabledOverride = Mutex<Bool?>(nil)
+
+    @discardableResult
+    static func setEnabledForTesting(_ enabled: Bool?) -> Bool? {
+        enabledOverride.withLock { previous in
+            let old = previous
+            previous = enabled
+            return old
+        }
     }
     private static let enabledKey = "captcha.diagnosticsEnabled"
 

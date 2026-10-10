@@ -10,7 +10,66 @@ private func canonicalAcceptanceHost(_ host: String) -> String {
     return SudrfHost.moduleHost(lowercased)
 }
 
+private final class Issue339DenyNetworkURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
+}
+
 final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
+
+    @MainActor
+    func testPrivateHarnessPersistsOfflineDirectLinkWithoutNetwork() async throws {
+        let isolation = Issue339TestIsolation()
+        defer { isolation.removePreferences() }
+        let settings = isolation.makeCaptchaSettings()
+        settings.autoSolveEnabled = true
+        let tokenStore = CaptchaTokenStore()
+        let client = Self.makeIsolatedClient(captchaTokenStore: tokenStore, denyNetwork: true)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("issue-339-offline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let previousDir = SearchDiagnostics.setDirForTesting(root)
+        defer { _ = SearchDiagnostics.setDirForTesting(previousDir) }
+        let previousEnabled = SearchDiagnostics.setEnabledForTesting(true)
+        defer { _ = SearchDiagnostics.setEnabledForTesting(previousEnabled) }
+        let solverLog = CaptchaSolverLog(
+            fileURL: root.appendingPathComponent("solver.log"),
+            failuresDir: root, diagnosticsDir: root)
+        let solver = try isolation.makeCaptchaSolver(log: solverLog, settings: settings)
+        XCTAssertTrue(solver.log === solverLog)
+        let context = MovementContext(
+            branchRaw: CourtBranch.general.rawValue, region: "Республика Коми",
+            searchDomain: "syktsud--komi.sudrf.ru",
+            displayDomain: "syktsud.komi.sudrf.ru",
+            courtTitle: "Сыктывкарский городской суд",
+            courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "11RS0001", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue,
+            caseNumber: "2-339/2026", caseID: "offline-339", caseUID: "offline-guid")
+        let result = try await addAndAutoRefresh(
+            context: context, client: client, solver: solver,
+            settings: settings, corpus: isolation.makeCaptchaCorpus(),
+            observations: SolveObservations(), storeURL: root.appendingPathComponent("tracked.store"),
+            isolation: isolation, captchaTokenStore: tokenStore,
+            notificationReceiver: Issue339NotificationReceiver())
+        XCTAssertEqual(result.persisted.recordCount, 1)
+        XCTAssertEqual(result.persisted.recordKey, context.key)
+        XCTAssertEqual(try coldReopen(storeURL: root.appendingPathComponent("tracked.store"),
+                                      key: context.key), result.persisted)
+        XCTAssertTrue(result.outcome == "partial" || result.outcome == "failed")
+        let diagnosticURL = root.appendingPathComponent("refresh-outcome-diagnostic.txt")
+        let diagnostic = try String(contentsOf: diagnosticURL, encoding: .utf8)
+        XCTAssertFalse(diagnostic.isEmpty)
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(
+            atPath: diagnosticURL.path)[.posixPermissions] as? NSNumber).intValue
+        XCTAssertEqual(mode & 0o777, 0o600)
+    }
 
     private struct LocatorComparison: Codable {
         let parsed: Bool
@@ -216,27 +275,6 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
     }
 
     @MainActor
-    func testFactoryPassesSuppliedLoggerThroughUnchangedProviderSelection() throws {
-        let isolation = Issue339TestIsolation()
-        defer { isolation.removePreferences() }
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("issue-339-factory-log-\(UUID().uuidString)",
-                                    isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let logger = CaptchaSolverLog(
-            fileURL: directory.appendingPathComponent("solver.log"),
-            failuresDir: directory.appendingPathComponent("failures", isDirectory: true),
-            diagnosticsDir: directory.appendingPathComponent("diagnostics", isDirectory: true))
-        let solver = CaptchaSolverFactory.make(
-            settings: isolation.makeCaptchaSettings(), log: logger)
-
-        XCTAssertTrue(solver.log === logger,
-                      "factory must use the requested log destination")
-    }
-
-    @MainActor
     func testOptInLiveDirectLinkAutoRefreshPersistsAcrossColdReopen() async throws {
         guard Bundle.main.bundleIdentifier != "ru.sudrf.app" else {
             XCTFail("live acceptance cannot run inside the production app process")
@@ -249,17 +287,10 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
             throw XCTSkip("live #339 acceptance is opt-in and remains disabled by default")
         }
 
-        let processDefaults = UserDefaults.standard
-        let autoSolveEnabled = processDefaults.object(forKey: "captcha.autoSolve").map { _ in
-            processDefaults.bool(forKey: "captcha.autoSolve")
-        } ?? true
-        guard autoSolveEnabled else {
-            throw XCTSkip("automatic CAPTCHA solving is disabled in the test process")
-        }
         let isolation = Issue339TestIsolation()
         defer { isolation.removePreferences() }
         let settings = isolation.makeCaptchaSettings()
-        settings.autoSolveEnabled = autoSolveEnabled
+        settings.autoSolveEnabled = true
         let captchaTokenStore = CaptchaTokenStore()
         let notificationReceiver = Issue339NotificationReceiver()
 
@@ -278,12 +309,14 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         }
         let previousSearchDiagnosticsDirectory = SearchDiagnostics.setDirForTesting(searchDiagnostics)
         defer { _ = SearchDiagnostics.setDirForTesting(previousSearchDiagnosticsDirectory) }
+        let previousDiagnosticsEnabled = SearchDiagnostics.setEnabledForTesting(true)
+        defer { _ = SearchDiagnostics.setEnabledForTesting(previousDiagnosticsEnabled) }
 
         let solverLog = CaptchaSolverLog(
             fileURL: root.appendingPathComponent("captcha-solve.log"),
             failuresDir: solverFailures,
             diagnosticsDir: solverDiagnostics)
-        let solver = CaptchaSolverFactory.make(settings: settings, log: solverLog)
+        let solver = try isolation.makeCaptchaSolver(log: solverLog, settings: settings)
         let captchaCorpus = CorpusStore(baseDir: corpusDirectory)
         let observations = SolveObservations()
         let client = Self.makeIsolatedClient(captchaTokenStore: captchaTokenStore)
@@ -413,6 +446,8 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
     ) async throws -> LiveRefreshResult {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         var capturedStore: TrackedStore?
+        let unusedVSRF = Issue339UnusedVSRF()
+        let unusedMosGorSud = Issue339UnusedMosGorSud()
         let router = try AppRouter(
             captchaSettings: settings,
             modelContainer: container,
@@ -449,14 +484,39 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
                     treasuryDiscover: { _, _, _ in
                         EnforcementLookup(state: .error)
                     },
+                    vsrfProvider: unusedVSRF,
+                    mosGorSudProvider: unusedMosGorSud,
                     fsspAutoModelEnabled: false,
                     fsspDiscover: { _ in .error("disabled in issue-339 acceptance harness") })
             },
+            importVSRFProvider: unusedVSRF,
+            importMosGorSudProvider: unusedMosGorSud,
+            selectedPublishedAct: PublishedActSelection(
+                cache: ActFileCache(directory: storeURL.deletingLastPathComponent()
+                    .appendingPathComponent("published-acts", isDirectory: true)),
+                fetch: { _, _ in throw CancellationError() }),
             trackedStoreProjectionSynchronizer: { _, _ in },
             userDefaults: isolation.userDefaults,
+            client: client,
+            captchaTokenStore: captchaTokenStore,
+            directCaseLinkResolverFactory: { client in
+                DirectCaseLinkResolver(client: client,
+                    districtResolver: DistrictCourtResolver(client: client, cacheURL: nil))
+            },
             spotlightIndexerFactory: { isolation.makeSpotlightIndexer(catalog: $0) },
             currentEntityActivityPublisher: { _ in },
-            feedNotificationPublisher: { notificationReceiver.receive($0) })
+            feedNotificationPublisher: { notificationReceiver.receive($0) },
+            feedBadgePublisher: { _ in },
+            notificationOpenInstaller: { _ in },
+            intentInstaller: { _ in },
+            captchaSolverFactory: { _ in solver },
+            repairCoordinatorFactory: { store, client in
+                TrackedCaseRepairCoordinator(
+                    store: store, client: client, originResolver: Issue339UnusedOrigin(),
+                    defaults: isolation.userDefaults, captchaSolver: solver,
+                    captchaSettings: settings,
+                    anchorCardResolver: { _ in throw CancellationError() })
+            })
         router.refreshCenter.repairBeforeRefresh = nil
         router.refreshCenter.recoverCard = { _ in throw CancellationError() }
 
@@ -472,6 +532,15 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         }
         let execution = await refreshTask.value
         let elapsed = Self.elapsedMilliseconds(since: refreshStartedAt)
+        if let diagnostic = Self.outcomeDiagnostic(execution.outcome) {
+            let url = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("refresh-outcome-diagnostic.txt")
+            guard FileManager.default.createFile(
+                atPath: url.path, contents: Data(diagnostic.utf8),
+                attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
         guard let record = capturedStore?.record(forKey: key) else {
             XCTFail("the direct link must persist a tracked record")
             throw LiveAcceptanceError.persistedRecordMissing
@@ -548,12 +617,19 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
     }
 
     private static func makeIsolatedClient(
-        captchaTokenStore: CaptchaTokenStore
+        captchaTokenStore: CaptchaTokenStore, denyNetwork: Bool = false
     ) -> SudrfClient {
         SudrfClient(
             sessionFactory: { delegate in
                 let configuration = URLSessionConfiguration.ephemeral
                 configuration.timeoutIntervalForRequest = 45
+                configuration.urlCache = nil
+                configuration.httpCookieStorage = HTTPCookieStorage()
+                configuration.httpShouldSetCookies = true
+                configuration.httpCookieAcceptPolicy = .always
+                if denyNetwork {
+                    configuration.protocolClasses = [Issue339DenyNetworkURLProtocol.self]
+                }
                 return URLSession(configuration: configuration,
                                   delegate: delegate, delegateQueue: nil)
             },
@@ -585,6 +661,13 @@ final class DirectCaseLinkLiveAcceptanceTests: XCTestCase {
         case .captchaRequired: "captcha_required"
         case .failed: "failed"
         case .notFound: "not_found"
+        }
+    }
+
+    private static func outcomeDiagnostic(_ outcome: CaseRefreshOutcome) -> String? {
+        switch outcome {
+        case .partial(let message), .failed(let message): message
+        default: nil
         }
     }
 

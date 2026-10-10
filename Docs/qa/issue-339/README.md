@@ -2,6 +2,75 @@
 
 ## Current result — 10 October 2026
 
+Issue #339 remains open and PR #446 remains draft. The native form, movement
+card and pasteboard route were accepted separately on 10 October 2026. All
+three authorized local live attempts have now been used; none proves full-chain
+success. No fourth live attempt is authorized by this record.
+
+### Third live attempt and private harness
+
+The third attempt ran on 10 October 2026 from 17:12:30 UTC to 17:16:09 UTC
+with the reviewed private harness delta on integration head
+`908930089230ac473b722225a7fd245144e0a293`. One selected XCTest passed,
+zero failures and zero skips, 219.435 seconds. This run is distinct from both
+earlier responses; their original diagnostic limitations remain unchanged.
+
+The on-device CoreML/Vision pipeline returned two tokens, one each for
+`sankt-peterburgsky--spb.sudrf.ru` and `3kas.sudrf.ru`. Each token-returning
+host subsequently had confirmed fresh-card coverage or a verified empty
+listing, with no remaining CAPTCHA/source failure at that host. One record and
+two movement instances were saved. A new disk container reopened the selected context and locator digests,
+selected movement-instance fields, collections, seen/fetch timestamps, source
+outcome kind and journal IDs with matching values. This comparison does not
+assert equality of the complete raw context, movement or journal payload. No historic journal events appeared.
+Timings: resolver 4,602 ms; refresh 214,787 ms; solver 16,984 ms; cold reopen 2 ms.
+
+The overall outcome remained `.partial`. Its associated diagnostic message
+was not retained by this harness, and persistence strips fresh coverage from
+the display cache. Therefore the cause of that partial outcome is **not
+established**. The test passing proves the two CAPTCHA continuations and cold
+persistence, not complete-chain acceptance. Raw responses, private locators,
+CAPTCHA codes, tokens and cookies remain local and are not published.
+
+The current harness no longer reads process auto-solver preferences or discovers
+models in installed/shared locations. It supplies private settings, tokens,
+cookies, act cache, log/corpus directories and explicit repository numeric and
+specialist models through the existing CoreML/Vision provider pipeline. The
+ordinary local macOS solver diagnostics remain enabled as authorized; file
+logs are temporary. Unused source/repair/act providers reject access, while
+Spotlight, activities, badge changes, external opens and notifications use test
+receivers. No working store, ordinary application or TestFlight was opened.
+An offline test exercised this exact private setup with a denied network and
+passed one XCTest, zero failures/skips, in 13.737 seconds. A subsequent test-only
+change retains the original partial/failed diagnostic in a private `0600` file;
+its offline assertion passed one XCTest with zero failures/skips. It enables
+future diagnostic capture and cannot recover the third attempt’s missing message.
+
+| Local evidence | SHA-256 |
+| --- | --- |
+| Third live log (private) | `9795d850bb36fb83549758668e34785be1ea5aa747bb268735b34effc5b7827e` |
+| Private harness offline log | `fe08ef4bf4a9e087649c6969c7c99b025cd6b277a045014abdf2f124d21c96ef` |
+| Private outcome diagnostic offline log | `1c126512f1e55eb6c50e8cb592393a11b23ad6838d6215a1cd38be859cf83090` |
+| Both repository model manifest checks | `c4d64f9d39e7ac13f1f169cb1e883d6ec11246c5bcfd3617b850377a70060aa5` |
+
+The model checks compared all tracked files against the unchanged primary and
+specialist manifests; both passed. The live root was mode `0700`; the retained
+locator diagnostic and redirected process log were mode `0600`.
+
+Hosted CI [38069830794](https://github.com/arvidsever/Sudrf/actions/runs/38069830794)
+passed on the integration head above: six focused sheet tests executed in a
+fresh process with no skips; 2,137 XCTest cases (26 explicit skips, zero failures),
+28 Swift Testing cases and 27 Python cases (six skips). Registry, hosted build
+and packaging also passed. Log SHA-256:
+`8820557b3e895bc0cc2039890362702edf2a1c700744da24dadbbcf12df3822f`.
+That hosted result predates the private harness delta; a new current-head CI
+is required after its commit. Independent Astra source review of the three-file private harness delta
+accepted commit/push into draft and CI, not merge or full live acceptance.
+The earlier isolation audit identified the private-dependency boundaries
+corrected here. Current-head CI and complete-chain acceptance remain open.
+
+## Earlier committed checkpoint — 10 October 2026
+
 Issue #339 remains open and PR #446 remains draft. The offline AppRouter path is now executed, not only compiled: hosted run [37994371778](https://github.com/arvidsever/Sudrf/actions/runs/37994371778) on `752cfc0ad7e30ed71d3466ab63b1a861fd8c4f92` passed all six focused `DirectCaseLinkSheetTests`, with zero skips and zero failures, in a fresh process. The unchanged full suite passed 2,038 XCTest cases (25 skips, zero failures), 28 Swift Testing cases and 26 Python cases (six skips). The full-suite skips do not replace the separate six-test gate.
 
 Hosted log SHA-256: `142a67c4506c35b206704a80da86a193b7195b0257b831bb6a42821f95b8bcd8`. Own Xcode 27 build on the same head succeeded without launch; log SHA-256: `45ca6a047724e6c9ef0092fc5660a9858dde9905a9df82f7775eb8ce4619e986`. The registry generator reported the checked-in resource current.
@@ -32,7 +101,7 @@ The clean own Xcode build passed. Build log SHA-256: `032b4e7a8152184aeacbbf82b8
 
 The approved test seam leaves normal `AppRouter` behavior unchanged: its defaults still publish `NSUserActivity` with `becomeCurrent()` and send feed notifications through `FeedNotifier.shared`. The #339 harnesses inject a test activity publisher, a count-only notification receiver, and a `SpotlightIndexer` backed by a no-op writer and suite-scoped stores. No system notification is delivered by those harnesses.
 
-`FeedNotifier.setBadge` remains a separate Dock side effect. Every #339 test that constructs `AppRouter` now skips unless `NSApp == nil`; the app lifecycle hook that configures `UNUserNotificationCenter` is not invoked. The offline test also uses suite-scoped preferences, a temporary CAPTCHA corpus and log paths, and an instance-local token store.
+Older sheet tests guard the separate `FeedNotifier.setBadge` Dock side effect with `NSApp == nil`; the new private live harness additionally supplies a no-op badge receiver. Every #339 test that constructs `AppRouter` now skips unless `NSApp == nil`; the app lifecycle hook that configures `UNUserNotificationCenter` is not invoked. The offline test also uses suite-scoped preferences, a temporary CAPTCHA corpus and log paths, and an instance-local token store.
 
 The six offline AppRouter tests have now executed in the isolated hosted process described above. Live and native UI acceptance remain separate criteria.
 
@@ -52,15 +121,15 @@ swift test --filter DirectCaseLinkSheetTests
 
 ## Opt-in live harness and boundaries
 
-The first attempt and its unresolved locator criterion are recorded above. The live test is skipped unless `SUDRF_ISSUE339_LIVE_ACCEPTANCE=1` is present in the XCTest process. It fails immediately if the process bundle identifier is `ru.sudrf.app`, skips if `NSApp` is available, and skips if automatic CAPTCHA solving is disabled in the test process.
+The first attempt and its unresolved locator criterion are recorded above. The live test is skipped unless `SUDRF_ISSUE339_LIVE_ACCEPTANCE=1` is present in the XCTest process. It fails immediately if the process bundle identifier is `ru.sudrf.app`, skips if `NSApp` is available, and uses explicitly enabled suite-scoped automatic CAPTCHA settings.
 
-The live path uses the existing sanitized #321 locator with `DirectCaseLinkResolver`, then calls `AppRouter.addDirectCaseLink` and joins the refresh task that this method must already have started. The test uses the production `CaptchaSolverFactory` and its unchanged provider selection. The factory now accepts an internal logger argument defaulting to `.shared`; live tests inject a temporary `CaptchaSolverLog`, and a focused test asserts that the factory returns a solver holding that exact logger.
+The live path uses the existing sanitized #321 locator with `DirectCaseLinkResolver`, then calls `AppRouter.addDirectCaseLink` and joins the refresh task that this method must already have started. The test constructs the existing CoreML/Vision provider pipeline with explicit repository models and a temporary `CaptchaSolverLog`, bypassing installed-model discovery. Normal factory behavior is unchanged; the older factory-logger test is replaced by the offline private-harness persistence test.
 
-The court client uses an ephemeral URL session, `WorkingVariantStore(cacheURL: nil)`, and an instance-local `CaptchaTokenStore`; no shared token entries are read, cleared, or restored. The live test reads the process auto-solver setting once, then copies that value into suite-scoped `CaptchaSettings`. CAPTCHA attempts use a per-challenge maximum of three. `SearchDiagnostics` is redirected to the temporary run area and restored afterward. The store, CAPTCHA corpus, settings, and Spotlight manifest/preferences use test-owned temporary locations. Raw solver and search diagnostics remain local in the temporary run directory; do not attach them to QA reports or pull requests.
+The court client uses an ephemeral URL session, `WorkingVariantStore(cacheURL: nil)`, and an instance-local `CaptchaTokenStore`; no shared token entries are read, cleared, or restored. The live test explicitly enables automatic solving in suite-scoped `CaptchaSettings`; it does not read process auto-solver preferences. CAPTCHA attempts use a per-challenge maximum of three. `SearchDiagnostics` is redirected to the temporary run area and restored afterward. The store, CAPTCHA corpus, settings, and Spotlight manifest/preferences use test-owned temporary locations. Raw solver and search diagnostics remain local in the temporary run directory; do not attach them to QA reports or pull requests.
 
 The movement provider also injects `DistrictCourtResolver(client: sameClient, cacheURL: nil)` through `MovementService`'s existing `transferCourts` initializer. The harness observes only fresh source-coverage summaries. A token-returning host must have a later movement result proving either a loaded native card admitted against the source coverage or a verified empty listing, with no remaining CAPTCHA or source failure for that host.
 
-The test does not bootstrap background work, query FSSP or Treasury, use the working database, or call `AppRouter.resolveDirectCaseLink`. That wrapper owns its default client, so the resolver is exercised directly with the isolated client and its result is passed to `addDirectCaseLink`. The test receiver substitutes for both `NSUserActivity` publication and feed-notification delivery; it records the activity type and notification-entry count without retaining case text or identifiers. `SpotlightIndexer` uses the harness's no-op writer. The unchanged production publishers remain the defaults outside these tests.
+The test does not bootstrap background work, query FSSP or Treasury, or use the working database. It exercises `DirectCaseLinkResolver` with the isolated client and passes its result to `addDirectCaseLink`; AppRouter also receives an explicitly private resolver and rejecting unused providers. The test receiver substitutes for both `NSUserActivity` publication and feed-notification delivery; it records the activity type and notification-entry count without retaining case text or identifiers. `SpotlightIndexer` uses the harness's no-op writer. The unchanged production publishers remain the defaults outside these tests.
 
 The test cold-reopens the temporary disk store in a new `ModelContainer` and checks exact saved state without importing a second time. It records only stage durations, source-host counts, outcome labels, and short SHA-256 digests. It never prints OCR values, CAPTCHA tokens, cookies, full locators, or participant data.
 

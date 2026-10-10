@@ -1,4 +1,5 @@
 import Foundation
+import SudrfKit
 @testable import CaptchaSolver
 @testable import SudrfApp
 
@@ -32,6 +33,29 @@ final class Issue339TestIsolation {
             log: CaptchaSolverLog(fileURL: nil, failuresDir: nil, diagnosticsDir: nil))
     }
 
+    @MainActor
+    func makeCaptchaSolver(log: CaptchaSolverLog, settings: CaptchaSettings) throws -> CaptchaSolver {
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../CaptchaSolverTests/Fixtures", isDirectory: true)
+            .standardizedFileURL
+        let primaryURL = fixtures.appendingPathComponent("model-captcha-numeric.mlmodelc")
+        let specialistURL = fixtures.appendingPathComponent(
+            "model-captcha-numeric-specialist.mlmodelc")
+        let primary = try CoreMLCaptchaStrategy(modelURL: primaryURL, kind: .sudrfToken)
+        let specialist = try CoreMLCaptchaStrategy(modelURL: specialistURL, kind: .sudrfToken)
+        var vision = VisionOCRStrategy(preprocessorHosts: settings.preprocessorHosts)
+        vision.preprocessingProvider = { [weak settings] in
+            settings?.preprocessorEnabled ?? false
+        }
+        let numeric = HighestConfidenceStrategy(first: primary, second: specialist)
+        let provider = KindDispatchingStrategy(
+            primary: numeric, fallback: vision,
+            minPrimaryConfidence: settings.minConfidence,
+            primaryAttemptIsCompatible: { CoreMLCaptchaStrategy.isCompatibleOutput($0.value) })
+        return CaptchaSolver(provider: provider,
+                             enabledKinds: [.sudrfToken, .kcaptcha], log: log)
+    }
+
     func makeSpotlightIndexer(catalog: CaseCatalog) -> SpotlightIndexer {
         SpotlightIndexer(
             catalog: catalog,
@@ -50,6 +74,30 @@ final class Issue339TestIsolation {
         if FileManager.default.fileExists(atPath: supportDirectory.path) {
             try? FileManager.default.removeItem(at: supportDirectory)
         }
+    }
+}
+
+struct Issue339UnusedVSRF: VSRFProviding {
+    func search(uniqueNumber: String?, oldCaseNumber: String?,
+                keywords: String?) async throws -> VSRFSearchResults { throw CancellationError() }
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        throw CancellationError()
+    }
+}
+
+struct Issue339UnusedMosGorSud: MosGorSudProviding {
+    func search(courtAlias: String?, uid: String?, caseNumber: String?, participant: String?,
+                instance: Int, processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+        throw CancellationError()
+    }
+    func fetchCard(url: URL) async throws -> MosGorSudCard { throw CancellationError() }
+    func fetchPublishedAct(url: URL) async throws -> PublishedActFile { throw CancellationError() }
+}
+
+struct Issue339UnusedOrigin: CaseOriginResolving {
+    func resolve(anchorContext: MovementContext,
+                 anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        throw CancellationError()
     }
 }
 

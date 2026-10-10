@@ -24,7 +24,7 @@ struct SourceHealthIndex {
             .appendingPathComponent("source-health-index.json")
     }
 
-    func load() throws -> SourceHealthState {
+    func load(trackedHosts: Set<String>) throws -> SourceHealthState {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return SourceHealthState()
         }
@@ -37,11 +37,12 @@ struct SourceHealthIndex {
         for (host, savedState) in snapshot.hosts {
             state.restore(savedState, for: host)
         }
-        return state
+        return state.retaining(trackedHosts: trackedHosts)
     }
 
-    func save(_ state: SourceHealthState) throws {
-        let snapshot = Snapshot(version: Self.schemaVersion, hosts: state.hosts)
+    func save(_ state: SourceHealthState, trackedHosts: Set<String>) throws {
+        let retained = state.retaining(trackedHosts: trackedHosts)
+        let snapshot = Snapshot(version: Self.schemaVersion, hosts: retained.hosts)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(snapshot)

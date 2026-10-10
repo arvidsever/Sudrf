@@ -7,6 +7,11 @@ import SudrfKit
 @testable import SudrfApp
 
 final class SourceHealthIndexTests: XCTestCase {
+    private struct Snapshot: Codable {
+        let version: Int
+        let hosts: [String: SourceHealthState.HostState]
+    }
+
     private var directory: URL!
     private var fileURL: URL!
 
@@ -33,12 +38,12 @@ final class SourceHealthIndexTests: XCTestCase {
         state.record(unsafe)
 
         let index = SourceHealthIndex(fileURL: fileURL)
-        try index.save(state)
+        try index.save(state, trackedHosts: [])
         let json = try String(contentsOf: fileURL, encoding: .utf8)
         XCTAssertFalse(json.contains("sentinel"))
         XCTAssertFalse(json.contains("affectedSources"))
 
-        let loaded = try index.load()
+        let loaded = try index.load(trackedHosts: [])
         XCTAssertEqual(loaded.hosts.count, 1)
         XCTAssertEqual(loaded.hosts["court.sudrf.ru"]?.lastError?.errorCode, -1200)
         XCTAssertEqual(loaded.hosts["court.sudrf.ru"]?.lastError?.transportCategory, .tls)
@@ -51,8 +56,8 @@ final class SourceHealthIndexTests: XCTestCase {
         state.record(attempt(.partial, time: 30))
 
         let index = SourceHealthIndex(fileURL: fileURL)
-        try index.save(state)
-        let loaded = try index.load()
+        try index.save(state, trackedHosts: [])
+        let loaded = try index.load(trackedHosts: [])
         let host = try XCTUnwrap(loaded.hosts["court.sudrf.ru"])
         XCTAssertEqual(host.lastObserved?.kind, .partial)
         XCTAssertEqual(host.lastSuccess?.kind, .usableSnapshot)
@@ -62,13 +67,13 @@ final class SourceHealthIndexTests: XCTestCase {
     func testReopenDropsHostWithPathOrQueryInjectedIntoFile() throws {
         var state = SourceHealthState()
         state.record(attempt(.parserFailure, time: 10))
-        try SourceHealthIndex(fileURL: fileURL).save(state)
+        try SourceHealthIndex(fileURL: fileURL).save(state, trackedHosts: [])
         let poisoned = try String(contentsOf: fileURL, encoding: .utf8)
             .replacingOccurrences(of: "court.sudrf.ru",
                                   with: "court.sudrf.ru/path?private=sentinel")
         try poisoned.write(to: fileURL, atomically: true, encoding: .utf8)
 
-        let loaded = try SourceHealthIndex(fileURL: fileURL).load()
+        let loaded = try SourceHealthIndex(fileURL: fileURL).load(trackedHosts: [])
         XCTAssertTrue(loaded.hosts.isEmpty)
         XCTAssertFalse(String(describing: loaded).contains("sentinel"))
     }
@@ -77,7 +82,7 @@ final class SourceHealthIndexTests: XCTestCase {
         try writePoisonedSnapshot(lastSuccess: fact(kind: "usableSnapshot", errorCode: -1200),
                                   lastError: "null")
 
-        let loaded = try SourceHealthIndex(fileURL: fileURL).load()
+        let loaded = try SourceHealthIndex(fileURL: fileURL).load(trackedHosts: [])
         XCTAssertNil(loaded.hosts["court.sudrf.ru"]?.lastSuccess)
     }
 
@@ -85,7 +90,7 @@ final class SourceHealthIndexTests: XCTestCase {
         try writePoisonedSnapshot(lastSuccess: "null",
                                   lastError: fact(kind: "transportFailure", errorCode: -999))
 
-        let loaded = try SourceHealthIndex(fileURL: fileURL).load()
+        let loaded = try SourceHealthIndex(fileURL: fileURL).load(trackedHosts: [])
         XCTAssertNil(loaded.hosts["court.sudrf.ru"]?.lastError)
     }
 
@@ -93,7 +98,7 @@ final class SourceHealthIndexTests: XCTestCase {
         let original = Data("not-json sentinel".utf8)
         try original.write(to: fileURL)
 
-        XCTAssertThrowsError(try SourceHealthIndex(fileURL: fileURL).load())
+        XCTAssertThrowsError(try SourceHealthIndex(fileURL: fileURL).load(trackedHosts: []))
         XCTAssertEqual(try Data(contentsOf: fileURL), original)
     }
 
@@ -106,13 +111,65 @@ final class SourceHealthIndexTests: XCTestCase {
 
         XCTAssertThrowsError(try SourceHealthIndex(
             fileURL: blocker.appendingPathComponent("source-health-index.json")
-        ).save(state))
+        ).save(state, trackedHosts: []))
         XCTAssertEqual(try Data(contentsOf: blocker), original)
     }
 
-    private func attempt(_ kind: SourceOutcomeKind, time: Double, code: String? = nil) -> SourceAttempt {
+    func testRetentionKeepsTrackedHostsAndNewestOtherHostsAcrossReadAndWrite() throws {
+        let trackedHosts = Set((0..<55).map { String(format: "tracked-%02d.sudrf.ru", $0) })
+        let recentHosts = (0..<48).map { String(format: "recent-%02d.sudrf.ru", $0) }
+        let tiedHosts = (0..<4).map { String(format: "tie-%02d.sudrf.ru", $0) }
+        let oldHosts = (0..<2).map { String(format: "old-%02d.sudrf.ru", $0) }
+        var state = SourceHealthState()
+
+        for host in trackedHosts.sorted() {
+            state.record(attempt(.parserFailure, time: -100, host: host))
+        }
+        for host in recentHosts {
+            state.record(attempt(.parserFailure, time: 100, host: host))
+        }
+        for host in tiedHosts {
+            state.record(attempt(.parserFailure, time: 90, host: host))
+        }
+        for host in oldHosts {
+            state.record(attempt(.parserFailure, time: 80, host: host))
+        }
+
+        // Existing index files can predate the retention rule, so load must bound them too.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(Snapshot(version: 1, hosts: state.hosts))
+        try data.write(to: fileURL, options: .atomic)
+
+        let index = SourceHealthIndex(fileURL: fileURL)
+        let suppliedTrackedHosts = Set(trackedHosts.map { $0.uppercased() })
+        let retainedOtherHosts = Set(recentHosts + Array(tiedHosts.prefix(2)))
+        let expectedHosts = trackedHosts.union(retainedOtherHosts)
+
+        let retainedLegacyIndex = try index.load(trackedHosts: suppliedTrackedHosts)
+        XCTAssertEqual(Set(retainedLegacyIndex.hosts.keys), expectedHosts)
+        XCTAssertEqual(retainedLegacyIndex.hosts.count, 105)
+
+        // Save must bound an oversized in-memory state, not only an already-trimmed load.
+        try index.save(state, trackedHosts: suppliedTrackedHosts)
+        let persisted = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: fileURL))
+        XCTAssertEqual(Set(persisted.hosts.keys), expectedHosts)
+        XCTAssertEqual(persisted.hosts.count, 105)
+
+        let reopened = try index.load(trackedHosts: suppliedTrackedHosts)
+        XCTAssertEqual(Set(reopened.hosts.keys), expectedHosts)
+        XCTAssertEqual(reopened.hosts.count, 105)
+
+        // Once a caller no longer marks a host as tracked, it competes by observation time.
+        let afterUntracking = try index.load(trackedHosts: [])
+        XCTAssertEqual(Set(afterUntracking.hosts.keys), retainedOtherHosts)
+        XCTAssertEqual(afterUntracking.hosts.count, 50)
+    }
+
+    private func attempt(_ kind: SourceOutcomeKind, time: Double, host: String = "court.sudrf.ru",
+                         code: String? = nil) -> SourceAttempt {
         SourceAttempt(kind: kind, provenance: .init(
-            operation: .search, sourceFamily: "sudrf", host: "court.sudrf.ru",
+            operation: .search, sourceFamily: "sudrf", host: host,
             observedAt: Date(timeIntervalSince1970: time), errorCode: code
         ))
     }

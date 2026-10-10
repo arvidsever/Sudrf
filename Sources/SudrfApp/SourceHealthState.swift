@@ -43,6 +43,29 @@ struct SourceHealthState: Sendable {
 
     private(set) var hosts: [String: HostState] = [:]
 
+    /// Keeps every currently tracked host plus the 50 most recently observed others.
+    func retaining(trackedHosts rawTrackedHosts: Set<String>) -> Self {
+        let trackedHosts = Set(rawTrackedHosts.compactMap(Self.validatedHost))
+        let otherHosts = hosts.keys.filter { !trackedHosts.contains($0) }.sorted { lhs, rhs in
+            let lhsObserved = hosts[lhs]?.lastObserved?.observedAt ?? .distantPast
+            let rhsObserved = hosts[rhs]?.lastObserved?.observedAt ?? .distantPast
+            if lhsObserved != rhsObserved { return lhsObserved > rhsObserved }
+            return lhs < rhs
+        }
+
+        var retainedHosts: [String: HostState] = [:]
+        for host in trackedHosts {
+            if let state = hosts[host] { retainedHosts[host] = state }
+        }
+        for host in otherHosts.prefix(50) {
+            if let state = hosts[host] { retainedHosts[host] = state }
+        }
+
+        var retained = self
+        retained.hosts = retainedHosts
+        return retained
+    }
+
     mutating func record(_ attempt: SourceAttempt, confirmedOperationHost: String? = nil) {
         let provenance = attempt.provenance
         guard let host = Self.validatedHost(provenance.host),

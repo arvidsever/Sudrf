@@ -222,24 +222,41 @@ Existing persisted identity graphs are not silently rebuilt by this change.
 
 Native acceptance found lexicographic ordering such as 8, 89, 9, 90.
 `moscowCourtOption(for:)` omitted `CourtOption.number`, so the existing shared
-numeric comparator fell back to the published title. The mapping now forwards
-`unit.magistrateCourt.number`, derived from the classification code. Published
-title, classification code and native `/rs/<id>` remain separate fields.
+numeric comparator fell back to alphabetic title ordering. The first correction
+forwarded the classification number and passed 13 synthetic focused tests, but
+native QA then exposed a separate mismatch: active unit 48 has code `77MS0439`;
+units 323 and 391 also have different classification numbers. That intermediate
+implementation does not satisfy full visible-number ordering.
 
-The decoded Moscow-unit regression exercises the actual mapping followed by
-`SearchModel.ordered`, expecting `[1, 2, 8, 9, 10, 89, 90, 100, 471]`.
-Its titles and native IDs deliberately run in reverse numerical order to prove
-that neither supplies the numeric sorting key. The existing classification,
-canceled-unit and higher-court ordering checks remain in the focused profile.
+The final mapping reads the number after № in the published title, retaining the
+classification code and native URL ID unchanged for routing and identity. It
+uses the existing `SearchModel.ordered` numeric comparator. Synthetic units
+intentionally use different classification and native IDs. A regression also
+parses all 476 entries of the existing official-directory fixture and asserts
+that all 471 active options appear as visible numbers 1 through 471. Inactive
+historical entries remain excluded.
 
-On 10 October 2026 the focused command executed 13 App tests (5
-`CourtOptionOrderTests`, 8 `MoscowCourtOptionTests`), all passed:
+On 10 October 2026 the final focused command executed 14 App tests (5
+`CourtOptionOrderTests`, 9 `MoscowCourtOptionTests`), all passed:
 
 ```sh
-swift test --scratch-path /private/tmp/sudrf-106-spm --filter 'CourtOptionOrderTests|MoscowCourtOptionTests'
+swift test --disable-sandbox --scratch-path /private/tmp/sudrf-106-spm -Xswiftc -strict-concurrency=complete --filter 'CourtOptionOrderTests|MoscowCourtOptionTests'
 ```
 
-Log: `/private/tmp/sudrf-106-picker-order-tests.log`, SHA-256
-`6de9b0e64da8950214922d88c1ba63195a88e4cec5fcee50ac79d4e7abd2ac30`.
-This regression run used synthetic units and no live requests. Native UI
-acceptance and hosted current-commit CI remain separate gates.
+Log: `/private/tmp/sudrf-106-published-order-tests.log`, SHA-256:
+`8743c227422f41e71d3cbfbfd1290508dfc68ae14c5e40c137b530c34b4eeba4`.
+The fixture is a saved official directory, not a new live response. Independent
+Astra review passed for this final correction on 10 October 2026, including the
+fallback for an unparseable published number and unchanged routing identity.
+
+Native offline QA used `Sudrf106PublishedQA`, bundle identifier
+`ru.sudrf.qa.issue106.published`, with this final production mapping and the saved
+directory. Its expanded native menu contained all 471 options in exactly the
+order 1 through 471. Selection of 9 and 89 was checked; screenshots shown in the
+conversation display 8, 9, 10 and 88, 89, 90 respectively. The source used an
+offline fixture and no working database. The QA application and the two earlier
+QA instances were quit; inventory confirmed no running QA applications.
+
+User acceptance of the corrected screenshots and hosted current-commit CI
+remain separate gates. The previous classification-based review does not stand
+in for this final title-based review.

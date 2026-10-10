@@ -167,10 +167,13 @@ final class SearchModel: ObservableObject {
               !unit.courtFullNameWithMunicipal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
+        // В Москве классификационный код может отличаться от опубликованного номера участка.
+        let number = unit.courtFullNameWithMunicipal.firstMatch(of: /№\s*([0-9]+)/)
+            .flatMap { Int($0.1) }
         return CourtOption(domain: MoscowMagistrateDirectoryParser.host,
                            title: unit.courtFullNameWithMunicipal,
                            level: .magistrate, code: unit.code,
-                           number: unit.magistrateCourt.number,
+                           number: number,
                            moscowMagistrateUnitPathID: unitPathID)
     }
 

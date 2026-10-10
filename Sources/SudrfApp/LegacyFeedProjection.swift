@@ -33,10 +33,7 @@ struct LegacyFeedRecordInput {
         let projectedActs: [CaseAct]
         let projectedInstances: [CaseInstance]
         if snapshot != nil, let movement {
-            projectedActs = movement.acts.map {
-                CaseAct(id: $0.id, title: $0.title, date: $0.date,
-                        courtShort: $0.courtShort, instanceLevel: $0.instanceLevel)
-            }
+            projectedActs = movement.acts
             projectedInstances = movement.instances.map { instance in
                 // Keep renderer fields without retaining per-instance sessions or linked act files.
                 CaseInstance(
@@ -113,10 +110,11 @@ struct LegacyFeedProjectionResult {
 }
 
 enum LegacyFeedProjection {
-    private struct RawRow {
+    struct RawRow {
         let entry: FeedEntry
         let legacyID: String
         let isMaterial: Bool
+        let source: LegacyFeedHistorySource?
     }
 
     /// Retain all dated history before the display window or material-ID collapse.
@@ -125,7 +123,7 @@ enum LegacyFeedProjection {
         rawRows(records: records, readIDs: readIDs).map(\.entry)
     }
 
-    private static func rawRows(records: [LegacyFeedRecordInput], readIDs: Set<String>)
+    static func rawRows(records: [LegacyFeedRecordInput], readIDs: Set<String>)
         -> [RawRow] {
         var rows = [RawRow]()
 
@@ -140,7 +138,7 @@ enum LegacyFeedProjection {
                         id: id, dayHead: nil, date: date, time: "—", recordKey: record.recordKey,
                         caseNumber: record.caseNumber, client: record.client, kind: .enforcement,
                         text: event.text, actID: nil, isUnread: !readIDs.contains(id)),
-                        legacyID: id, isMaterial: false))
+                        legacyID: id, isMaterial: false, source: nil))
                 }
             }
 
@@ -171,7 +169,8 @@ enum LegacyFeedProjection {
                     instanceLevel: session.level, sourceCardID: session.sourceCardID,
                     sourceInstanceID: previousRegistration?.instance.id ?? material.instance?.id,
                     previousRegistrationNumber: previousRegistration?.number),
-                    legacyID: legacyID, isMaterial: session.level == .material))
+                    legacyID: legacyID, isMaterial: session.level == .material,
+                    source: .session(session)))
             }
 
             if !record.acts.isEmpty {
@@ -220,7 +219,8 @@ enum LegacyFeedProjection {
                         instanceLevel: sourceLevel, sourceCardID: sourceCardID,
                         sourceInstanceID: exactOwner?.id ?? material?.id,
                         previousRegistrationNumber: previousRegistrationNumber),
-                        legacyID: legacyID, isMaterial: sourceLevel == .material))
+                        legacyID: legacyID, isMaterial: sourceLevel == .material,
+                        source: .act(act)))
                 }
             }
         }

@@ -1,5 +1,30 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Pure history-import contract — 10 October 2026
+
+`LegacyFeedHistoryImport` prepares one quiet import of every retained dated court
+row. `legacyFeedImported` explicitly records published history rather than a
+new semantic transition. Evidence retains the original row ID/origin and full
+`StoredSession` or `CaseAct`, including file provenance and production number.
+It omits current client labels, read state and day headings. Canonical payload
+fingerprints and duplicate ordinals preserve conflicting IDs and multiplicity;
+RSS is excluded in favor of #454. No aliases are authorized by this import alone.
+
+An optional JSON-only import version prevents replay after reopen or formatter
+changes without promoting judicial baselines. Each original record must be
+imported before dossier merge. Mixing completed and incomplete imports throws,
+including an imported-empty origin, rather than guessing history from the merged
+snapshot. Old journal JSON reads without the new optional fields.
+
+The focused final run passed 22 XCTest tests and 28 Swift Testing tests, with no
+failures or skips: eight import tests, seven renderer tests, seven baseline tests
+and the existing semantic derivation suite. Local log
+`/private/tmp/sudrf-179-history-import-final-tests.log`, SHA-256
+`e613063ba5684b9228f9af41f0ea7f15d90ce49fd7af12fb1c8102dd83840a0d`.
+Independent source review found and resolved missing file provenance and the
+imported-empty merge boundary. This checkpoint does not wire persistence,
+preparation/refresh rollback, mark replay or the production feed/notifier/badge.
+
 ## Full dated-history extraction — 10 October 2026
 
 `LegacyFeedProjection.allEntries` now shares the renderer's raw row builder and

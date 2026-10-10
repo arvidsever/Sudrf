@@ -23,6 +23,7 @@ enum CaseEventKind: String, Codable, CaseIterable, Sendable {
     case deadlineChanged
     case deadlineExpired
     case deadlineSuperseded
+    case legacyFeedImported
 }
 
 struct CaseEventEvidence: Codable, Equatable, Sendable {
@@ -39,6 +40,7 @@ struct CaseEventEvidence: Codable, Equatable, Sendable {
     var ruleID: String? = nil
     var occurrenceKey: String? = nil
     var relatedOccurrenceKey: String? = nil
+    var legacyFeedHistory: LegacyFeedHistoryEvidence? = nil
 }
 
 /// Stable identity for a repeatable transition inside one persisted event stream.
@@ -104,6 +106,7 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
     var derivationVersion: Int
     var events: [CaseEvent]
     var semanticBaselines: CaseEventBaselines? = nil
+    var legacyFeedImportVersion: Int? = nil
 
     init(schemaVersion: Int = Self.currentSchemaVersion,
          derivationVersion: Int = Self.currentDerivationVersion,
@@ -178,6 +181,10 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
     }
 
     static func merged(_ journals: [CaseEventJournal]) throws -> CaseEventJournal {
+        if journals.contains(where: { $0.legacyFeedImportVersion != nil }),
+           !journals.allSatisfy({ $0.legacyFeedImportVersion == LegacyFeedHistoryImport.currentVersion }) {
+            throw LegacyFeedHistoryImportError.incompleteOriginHistory
+        }
         var merged = CaseEventJournal()
         for journal in journals {
             try merged.append(journal.events)
@@ -186,6 +193,10 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
             $0.derivationVersion == currentDerivationVersion
         }.compactMap(\.semanticBaselines)
         if !baselines.isEmpty { merged.semanticBaselines = CaseEventBaselines.merged(baselines) }
+        if !journals.isEmpty,
+           journals.allSatisfy({ $0.legacyFeedImportVersion == LegacyFeedHistoryImport.currentVersion }) {
+            merged.legacyFeedImportVersion = LegacyFeedHistoryImport.currentVersion
+        }
         return merged
     }
 }

@@ -1,0 +1,59 @@
+{
+  "classification": "live VSRFClient/MovementService plus isolated disk JSON; not SwiftData/RefreshCenter/GUI acceptance",
+  "sourceHead": "c458352edc2fb63daa18f100fbaa77162b7aa009",
+  "inputProvenance": "First-instance number and court from author issue104; surname key from author screenshot of 9 October 2026; judicial UID independently unproven and omitted",
+  "requests": [
+    {
+      "bytes": 218168,
+      "effectiveURL": "https://www.vsrf.ru/lk/practice/claims?registerDateExact=off&considerationDateExact=off&numberExact=true&oldCaseNumber1=2-8236/2025",
+      "errorCode": 0,
+      "ordinal": 1,
+      "requestedURL": "https://vsrf.ru/lk/practice/claims?registerDateExact=off&considerationDateExact=off&numberExact=true&oldCaseNumber1=2-8236/2025",
+      "sha256": "b9e2d76b21abcd4f6cb266605dfb04ada8fb2e45bc1b2b00e94b019ca81b9d48",
+      "status": 200
+    },
+    {
+      "bytes": 174890,
+      "effectiveURL": "https://www.vsrf.ru/lk/practice/claims/21-36956256",
+      "errorCode": 0,
+      "ordinal": 2,
+      "requestedURL": "https://www.vsrf.ru/lk/practice/claims/21-36956256",
+      "sha256": "a0ce814af1786fcae0253a6011aa2a001759fdd0f7ad6e76b725c937ae305b60",
+      "status": 200
+    }
+  ],
+  "outcome": {
+    "actCount": 0,
+    "diskJSONRoundtrip": true,
+    "expectedComplaintFound": true,
+    "expectedOwnIntakeFound": true,
+    "expectedOwnRefusalFound": true,
+    "incomplete": false,
+    "inputProvenance": "issue104 and author screenshot9Oct2026; UID unproven",
+    "instanceCount": 1,
+    "loadedCardIdentities": [
+      {
+        "cartotekaKey": "claims",
+        "courtKey": "vsrf.ru",
+        "sourceFamily": "vsrf",
+        "sourceNativeID": "21-36956256"
+      }
+    ],
+    "sourceURLs": [
+      "https://www.vsrf.ru/lk/practice/claims/21-36956256"
+    ],
+    "status": "returned",
+    "targetOwnProductionCount": 1
+  },
+  "hashes": {
+    "runMetadata": "8f93f59e14df4c0c7b9c25452983ca14906df32617900e7d60efe126257f10ec",
+    "outcome": "88e6ba6c1d60a86e86059142a40136bd3f0a310f1c5fc2fa7ef648e162f5d5b9",
+    "probeSource": "ad5c55c5b9e99b351cb47b347078b2d1c52884c04175d48e3907708d83cb3e43"
+  },
+  "startedUTC": "2026-10-10T02:20:29.940446+00:00",
+  "finishedUTC": "2026-10-10T02:20:32.475276+00:00",
+  "requestBudget": 4,
+  "redirectBudgetPerRequest": 2,
+  "executableSHA256": "45e59598f0bca12f34edf306b9c9652db4ed1eec9ee056bd47cf808b8451dbdd",
+  "exitCode": 0
+}

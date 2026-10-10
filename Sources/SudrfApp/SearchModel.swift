@@ -247,6 +247,8 @@ final class SearchModel: ObservableObject {
         var pendingCaseCount: Int = 0
         /// Несколько номеров дел из очереди — для подсказки в листе капчи.
         var pendingCaseNumbers: [String] = []
+        /// Captured at form creation; a late import callback cannot revive an old operation.
+        var importRepairGeneration: Int? = nil
     }
 
     var isDrilled: Bool { movement != nil || loadingMovement }
@@ -276,7 +278,7 @@ final class SearchModel: ObservableObject {
     private let magistrateResolver: MagistrateCourtResolver
     private let client: SudrfClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
-    private let vsrfClient = VSRFClient()
+    private let vsrfClient: any VSRFProviding
     private let mosGorSudClient: any MosGorSudProviding
     private let movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)?
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,
@@ -313,6 +315,7 @@ final class SearchModel: ObservableObject {
          resolver: DistrictCourtResolver? = nil,
          magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
+         vsrfProvider: (any VSRFProviding)? = nil,
          movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
@@ -331,6 +334,7 @@ final class SearchModel: ObservableObject {
         self.magistrateResolver = magistrateResolver
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
+        self.vsrfClient = vsrfProvider ?? VSRFClient()
         self.movementServiceFactory = movementServiceFactory
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.autoSolve = autoSolve ?? { url, client, solver, settings in

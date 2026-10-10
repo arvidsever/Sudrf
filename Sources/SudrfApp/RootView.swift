@@ -169,19 +169,26 @@ private struct StorageStartupLoadingView: View {
 /// Рабочее дерево создаётся только после успешного открытия persistent store.
 /// В аварийном состоянии нет ни ModelContainer, ни меню/обработчиков импорта,
 /// поэтому записать данные во временную базу невозможно.
-private struct OperationalRootView: View {
+struct OperationalRootView: View {
     @ObservedObject var router: AppRouter
+    var searchModel: SearchModel? = nil
     @SceneStorage("myCases.productionFilters") private var storedProductionFilters = ""
     @SceneStorage("myCases.stageFilters") private var storedStageFilters = ""
     @SceneStorage("myCases.tierFilters") private var storedTierFilters = ""
     @SceneStorage("myCases.showCompleted") private var storedShowCompleted = false
     @State private var restoredMyCasesFilters = false
 
+    @ViewBuilder private var searchContent: some View {
+        if let searchModel { ContentView(model: searchModel) }
+        else { ContentView(client: router.client) }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color(nsColor: .sudrfContent).ignoresSafeArea()
 
-            ContentView(client: router.client)
+            searchContent
+                .padding(.top, router.importState != nil ? 38 : 0)
                 .environmentObject(router)
                 .opacity(router.section == .search ? 1 : 0)
                 .allowsHitTesting(router.section == .search)
@@ -197,22 +204,43 @@ private struct OperationalRootView: View {
                 }
             }
             .environmentObject(router)
+            .padding(.top, router.importState != nil ? 38 : 0)
             .transition(.opacity)
 
             if router.openedCase != nil, router.section != .search {
                 CaseCardHost()
                     .environmentObject(router)
+                    .padding(.top, router.importState != nil ? 38 : 0)
                     .transition(.opacity)
             }
 
             // Полоса навигации: капсула строго по центру окна, глобальный поиск
             // прижат вправо. ZStack, а не HStack со Spacer'ами, — иначе ширина
             // поля сдвигала бы капсулу с центра.
-            ZStack {
-                NavCapsule()
-                HStack {
-                    Spacer(minLength: 0)
-                    GlobalSearchField()
+            VStack(spacing: 6) {
+                ZStack {
+                    NavCapsule()
+                    HStack {
+                        Spacer(minLength: 0)
+                        GlobalSearchField()
+                    }
+                }
+                if router.importState != nil {
+                    HStack(spacing: 10) {
+                        if let progress = router.importRepairProgress {
+                            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                                .frame(width: 120)
+                            Text("Связи: \(progress.done) из \(progress.total)")
+                            Button(router.importRepairStopRequested ? "Останавливаю…" : "Остановить") {
+                                router.stopImportRepair()
+                            }.disabled(router.importRepairStopRequested)
+                        }
+                        Button(router.importRepairProgress == nil ? "Отчёт импорта" : "Подробнее") {
+                            router.showImportProgress()
+                        }
+                    }
+                    .font(.system(size: 11))
+                    .frame(height: 32)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -258,18 +286,22 @@ private struct OperationalRootView: View {
             router.handleSpotlightItem(identifier: identifier)
         }
         .sheet(isPresented: Binding(
-            get: { router.importState != nil || router.repairSummary != nil },
+            get: { router.importSheetPresented || router.repairSummary != nil },
             set: { shown in
                 if !shown {
-                    guard !router.isImportFinalizing else { return }
-                    if case .running(_, _, let canCancel) = router.importState, canCancel {
-                        router.cancelImport()
-                    }
-                    else if router.importState != nil { router.dismissImportSummary() }
-                    else { router.dismissRepairSummary() }
+                    if router.importSheetPresented {
+                        guard !router.isImportFinalizing else { return }
+                        if case .running(_, _, let canCancel) = router.importState, canCancel {
+                            router.cancelImport()
+                        } else { router.dismissImportSummary() }
+                    } else { router.dismissRepairSummary() }
                 }
+
             })) {
-            ImportSheet()
+            ImportSheet(onNewImport: {
+                router.dismissImportSummary()
+                pickCSVAndImport(newImport: true)
+            })
                 .environmentObject(router)
         }
         .sheet(item: $router.fsspCaptcha) { presentation in
@@ -311,8 +343,8 @@ private struct OperationalRootView: View {
     }
 
     /// Меню «Файл → Импортировать дела из CSV…»: выбор файла и запуск импорта.
-    private func pickCSVAndImport() {
-        guard router.importState == nil else { return }
+    private func pickCSVAndImport(newImport: Bool = false) {
+        guard newImport || router.importState == nil else { router.showImportProgress(); return }
         let panel = NSOpenPanel()
         panel.title = "Импорт дел из CSV"
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
@@ -473,11 +505,12 @@ private struct StorageQuarantinedView: View {
 
 private struct ImportSheet: View {
     @EnvironmentObject var router: AppRouter
+    let onNewImport: () -> Void
     @State private var exportError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            switch router.importState {
+            switch router.importSheetPresented ? router.importState : nil {
             case .running(let done, let total, let canCancel):
                 Text("Импорт дел").font(.system(size: 15, weight: .bold))
                 Text(canCancel
@@ -495,7 +528,9 @@ private struct ImportSheet: View {
                     ProgressView()
                 }
             case .finished(let summary):
-                Text("Импорт завершён").font(.system(size: 15, weight: .bold))
+                Text(router.importRepairProgress == nil ? "Импорт завершён" : "Дела сохранены. Проверка связей продолжается").font(.system(size: 15, weight: .bold))
+                Button("Импортировать другой файл", action: onNewImport)
+                    .disabled(!router.canBeginAnotherImport)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         importedSection(summary)
@@ -531,6 +566,8 @@ private struct ImportSheet: View {
                         .keyboardShortcut(.defaultAction)
                 }
             case .failed(let message):
+                Button("Выбрать другой файл", action: onNewImport)
+                    .disabled(!router.canBeginAnotherImport)
                 Text("Ошибка импорта").font(.system(size: 15, weight: .bold))
                 Text(message)
                     .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -580,7 +617,7 @@ private struct ImportSheet: View {
         }
         .padding(20)
         .frame(width: 620)
-        .interactiveDismissDisabled(router.isImportFinalizing)
+        .interactiveDismissDisabled(router.importSheetPresented && router.isImportFinalizing)
         .alert("Не удалось сохранить отчёт", isPresented: Binding(
             get: { exportError != nil },
             set: { shown in if !shown { exportError = nil } }
@@ -594,8 +631,8 @@ private struct ImportSheet: View {
         .sheet(item: $router.captcha) { ctx in
             CaptchaAssistSheet(context: ctx,
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
-                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
-                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
+                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token, originGeneration: ctx.importRepairGeneration) },
+                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host, originGeneration: ctx.importRepairGeneration) },
                                onMagistrateCaptchaAccepted: { png, code, host in
                                    _ = await router.storeAcceptedMagistrateCaptcha(
                                        png: png, code: code, host: host)
@@ -952,8 +989,8 @@ private struct CaseCardHost: View {
         .sheet(item: $router.captcha) { ctx in
             CaptchaAssistSheet(context: ctx,
                                onCardHTML: { html in Task { await router.ingestCaptchaCard(html: html) } },
-                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token) },
-                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host) },
+                               onCaptchaPair: { host, token in router.storeCaptchaPair(host: host, token: token, originGeneration: ctx.importRepairGeneration) },
+                               onSessionUnlocked: { host in router.captchaSessionUnlocked(host: host, originGeneration: ctx.importRepairGeneration) },
                                onMagistrateCaptchaAccepted: { png, code, host in
                                    _ = await router.storeAcceptedMagistrateCaptcha(
                                        png: png, code: code, host: host)

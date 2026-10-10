@@ -337,6 +337,8 @@ final class TrackedCaseRepairCoordinator {
     private var completedKey: String { "\(Self.migrationID).completed" }
     private var runningTask: Task<CaseRepairSummary, Error>?
     private var scopedTask: Task<CaseRepairSummary, Error>?
+    private(set) var foregroundRepairDemand = 0
+    private var backgroundAdmissionWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(store: TrackedStore, client: SudrfClient, originResolver: any CaseOriginResolving,
          defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init,
@@ -383,7 +385,8 @@ final class TrackedCaseRepairCoordinator {
 
     /// Импортный batch не должен получить хвост общего startup repair: сначала
     /// завершаем уже идущий проход, затем ремонтируем только его persistent keys.
-    func run(keys: Set<String>, forceAttempt: Bool = false) async throws -> CaseRepairSummary {
+    func run(keys: Set<String>, forceAttempt: Bool = false,
+             admission: (() async throws -> Void)? = nil) async throws -> CaseRepairSummary {
         guard !keys.isEmpty else { return CaseRepairSummary() }
         var scopedKeys = keys
         var preceding = CaseRepairSummary()
@@ -414,6 +417,8 @@ final class TrackedCaseRepairCoordinator {
                 }
                 continue
             }
+            if let admission { try await admission() }
+            if runningTask != nil || scopedTask != nil { continue }
             break
         }
         let keysForPass = scopedKeys
@@ -534,8 +539,30 @@ final class TrackedCaseRepairCoordinator {
     /// Точечный preflight для RefreshCenter. Общий reconciler гарантирует,
     /// что refresh продолжится уже по каноническому persistent locator.
     func repairIfNeeded(key: String, forceAttempt: Bool = false) async throws -> Outcome {
+        foregroundRepairDemand += 1
+        defer {
+            foregroundRepairDemand -= 1
+            if foregroundRepairDemand == 0 {
+                let waiters = backgroundAdmissionWaiters
+                backgroundAdmissionWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         let summary = try await run(keys: [key], forceAttempt: forceAttempt)
         return Outcome(effectiveKey: summary.effectiveKey(for: key), summary: summary)
+    }
+
+    /// CSV background admission yields to every interactive preflight, including
+    /// a first open with no cache. The current card completes before either proceeds.
+    func runBackground(key: String, forceAttempt: Bool = false,
+                       admit: @escaping () -> Bool = { true }) async throws -> CaseRepairSummary {
+        return try await run(keys: [key], forceAttempt: forceAttempt, admission: { [self] in
+            while foregroundRepairDemand > 0 {
+                await withCheckedContinuation { backgroundAdmissionWaiters.append($0) }
+            }
+            try Task.checkCancellation()
+            guard admit() else { throw CancellationError() }
+        })
     }
 
     private func repairHigherAnchor(key: String, caseKey: String? = nil,

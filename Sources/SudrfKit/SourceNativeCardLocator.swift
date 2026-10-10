@@ -89,6 +89,61 @@ public struct SourceNativeCardLocator: Codable, Equatable, Hashable, Sendable, I
                     cartotekaKey: cartoteka.id, sourceNativeID: caseID)
     }
 
+    /// Locator for a first-instance Moscow magistrate KoAP card. Its URL embeds
+    /// the court unit and a UUID; both are part of the source-native identity.
+    public static func moscowMagistrateKoAP(url: URL, cartoteka: Cartoteka) -> Self? {
+        guard cartoteka.id == "adm", MoscowMagistrateKoAPURLPolicy.allows(url) else { return nil }
+
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count == 5,
+              let unit = parts.first,
+              unit.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil,
+              let unitNumber = Int(unit), unitNumber > 0,
+              parts[1] == "cases", parts[2] == "admin", parts[3] == "details",
+              let uuid = UUID(uuidString: parts[4]),
+              uuid.uuidString.caseInsensitiveCompare(parts[4]) == .orderedSame else { return nil }
+
+        return Self(sourceFamily: MoscowMagistrateKoAPSource.family,
+                    courtKey: unit, cartotekaKey: cartoteka.id,
+                    sourceNativeID: uuid.uuidString.lowercased())
+    }
+
+    /// Locator for the first district-court review card linked from a Moscow
+    /// magistrate KoAP case. This is specifically the RS `appeal-admin`
+    /// section; MGS review cards and other RS sections are not this appeal.
+    static func moscowMagistrateKoAPAppeal(url: URL) -> Self? {
+        guard let (parts, alias, prefixCount) = mosgorsudPath(url: url),
+              prefixCount == 2,
+              MosGorSudCourtDirectory.districtCourts.contains(where: { $0.alias == alias }),
+              parts.count == prefixCount + 5,
+              Array(parts[prefixCount..<(prefixCount + 2)]) == ["services", "cases"],
+              parts[prefixCount + 2] == "appeal-admin",
+              parts[prefixCount + 3] == "details",
+              let cardID = parts.last,
+              let uuid = UUID(uuidString: cardID),
+              uuid.uuidString.caseInsensitiveCompare(cardID) == .orderedSame else { return nil }
+        return Self(sourceFamily: "mosgorsud", courtKey: alias,
+                    cartotekaKey: "admj", sourceNativeID: uuid.uuidString.lowercased())
+    }
+
+    /// Locator for a published Moscow City Court KoAP review card. The exact
+    /// `review-supervision` route and MGS UUID are required; a UID search row
+    /// alone is not an identity or a relation to a magistrate case.
+    static func moscowMagistrateKoAPReview(url: URL) -> Self? {
+        guard let (parts, alias, prefixCount) = mosgorsudPath(url: url),
+              alias == MosGorSudCourtDirectory.mgsAlias,
+              prefixCount == 1,
+              parts.count == prefixCount + 5,
+              Array(parts[prefixCount..<(prefixCount + 2)]) == ["services", "cases"],
+              parts[prefixCount + 2] == "review-supervision",
+              parts[prefixCount + 3] == "details",
+              let cardID = parts.last,
+              let uuid = UUID(uuidString: cardID),
+              uuid.uuidString.caseInsensitiveCompare(cardID) == .orderedSame else { return nil }
+        return Self(sourceFamily: "mosgorsud", courtKey: alias,
+                    cartotekaKey: "adm33", sourceNativeID: uuid.uuidString.lowercased())
+    }
+
     /// Locator for a Moscow card URL. The court alias is part of the native
     /// scope, so cards from distinct `/rs/<alias>/` paths stay separate.
     public static func mosgorsud(url: URL, cartoteka: Cartoteka) -> Self? {

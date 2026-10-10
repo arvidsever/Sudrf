@@ -16,6 +16,13 @@ public protocol MosGorSudProviding: Sendable {
     func fetchPublishedAct(url: URL) async throws -> PublishedActFile
 }
 
+/// Optional native-response capability used when a relationship depends on
+/// the effective card URL after redirects. Ordinary MGS movement providers
+/// keep the existing public surface.
+protocol MosGorSudCardResponseProviding: Sendable {
+    func fetchCardWithResponseURL(url: URL) async throws -> MosGorSudCardFetchResult
+}
+
 extension MosGorSudClient: MosGorSudProviding {}
 
 public extension MosGorSudProviding {
@@ -23,6 +30,8 @@ public extension MosGorSudProviding {
         throw PublishedActFileError.extractionFailed
     }
 }
+
+extension MosGorSudClient: MosGorSudCardResponseProviding {}
 
 extension MovementService {
 
@@ -176,8 +185,10 @@ extension MovementService {
             return (loadedActs, bodies, ids, error)
         }
 
-        let baseLevel: CaseInstance.Level = route.instance >= 3 ? .cassation
-                                          : route.instance == 2 ? .appeal : .first
+        let baseLevel: CaseInstance.Level = cartoteka.id == "adm33" && route.processType == .admin
+            ? .supervisory
+            : route.instance >= 3 ? .cassation
+            : route.instance == 2 ? .appeal : .first
         let baseCourt = base.court ?? baseCard?.court ?? "Суд Москвы (mos-gorsud.ru)"
         let baseActURLs = baseCard?.actFiles.compactMap {
             PublishedActURLPolicy.safeMosGorSudURL($0.url)
@@ -314,40 +325,18 @@ extension MovementService {
             }
         }
 
-        // 3. Кассация на общей платформе (2-й КСОЮ, sudrf.ru) — тем же УИД-циклом,
-        //    что и у остальных регионов; домены приходят из MovementContext
-        //    (суд субъекта Москвы вне платформы — в списке его нет, КСОЮ есть).
-        if let uid, !uid.isEmpty {
-            let result = try await sudrfCassationInstances(uid: uid,
-                                                            baseCartotekaID: cartoteka.id)
-            instances.append(contentsOf: result.instances)
-            acts.append(contentsOf: result.acts)
-            actBodies.merge(result.bodies) { a, _ in a }
-            result.incompleteDomains.forEach(markIncomplete)
-            result.honestZeroDomains.forEach(markHonestZero)
-            coverage.merge(result.sourceRefreshCoverage)
-        }
-
-        // 4. Вторая кассация — ВС РФ (по УИД; тройка без фамилий не собирается —
-        //    стороны на портале не размечены по ролям).
-        if let vsrf, let uid, !uid.isEmpty {
-            let result = try await Self.vsrfInstancesOutcome(
-                vsrf: vsrf, uid: uid,
-                firstInstanceCourt: instances[0].court,
-                firstInstanceCaseNumber: base.caseNumber,
-                partySurnames: [])
-            instances.append(contentsOf: result.instances)
-            acts.append(contentsOf: result.acts)
-            for identity in result.loadedCardIdentities { coverage.recordLoaded(identity) }
-            if result.incomplete {
-                markIncomplete("vsrf.ru")
-                coverage.markPartial(sourceFamily: "vsrf", courtKey: "vsrf.ru")
-            }
-            if result.instances.isEmpty, !result.incomplete {
-                markHonestZero("vsrf.ru")
-                coverage.mark(.honestZero, sourceFamily: "vsrf", courtKey: "vsrf.ru")
-            }
-        }
+        // 3–4. Existing federal stages use the original first-instance court
+        //      and number, even when this source anchor is a later Moscow card.
+        let federal = try await moscowFederalStages(
+            uid: uid, firstInstanceCourt: instances[0].court,
+            firstInstanceCaseNumber: base.caseNumber,
+            baseCartotekaID: cartoteka.id)
+        instances.append(contentsOf: federal.instances)
+        acts.append(contentsOf: federal.acts)
+        actBodies.merge(federal.bodies) { a, _ in a }
+        federal.incompleteDomains.forEach(markIncomplete)
+        federal.honestZeroDomains.forEach(markHonestZero)
+        coverage.merge(federal.sourceRefreshCoverage)
 
         // Some old Moscow cases link to an appellate court only through a
         // saved card. Restrict this refresh to official ASOYu hosts; the shared
@@ -435,7 +424,9 @@ extension MovementService {
     /// кругов апелляции (в кассации все найденные записи — кассационные) и без
     /// добора по known cards.
     private func sudrfCassationInstances(uid: String,
-                                         baseCartotekaID: String) async throws
+                                         baseCartotekaID: String,
+                                         domains: [String]? = nil,
+                                         using provider: (any CaseProviding)? = nil) async throws
         -> (instances: [CaseInstance], acts: [CaseAct], bodies: [String: String],
             incompleteDomains: [String], honestZeroDomains: [String],
             sourceRefreshCoverage: [MovementCourtCoverage]) {
@@ -446,7 +437,7 @@ extension MovementService {
         var honestZeroDomains: [String] = []
         var coverage = MovementCoverageAccumulator()
 
-        for domain in higherCourtDomains {
+        for domain in domains ?? higherCourtDomains {
             let level = Self.courtLevel(forDomain: domain)
             guard level == .cassation else { continue }
             let court = Court(domain: domain,
@@ -461,7 +452,8 @@ extension MovementService {
             for cart in toTry {
                 do {
                     let outcome = try await discoveryRowsOutcome(court: court, cartoteka: cart,
-                                                                 field: .uid, value: uid)
+                                                                 field: .uid, value: uid,
+                                                                 using: provider)
                     if outcome.kind == .partial {
                         domainIncomplete = true
                         coverage.markPartial(sourceFamily: "sudrf",
@@ -478,7 +470,8 @@ extension MovementService {
                     }
                     guard !rows.isEmpty else { continue }
                     for r in rows {
-                        let card = try await fetchCard(row: r, court: court, cartoteka: cart)
+                        let card = try await fetchCard(row: r, court: court,
+                                                       cartoteka: cart, using: provider)
                         let locator: SourceNativeCardLocator?
                         if let url = r.cardURL {
                             locator = SourceNativeCardLocator.sudrf(url: url, cartoteka: cart)
@@ -547,6 +540,63 @@ extension MovementService {
                 honestZeroDomains.append(domain)
                 coverage.mark(.honestZero, sourceFamily: "sudrf",
                               courtKey: SudrfHost.moduleHost(domain))
+            }
+        }
+        return (instances, acts, bodies, incompleteDomains, honestZeroDomains, coverage.values)
+    }
+
+    /// Existing federal discovery shared by ordinary Moscow cases and the
+    /// verified Moscow magistrate KoAP chain. The first-instance details are
+    /// passed explicitly so a later 4а card cannot become the VS comparison
+    /// anchor by accident.
+    func moscowFederalStages(uid: String?, firstInstanceCourt: String,
+                             firstInstanceCaseNumber: String,
+                             baseCartotekaID: String,
+                             cassationDomains: [String]? = nil) async throws
+        -> (instances: [CaseInstance], acts: [CaseAct], bodies: [String: String],
+            incompleteDomains: [String], honestZeroDomains: [String],
+            sourceRefreshCoverage: [MovementCourtCoverage]) {
+        guard let uid, !uid.isEmpty else {
+            return ([], [], [:], [], [], [])
+        }
+        var instances: [CaseInstance] = []
+        var acts: [CaseAct] = []
+        var bodies: [String: String] = [:]
+        var incompleteDomains: [String] = []
+        var honestZeroDomains: [String] = []
+        var coverage = MovementCoverageAccumulator()
+
+        // MagistrateClient is the existing provider router: it handles
+        // *.msudrf.ru itself and forwards federal sudrf.ru requests to the
+        // injected SudrfClient. The Moscow KoAP anchor client is unsuitable
+        // for these higher-court calls.
+        let federalProvider = magistrate ?? client
+        let cassation = try await sudrfCassationInstances(
+            uid: uid, baseCartotekaID: baseCartotekaID,
+            domains: cassationDomains, using: federalProvider)
+        instances.append(contentsOf: cassation.instances)
+        acts.append(contentsOf: cassation.acts)
+        bodies.merge(cassation.bodies) { current, _ in current }
+        incompleteDomains.append(contentsOf: cassation.incompleteDomains)
+        honestZeroDomains.append(contentsOf: cassation.honestZeroDomains)
+        coverage.merge(cassation.sourceRefreshCoverage)
+
+        if let vsrf {
+            let result = try await Self.vsrfInstancesOutcome(
+                vsrf: vsrf, uid: uid,
+                firstInstanceCourt: firstInstanceCourt,
+                firstInstanceCaseNumber: firstInstanceCaseNumber,
+                partySurnames: [])
+            instances.append(contentsOf: result.instances)
+            acts.append(contentsOf: result.acts)
+            for identity in result.loadedCardIdentities { coverage.recordLoaded(identity) }
+            if result.incomplete {
+                incompleteDomains.append("vsrf.ru")
+                coverage.markPartial(sourceFamily: "vsrf", courtKey: "vsrf.ru")
+            }
+            if result.instances.isEmpty, !result.incomplete {
+                honestZeroDomains.append("vsrf.ru")
+                coverage.mark(.honestZero, sourceFamily: "vsrf", courtKey: "vsrf.ru")
             }
         }
         return (instances, acts, bodies, incompleteDomains, honestZeroDomains, coverage.values)

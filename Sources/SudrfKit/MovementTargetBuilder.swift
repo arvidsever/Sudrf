@@ -4,6 +4,104 @@ import Foundation
 /// Уровень якоря важнее уровня суда: апелляционная карточка суда субъекта не
 /// должна повторно рассматриваться как первая инстанция этого суда.
 public enum MovementTargetBuilder {
+    /// A published GPK/KAS source link, independent of a saved instance level or UID.
+    static func magistrateGPKKASOriginProcess(
+        court: Court, cartoteka: Cartoteka, card: CaseCard, expectedNumber: String
+    ) -> ProcessKind? {
+        guard let number = card.caseNumber,
+              MovementService.samePublishedCaseNumber(number, expectedNumber),
+              CartotekaRegistry.prefixMatches(cartoteka, caseNumber: number),
+              card.processKindConflict != true else { return nil }
+        let index = CartotekaRegistry.normalizedNumber(number)
+        let indexedProcess: ProcessKind? = index.hasPrefix("2а-") ? .administrative
+            : index.hasPrefix("2-") ? .civil
+            : CaseIndexClassifier.classify(caseNumber: number, courtLevel: .district)?.processKind
+        guard let process = card.processKind ?? indexedProcess,
+              indexedProcess == nil || (process == .special ? .civil : process) == indexedProcess,
+              process == .civil || process == .administrative || process == .special
+        else { return nil }
+        if court.level == .district {
+            guard ["g2", "p2"].contains(cartoteka.id),
+                  let own = CaseIndexClassifier.classify(caseNumber: number, courtLevel: .district),
+                  own.cardRole == .appellateCase,
+                  (process == .special ? .civil : process) == own.processKind,
+                  let lower = card.lowerCourt,
+                  let title = lower.courtTitle?.lowercased(),
+                  ((title.contains("миров") && title.contains("суд"))
+                    || title.contains("судебный участок")),
+                  let lowerNumber = lower.caseNumber,
+                  CartotekaRegistry.normalizedNumber(lowerNumber).hasPrefix(
+                    process == .administrative ? "2а-" : "2-")
+            else { return nil }
+        } else {
+            guard court.level == .magistrate, cartoteka.id == "g1",
+                  index.hasPrefix(process == .administrative ? "2а-" : "2-")
+            else { return nil }
+        }
+        return process
+    }
+
+    /// Rebuild only the magistrate cassation slice after the source card is loaded.
+    /// A saved date rule or a legacy domain target must not choose the route.
+    static func normalizedMagistrateCassationTargets(
+        _ targets: [MovementSearchTarget], court: Court, cartoteka: Cartoteka,
+        card: CaseCard, expectedNumber: String, expectedUID: String?
+    ) -> (targets: [MovementSearchTarget], proven: Bool) {
+        guard let process = magistrateGPKKASOriginProcess(
+            court: court, cartoteka: cartoteka, card: card, expectedNumber: expectedNumber),
+            expectedUID == nil || card.uid == nil || MovementService.normalizedJudicialUID(card.uid)
+                == MovementService.normalizedJudicialUID(expectedUID)
+        else { return (targets, false) }
+
+        let publishedCode = KoAPProceduralRole.classificationCode(from: card.uid)
+            .map(CourtDirectory.normalizedSubjectCode)
+        let savedCode = KoAPProceduralRole.classificationCode(from: expectedUID)
+            .map(CourtDirectory.normalizedSubjectCode)
+        let sourceHost = court.domain.hasSuffix(".msudrf.ru")
+            ? String(court.domain.dropLast(".msudrf.ru".count)) + ".sudrf.ru"
+            : court.domain
+        let sourceCodes = Set(CourtDirectory.subjectCourtDomainByCode.compactMap { code, domain in
+            CourtDirectory.regionSuffix(ofDomain: domain)
+                == CourtDirectory.regionSuffix(ofDomain: sourceHost) ? code : nil
+        })
+        guard sourceCodes.count <= 1 else { return (targets, false) }
+        let sourceCode = sourceCodes.first
+        guard let code = publishedCode ?? savedCode ?? sourceCode,
+              (publishedCode == nil || publishedCode == code),
+              (savedCode == nil || savedCode == code),
+              (sourceCode == nil || sourceCode == code) else { return (targets, false) }
+        guard let cassation = CourtDirectory.cassationCourt(forSubjectCode: code),
+              let subject = CourtDirectory.subjectCourt(forSubjectCode: code),
+              subject.isSudrfPlatform else { return (targets, false) }
+        let isKAS = process == .administrative
+        let cassationHost = SudrfHost.moduleHost(cassation.domain)
+        let subjectHost = SudrfHost.moduleHost(subject.domain)
+        var result = targets.compactMap { target -> MovementSearchTarget? in
+            let host = SudrfHost.moduleHost(target.domain)
+            let affectedIDs = host == cassationHost ? ["g3", "p3"]
+                : host == subjectHost ? ["g33", "p33"] : []
+            guard !affectedIDs.isEmpty,
+                  target.instanceLevel == nil || target.instanceLevel == .cassation
+            else { return target }
+            guard let ids = target.cartotekaIDs else { return nil } // legacy domain fallback
+            let retained = ids.filter { !affectedIDs.contains($0) }
+            guard retained != ids else { return target }
+            guard !retained.isEmpty else { return nil }
+            var kept = target
+            kept.cartotekaIDs = retained
+            return kept
+        }
+        result.append(MovementSearchTarget(
+            domain: cassation.domain, courtTitle: cassation.title,
+            courtLevel: .cassation, instanceLevel: .cassation,
+            cartotekaIDs: [isKAS ? "p3" : "g3"]))
+        result.append(MovementSearchTarget(
+            domain: CourtDirectory.dashVariant(of: subject.domain) ?? subject.domain,
+            courtTitle: subject.title, courtLevel: .subject, instanceLevel: .cassation,
+            cartotekaIDs: [isKAS ? "p33" : "g33"]))
+        return (result, true)
+    }
+
     /// Whether the principal criminal case's first cassation is routed to the
     /// Supreme Court under the current UPK route. The index and role must agree;
     /// an appeal anchor also needs a published link back to a subject/circuit
@@ -355,9 +453,9 @@ public enum MovementTargetBuilder {
         }
     }
 
-    /// Не-КоАП цели мирового участка: районная апелляция, КСОЮ до 2026 и
-    /// президиум суда субъекта с 2026. Суффикс картотеки зависит от отрасли,
-    /// поэтому КАС отделяется от гражданского по индексу «2а».
+    /// Цели мирового участка: районная апелляция и для ГПК/КАС оба возможных
+    /// кассационных маршрута при неизвестной дате подачи жалобы. Суффикс
+    /// картотеки КАС отличается от гражданского по индексу «2а».
     private static func magistrateTargets(
         baseCartoteka: Cartoteka, caseNumber: String,
         courtCode: String?, region: String,
@@ -373,6 +471,9 @@ public enum MovementTargetBuilder {
                                                            usePresidium: true)
         let subjectCode = courtCode.map(CourtDirectory.normalizedSubjectCode)
             ?? CourtDirectory.subjectNumericCode(forRegion: region)
+        let normalizedNumber = CartotekaRegistry.normalizedNumber(caseNumber)
+        let civilOrKAS = baseCartoteka.id == "g1"
+            && (normalizedNumber.hasPrefix("2-") || normalizedNumber.hasPrefix("2а-"))
         var targets: [MovementSearchTarget] = []
 
         for court in districtCourts where !appealIDs.isEmpty {
@@ -386,7 +487,8 @@ public enum MovementTargetBuilder {
            let court = CourtDirectory.cassationCourt(forSubjectCode: subjectCode) {
             targets.append(MovementSearchTarget(
                 domain: court.domain, courtTitle: court.title, courtLevel: .cassation,
-                instanceLevel: .cassation, cartotekaIDs: ksoyIDs, dateRule: .before2026))
+                instanceLevel: .cassation, cartotekaIDs: ksoyIDs,
+                dateRule: civilOrKAS ? .always : .before2026))
         }
         if let subjectCode, !presidiumIDs.isEmpty,
            let court = CourtDirectory.subjectCourt(forSubjectCode: subjectCode),
@@ -394,7 +496,8 @@ public enum MovementTargetBuilder {
             targets.append(MovementSearchTarget(
                 domain: CourtDirectory.dashVariant(of: court.domain) ?? court.domain,
                 courtTitle: court.title, courtLevel: .subject,
-                instanceLevel: .cassation, cartotekaIDs: presidiumIDs, dateRule: .from2026))
+                instanceLevel: .cassation, cartotekaIDs: presidiumIDs,
+                dateRule: civilOrKAS ? .always : .from2026))
         }
         return targets.isEmpty ? nil : targets
     }

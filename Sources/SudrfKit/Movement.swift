@@ -354,6 +354,8 @@ public struct KnownCard: Sendable, Equatable, Codable {
 
 public enum MovementDateRule: String, Sendable, Equatable, Codable {
     case always
+    /// Legacy persisted rules. Magistrate GPK/KAS targets are rebuilt from the
+    /// verified source card before this lower-act-date filter is applied.
     case before2026
     case from2026
     /// Старое производство в президиуме суда субъекта остаётся возможным,
@@ -601,7 +603,17 @@ public actor MovementService: MovementProviding {
         // НЕ путать с base.caseUID: это внутренний GUID ссылки на карточку
         // (параметр case_uid=…), у каждого суда он свой — для сквозного поиска
         // по инстанциям не годится.
-        let uid = baseCard.uid
+        let provenMagistrateOrigin = branch == .general
+            && MovementTargetBuilder.magistrateGPKKASOriginProcess(
+                court: court, cartoteka: cartoteka, card: baseCard,
+                expectedNumber: base.caseNumber) != nil
+        let conflictingBaseUID = provenMagistrateOrigin
+            && Self.validSavedUID(judicialUID) != nil && baseCard.uid != nil
+            && Self.normalizedJudicialUID(baseCard.uid)
+                != Self.normalizedJudicialUID(judicialUID)
+        let borrowedUID = baseCard.uid == nil && provenMagistrateOrigin
+            ? Self.validSavedUID(judicialUID) : nil
+        let uid = conflictingBaseUID ? nil : (baseCard.uid ?? borrowedUID)
         var coverage = MovementCoverageAccumulator()
         func sourceFamily(for domain: String) -> String {
             if MosGorSudRouting.isMosGorSud(domain: domain) { return "mosgorsud" }
@@ -612,6 +624,7 @@ public actor MovementService: MovementProviding {
             coverage.markPartial(sourceFamily: sourceFamily(for: domain),
                                  courtKey: SudrfHost.moduleHost(domain))
         }
+        if borrowedUID != nil || conflictingBaseUID { markCoveragePartial(court.domain) }
         func markCoverageZero(_ domain: String) {
             coverage.mark(.honestZero, sourceFamily: sourceFamily(for: domain),
                           courtKey: SudrfHost.moduleHost(domain))
@@ -1211,7 +1224,14 @@ public actor MovementService: MovementProviding {
                                  cartoteka: Cartoteka, inst: CaseInstance,
                                  act: CaseAct?, body: String?)] = []
         let legalForceDate = baseCard.legalForceDate ?? base.legalForceDate
-        for target in higherCourtTargets where target.dateRule.matches(legalForceDate: legalForceDate) {
+        let normalizedRoute = branch == .general
+            ? MovementTargetBuilder.normalizedMagistrateCassationTargets(
+                higherCourtTargets, court: court, cartoteka: cartoteka,
+                card: baseCard, expectedNumber: base.caseNumber, expectedUID: judicialUID)
+            : (targets: higherCourtTargets, proven: false)
+        let searchTargets = normalizedRoute.targets
+        for (targetIndex, target) in searchTargets.enumerated()
+            where target.dateRule.matches(legalForceDate: legalForceDate) {
             guard let uid else { break }
             let domain = target.domain
             let level = target.courtLevel ?? Self.courtLevel(forDomain: domain)
@@ -1234,6 +1254,8 @@ public actor MovementService: MovementProviding {
             let isSubjectFirstAppealRoute = level == .appeal
                 && isSubjectFirstAnchor
                 && ["u1", "g1", "p1"].contains(cartoteka.id.lowercased())
+            let isMagistrateCassationRoute = normalizedRoute.proven
+                && targetIndex >= searchTargets.count - 2
 
             let instanceCountBeforeTarget = instances.count
             let candidateCountBeforeTarget = relatedCandidates.count
@@ -1268,7 +1290,7 @@ public actor MovementService: MovementProviding {
                     var captchaCardFormURL: URL?
                     for r in usable {
                         var resolvedLevel = instLevel
-                        if isSubjectFirstAppealRoute,
+                        if (isSubjectFirstAppealRoute || isMagistrateCassationRoute),
                            !Self.isCompatibleAppealSourceURL(
                                r, court: higherCourt, cartoteka: higherCart) {
                             targetIncomplete = true
@@ -1315,6 +1337,20 @@ public actor MovementService: MovementProviding {
                             markHigherCourtIncomplete(domain)
                             markCoveragePartial(domain)
                             continue
+                        }
+                        if isMagistrateCassationRoute {
+                            guard let publishedNumber = higherCard.caseNumber,
+                                  Self.normalizedJudicialUID(higherCard.uid)
+                                    == Self.normalizedJudicialUID(uid),
+                                  Self.samePublishedCaseNumber(r.caseNumber, publishedNumber),
+                                  CartotekaRegistry.prefixMatches(
+                                    higherCart, caseNumber: publishedNumber)
+                            else {
+                                targetIncomplete = true
+                                markHigherCourtIncomplete(domain)
+                                markCoveragePartial(domain)
+                                continue
+                            }
                         }
                         if isSubjectFirstAppealRoute {
                             guard let publishedNumber = higherCard.caseNumber,

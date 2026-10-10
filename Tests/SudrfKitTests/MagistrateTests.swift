@@ -434,6 +434,131 @@ final class MagistrateTests: XCTestCase {
         XCTAssertTrue(MovementDateRule.from2026.matches(legalForceDate: nil))
     }
 
+    func testCassationRouteIgnoresSavedDateRulesAndLowerActDate() throws {
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Судебный участок", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let uid = "11MS0001-01-2025-000001-01"
+        let old = [MovementSearchTarget(domain: "3kas.sudrf.ru", courtLevel: .cassation,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                        dateRule: .before2026),
+                   MovementSearchTarget(domain: "vs.komi.sudrf.ru", courtLevel: .subject,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g33"],
+                                        dateRule: .from2026)]
+        for lowerDate in ["09.05.2026", "10.05.2026"] {
+            let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: "2-12/2025", legalForceDate: lowerDate,
+                                processKind: .civil)
+            let result = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+                old, court: court, cartoteka: cart, card: card,
+                expectedNumber: "2-12/2025", expectedUID: uid)
+            XCTAssertTrue(result.proven)
+            XCTAssertEqual(result.targets.count, 2)
+            XCTAssertEqual(Set(result.targets.compactMap { $0.cartotekaIDs?.first }), ["g3", "g33"])
+            XCTAssertTrue(result.targets.allSatisfy { $0.dateRule == .always })
+        }
+        let unrelated = CaseCard(rawText: "", actText: nil, uid: "99MS0001-01-2025-000001-01",
+                                 caseNumber: "2-12/2025", processKind: .civil)
+        XCTAssertEqual(MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            old, court: court, cartoteka: cart, card: unrelated,
+            expectedNumber: "2-12/2025", expectedUID: uid).targets, old)
+        let wrongNumber = CaseCard(rawText: "", actText: nil, uid: uid,
+                                   caseNumber: "2-99/2025", processKind: .civil)
+        XCTAssertFalse(MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            old, court: court, cartoteka: cart, card: wrongNumber,
+            expectedNumber: "2-12/2025", expectedUID: uid).proven)
+        let wrongCart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "adm"))
+        XCTAssertFalse(MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            old, court: court, cartoteka: wrongCart,
+            card: CaseCard(rawText: "", actText: nil, uid: uid,
+                           caseNumber: "2-12/2025", processKind: .civil),
+            expectedNumber: "2-12/2025", expectedUID: uid).proven)
+    }
+
+    func testDistrictAppealRequiresPublishedMagistrateRelation() throws {
+        let court = Court(domain: "district.komi.sudrf.ru", title: "Районный суд", level: .district)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g2"))
+        let uid = "11MS0001-01-2025-000001-01"
+        let legacy = [MovementSearchTarget(domain: "3kas.sudrf.ru")]
+        let linked = CaseCard(rawText: "", actText: nil, uid: uid,
+                              caseNumber: "11-12/2025",
+                              lowerCourt: LowerCourtReference(
+                                courtTitle: "Мировой судья судебного участка № 1",
+                                caseNumber: "2-12/2025"), processKind: .civil)
+        let normalized = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            legacy, court: court, cartoteka: cart, card: linked,
+            expectedNumber: "11-12/2025", expectedUID: uid)
+        XCTAssertEqual(Set(normalized.targets.compactMap { $0.cartotekaIDs?.first }), ["g3", "g33"])
+        let unrelated = CaseCard(rawText: "", actText: nil, uid: uid,
+                                 caseNumber: "11-12/2025", processKind: .civil)
+        XCTAssertEqual(MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            legacy, court: court, cartoteka: cart, card: unrelated,
+            expectedNumber: "11-12/2025", expectedUID: uid).targets, legacy)
+        let districtFirst = CaseCard(rawText: "", actText: nil, uid: uid,
+                                     caseNumber: "2-12/2025", processKind: .civil)
+        let firstCart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g1"))
+        XCTAssertFalse(MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            legacy, court: court, cartoteka: firstCart, card: districtFirst,
+            expectedNumber: "2-12/2025", expectedUID: uid).proven)
+    }
+
+    func testNormalizationPreservesUnrelatedAndMixedTargets() throws {
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Судебный участок", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let uid = "11MS0001-01-2025-000001-01"
+        let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                            caseNumber: "2-12/2025", processKind: .civil)
+        let foreign = MovementSearchTarget(domain: "6kas.sudrf.ru", courtLevel: .cassation,
+                                           instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                           dateRule: .before2026)
+        let supervisory = MovementSearchTarget(domain: "vs--komi.sudrf.ru", courtLevel: .subject,
+                                               instanceLevel: .supervisory, cartotekaIDs: ["g33"])
+        let mixed = MovementSearchTarget(domain: "3kas.sudrf.ru", courtLevel: .cassation,
+                                         instanceLevel: .cassation, cartotekaIDs: ["g3", "adm3"])
+        let targets = [foreign, supervisory, mixed]
+        let normalized = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            targets, court: court, cartoteka: cart, card: card,
+            expectedNumber: "2-12/2025", expectedUID: uid)
+        XCTAssertEqual(normalized.targets[0], foreign)
+        XCTAssertEqual(normalized.targets[1], supervisory)
+        XCTAssertEqual(normalized.targets[2].cartotekaIDs, ["adm3"])
+        XCTAssertEqual(normalized.targets.count, 5)
+    }
+
+    func testMissingFreshUIDUsesSavedProofAndConflictingUIDRejectsRoute() throws {
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Судебный участок", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let savedUID = "11MS0001-01-2025-000001-01"
+        let old = [MovementSearchTarget(domain: "3kas.sudrf.ru", courtLevel: .cassation,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                        dateRule: .before2026)]
+        let missing = CaseCard(rawText: "", actText: nil,
+                               caseNumber: "2-12/2025", processKind: .civil)
+        let repaired = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            old, court: court, cartoteka: cart, card: missing,
+            expectedNumber: "2-12/2025", expectedUID: savedUID)
+        XCTAssertTrue(repaired.proven)
+        XCTAssertEqual(Set(repaired.targets.compactMap { $0.cartotekaIDs?.first }), ["g3", "g33"])
+        let conflict = CaseCard(rawText: "", actText: nil,
+                                uid: "99MS0001-01-2025-000001-01",
+                                caseNumber: "2-12/2025", processKind: .civil)
+        let rejected = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+            old, court: court, cartoteka: cart, card: conflict,
+            expectedNumber: "2-12/2025", expectedUID: savedUID)
+        XCTAssertFalse(rejected.proven)
+        XCTAssertEqual(rejected.targets, old)
+    }
+
+    func testUPKMagistrateTargetsKeepLegacyDateRules() throws {
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "u1"))
+        let targets = try XCTUnwrap(MovementTargetBuilder.targets(
+            branch: .general, courtLevel: .magistrate, baseCartoteka: cart,
+            caseNumber: "1-12/2025", judicialUID: "11MS0001-01-2025-000001-01",
+            courtTitle: "Мировой судья", courtCode: "11MS0001",
+            region: "Республика Коми", displayDomain: "example.komi.msudrf.ru"))
+        XCTAssertEqual(Set(targets.filter { $0.instanceLevel == .cassation }
+            .map(\.dateRule)), [.before2026, .from2026])
+    }
+
     func testUnknownHTMLIsNotParsedAsEmptyMagistrateCard() {
         XCTAssertThrowsError(try MagistrateCardParser.parse(
             html: "<html><script>location='/protection'</script></html>"))

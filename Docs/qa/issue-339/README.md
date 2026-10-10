@@ -18,7 +18,7 @@ Second run log SHA-256: `de380c54c99fb4e91e1a0985b45c2fe30693d075620c6b5d2f78b3b
 
 Own Xcode 27 build after the diagnostics writer fix passed without launch; log SHA-256 `cb50a3fd69e4f40e424af5bdc46af450dfa3bcc03318eb0e1e2822c83913935e`. The subsequent locator change is test-only. Hosted CI [37997870822](https://github.com/arvidsever/Sudrf/actions/runs/37997870822) passed on `013adf3dd5c93918356b000297d6dcc8f027d0d4`: all six focused sheet tests executed without skips; full suite 2,041 XCTest cases (25 explicit skips, zero failures), 28 Swift Testing cases, and 26 Python cases (six skips). Log SHA-256: `abbe39e3f37a3b421b88f7f1b44296e373b172aeaa686e0a6d48f164912ad8cf`. This run predates the separate native QA host below; its final commit needs current-head CI before merge.
 
-Native SwiftUI sheet, pasteboard and visual acceptance remain pending. No ordinary application, TestFlight or working store was opened. The sections below retain the harness contract and earlier checkpoints; their compile-only holds describe earlier stages, not the current six-test result.
+The native SwiftUI sheet and both visual screens were accepted on 10 October 2026, as recorded below. Pasteboard verification also passed in the subsequent isolated native session described below. No ordinary application, TestFlight or working store was opened. The sections below retain the harness contract and earlier checkpoints; their compile-only holds describe earlier stages, not the current six-test result.
 
 ## Native QA preparation — 10 October 2026
 
@@ -64,7 +64,7 @@ The test does not bootstrap background work, query FSSP or Treasury, use the wor
 
 The test cold-reopens the temporary disk store in a new `ModelContainer` and checks exact saved state without importing a second time. It records only stage durations, source-host counts, outcome labels, and short SHA-256 digests. It never prints OCR values, CAPTCHA tokens, cookies, full locators, or participant data.
 
-Even a successful live component test does not exercise the native SwiftUI sheet, pasteboard handling, or visual confirmation. Those UI criteria remain pending and must not be reported as covered by model/component tests.
+The live component test does not exercise the native SwiftUI sheet, pasteboard handling, or visual confirmation. Separate native runtime evidence and acceptance of both screens on 10 October 2026 are recorded below; pasteboard verification passed separately as recorded below. Model/component tests do not cover these UI criteria.
 
 ## Local checkpoint (9 October 2026)
 
@@ -89,7 +89,7 @@ The author approved the test-only activity, Spotlight and notification substitut
 
 The default `PublishedActSelection` cache only stores its directory URL at initialization. File-system reads/writes occur when an act is selected or saved; these harnesses do neither. The opt-in test's single auto-solver preference read belongs to the XCTest process, then suite-scoped settings are used. This checkpoint does not claim zero access to process defaults.
 
-## Current-main rebase checkpoint
+## Historical main rebase checkpoint — 10 October 2026
 
 Rebased onto main `e9910a36b9d1af09d82de3f2eeaba246573a6cca` (0.64.5, build 257). The two conflict sites retain main's injected VSRF/import providers and the approved CAPTCHA token/solver seams together. All test targets compiled successfully without execution: `/private/tmp/sudrf-339-rebased-compile.log`, SHA-256 `e109692f1b459e4e62f0fa502cea061d92ac38b8f68698e22c2b43aa750826ac`. Runtime offline evidence must come from current-head CI and must show actual test execution rather than skips.
 
@@ -131,10 +131,31 @@ Accepted native offline screenshots (actual CUA captures, synthetic QA data):
 - [Direct-link form](screenshots/issue-339-native-form.jpg).
 - [Movement card](screenshots/issue-339-native-card.jpg).
 
-These two screens and the observed offline add route are accepted. Pasteboard
-behavior was not separately verified; this approval does not expand the earlier
-live component result into full live-chain acceptance.
+These two screens and the observed offline add route are accepted. The later
+pasteboard observation is recorded separately below; neither observation expands
+the earlier live component result into full live-chain acceptance.
 
 Original capture paths and SHA-256:
 - `/Users/arvidsever/.codex/visualizations/2026/09/26/01a0dd3e-f51f-73a3-94a6-d6008364562e/issue-339-native-form.jpg`: `cb2c67fa1986fc54e7eccfa4c5d708d89ecc85ed7abf7ff39139266b55c342d4`.
 - `/Users/arvidsever/.codex/visualizations/2026/09/26/01a0dd3e-f51f-73a3-94a6-d6008364562e/issue-339-native-card.jpg`: `7e280d26c04ae2acb85d6583fee883b2581f25aaeae9cf1c2957b36e8c9fad2c`.
+
+## Native pasteboard follow-up — 10 October 2026
+
+The standalone QA-only AppKit host now installs application and Edit menus with
+native responder-chain Cut/Copy/Paste/Select All commands and Quit. Independent
+Astra review passed. Production application files and interface are unchanged.
+The own QA rebuild passed; build log SHA-256:
+`5aa0e85d9f1694b936620727ff414d1f515f9a6fb45a6b9177593dfae19b7491`;
+binary SHA-256:
+`e243d0adbd8e8811e8d9cd1bdb17a62182918bc546623d19b53cb74126d6ef38`.
+Strict signature verification passed for the rebuilt own QA product.
+
+Root CUA focused the real sheet URL field, pasted the exact synthetic URL,
+selected Check, then Add. The real CaseMovementView opened. This verifies the
+native pasteboard route in the isolated offline host; the two accepted screens
+remain the same form/card, so no replacement visual acceptance is claimed.
+No new live-source request was made. The separately recorded live component
+outcome remains partial.
+
+Root then quit the own QA app with the native Quit shortcut. A fresh CUA app
+inventory returned no `ru.sudrf.qa.issue339` entry, confirming cleanup.

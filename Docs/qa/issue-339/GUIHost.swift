@@ -202,6 +202,28 @@ struct Issue339QABoot {
         precondition(Bundle.main.bundleIdentifier == "ru.sudrf.qa.issue339")
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        // The standalone AppKit host needs the native menu's responder-chain shortcuts.
+        let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu()
+        let quit = NSMenuItem(title: "Завершить QA", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = app
+        applicationMenu.addItem(quit)
+        applicationItem.submenu = applicationMenu
+        menu.addItem(applicationItem)
+        let editItem = NSMenuItem(title: "Правка", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "Правка")
+        for (title, action, key) in [
+            ("Вырезать", #selector(NSText.cut(_:)), "x"),
+            ("Копировать", #selector(NSText.copy(_:)), "c"),
+            ("Вставить", #selector(NSText.paste(_:)), "v"),
+            ("Выбрать всё", #selector(NSText.selectAll(_:)), "a")
+        ] {
+            editMenu.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+        }
+        editItem.submenu = editMenu
+        menu.addItem(editItem)
+        app.mainMenu = menu
         let delegate = Issue339QADelegate()
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }

@@ -125,6 +125,56 @@ final class MoscowMagistrateSearchTests: XCTestCase {
         ])
     }
 
+    func testNonUIDMovementCacheRequiresSelectedNativeCardIdentity() async throws {
+        let (model, session, corpusURL) = try await makeUIDSearchModel(
+            cardHTML: Self.cardHTML, cardDelay: 0, isolatedMovement: true)
+        defer {
+            session.invalidateAndCancel()
+            MoscowUnitSearchURLProtocol.reset()
+            try? FileManager.default.removeItem(at: corpusURL)
+        }
+        let option = try XCTUnwrap(model.selectedCourt)
+        let selectedURL = try XCTUnwrap(URL(string:
+            "https://mos-sud.ru/425/cases/admin/details/22222222-2222-4222-8222-222222222222"))
+        let oldURL = try XCTUnwrap(URL(string:
+            "https://mos-sud.ru/425/cases/admin/details/11111111-1111-4111-8111-111111111111"))
+        let row = CaseSearchResult(caseNumber: "5-42/425/2026",
+            caseID: "22222222-2222-4222-8222-222222222222", cardURL: selectedURL)
+        XCTAssertNil(row.caseUID)
+        model.results = [row]
+        let key = MovementContext.identityKey(displayDomain: option.domain,
+            courtCode: option.code, caseNumber: row.caseNumber)
+        let previous = MovementMemoryCache.shared.get(key)
+        defer {
+            if let previous { MovementMemoryCache.shared.put(key, previous.movement) }
+            else { MovementMemoryCache.shared.remove(key) }
+        }
+        func cachedMovement(sourceURL: URL?) -> CaseMovement {
+            let instance = CaseInstance(level: .first, court: option.title,
+                caseNumber: row.caseNumber, judge: nil, domain: option.domain,
+                foundByUID: false, result: "Cached result", sessions: [], sourceURL: sourceURL)
+            return CaseMovement(uid: "cached-uid", caseNumber: row.caseNumber,
+                inForce: false, instances: [instance], complaints: [:], acts: [])
+        }
+        for sourceURL in [oldURL, nil, URL(string: "https://mos-sud.ru/425/not-a-card")] {
+            MoscowUnitSearchURLProtocol.configure(directory: Self.directoryHTML,
+                results: Self.resultsHTML, card: Self.cardHTML)
+            MovementMemoryCache.shared.put(key, cachedMovement(sourceURL: sourceURL))
+            await model.openMovement(row)
+            XCTAssertEqual(MoscowUnitSearchURLProtocol.cardRequests(), [selectedURL],
+                "A different, absent or invalid native locator must fetch selected card B")
+            XCTAssertEqual(model.movement?.instances.first?.sourceURL, selectedURL)
+            XCTAssertNotEqual(model.movement?.uid, "cached-uid")
+        }
+        MoscowUnitSearchURLProtocol.configure(directory: Self.directoryHTML,
+            results: Self.resultsHTML, card: Self.cardHTML)
+        MovementMemoryCache.shared.put(key, cachedMovement(sourceURL: selectedURL))
+        await model.openMovement(row)
+        XCTAssertTrue(MoscowUnitSearchURLProtocol.cardRequests().isEmpty,
+            "The same native identity remains a cache hit")
+        XCTAssertEqual(model.movement?.uid, "cached-uid")
+    }
+
     func testUIDSearchRejectsWrongOrMissingOwnCardUID() async throws {
         let ownUID = "77MS0425-01-2026-000042-10"
         let wrongUIDCard = Self.cardHTML.replacingOccurrences(
@@ -217,7 +267,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
         try await makeUIDSearchModel(cardHTML: cardHTML, cardDelay: 0)
     }
 
-    private func makeUIDSearchModel(cardHTML: String, cardDelay: TimeInterval) async throws
+    private func makeUIDSearchModel(cardHTML: String, cardDelay: TimeInterval,
+                                    isolatedMovement: Bool = false) async throws
         -> (model: SearchModel, session: URLSession, corpusURL: URL) {
         MoscowUnitSearchURLProtocol.configure(
             directory: Self.directoryHTML, results: Self.resultsHTML, card: cardHTML,
@@ -247,7 +298,12 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             magistrateResolver: MagistrateCourtResolver(
                 client: ordinaryClient, cacheURL: nil, moscowDirectoryClient: moscowClient),
             mosGorSudClient: MosGorSudClient(session: session, minInterval: 0),
-            moscowMagistrateClient: moscowClient)
+            moscowMagistrateClient: moscowClient,
+            movementServiceFactory: isolatedMovement ? { _, _ in
+                MovementService(client: moscowClient, higherCourtDomains: [],
+                    vsrf: nil, mosgorsud: nil, magistrate: nil,
+                    transferCourts: { _ in [] })
+            } : nil)
         model.tier = .magistrate
         model.region = "77"
         await model.resolveCourts()

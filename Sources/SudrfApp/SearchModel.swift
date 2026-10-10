@@ -1176,12 +1176,27 @@ final class SearchModel: ObservableObject {
                                 cartoteka: Cartoteka) -> Bool {
         let baseLevel = MovementContext.instanceLevel(
             cartotekaID: cartoteka.id, courtLevel: court.level, judicialUID: movement.uid)
+        let isMoscowMagistrate = court.level == .magistrate && cartoteka.id == "adm"
+            && SudrfHost.moduleHost(court.domain) == "mos-sud.ru"
         let matchingInstances = movement.instances.filter {
             $0.level == baseLevel
                 && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
-                && CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber)
+                && (isMoscowMagistrate
+                    ? MoscowMagistrateKoAPNumber.matchesPublishedNumber($0.caseNumber, row.caseNumber)
+                    : CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber))
         }
         guard !matchingInstances.isEmpty else { return false }
+        if isMoscowMagistrate {
+            guard let url = verifiedExactCardURL(for: row, court: court),
+                  let selected = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cartoteka) else { return false }
+            return matchingInstances.contains { instance in
+                guard let sourceURL = instance.sourceURL,
+                      let cached = SourceNativeCardLocator.moscowMagistrateKoAP(
+                        url: sourceURL, cartoteka: cartoteka) else { return false }
+                return cached.identity == selected.identity
+            }
+        }
         guard let exactURL = verifiedDirectCardURLForCache(for: row, court: court) else {
             // При наличии пары идентификаторов непроверенная ссылка не участвует
             // в загрузке: карточка строится для выбранного суда и картотеки.

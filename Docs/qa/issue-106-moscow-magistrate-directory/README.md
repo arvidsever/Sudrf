@@ -262,3 +262,31 @@ the native screenshots. This accepts the offline picker order and selection;
 it does not accept live card/search completeness or the whole #106 scope.
 Hosted current-commit CI remains a separate gate. The previous classification-
 based review does not stand in for this final title-based review.
+
+## Native movement cache identity — 10 October 2026
+
+The Moscow magistrate cache now compares native published case numbers with
+`MoscowMagistrateKoAPNumber.matchesPublishedNumber` and requires the cached
+first-instance `SourceNativeCardLocator` identity to equal the selected card.
+A different, absent or invalid locator is a cache miss. Other sources retain
+their previous cache admission rules; saved records and journals are unchanged.
+
+The initial review suspected an incorrect cache hit for two native cards with
+the same unit and number. Execution did not reproduce that claim: the previous
+generic number comparison rejected the valid three-part native number, so both
+cards missed the cache. This correction adds safe native cache reuse rather
+than establishing a prior wrong-card display.
+
+The regression uses the actual Moscow client and MovementService against an
+injected offline URLProtocol: selected card B is fetched for cached A, absent
+and invalid source locators, despite equal unit/number and absent caseUID. The
+same B identity is reused without a request. Transport cookies/cache, tokens,
+corpus and higher-provider paths are isolated; the existing read-only
+CaptchaSettings.shared object is retained, with no preference mutation and no
+CAPTCHA challenge in the fixture. The previous in-memory cache entry is restored.
+
+Fifteen focused tests passed without failures or skips (five ordering, nine
+Moscow mapping and one cache regression). Log:
+`/private/tmp/sudrf-106-cache-picker-final-profile.log`, SHA-256:
+`73bae2e31702a57088eeeb8fe2e36a118658f158db652c3bb9453be5b6e41bda`.
+This offline profile does not add live-source or native GUI acceptance evidence.

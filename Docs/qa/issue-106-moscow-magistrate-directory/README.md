@@ -349,3 +349,19 @@ Historical hosted run38056295190 on `2b514b7` explicitly passed the named
 (12.558s), plus `testPickerSelectionScopesGlobalSearchAndOpensExactNativeCard`
 (0.026s) and the no-judicial-UID native identity test (0.001s). These were executed,
 not skipped. Final integrated-head CI must independently repeat these gates.
+
+## Release preparation — 10 October 2026
+
+Actual main was rechecked as `8a7f0e8245d7275dcd879692b998560c33ef9d9f`,
+0.64.8/build 260. The new-source first stage assigns minor 0.65.0/build 261.
+Release notes and roadmap/history preserve the open #106 scope. No working
+app/data, live-source attempt or TestFlight was used for this release preparation.
+
+Implementation head `8991e3a` hosted run 38058116755 passed with 2100 XCTest,
+21 skips, 28 Swift Testing and 27 Python (six skips), zero failures. Exact selected
+card, no-UID identity, cache identity and both named disk regressions actually
+executed rather than skipping. Log SHA-256:
+`19ff9fab3071b5c63f09c3c6ec4ca2e64bbd137847ec77c69fbe9b76f47e3526`.
+App/CLI/models/registry/package gates passed; hosted SDK 27 build/test steps
+skipped. The separate native fixture build is UI evidence, not a hosted SDK 27
+or full live-chain gate. The release commit must pass its own current-head CI.

@@ -21,15 +21,15 @@ no live Treasury response is claimed. This is the separate prerequisite for
 
 ## Verified
 
-The nine new `TreasuryEventJournalTests` run with synthetic data and temporary
+The ten new `TreasuryEventJournalTests` run with synthetic data and temporary
 disk stores. The native-client test uses an ephemeral URLProtocol session,
 disabled cookies/cache, private court client stores and rejecting unused court
 providers. Conditional construction of injected RefreshCenter clients reuses
 the already reviewed #241 pattern; ordinary defaults are preserved.
 
-Result: **9 tests, 0 failures, 0 skips**. Final local log:
-`/private/tmp/sudrf-454-isolated-final.log`; SHA-256
-`e6065f410a5cb5b5ba9cfeb1b6349353e554bbf4efeaf0456afd45923ec35ca6`.
+Result: **10 tests, 0 failures, 0 skips**. Final local log:
+`/private/tmp/sudrf-454-notifications.log`; SHA-256
+`9e43d63203154752ff483043a80740bdf6450f182fd07cf8d2c0bc7919b27e61`.
 
 Covered: GUID identity, changed presentation, duplicate/reordered RSS, malformed
 GUIDs, FSSP exclusion, old history backfill, restart/replay, real native
@@ -38,6 +38,19 @@ survivor and retired IDs, collections, court events and compatible baselines,
 and journal append/encoding/save failure rollback. A combined preparation
 save failure also restores both Moscow normalization and RSS backfill, including
 retained model objects and reopened disk contents.
+
+The tenth test runs the existing AppRouter feed and notification filter with
+private settings, tokens, clients, corpus and act cache. Spotlight, activities,
+intent installation and dock badge effects are replaced; the notification
+publisher records submissions in a private receiver. The DI-only AppModel
+parameters reuse the reviewed #250 pattern and retain ordinary defaults.
+Persisted history is quiet; the first real synthetic fetch announces its new
+GUIDs once. Repeating while they remain unread does not announce them again.
+Read/known IDs of a deleted duplicate transfer through the actual disk merge
+and existing RefreshCenter remap callback; the V6 survivor key stays permanent.
+Reopening the merged store retains read state and causes no new submission.
+This proves submission/filtering, not macOS notification delivery. No native
+application, AppBootstrap, background scheduler or live network was used.
 
 An additional existing-class profile ran 152 tests without failures (7 Kit,
 85 RefreshCenter, 52 repair and 8 new journal tests). That broad profile is
@@ -62,12 +75,10 @@ not established. No installed application or working database was opened.
 
 ## Remaining gates
 
-- Actual AppRouter known/read filtering and notification submission through a
-  private receiver. A successful RefreshCenter callback is not this proof.
-  Reuse the private dependencies prepared in #250 rather than a second feed
-  implementation; do not cut the production feed over in this issue.
-- Independent source review passed at `d6d282f`; remaining registry/project
-  generation, native build and
-  current-head CI. No release version is assigned yet.
+- Independent review passed for the source and all ten isolated tests;
+  registry verification and project generation passed. The own Xcode Debug
+  build succeeded without launching the app: `/private/tmp/sudrf-454-native-build.log`,
+  SHA-256 `f7782742eb2a45bfcc2d268ebe4f962ce2c3b9f4a1b423d94d97ac2b5010a544`.
+  Current-head CI remains; no release version is assigned yet.
 - Changelog/history/release table at the actual merge order. Keep #454 open
-  until the remaining preservation and notification criteria pass.
+  until current-head CI and release gates pass.

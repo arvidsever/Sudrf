@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 import XCTest
 import SwiftData
+import CaptchaSolver
 @testable import SudrfKit
 @testable import SudrfApp
 
@@ -259,6 +260,161 @@ final class TreasuryEventJournalTests: XCTestCase {
         }
     }
 
+    private func makeRouter(container: ModelContainer, defaults: UserDefaults,
+                            suite: String, directory: URL,
+                            notifications: @escaping @MainActor ([FeedEntry]) -> Void)
+        throws -> (AppRouter, TrackedStore, URLSession) {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [Treasury454URLProtocol.self]
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        let session = URLSession(configuration: config)
+        let treasury = TreasuryClient(session: session, minInterval: 0,
+            baseURL: URL(string: "https://treasury454.test")!, maxAttempts: 1)
+        let vsrf = Treasury454UnusedVSRF()
+        let moscow = MosGorSudClient(session: session, minInterval: 0)
+        var capturedStore: TrackedStore?
+        let router = try AppRouter(captchaSettings: CaptchaSettings(defaults: defaults),
+            modelContainer: container,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("corpus")),
+            refreshCenterFactory: { store, client in
+                capturedStore = store
+                return RefreshCenter(store: store, client: client,
+                    serviceBuilder: { _ in Treasury454UnusedMovement() },
+                    treasuryDiscover: { document, number, court in
+                        try await treasury.discover(document: document, caseNumber: number, court: court)
+                    }, vsrfProvider: vsrf, fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in .notFound(.init(state: .notFound, record: nil)) })
+            }, importVSRFProvider: vsrf, importMosGorSudProvider: moscow,
+            selectedPublishedAct: PublishedActSelection(
+                cache: ActFileCache(directory: directory.appendingPathComponent("acts")),
+                fetch: { _, _ in XCTFail("unexpected act request"); throw CancellationError() }),
+            summaryConfigurationProvider: { throw CancellationError() },
+            userDefaults: defaults, client: TestNetworkGuard.sudrfClient(),
+            captchaTokenStore: CaptchaTokenStore(),
+            directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(
+                fetchCard: { _ in XCTFail("unexpected direct card request"); throw CancellationError() },
+                districtCourts: { _ in XCTFail("unexpected directory request"); throw CancellationError() }) },
+            spotlightIndexerFactory: { catalog in SpotlightIndexer(catalog: catalog,
+                writer: Treasury454NoSpotlight(), manifestStore: SpotlightManifestStore(suiteName: suite),
+                preferenceStore: SpotlightPreferenceStore(suiteName: suite)) },
+            currentEntityActivityPublisher: { _ in XCTFail("unexpected activity publication") },
+            feedNotificationPublisher: notifications,
+            feedBadgePublisher: { _ in }, notificationOpenInstaller: { _ in }, intentInstaller: { _ in },
+            captchaSolverFactory: { _ in nil },
+            repairCoordinatorFactory: { store, client in TrackedCaseRepairCoordinator(
+                store: store, client: client, originResolver: Treasury454NoOrigin(), defaults: defaults,
+                anchorCardFetcher: { _ in XCTFail("unexpected repair request"); throw CancellationError() }) })
+        return (router, try XCTUnwrap(capturedStore), session)
+    }
+
+    func testActualFeedNotifierFilteringPreservesOldMarksAndFirstFetchAcrossRestartAndMerge() async throws {
+        for hasOldHistory in [true, false] {
+            let directory = try directory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let url = directory.appendingPathComponent("fixture.store")
+            let suite = "Sudrf.Treasury454.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            var key = ""
+            var oldID = ""
+            do {
+                let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let store = try TrackedStore(container: container, prepared: true)
+                let record = try store.upsert(context: context(), snapshot: nil,
+                                              movement: movement(), collections: ["Пользовательская"])
+                key = record.key
+                oldID = AppRouter.enforcementFeedID(recordKey: key, guid: "native-guid-1")
+                if hasOldHistory {
+                    record.enforcementRecords = [source([rss("native-guid-1", date: DateUtil.today)])]
+                    defaults.set([oldID], forKey: "overviewReadFeedIDs.v1")
+                    defaults.set([oldID], forKey: "notifiedFeedIDs.v1")
+                }
+                record.seenAt = observed
+                try store.save()
+            }
+            var batches: [[FeedEntry]] = []
+            for pass in 0..<2 {
+                let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let (router, store, session) = try makeRouter(container: container, defaults: defaults,
+                    suite: suite, directory: directory, notifications: { batches.append($0) })
+                defer { session.invalidateAndCancel() }
+                XCTAssertEqual(batches.count, pass == 0 ? 0 : 1)
+                if hasOldHistory {
+                    XCTAssertEqual(router.feed.first { $0.id == oldID }?.isUnread, false)
+                }
+                let task = try XCTUnwrap(router.refreshCenter.refreshEnforcement(key: key))
+                await task.value
+                XCTAssertNil(router.refreshCenter.enforcementError(forKey: key))
+                let expectedGUIDs = hasOldHistory ? ["native-guid-2"] : ["native-guid-1", "native-guid-2"]
+                XCTAssertEqual(batches.count, 1)
+                XCTAssertEqual(Set(batches[0].map(\.id)), Set(expectedGUIDs.map {
+                    AppRouter.enforcementFeedID(recordKey: key, guid: $0)
+                }))
+                let record = try XCTUnwrap(store.record(forKey: key))
+                XCTAssertEqual(record.eventJournal?.events.filter { $0.kind == .treasuryRSSPublished }.count, 2)
+                XCTAssertEqual(record.collectionNames, ["Пользовательская"])
+                if pass == 0 {
+                    let repeatedUnread = try XCTUnwrap(router.refreshCenter.refreshEnforcement(key: key))
+                    await repeatedUnread.value
+                    XCTAssertEqual(batches.count, 1)
+                    XCTAssertTrue(router.feed.contains { $0.isUnread })
+                    router.markAllFeedRead()
+                    let repeated = try XCTUnwrap(router.refreshCenter.refreshEnforcement(key: key))
+                    await repeated.value
+                    XCTAssertEqual(batches.count, 1)
+                } else {
+                    XCTAssertTrue(router.feed.allSatisfy { !$0.isUnread })
+                    // Exercise the existing remap callback after the real disk merge.
+                    var duplicateContext = context("М-454/2026")
+                    duplicateContext.caseID = "notification-merge"
+                    duplicateContext.caseUID = "notification-merge-guid"
+                    let duplicate = try store.upsert(context: duplicateContext, snapshot: nil,
+                                                     movement: movement(), collections: [])
+                    try store.applyEnforcementUpdates(forLocator: duplicate.key,
+                        updates: [source([rss("native-guid-3", date: DateUtil.today)])], openedKey: nil)
+                    let duplicateKey = duplicate.key
+                    let duplicateID = AppRouter.enforcementFeedID(recordKey: duplicateKey, guid: "native-guid-3")
+                    router.reload()
+                    router.markAllFeedRead()
+                    XCTAssertTrue((defaults.stringArray(forKey: "overviewReadFeedIDs.v1") ?? []).contains(duplicateID))
+                    XCTAssertTrue((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(duplicateID))
+                    var canonical = context("2-454-REANCHORED/2026")
+                    canonical.caseID = "reanchored-454"
+                    canonical.caseUID = "reanchored-guid-454"
+                    let oldKey = key
+                    let remaps = try TrackedCaseRepairCoordinator.atomicMerge(store: store,
+                        survivor: record, duplicates: [duplicate], canonicalContext: canonical,
+                        canonicalCard: nil)
+                    key = record.key
+                    XCTAssertEqual(key, oldKey)
+                    XCTAssertEqual(record.context?.caseNumber, canonical.caseNumber)
+                    XCTAssertEqual(remaps[duplicateKey], key)
+                    router.refreshCenter.onRefreshed?(key, try XCTUnwrap(record.movement), remaps)
+                    XCTAssertEqual(batches.count, 1)
+                    XCTAssertTrue(router.feed.allSatisfy { !$0.isUnread })
+                    XCTAssertEqual(Set(defaults.stringArray(forKey: "overviewReadFeedIDs.v1") ?? []),
+                        Set(["native-guid-1", "native-guid-2", "native-guid-3"].map {
+                            AppRouter.enforcementFeedID(recordKey: key, guid: $0)
+                        }))
+                    XCTAssertFalse((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(duplicateID))
+                    XCTAssertTrue((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(
+                        AppRouter.enforcementFeedID(recordKey: key, guid: "native-guid-3")))
+                }
+            }
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let (reopened, store, session) = try makeRouter(container: container, defaults: defaults,
+                suite: suite, directory: directory, notifications: { batches.append($0) })
+            defer { session.invalidateAndCancel() }
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertEqual(batches.count, 1)
+            XCTAssertTrue(reopened.feed.allSatisfy { !$0.isUnread })
+        }
+    }
+
     func testPreparationFailureRestoresRSSAndMoscowNormalizationInMemoryAndOnDisk() throws {
         let directory = try directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -363,6 +519,11 @@ private final class Treasury454URLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
             return
         }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss"
+        let publishedDate = formatter.string(from: DateUtil.today)
         let content: String
         if url.path == "/roskazna/rss" {
             let history = URLComponents(url: url, resolvingAgainstBaseURL: false)?
@@ -370,8 +531,8 @@ private final class Treasury454URLProtocol: URLProtocol {
             if history {
                 content = """
                 <rss><channel>
-                <item><title>Документ принят</title><guid>native-guid-1</guid><pubDate>Thu, 01 Oct 2026 00:00:00</pubDate></item>
-                <item><title>Документ исполнен</title><guid>native-guid-2</guid><pubDate>Fri, 02 Oct 2026 00:00:00</pubDate></item>
+                <item><title>Документ принят</title><guid>native-guid-1</guid><pubDate>\(publishedDate)</pubDate></item>
+                <item><title>Документ исполнен</title><guid>native-guid-2</guid><pubDate>\(publishedDate)</pubDate></item>
                 </channel></rss>
                 """
             } else {
@@ -396,4 +557,17 @@ private final class Treasury454URLProtocol: URLProtocol {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private struct Treasury454NoOrigin: CaseOriginResolving {
+    func resolve(anchorContext: MovementContext, anchorCard: CaseCard) async throws -> ResolvedCaseOrigin {
+        XCTFail("unexpected origin lookup")
+        throw CancellationError()
+    }
+}
+
+private actor Treasury454NoSpotlight: SpotlightIndexWriting {
+    func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws { XCTFail("unexpected indexing") }
+    func delete(caseIDs: [String], actIDs: [String]) async throws { XCTFail("unexpected index deletion") }
+    func deleteAll() async throws { XCTFail("unexpected index deletion") }
 }

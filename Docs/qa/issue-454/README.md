@@ -52,7 +52,13 @@ defaults domain equals the installed app domain. Log `/private/tmp/sudrf-454-foc
 A subsequent full local suite was stopped (exit 130) during Kit parser tests
 after this boundary was identified. Do not rerun the broad suite locally or
 restore shared settings without a known prior value; run the full suite in CI.
-No installed application or working database was opened.
+Default test-process constructors also create common diagnostic/corpus
+directories, read corpus manifests and construct VS RF/Moscow clients with
+shared cookie storage. Lazy court-client/variant-cache constructors alone do
+not prove network or cache access. AppRouter installs its normal intent/open
+hooks and invokes the badge callback, while its non-notifying reload does not
+submit notifications or indexing. Effects on installed-app preferences are
+not established. No installed application or working database was opened.
 
 ## Remaining gates
 
@@ -60,7 +66,8 @@ No installed application or working database was opened.
   private receiver. A successful RefreshCenter callback is not this proof.
   Reuse the private dependencies prepared in #250 rather than a second feed
   implementation; do not cut the production feed over in this issue.
-- Final independent review, registry/project generation, native build and
+- Independent source review passed at `d6d282f`; remaining registry/project
+  generation, native build and
   current-head CI. No release version is assigned yet.
 - Changelog/history/release table at the actual merge order. Keep #454 open
   until the remaining preservation and notification criteria pass.

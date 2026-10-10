@@ -2171,7 +2171,9 @@ final class AppRouter: ObservableObject {
                 unreadByCase: unreadByCase, snapshot: snap,
                 movement: snap == nil ? nil : rec.movement,
                 context: snap == nil ? nil : rec.context,
-                enforcementRecords: rec.enforcementRecords)
+                enforcementRecords: rec.enforcementRecords,
+                recordKeyAliases: Set(rec.legacyKeyAliases),
+                canUseRecordKeyAliases: TrackedCaseIdentity.persistedState(for: rec) != nil)
             legacyFeedRecords.append(feedRecord)
 
             guard let snap else { continue }

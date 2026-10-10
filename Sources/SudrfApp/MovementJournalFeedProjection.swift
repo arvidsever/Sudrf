@@ -20,6 +20,9 @@ enum MovementJournalFeedProjection {
                 .filter { kinds.contains($0.kind) }.map { (record, $0) }
         }
         let counts = Dictionary(grouping: references, by: { $0.1.id })
+        let originOwners = Dictionary(grouping: records.flatMap { record in
+            record.recordKeyAliases.union([record.recordKey]).map { ($0, record.recordKey) }
+        }, by: { $0.0 })
         var entries = [FeedEntry]()
         var unmapped = [String]()
         for (record, event) in references {
@@ -27,8 +30,13 @@ enum MovementJournalFeedProjection {
             let date = Date(timeIntervalSinceReferenceDate: event.observedAtRef)
             guard (0...45).contains(DateUtil.daysBetween(date, today)) else { continue }
             let evidence = event.evidence
+            let ownsOrigin = event.occurrence.map {
+                ($0.originRecordKey == record.recordKey || record.canUseRecordKeyAliases
+                    && record.recordKeyAliases.contains($0.originRecordKey))
+                    && originOwners[$0.originRecordKey]?.map(\.1) == [record.recordKey]
+            } ?? true
             guard !event.id.isEmpty, counts[event.id]?.count == 1,
-                  event.occurrence == nil || event.occurrence?.originRecordKey == record.recordKey,
+                  ownsOrigin,
                   let context = record.context, let source = evidence.sourceCardID,
                   let levelRaw = evidence.instanceLevelRaw,
                   let level = CaseInstance.Level(rawValue: levelRaw) else {

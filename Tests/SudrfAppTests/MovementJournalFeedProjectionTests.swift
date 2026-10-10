@@ -91,6 +91,75 @@ final class MovementJournalFeedProjectionTests: XCTestCase {
         }
     }
 
+    func testProvenRetiredKeyKeepsImmutableOccurrenceAndMarksAfterReopen() throws {
+        let f = fixture(aliases: ["retired-record"])
+        let raw = event(.judgeChanged, f, previous: "А", value: "Б")
+        let events = CaseEventJournal().identifyingOccurrences([raw], originKey: "retired-record")
+        let journal = CaseEventJournal(events: events)
+        let data = try JSONEncoder().encode(journal)
+        let reopened = try JSONDecoder().decode(CaseEventJournal.self, from: data)
+        let ids = Set(events.map(\.id))
+        let result = project(f, reopened.events, read: ids, known: ids)
+        XCTAssertEqual(result.entries.map(\.id), events.map(\.id))
+        XCTAssertEqual(result.entries.first?.recordKey, f.input.recordKey)
+        XCTAssertEqual(result.entries.first?.isUnread, false)
+        XCTAssertEqual(result.knownIDs, ids)
+        XCTAssertTrue(result.unmappedEvents.isEmpty)
+        XCTAssertEqual(reopened, journal)
+    }
+
+    func testRetiredKeyWithTwoSurvivingOwnersIsNotBorrowed() {
+        let f = fixture(aliases: ["retired-record"])
+        let other = fixture(recordKey: "other-survivor", aliases: ["retired-record"])
+        let raw = event(.judgeChanged, f, previous: "А", value: "Б")
+        let events = CaseEventJournal().identifyingOccurrences([raw], originKey: "retired-record")
+        let result = MovementJournalFeedProjection.project(records: [f.input, other.input],
+            journalsByRecordKey: [f.input.recordKey: .init(events: events)], today: today,
+            readIDs: [], knownIDs: [])
+        XCTAssertTrue(result.entries.isEmpty)
+        XCTAssertEqual(result.unmappedEvents, events.map(\.id))
+    }
+
+    func testStillExistingOriginOwnerBlocksRetiredAlias() {
+        let f = fixture(aliases: ["still-existing"])
+        let other = fixture(recordKey: "still-existing")
+        let events = CaseEventJournal().identifyingOccurrences(
+            [event(.judgeChanged, f, previous: "А", value: "Б")], originKey: "still-existing")
+        let result = MovementJournalFeedProjection.project(records: [f.input, other.input],
+            journalsByRecordKey: [f.input.recordKey: .init(events: events)], today: today,
+            readIDs: [], knownIDs: [])
+        XCTAssertTrue(result.entries.isEmpty)
+        XCTAssertEqual(result.unmappedEvents, events.map(\.id))
+    }
+
+    func testUnvalidatedAliasCannotAdmitHistoryButStillBlocksAnotherOwner() {
+        let f = fixture(aliases: ["retired-record"])
+        let unvalidated = fixture(recordKey: "invalid-survivor", aliases: ["retired-record"],
+                                  canUseAliases: false)
+        let events = CaseEventJournal().identifyingOccurrences(
+            [event(.judgeChanged, f, previous: "А", value: "Б")], originKey: "retired-record")
+        XCTAssertTrue(project(unvalidated, events).entries.isEmpty)
+        let result = MovementJournalFeedProjection.project(records: [f.input, unvalidated.input],
+            journalsByRecordKey: [f.input.recordKey: .init(events: events)], today: today,
+            readIDs: [], knownIDs: [])
+        XCTAssertTrue(result.entries.isEmpty)
+        XCTAssertEqual(result.unmappedEvents, events.map(\.id))
+    }
+
+    func testRetiredKeyDoesNotOverrideExactSourceOrInferUnlistedKeys() {
+        let f = fixture(aliases: ["retired-record"])
+        let raw = event(.judgeChanged, f, previous: "А", value: "Б")
+        let unlisted = CaseEventJournal().identifyingOccurrences([raw], originKey: "other-survivor")
+        XCTAssertTrue(project(f, unlisted).entries.isEmpty)
+        var evidence = raw.evidence
+        evidence.sourceCardID = "another-source"
+        let foreign = CaseEvent(id: raw.id, kind: raw.kind,
+            observedAtRef: raw.observedAtRef, evidence: evidence)
+        let retired = CaseEventJournal().identifyingOccurrences([foreign], originKey: "retired-record")
+        XCTAssertTrue(project(f, retired).entries.isEmpty)
+        XCTAssertEqual(project(f, retired).unmappedEvents, retired.map(\.id))
+    }
+
     func testRepeatedTransitionDistinctIDsAndReadStateSurviveJournalFileReopen() throws {
         let f = fixture()
         var journal = CaseEventJournal()
@@ -123,7 +192,8 @@ final class MovementJournalFeedProjectionTests: XCTestCase {
         let source: String
     }
     private func fixture(material: Bool = false, judge: String = "Петров П.П.",
-                         result: String = "Иск удовлетворён частично") -> Fixture {
+                         result: String = "Иск удовлетворён частично", recordKey: String? = nil,
+                         aliases: Set<String> = [], canUseAliases: Bool = true) -> Fixture {
         let context = MovementContext(branchRaw: "general", region: "Республика Коми",
             searchDomain: "syktsud--komi.sudrf.ru", displayDomain: "syktsud.komi.sudrf.ru",
             courtTitle: "Учебный городской суд", courtLevelRaw: "district", courtCode: "11RS0001",
@@ -139,9 +209,10 @@ final class MovementJournalFeedProjectionTests: XCTestCase {
             steps: [], sessions: [], deadlines: [])
         let movement = CaseMovement(uid: "", caseNumber: context.caseNumber, inForce: false,
             instances: [owner], complaints: [:], acts: [])
-        let input = LegacyFeedRecordInput(recordKey: context.key, caseNumber: context.caseNumber,
+        let input = LegacyFeedRecordInput(recordKey: recordKey ?? context.key, caseNumber: context.caseNumber,
             client: "Учебное дело", unreadByCase: true, snapshot: snapshot,
-            movement: movement, context: context, enforcementRecords: [])
+            movement: movement, context: context, enforcementRecords: [], recordKeyAliases: aliases,
+            canUseRecordKeyAliases: canUseAliases)
         return Fixture(input: input, owner: owner,
             source: CaseSnapshotSourceIdentity.sourceCardID(for: owner, context: context)!)
     }

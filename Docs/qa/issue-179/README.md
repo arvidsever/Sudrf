@@ -1,5 +1,26 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Retained occurrence origins — 10 October 2026
+
+The movement shadow accepts an immutable occurrence origin from a retained
+record-key alias only when the existing persisted identity graph is valid and
+that key has exactly one claimant across all input records. Raw aliases from
+invalid graphs still block a conflicting claim; they cannot admit history.
+Current keys remain valid without fabricating an identity graph. Source card,
+level, case number and unique event ID checks still apply. No key is inferred
+from a number or UID, and stored event IDs, evidence and marks are not rewritten.
+
+Thirteen focused pure tests passed, zero failures/skips. The five new checks
+cover JSON reopen with retained marks, two surviving claimants, a still-existing
+original owner, an unvalidated competing claim, and foreign/unlisted sources.
+Occurrence-origin checks use judge-change events because newly discovered
+productions do not have repeatable transition occurrence identities. This is
+journal JSON/projection coverage, not a SwiftData merge or live AppRouter test.
+Log `/private/tmp/sudrf-179-origin-alias-tests.log`, SHA-256
+`2293d541603679a40d78bfdc40fbd8879e6b921d7c770344afd30f6b3fdc5c98`.
+Independent Astra review passed. Production feed, notifications and badges still
+use the existing renderer; full #179 cutover remains incomplete.
+
 ## Undated movement projection — 10 October 2026
 
 The accepted judge/production/result rows now have a pure journal projection into
@@ -13,9 +34,9 @@ Historical judge/result text uses immutable published evidence even when the
 current exact owner later changes. Production court comes from the current
 proven exact owner (the event evidence has no stored court). Unique event ID,
 source, level and number are required; foreign/ambiguous owners remain unmapped.
-A persisted occurrence origin must match the current record key: legitimate
-reanchor/merged-dossier historical events remain unmapped until explicit alias
-proof exists. This is not full merged-dossier coverage.
+The initial checkpoint required an occurrence origin to match the current key.
+The retained-origin layer above supersedes that limitation for proven, uniquely
+owned aliases. Full disk merge and live notifier coverage is still a later gate.
 
 Eight isolated pure tests passed without failures/skips: accepted text/date,
 actual existing recent-feed filtering, material source/subtitle, absent/foreign

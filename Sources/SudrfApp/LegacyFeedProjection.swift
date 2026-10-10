@@ -3,6 +3,8 @@ import SudrfKit
 
 struct LegacyFeedRecordInput {
     let recordKey: String
+    let recordKeyAliases: Set<String>
+    let canUseRecordKeyAliases: Bool
     let caseNumber: String
     let client: String
     let unreadByCase: Bool
@@ -16,8 +18,11 @@ struct LegacyFeedRecordInput {
 
     init(recordKey: String, caseNumber: String, client: String, unreadByCase: Bool,
          snapshot: CaseSnapshot?, movement: CaseMovement?, context: MovementContext?,
-         enforcementRecords: [EnforcementRecord]) {
+         enforcementRecords: [EnforcementRecord], recordKeyAliases: Set<String> = [],
+         canUseRecordKeyAliases: Bool = false) {
         self.recordKey = recordKey
+        self.recordKeyAliases = recordKeyAliases.subtracting(["", recordKey])
+        self.canUseRecordKeyAliases = canUseRecordKeyAliases
         self.caseNumber = caseNumber
         self.client = client
         self.unreadByCase = unreadByCase

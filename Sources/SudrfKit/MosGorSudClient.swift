@@ -84,6 +84,19 @@ public actor MosGorSudClient {
         return try MosGorSudCardParser.parse(html: html, sourceURL: url)
     }
 
+    func fetchCardWithResponseURL(url: URL) async throws -> MosGorSudCardFetchResult {
+        guard url.scheme?.lowercased() == "https",
+              PublishedActURLPolicy.allowedMosGorSudHosts.contains(url.host?.lowercased() ?? ""),
+              url.user == nil, url.password == nil, url.port == nil else {
+            throw SudrfError.searchModuleUnavailable(domain: MosGorSudEndpoint.host)
+        }
+        let response = try await transport.fetchHTML(
+            url, maxAttempts: maxAttempts,
+            allowedFinalHosts: PublishedActURLPolicy.allowedMosGorSudHosts)
+        let card = try MosGorSudCardParser.parse(html: response.html, sourceURL: response.finalURL)
+        return MosGorSudCardFetchResult(card: card, responseURL: response.finalURL)
+    }
+
     /// Fetches and verifies a published attachment. A successful HTTP request
     /// alone is not enough: HTML/CAPTCHA responses, misleading MIME types and
     /// unsafe Office containers are rejected before any caller can persist an

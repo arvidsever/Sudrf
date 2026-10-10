@@ -85,6 +85,26 @@ clients без cookies/cache, nil resolver/variant caches, частный nil-di
 `05a29dbd7b4b74bb65bf21a501a4cfb3c6ed42ce37bec55359a88eecccd140e9`.
 
 
+### Интеграция актуального main после первого push
+
+Первый background HEAD `1e9a3d8` оказался конфликтующим с уже вошедшим #106:
+GitHub не создал CI этого HEAD. Интегрирован `origin/main` `fb3e2c7` merge commit
+без переписывания истории. Default RefreshCenter сохраняет маршрут #106
+`mos-sud.ru` + `adm` → MoscowMagistrateKoAPClient, обычный magistrate и general
+providers; custom builder сохраняет отсутствие создания ненужных клиентов.
+SearchModel сохраняет main lazy VSRF default и частную provider injection.
+QA-host дополнительно передаёт частный Moscow client и в MagistrateCourtResolver.
+Независимое ревью разрешения конфликтов: PASS.
+
+После интеграции: 8 тестов, 0 ошибок/пропусков, 0,248 секунды;
+`/private/tmp/sudrf-250-main-integration-profile.log`, SHA-256
+`051cd81dcbb41fc7fbdb5fb9938b97d93d8ad444d86187b92de65accefb5f2d3`.
+Повтор сборки QA host без запуска: PASS, SHA-256
+`9667f271ba432c250da5d7675ba58c46a2a8e4ea8e47a8c365d5014b543148e2`.
+Xcode 27 unsigned Debug: BUILD SUCCEEDED без запуска;
+`/private/tmp/sudrf-250-main-integration-xcode-build.log`, SHA-256
+`473d19d7b6d310030d14879fe377dfa1ca27c1c704089806b4d1e69b58b4f8e6`.
+
 ### Оставшиеся gates
 
 Изолированный host с настоящими OperationalRootView/навигацией/карточкой готовится

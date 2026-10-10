@@ -238,6 +238,7 @@ public enum MosGorSudCardParser {
             receiptDate: field("дата поступления", "дата регистрации"),
             legalForceDate: field("дата вступления"),
             higherNumber: field("вышестоящей инстанции").flatMap(firstCaseNumberLike),
+            lowerNumber: field("нижестоящей инстанции").flatMap(firstCaseNumberLike),
             sessions: sessions,
             participants: participants,
             actFiles: actFiles,
@@ -304,7 +305,7 @@ public enum MosGorSudCardParser {
     }
 
     private static func firstCaseNumberLike(_ s: String) -> String? {
-        s.firstMatch(of: /\d+[а-яё]?-\d+\/\d{4}/).map { String($0.output) }
+        s.firstMatch(of: /\d+[а-яё]?-\d+\/(?:\d+\/)?\d{4}/).map { String($0.output) }
     }
 
     /// `<p class="table-bold-text">Роль</p>Имя<br/>Имя…` → ["Роль: Имя", …].

@@ -73,6 +73,143 @@ final class DeadlineRuleEngineTests: XCTestCase {
         ])
     }
 
+    func testDecisionFinalFormConflictingDatesDoNotProduceExactDeadline() throws {
+        let mv = movement(sessions: [
+            CaseSession(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            CaseSession(date: "03.03.2026", event: "Решение изготовлено в окончательной форме"),
+            CaseSession(date: "05.03.2026", event: "Решение изготовлено в окончательной форме"),
+        ])
+        let result = DeadlineRuleEngine.evaluate(
+            registry: try LegalDeadlineRegistry.load(), movement: mv,
+            context: DeadlineRuleEngine.Context(movementContext: context("g")),
+            timeline: CaseLifecycleResolver.timeline(in: mv, production: .civil),
+            today: DateUtil.parse("10.03.2026")!)
+        let actual = result.deadlines.map { "\($0.provenance?.trigger.dateRaw ?? "nil") -> \($0.date)" }
+        XCTAssertTrue(result.deadlines.isEmpty, "Actual trigger/deadline: \(actual)")
+        let assessment = try XCTUnwrap(result.assessments.first { $0.ruleID == "GPK-APPEAL-GENERAL" })
+        XCTAssertTrue(assessment.missingEvidenceRaw.contains(DeadlineEvidenceRequirement.finalForm.rawValue),
+                      "Actual assessment: \(assessment)")
+    }
+
+    func testDecisionFinalFormDoesNotUseIntermediateDeterminationDate() throws {
+        let mv = movement(sessions: [
+            CaseSession(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            CaseSession(date: "03.03.2026", event: "Решение изготовлено в окончательной форме"),
+            CaseSession(date: "10.03.2026", event: "Промежуточное определение изготовлено в окончательной форме"),
+        ])
+        let result = DeadlineRuleEngine.evaluate(
+            registry: try LegalDeadlineRegistry.load(), movement: mv,
+            context: DeadlineRuleEngine.Context(movementContext: context("g")),
+            timeline: CaseLifecycleResolver.timeline(in: mv, production: .civil),
+            today: DateUtil.parse("10.03.2026")!)
+        let deadline = try XCTUnwrap(result.deadlines.first { $0.provenance?.ruleID == "GPK-APPEAL-GENERAL" })
+        XCTAssertEqual(deadline.provenance?.trigger.dateRaw, "03.03.2026",
+                       "Actual trigger: \(String(describing: deadline.provenance?.trigger)); deadline: \(deadline.date)")
+    }
+
+    func testDecisionFinalFormRequiresOwnActMembership() throws {
+        for cartoteka in ["g", "p"] {
+            for form in [
+                CaseSession(date: "03.03.2026", event: "Изготовлено мотивированное решение в окончательной форме"),
+                CaseSession(date: "03.03.2026", event: "Изготовление акта", result: "Решение изготовлено в окончательной форме"),
+            ] {
+                let decision = CaseSession(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение")
+                let mv = movement(cartoteka: cartoteka, sessions: [decision, form, form])
+                let result = try evaluation(mv, cartoteka: cartoteka)
+                XCTAssertEqual(result.deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "03.03.2026")
+            }
+        }
+        for wording in ["Принято в окончательной форме", "Решение не изготовлено в окончательной форме",
+                        "Согласно решению от 01.03.2026 изготовлено в окончательной форме"] {
+            let mv = movement(sessions: [
+                .init(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+                .init(date: "03.03.2026", event: wording),
+            ])
+            XCTAssertFalse(try evaluation(mv).deadlines.contains { $0.kind == "appeal" }, wording)
+        }
+    }
+
+    func testDecisionFinalFormRejectsFutureNegatedAndForeignStatements() throws {
+        for wording in ["Решение будет изготовлено в окончательной форме",
+                        "Решение изготовлено не в окончательной форме",
+                        "Решение нижестоящего суда изготовлено в окончательной форме",
+                        "Решение, ранее принятое, изготовлено в окончательной форме"] {
+            let mv = movement(sessions: [
+                .init(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+                .init(date: "03.03.2026", event: wording),
+            ])
+            XCTAssertFalse(try evaluation(mv).deadlines.contains { $0.kind == "appeal" }, wording)
+        }
+        for wording in ["Решение не изготовлено в окончательной форме",
+                        "Согласно прежнему решению от 01.03.2026 изготовлено в окончательной форме"] {
+            let mv = movement(sessions: [
+                .init(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+                .init(date: "03.03.2026", event: "Решение изготовлено в окончательной форме"),
+                .init(date: "10.03.2026", event: wording),
+            ])
+            XCTAssertEqual(try evaluation(mv).deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "03.03.2026", wording)
+        }
+    }
+
+    func testDecisionFinalFormTwoDecisionsRequireExplicitOwnTarget() throws {
+        let announcements = [
+            CaseSession(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            CaseSession(date: "02.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+        ]
+        for (wording, accepted) in [
+            ("Решение изготовлено в окончательной форме", false),
+            ("Решение от 02.03.2026 изготовлено в окончательной форме", true),
+            ("Решение от 01.03.2026 изготовлено в окончательной форме", false),
+            ("Определение: решение от 02.03.2026 изготовлено в окончательной форме", false),
+        ] {
+            var combinedAnnouncements = announcements
+            combinedAnnouncements[0].event = "Вынесено решение; составлен протокол"
+            for rows in [announcements, announcements.reversed().map { $0 }, combinedAnnouncements] {
+                let mv = movement(sessions: rows + [.init(date: "03.03.2026", event: wording)])
+                let result = try evaluation(mv)
+                XCTAssertEqual(result.deadlines.contains { $0.kind == "appeal" }, accepted, wording)
+                var copied = mv
+                copied.instances[0].sessions[copied.instances[0].sessions.count - 1].result = "Иск удовлетворён"
+                XCTAssertEqual(try evaluation(copied).deadlines.contains { $0.kind == "appeal" }, accepted,
+                               "Copied disposition: \(wording)")
+            }
+        }
+    }
+
+    func testDecisionFinalFormAdditionalAndDuplicateAnnouncements() throws {
+        let ordinary = CaseSession(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение")
+        let additional = CaseSession(date: "02.03.2026", event: "Вынесено дополнительное решение", result: "Иск удовлетворён")
+        let form = CaseSession(date: "03.03.2026", event: "Дополнительное решение изготовлено в окончательной форме")
+        let proved = movement(sessions: [ordinary, additional, additional, form])
+        XCTAssertEqual(try evaluation(proved).deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "03.03.2026")
+        let another = CaseSession(date: "04.03.2026", event: "Вынесено дополнительное решение", result: "Иск удовлетворён")
+        let ambiguous = movement(sessions: [ordinary, additional, another,
+                                            .init(date: "05.03.2026", event: form.event)])
+        XCTAssertFalse(try evaluation(ambiguous).deadlines.contains { $0.kind == "appeal" })
+    }
+
+    func testDecisionFinalFormEarlierOrdinaryDoesNotBlockAdditionalAct() throws {
+        let mv = movement(sessions: [
+            .init(date: "01.03.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            .init(date: "02.03.2026", event: "Решение изготовлено в окончательной форме"),
+            .init(date: "03.03.2026", event: "Вынесено дополнительное решение", result: "Иск удовлетворён"),
+            .init(date: "04.03.2026", event: "Дополнительное решение изготовлено в окончательной форме"),
+        ])
+        XCTAssertEqual(try evaluation(mv).deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "04.03.2026")
+        var sameRow = mv
+        sameRow.instances[0].sessions.remove(at: 1)
+        sameRow.instances[0].sessions[0].result = "Иск удовлетворён; решение принято в окончательной форме"
+        XCTAssertEqual(try evaluation(sameRow).deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "04.03.2026")
+    }
+
+    func testDecisionFinalFormCombinedAnnouncementRemainsOwnAct() throws {
+        let mv = movement(sessions: [
+            .init(date: "01.03.2026", event: "Вынесено решение; решение изготовлено в окончательной форме",
+                  result: "Иск удовлетворён"),
+        ])
+        XCTAssertEqual(try evaluation(mv).deadlines.first { $0.kind == "appeal" }?.provenance?.trigger.dateRaw, "01.03.2026")
+    }
+
     func testGPKGeneralUsesRegistryMonthAndRecordsProvenance() throws {
         let snap = snapshot(qualifiedCivilMovement(date: "02.02.2026"))
         let deadline = try XCTUnwrap(snap.deadlines.single(where: { $0.kind == "appeal" }))

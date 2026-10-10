@@ -344,7 +344,8 @@ enum TrackedCaseIdentity {
         }.reduce(into: [CourtLevel]()) { levels, level in
             if !levels.contains(level) { levels.append(level) }
         }
-        let directoryLevel = CourtDirectory.court(forDomain: link.moduleHost)?.level
+        let directoryLevel = CourtDirectory.militaryCourt(forDomain: link.moduleHost)?.level
+            ?? CourtDirectory.court(forDomain: link.moduleHost)?.level
             ?? SudrfHost.alternate(link.moduleHost)
                 .flatMap { CourtDirectory.court(forDomain: $0)?.level }
         if let directoryLevel, !targetLevels.isEmpty,
@@ -352,8 +353,9 @@ enum TrackedCaseIdentity {
         let levels = targetLevels.isEmpty ? directoryLevel.map { [$0] } ?? [] : targetLevels
         guard levels.count == 1, let level = levels.first else { return nil }
         guard let cartoteka = CartotekaRegistry.resolve(
-            level: level, deloID: link.deloID, new: link.new,
-            caseNumber: "") else { return nil }
+            branch: CourtDirectory.militaryCourt(forDomain: link.moduleHost) != nil ? .military : .general,
+            tier: CourtTier(rawValue: level.rawValue) ?? .district,
+            deloID: link.deloID, new: link.new, caseNumber: "") else { return nil }
         return SourceNativeCardIdentity(
             sourceFamily: "sudrf", courtKey: link.moduleHost,
             cartotekaKey: cartoteka.id, sourceNativeID: sourceNativeID)
@@ -392,7 +394,9 @@ enum TrackedCaseIdentity {
         guard let sourceNativeID = queryValue(named: ["case_id", "_id"], in: url),
               let deloID = queryValue(named: ["delo_id", "_deloId"], in: url),
               let cartoteka = CartotekaRegistry.resolve(
-                  level: context.cartotekaLevel, deloID: deloID,
+                  branch: context.branch,
+                  tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district,
+                  deloID: deloID,
                   new: queryValue(named: ["new", "_new"], in: url),
                   caseNumber: "") else {
             return nil

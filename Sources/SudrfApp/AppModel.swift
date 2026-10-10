@@ -2576,10 +2576,13 @@ final class AppRouter: ObservableObject {
         let linkIdentity: String? = sourceLink.flatMap { link in
             guard link.moduleHost == host,
                   let caseID = link.caseID, !caseID.isEmpty else { return nil }
-            let level = host == SudrfHost.moduleHost(context.searchDomain)
-                ? context.courtLevel : courtLevel(for: instance.level)
+            let level = instance.sourceEvidence?.sourceCourtLevel
+                ?? CourtDirectory.militaryCourt(forDomain: host)?.level
+                ?? (host == SudrfHost.moduleHost(context.searchDomain)
+                    ? context.courtLevel : courtLevel(for: instance.level))
             let cartoteka = CartotekaRegistry.resolve(
-                level: level, deloID: link.deloID,
+                branch: CourtDirectory.militaryCourt(forDomain: host) != nil ? .military : .general,
+                tier: CourtTier(rawValue: level.rawValue) ?? .district, deloID: link.deloID,
                 new: link.new, caseNumber: instance.caseNumber)?.id ?? link.deloID
             return SourceNativeCardIdentity(
                 sourceFamily: sourceFamily(for: link.host),

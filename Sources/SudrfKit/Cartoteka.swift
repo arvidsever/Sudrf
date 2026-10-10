@@ -145,7 +145,21 @@ public enum CartotekaRegistry {
     /// отдельно и по-прежнему использует для прямого GET.
     public static func resolve(level: CourtLevel, deloID: String, new: String?,
                                caseNumber: String) -> Cartoteka? {
-        let candidates = sets(for: level)
+        resolve(candidates: sets(for: level), level: level, deloID: deloID,
+                new: new, caseNumber: caseNumber)
+    }
+
+    /// Exact source tuples distinguish historical military proceedings before
+    /// number-based fallbacks. The level-only overload retains general catalogs.
+    public static func resolve(branch: CourtBranch, tier: CourtTier, deloID: String,
+                               new: String?, caseNumber: String) -> Cartoteka? {
+        guard let level = tier.level else { return nil }
+        return resolve(candidates: searchDimensions(branch: branch, tier: tier).cartoteki,
+                       level: level, deloID: deloID, new: new, caseNumber: caseNumber)
+    }
+
+    private static func resolve(candidates: [Cartoteka], level: CourtLevel,
+                                deloID: String, new: String?, caseNumber: String) -> Cartoteka? {
         let normalizedNew = new ?? "0"
         let resolved: Cartoteka?
         if let exact = candidates.first(where: {
@@ -158,7 +172,7 @@ public enum CartotekaRegistry {
         } else if let byDeloID = candidates.first(where: { $0.deloID == deloID }) {
             resolved = byDeloID
         } else {
-            resolved = matches(caseNumber: caseNumber, level: level).first
+            resolved = matches(caseNumber: caseNumber, cartoteki: candidates).first
         }
         guard let resolved else { return nil }
         return administrativeCounterpart(
@@ -488,9 +502,46 @@ public enum CartotekaRegistry {
         ["u1", "g1", "p1", "adm", "admj", "m"].contains($0.id)
     }
 
-    private static let militaryOkrug = subject.filter {
-        ["u1", "u2", "g1", "g2", "p1", "p2", "adm1"].contains($0.id)
-    } + district.filter { $0.id == "m" }
+    private static let militaryOkrug: [Cartoteka] = {
+        // Only labels/order differ for existing forms; historical forms have
+        // distinct native tuples and no unverified case-number prefixes.
+        func existing(_ id: String, title: String) -> Cartoteka {
+            var value = (subject + district).first { $0.id == id }!
+            value.title = title
+            return value
+        }
+        return [
+        existing("u1", title: "Уголовное, Первая инстанция"),
+        existing("u2", title: "Уголовное, Апелляционная инстанция"),
+        Cartoteka(id: "u3_old", title: "Уголовное, Кассационная инстанция (до 2013 года)",
+                  deloID: "4", new: "0", deloTable: "u2_case",
+                  caseNumberField: "u2_case__CASE_NUMBERSS", uidField: "u2_case__JUDICIAL_UIDSS",
+                  nameField: "U2_DEFENDANT__NAMESS"),
+        existing("u33", title: "Уголовное, Кассационная инстанция (с 2013 года)"),
+        Cartoteka(id: "u_supervisory_old", title: "Уголовное, Надзорная инстанция (до 2013 года)",
+                  deloID: "2450001", new: "0", deloTable: "u33_case",
+                  caseNumberField: "u33_case__CASE_NUMBERSS", uidField: "u33_case__JUDICIAL_UIDSS",
+                  nameField: "U33_DEFENDANT__NAMESS"),
+        existing("g1", title: "Гражданское, Первая инстанция"),
+        existing("g2", title: "Гражданское, Апелляционная инстанция"),
+        Cartoteka(id: "g3_old", title: "Гражданское, Кассационная инстанция (до 2012 года)",
+                  deloID: "5", new: "0", deloTable: "g2_case",
+                  caseNumberField: "g2_case__CASE_NUMBERSS", uidField: "g2_case__JUDICIAL_UIDSS",
+                  nameField: "G2_PARTS__NAMESS"),
+        existing("g33", title: "Гражданское, Кассационная инстанция (с 2012 года)"),
+        Cartoteka(id: "g_supervisory_old", title: "Гражданское, Надзорная инстанция (до 2012 года)",
+                  deloID: "2800001", new: "0", deloTable: "g33_case",
+                  caseNumberField: "g33_case__CASE_NUMBERSS", uidField: "g33_case__JUDICIAL_UIDSS",
+                  nameField: "G33_PARTS__NAMESS"),
+        existing("p1", title: "КАС, Первая инстанция"),
+        existing("p2", title: "КАС, Апелляционная инстанция"),
+        existing("p33", title: "КАС, Кассационная инстанция"),
+        existing("adm1", title: "АП, Производство по жалобам на постановления по делам об АП"),
+        existing("adm2", title: "АП, Производство по жалобам на решения по жалобам на постановления по делам об АП"),
+        existing("adm33", title: "АП, Производство по жалобам на вступившие в законную силу решения, постановления по делам об АП"),
+        existing("m", title: "Производство по материалам")
+        ]
+    }()
 
     /// Военный апелляционный суд использует тот же проверенный набор, что АСОЮ.
     private static let militaryAppeal = appealSOYu

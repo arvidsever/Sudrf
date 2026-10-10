@@ -283,6 +283,7 @@ public enum MovementTargetBuilder {
                                      courtTitle: String, courtCode: String?,
                                      region: String, displayDomain: String) -> [String] {
         guard baseInstanceLevel != .cassation else { return [] }
+        guard branch != .military || baseInstanceLevel != .supervisory else { return [] }
         guard branch == .general else {
             if baseInstanceLevel == .appeal {
                 return [CourtDirectory.cassationMilitaryCourt.domain]

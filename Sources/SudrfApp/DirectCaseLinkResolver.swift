@@ -110,7 +110,9 @@ struct DirectCaseLinkResolver: Sendable {
             throw DirectCaseLinkResolutionError.missingCaseNumber
         }
         guard let cartoteka = CartotekaRegistry.resolve(
-            level: resolvedCourt.court.level, deloID: link.deloID,
+            branch: resolvedCourt.branch,
+            tier: CourtTier(rawValue: resolvedCourt.court.level.rawValue) ?? .district,
+            deloID: link.deloID,
             new: link.new, caseNumber: caseNumber
         ) else {
             throw DirectCaseLinkResolutionError.unresolvedCartoteka

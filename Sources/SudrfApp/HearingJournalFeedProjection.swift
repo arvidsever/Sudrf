@@ -467,8 +467,7 @@ enum HearingJournalFeedProjection {
             if eventAliases.allSatisfy({ readIDs.contains($0.alias.legacyID) }) {
                 shadowReadIDs.insert(eventID)
             }
-            if eventAliases.count == 1, let alias = eventAliases.first,
-               knownIDs.contains(alias.alias.legacyID) {
+            if eventAliases.contains(where: { knownIDs.contains($0.alias.legacyID) }) {
                 shadowKnownIDs.insert(eventID)
             }
         }

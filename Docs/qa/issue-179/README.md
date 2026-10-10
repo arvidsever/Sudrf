@@ -1,5 +1,33 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Current acceptance checkpoint — 10 October 2026
+
+The user has accepted the single reschedule row, sorting by the new hearing date,
+and read migration only when both exact former rows are read. Familiarity and
+already-notified marks use either exact former mark, independently for each list;
+this supersedes the pending-decision statements in older checkpoints below.
+The hearing shadow now applies the accepted OR rule to its known-mark input.
+It does not yet connect a notified-mark adapter or change live feed/notifications.
+
+The new four-mask regression failed before the change (one test, three expected
+assertion failures), then all 25 hearing-shadow tests passed without failures or
+skips. A marked but incomplete alias pair remains blocked. Tests use synthetic
+records, pure projections and explicit temporary stores/preferences, with no
+AppRouter, shared settings, working database or application launch.
+
+| Log | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-179-known-or-red.log` | `c4895fbc1f26106bff4b78748e21d4e4617d561e9008597ce9caa97552f6e671` |
+| `/private/tmp/sudrf-179-known-or-green.log` | `45565cf74c53f9acbd9075c9b6524463cbaac6d63ab02b2f91a0234372b0383e` |
+
+The approved Treasury RSS journal dependency is tracked separately in
+[#454](https://github.com/arvidsever/Sudrf/issues/454): GUID identity, preservation
+of history and marks, and no repeated notification for persisted events.
+For new undated judge/production/result events the user chose detection date
+with an explicit application-detection label; its first mockup still requires
+approval before implementation. The full downstream gate and #179 remain open.
+New current-head CI is required after this compatibility change.
+
 This note records **stage 1** (legacy renderer extraction), **stage 2** (published-act
 shadow), **stage 3** (hearing-family shadow, including a narrow reschedule projection),
 and **stage 4** (three existing KoAP-KSOYU complaint milestones);

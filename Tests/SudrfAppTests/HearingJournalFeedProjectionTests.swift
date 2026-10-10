@@ -227,6 +227,31 @@ final class HearingJournalFeedProjectionTests: XCTestCase {
         }
     }
 
+    func testRescheduledKnownMarkTransfersFromEitherExactLegacyRow() throws {
+        let rescheduled = try rescheduledFixture(
+            recordKey: "rescheduled-known/2-4a/2026",
+            oldDate: DateUtil.addDays(today, -4), newDate: DateUtil.addDays(today, -2))
+        let legacy = legacyProjection([rescheduled.fixture.record])
+        let ids = legacy.entries.map(\.id)
+        XCTAssertEqual(ids.count, 2)
+        let eventID = try XCTUnwrap(rescheduled.journal.events.first?.id)
+
+        for mask in 0..<4 {
+            let selected = Set(ids.enumerated().compactMap { index, id in
+                mask & (1 << index) == 0 ? nil : id
+            })
+            let shadow = HearingJournalFeedProjection.project(
+                records: [rescheduled.fixture.record],
+                journalsByRecordKey: [rescheduled.fixture.record.recordKey: rescheduled.journal],
+                today: today, readIDs: [], knownIDs: selected, legacyEntries: legacy.entries)
+            XCTAssertEqual(shadow.shadowKnownIDs.contains(eventID), !selected.isEmpty,
+                           "known mask \(mask)")
+            XCTAssertTrue(shadow.shadowReadIDs.isEmpty)
+            XCTAssertTrue(try XCTUnwrap(shadow.entries.first).isUnread)
+            XCTAssertEqual(Set(shadow.aliases.map(\.legacyID)), Set(ids))
+        }
+    }
+
     @MainActor
     func testRescheduledReadAndNewDateSurviveDiskReopenWithoutProjectionMutation() throws {
         for bothRead in [true, false] {
@@ -444,9 +469,11 @@ final class HearingJournalFeedProjectionTests: XCTestCase {
         let missingAlias = HearingJournalFeedProjection.project(
             records: [rescheduled.fixture.record],
             journalsByRecordKey: [rescheduled.fixture.record.recordKey: rescheduled.journal],
-            today: today, readIDs: [], knownIDs: [], legacyEntries: incompleteLegacy)
+            today: today, readIDs: [], knownIDs: Set(incompleteLegacy.map(\.id)),
+            legacyEntries: incompleteLegacy)
         XCTAssertTrue(missingAlias.entries.isEmpty)
         XCTAssertTrue(missingAlias.aliases.isEmpty)
+        XCTAssertTrue(missingAlias.shadowKnownIDs.isEmpty)
         XCTAssertEqual(missingAlias.unmappedEvents.map(\.reason), [.missingLegacyHearing])
     }
 

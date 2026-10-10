@@ -33,10 +33,8 @@ final class CartotekaRegistryTests: XCTestCase {
 
         let okrug = CartotekaRegistry.searchDimensions(branch: .military, tier: .subject)
         XCTAssertFalse(okrug.usesRegion)
-        XCTAssertEqual(okrug.cartoteki.map(\.id), ["u1", "u2", "g1", "g2", "p1", "p2", "adm1", "m"])
-        XCTAssertTrue(["u33", "g33", "p33", "adm2", "adm33"].allSatisfy { id in
-            CartotekaRegistry.find(branch: .military, tier: .subject, id: id) == nil
-        })
+        XCTAssertEqual(okrug.cartoteki.map(\.id), ["u1", "u2", "u3_old", "u33", "u_supervisory_old",
+            "g1", "g2", "g3_old", "g33", "g_supervisory_old", "p1", "p2", "p33", "adm1", "adm2", "adm33", "m"])
 
         let appeal = CartotekaRegistry.searchDimensions(branch: .military, tier: .appeal)
         XCTAssertFalse(appeal.usesRegion)

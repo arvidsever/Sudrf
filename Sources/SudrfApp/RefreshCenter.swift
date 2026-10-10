@@ -1439,7 +1439,8 @@ final class RefreshCenter: ObservableObject {
               link.moduleHost == SudrfHost.moduleHost(instance.domain),
               !instance.court.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let cartoteka = CartotekaRegistry.resolve(
-                level: instance.sourceEvidence?.sourceCourtLevel ?? old.courtLevel,
+                branch: CourtDirectory.militaryCourt(forDomain: link.moduleHost) != nil ? .military : .general,
+                tier: CourtTier(rawValue: (instance.sourceEvidence?.sourceCourtLevel ?? old.courtLevel).rawValue) ?? .district,
                 deloID: link.deloID, new: link.new,
                 caseNumber: instance.caseNumber),
               cartoteka.id == instance.sourceEvidence?.cartotekaID else { return nil }
@@ -1545,7 +1546,8 @@ final class RefreshCenter: ObservableObject {
         for current in fresh.instances where current.foundByUID {
             guard let url = current.sourceURL, let link = try? SudrfCaseCardLink(url: url),
                   let cart = CartotekaRegistry.resolve(
-                    level: current.sourceEvidence?.sourceCourtLevel ?? .district,
+                    branch: CourtDirectory.militaryCourt(forDomain: link.moduleHost) != nil ? .military : .general,
+                    tier: CourtTier(rawValue: (current.sourceEvidence?.sourceCourtLevel ?? .district).rawValue) ?? .district,
                     deloID: link.deloID, new: link.new, caseNumber: current.caseNumber),
                   let native = SourceNativeCardLocator.sudrf(url: url, cartoteka: cart),
                   loadedIDs.contains(native.id) else { continue }

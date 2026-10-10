@@ -1,0 +1,272 @@
+{
+  "sourceReviewedDate": "2026-10-10",
+  "sourceCaptureDate": null,
+  "sourceMainResourceURL": "https://1zovs.spb.sudrf.ru/modules.php?name=sud_delo&name_op=sf&delo_id=1540005&new=5",
+  "sourceHTMLSHA256": "c29515b1182e81924150543a491b45a23002e05b36755f9361d1eefe47f36263",
+  "selectorEntriesInDOMOrder": [
+    {
+      "routeArguments": [
+        1540006,
+        1
+      ],
+      "label": "Первая инстанция",
+      "group": "Уголовное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "1540006"
+      }
+    },
+    {
+      "routeArguments": [
+        4,
+        4
+      ],
+      "label": "Апелляционная инстанция",
+      "group": "Уголовное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "4",
+        "new": "4"
+      }
+    },
+    {
+      "routeArguments": [
+        4,
+        1
+      ],
+      "label": "Кассационная инстанция (до 2013 года)",
+      "group": "Уголовное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "4"
+      }
+    },
+    {
+      "routeArguments": [
+        4,
+        2450001
+      ],
+      "label": "Кассационная инстанция (с 2013 года)",
+      "group": "Уголовное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "4",
+        "new": "2450001"
+      }
+    },
+    {
+      "routeArguments": [
+        2450001,
+        1
+      ],
+      "label": "Надзорная инстанция (до 2013 года)",
+      "group": "Уголовное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "2450001"
+      }
+    },
+    {
+      "routeArguments": [
+        1540005,
+        1
+      ],
+      "label": "Первая инстанция",
+      "group": "Гражданское судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "1540005"
+      }
+    },
+    {
+      "routeArguments": [
+        5,
+        5
+      ],
+      "label": "Апелляционная инстанция",
+      "group": "Гражданское судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "5",
+        "new": "5"
+      }
+    },
+    {
+      "routeArguments": [
+        5,
+        1
+      ],
+      "label": "Кассационная инстанция (до 2012 года)",
+      "group": "Гражданское судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "5"
+      }
+    },
+    {
+      "routeArguments": [
+        5,
+        2800001
+      ],
+      "label": "Кассационная инстанция (с 2012 года)",
+      "group": "Гражданское судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "5",
+        "new": "2800001"
+      }
+    },
+    {
+      "routeArguments": [
+        2800001,
+        1
+      ],
+      "label": "Надзорная инстанция (до 2012 года)",
+      "group": "Гражданское судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "2800001"
+      }
+    },
+    {
+      "routeArguments": [
+        41,
+        1
+      ],
+      "label": "Первая инстанция",
+      "group": "Административное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "41"
+      }
+    },
+    {
+      "routeArguments": [
+        42,
+        1
+      ],
+      "label": "Апелляционная инстанция",
+      "group": "Административное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "42"
+      }
+    },
+    {
+      "routeArguments": [
+        43,
+        1
+      ],
+      "label": "Кассационная инстанция",
+      "group": "Административное судопроизводство",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "43"
+      }
+    },
+    {
+      "routeArguments": [
+        1502001,
+        1
+      ],
+      "label": "Производство по жалобам на постановления по делам об АП",
+      "group": "Дела об административных правонарушениях",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "1502001"
+      }
+    },
+    {
+      "routeArguments": [
+        1513001,
+        1
+      ],
+      "label": "Производство по жалобам на решения по жалобам на постановления по делам об АП",
+      "group": "Дела об административных правонарушениях",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "1513001"
+      }
+    },
+    {
+      "routeArguments": [
+        2550001,
+        1
+      ],
+      "label": "Производство по жалобам на вступившие в законную силу решения, постановления по делам об АП",
+      "group": "Дела об административных правонарушениях",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "2550001"
+      }
+    },
+    {
+      "routeArguments": [
+        1610001,
+        1
+      ],
+      "label": "Производство по материалам",
+      "group": "Производство по материалам",
+      "javascriptFormRoute": {
+        "name": "sud_delo",
+        "srv_num": "1",
+        "name_op": "sf",
+        "nc": "1",
+        "delo_id": "1610001"
+      }
+    }
+  ],
+  "limitations": [
+    "Selector verified; only g2 search form captured",
+    "Route arguments are JavaScript arguments, not hidden form submission values",
+    "19 generic JS routes include two routes not visible in the 17-item selector"
+  ]
+}

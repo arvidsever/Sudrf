@@ -68,7 +68,8 @@ struct CaseCardRecovery: Sendable {
             }
             let srvNum = Int(originalLink.srvNum ?? "1") ?? 0
             guard let cartoteka = context.cartoteka ?? CartotekaRegistry.resolve(
-                level: context.cartotekaLevel, deloID: originalLink.deloID,
+                branch: context.branch,
+                tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district, deloID: originalLink.deloID,
                 new: originalLink.new, caseNumber: context.caseNumber),
                   srvNum > 0,
                   verifies(fetched: fetched, expected: context,
@@ -92,7 +93,8 @@ struct CaseCardRecovery: Sendable {
             try Task.checkCancellation()
 
             let cartoteka = context.cartoteka ?? CartotekaRegistry.resolve(
-                level: context.cartotekaLevel, deloID: originalLink.deloID,
+                branch: context.branch,
+                tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district, deloID: originalLink.deloID,
                 new: originalLink.new, caseNumber: context.caseNumber)
             guard let cartoteka else { throw originalError }
             let srvNum: Int
@@ -190,7 +192,8 @@ struct CaseCardRecovery: Sendable {
                   let link = try? SudrfCaseCardLink(url: url),
                   sameCourt(link.moduleHost, context.searchDomain),
                   CartotekaRegistry.resolve(
-                    level: context.cartotekaLevel, deloID: link.deloID,
+                    branch: context.branch,
+                tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district, deloID: link.deloID,
                     new: link.new, caseNumber: context.caseNumber)?.id == cartoteka.id,
                   nonEmpty(context.judicialUID) != nil
                     || Int(link.srvNum ?? "1") == srvNum else {
@@ -245,7 +248,8 @@ struct CaseCardRecovery: Sendable {
                 number, expected: context.caseNumber,
                 context: context, cartoteka: cartoteka),
               CartotekaRegistry.resolve(
-                level: context.cartotekaLevel, deloID: cartoteka.deloID,
+                branch: context.branch,
+                tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district, deloID: cartoteka.deloID,
                 new: cartoteka.new, caseNumber: number)?.id == cartoteka.id else {
             return false
         }
@@ -266,7 +270,8 @@ struct CaseCardRecovery: Sendable {
         guard let link = try? SudrfCaseCardLink(url: fetched.responseURL),
               sameCourt(link.moduleHost, context.searchDomain),
               CartotekaRegistry.resolve(
-                level: context.cartotekaLevel, deloID: link.deloID,
+                branch: context.branch,
+                tier: CourtTier(rawValue: context.cartotekaLevel.rawValue) ?? .district, deloID: link.deloID,
                 new: link.new, caseNumber: context.caseNumber)?.id == cartoteka.id,
               nonEmpty(context.judicialUID) != nil
                 || Int(link.srvNum ?? "1") == srvNum else {
@@ -391,7 +396,8 @@ struct CaseCardRecovery: Sendable {
             context.caseID = nonEmpty(link.caseID)
             context.caseUID = nonEmpty(link.caseUID)
             if let cartoteka = CartotekaRegistry.resolve(
-                level: context.courtLevel, deloID: link.deloID, new: link.new,
+                branch: context.branch,
+                tier: CourtTier(rawValue: context.courtLevel.rawValue) ?? .district, deloID: link.deloID, new: link.new,
                 caseNumber: nonEmpty(card.caseNumber) ?? context.caseNumber
             ) {
                 context.cartotekaId = cartoteka.id

@@ -773,7 +773,8 @@ enum CaseImporter {
 
         let isMaterial = link.deloID == "1610001" || link.deloID == "1610002"
         let cartoteka = CartotekaRegistry.resolve(
-            level: level, deloID: link.deloID, new: link.new, caseNumber: row.number)
+            branch: branch, tier: CourtTier(rawValue: level.rawValue) ?? .district,
+            deloID: link.deloID, new: link.new, caseNumber: row.number)
 
         return .seed(ImportSeed(
             row: row, provider: .sudrf,

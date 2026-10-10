@@ -1149,6 +1149,15 @@ enum MovementDerivation {
         guard let instance else { return nil }
         let text = (instance.court + " " + instance.domain).lowercased()
             .replacingOccurrences(of: "ё", with: "е")
+        // A published OVS supervision card is owned by the subject-level court,
+        // not the Supreme Court merely because its procedural level is supervisory.
+        if instance.level == .supervisory,
+           instance.sourceEvidence?.sourceCourtLevel == .subject
+            || CourtDirectory.okrugMilitaryCourts.contains(where: {
+                SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(instance.domain)
+            }) {
+            return .subject
+        }
         if instance.level == .vsCassation || instance.level == .supervisory
             || text.contains("vsrf.ru") || text.contains("верховн") && text.contains("росс") {
             return .supreme

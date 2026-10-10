@@ -671,7 +671,10 @@ enum DeadlineRuleEngine {
             let reviews = timeline.lifecycleOrdered.map(\.instance)
             let directCategory = directVSCategoryProof(movement: movement, context: context, timeline: timeline)
             let hasCurrentVS = reviews.contains { instance in
-                guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                guard instance.level == .vsCassation
+                    || instance.level == .supervisory
+                        && MovementDerivation.courtTier(for: instance, context: context.movementContext) == .supreme
+                else { return false }
                 guard let start = timeline.currentRoundDate else { return true }
                 return reviewActDate(instance, movement: movement).map { $0 >= start } == true
             }
@@ -697,7 +700,10 @@ enum DeadlineRuleEngine {
                         && directVSInstruction(instance, movement: movement)
             }
             if binding.trigger != .gpkVS && binding.trigger != .kasVS, provedVSRoute, !reviews.contains(where: { instance in
-                guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                guard instance.level == .vsCassation
+                    || instance.level == .supervisory
+                        && MovementDerivation.courtTier(for: instance, context: context.movementContext) == .supreme
+                else { return false }
                 guard let start = timeline.currentRoundDate else { return true }
                 return reviewActDate(instance, movement: movement).map { $0 >= start } == true
             }) {
@@ -706,7 +712,10 @@ enum DeadlineRuleEngine {
             }
             if binding.trigger == .gpkVS || binding.trigger == .kasVS {
                 guard provedVSRoute, !reviews.contains(where: { instance in
-                    guard instance.level == .vsCassation || instance.level == .supervisory else { return false }
+                    guard instance.level == .vsCassation
+                    || instance.level == .supervisory
+                        && MovementDerivation.courtTier(for: instance, context: context.movementContext) == .supreme
+                else { return false }
                     guard let start = timeline.currentRoundDate else { return true }
                     return reviewActDate(instance, movement: movement).map { $0 >= start } == true
                 }) else {

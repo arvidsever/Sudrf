@@ -909,7 +909,11 @@ enum CaseSnapshotSourceIdentity {
               let deloID = query(["delo_id", "_deloId"], url),
               let host = url.host else { return nil }
         let cartoteka = CartotekaRegistry.resolve(
-            level: level(for: instance), deloID: deloID,
+            branch: CourtDirectory.militaryCourt(forDomain: host) != nil ? .military : .general,
+            tier: CourtTier(rawValue: (instance.sourceEvidence?.sourceCourtLevel
+                ?? CourtDirectory.militaryCourt(forDomain: host)?.level
+                ?? level(for: instance)).rawValue) ?? .district,
+            deloID: deloID,
             new: query(["new", "_new"], url), caseNumber: instance.caseNumber)?.id
             ?? deloID
         return SourceNativeCardIdentity(

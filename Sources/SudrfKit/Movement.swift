@@ -635,10 +635,14 @@ public actor MovementService: MovementProviding {
                               fetchedURL: URL? = nil) -> SourceNativeCardLocator? {
             let level = Self.knownCardCourtLevel(forDomain: known.domain,
                                                  courtTitle: known.courtTitle)
+            let knownBranch: CourtBranch = CourtDirectory.militaryCourt(forDomain: known.domain) != nil
+                ? .military
+                : (SudrfHost.moduleHost(known.domain) == SudrfHost.moduleHost(court.domain) ? branch : .general)
+            let tier = CourtTier(rawValue: level.rawValue) ?? .district
             let cartoteka = known.cartotekaID.flatMap {
-                CartotekaRegistry.find(level: level, id: $0)
-            } ?? CartotekaRegistry.resolve(level: level, deloID: known.deloID,
-                                           new: known.new,
+                CartotekaRegistry.find(branch: knownBranch, tier: tier, id: $0)
+            } ?? CartotekaRegistry.resolve(branch: knownBranch, tier: tier,
+                                           deloID: known.deloID, new: known.new,
                                            caseNumber: known.caseNumber ?? "")
             guard let cartoteka else { return nil }
             let court = Court(domain: known.domain, title: known.courtTitle, level: level)
@@ -2167,7 +2171,9 @@ extension MovementService {
         if let pair = pairedCartotekaID(cartoteka.id) { ids.append(pair) }
         var result: [Cartoteka] = []
         for id in ids {
-            guard let found = CartotekaRegistry.find(level: court.level, id: id),
+            guard let found = CartotekaRegistry.find(
+                branch: CourtDirectory.militaryCourt(forDomain: court.domain) != nil ? .military : .general,
+                tier: CourtTier(rawValue: court.level.rawValue) ?? .district, id: id),
                   !result.contains(where: { $0.id == found.id }) else { continue }
             result.append(found)
         }
@@ -2179,9 +2185,10 @@ extension MovementService {
     static func cartoteka(from url: URL, court: Court,
                           caseNumber: String) -> Cartoteka? {
         guard let deloID = queryValue(["delo_id", "_deloId"], in: url) else { return nil }
-        return CartotekaRegistry.resolve(level: court.level, deloID: deloID,
-                                         new: queryValue(["new", "_new"], in: url),
-                                         caseNumber: caseNumber)
+        return CartotekaRegistry.resolve(
+            branch: CourtDirectory.militaryCourt(forDomain: court.domain) != nil ? .military : .general,
+            tier: CourtTier(rawValue: court.level.rawValue) ?? .district, deloID: deloID,
+            new: queryValue(["new", "_new"], in: url), caseNumber: caseNumber)
     }
 
     static func labelRegistrationRounds(_ instances: [CaseInstance], domain: String,
@@ -2353,10 +2360,7 @@ extension MovementService {
                 ? .subject : .district
         }
         if let court = CourtDirectory.court(forDomain: domain) { return court.level }
-        let host = SudrfHost.moduleHost(domain)
-        let militaryCourts = CourtDirectory.okrugMilitaryCourts
-            + [CourtDirectory.appellateMilitaryCourt, CourtDirectory.cassationMilitaryCourt]
-        return militaryCourts.first { SudrfHost.moduleHost($0.domain) == host }?.level ?? .district
+        return CourtDirectory.militaryCourt(forDomain: domain)?.level ?? .district
     }
 
     /// Определяет звено вышестоящего суда по домену (эвристика по структуре имени).

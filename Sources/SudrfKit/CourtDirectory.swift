@@ -188,6 +188,14 @@ public enum CourtDirectory {
         return nil
     }
 
+    /// Exact directory ownership for published military court hosts. Unknown
+    /// linked hosts do not inherit the branch of the case being followed.
+    public static func militaryCourt(forDomain domain: String) -> Court? {
+        let host = SudrfHost.moduleHost(domain)
+        return (okrugMilitaryCourts + [appellateMilitaryCourt, cassationMilitaryCourt])
+            .first { SudrfHost.moduleHost($0.domain) == host }?.court
+    }
+
     // MARK: - нормализация
 
     private static func normalize(_ s: String) -> String {

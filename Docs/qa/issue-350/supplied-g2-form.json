@@ -1,0 +1,168 @@
+{
+  "sourceReviewedDate": "2026-10-10",
+  "sourceCaptureDate": null,
+  "sourceMainResourceURL": "https://1zovs.spb.sudrf.ru/modules.php?name=sud_delo&name_op=sf&delo_id=1540005&new=5",
+  "sourceHTMLSHA256": "fe3a572b46e28cb61bce92255268d3101d45a730437ff77148f3cfeb55c86260",
+  "form": {
+    "name": "calform",
+    "method": "get",
+    "action": "",
+    "inputs": {
+      "name": {
+        "type": "hidden",
+        "value": "sud_delo"
+      },
+      "srv_num": {
+        "type": "hidden",
+        "value": "1"
+      },
+      "name_op": {
+        "type": "hidden",
+        "value": "r"
+      },
+      "delo_id": {
+        "type": "hidden",
+        "value": "5"
+      },
+      "case_type": {
+        "type": "hidden",
+        "value": "0"
+      },
+      "new": {
+        "type": "hidden",
+        "value": "5"
+      },
+      "G2_PARTS__NAMESS": {
+        "type": "text"
+      },
+      "g2_case__CASE_NUMBERSS": {
+        "type": "text"
+      },
+      "g2_case__JUDICIAL_UIDSS": {
+        "type": "text"
+      },
+      "delo_table": {
+        "type": "hidden",
+        "value": "g2_case"
+      },
+      "g2_case__ENTRY_DATE1D": {
+        "type": "text"
+      },
+      "g2_case__ENTRY_DATE2D": {
+        "type": "text"
+      },
+      "G2_CASE__COURT_I_REGION_ID": {
+        "type": "hidden"
+      },
+      "textfield": {
+        "type": "text"
+      },
+      "G2_CASE__COURT_I": {
+        "type": "hidden"
+      },
+      "G2_CASE__CASE_NUMBER_ISS": {
+        "type": "text"
+      },
+      "dic": {
+        "type": "button"
+      },
+      "G2_CASE__M_SUB_TYPE": {
+        "type": "hidden"
+      },
+      "G2_CASE__JUDGE": {
+        "type": "hidden"
+      },
+      "g2_case__RESULT_DATE1D": {
+        "type": "text"
+      },
+      "g2_case__RESULT_DATE2D": {
+        "type": "text"
+      },
+      "G2_CASE__RESULT": {
+        "type": "hidden"
+      },
+      "G2_CASE__BUILDING_ID": {
+        "type": "hidden"
+      },
+      "G2_CASE__JUDGE_I": {
+        "type": "hidden"
+      },
+      "G2_CASE__COURT_STRUCT": {
+        "type": "hidden"
+      },
+      "G2_EVENT__EVENT_NAME": {
+        "type": "hidden"
+      },
+      "G2_EVENT__EVENT_DATEDD": {
+        "type": "text"
+      },
+      "G2_PARTS__PARTS_TYPE": {
+        "type": "hidden"
+      },
+      "G2_PARTS__INN_STRSS": {
+        "type": "text"
+      },
+      "G2_PARTS__KPP_STRSS": {
+        "type": "text"
+      },
+      "G2_PARTS__OGRN_STRSS": {
+        "type": "text"
+      },
+      "G2_PARTS__OGRNIP_STRSS": {
+        "type": "text"
+      },
+      "G2_DOCUMENT__PUBL_DATE1D": {
+        "type": "text"
+      },
+      "G2_DOCUMENT__PUBL_DATE2D": {
+        "type": "text"
+      },
+      "G2_DOCUMENT__VALIDITY_DATE1D": {
+        "type": "text"
+      },
+      "G2_DOCUMENT__VALIDITY_DATE2D": {
+        "type": "text"
+      },
+      "G2_RKN_ACCESS_RESTRICTION__RKN_REASON": {
+        "type": "hidden"
+      },
+      "g2_rkn_access_restriction__RKN_RESTRICT_URLSS": {
+        "type": "text"
+      },
+      "G2_ORDER_INFO__ORDER_DATE1D": {
+        "type": "text"
+      },
+      "G2_ORDER_INFO__ORDER_DATE2D": {
+        "type": "text"
+      },
+      "G2_ORDER_INFO__ORDER_NUMSS": {
+        "type": "text"
+      },
+      "G2_ORDER_INFO__EXTERNALKEYSS": {
+        "type": "text"
+      },
+      "G2_ORDER_INFO__STATE_ID": {
+        "type": "hidden"
+      },
+      "G2_ORDER_INFO__RECIP_ID": {
+        "type": "hidden"
+      },
+      "list": {
+        "type": "checkbox"
+      },
+      "Submit": {
+        "type": "submit"
+      },
+      "Reset": {
+        "type": "reset"
+      }
+    }
+  },
+  "limitations": [
+    "Capture date not established",
+    "Only captured g2 form verified",
+    "19 JavaScript route combinations do not establish 17 visible selector items",
+    "Selector popup containers empty; labels and ordering unavailable",
+    "CAPTCHA fields and user values excluded"
+  ]
+}

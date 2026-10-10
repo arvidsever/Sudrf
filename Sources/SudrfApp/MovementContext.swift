@@ -71,6 +71,8 @@ struct MovementContext: Codable, Equatable, Sendable {
     static func instanceLevel(cartotekaID: String, courtLevel: CourtLevel,
                               judicialUID: String? = nil,
                               lowerCourtTitle: String? = nil) -> CaseInstance.Level {
+        if ["u3_old", "g3_old"].contains(cartotekaID) { return .cassation }
+        if ["u_supervisory_old", "g_supervisory_old"].contains(cartotekaID) { return .supervisory }
         if let level = KoAPProceduralRole.resolve(
             courtLevel: courtLevel, cartotekaID: cartotekaID,
             judicialUID: judicialUID, lowerCourtTitle: lowerCourtTitle).instanceLevel {
@@ -93,7 +95,8 @@ struct MovementContext: Codable, Equatable, Sendable {
         Court(domain: searchDomain, title: courtTitle, level: courtLevel)
     }
     var cartoteka: Cartoteka? {
-        CartotekaRegistry.find(level: cartotekaLevel, id: cartotekaId)
+        CartotekaRegistry.find(branch: branch, tier: CourtTier(rawValue: cartotekaLevel.rawValue) ?? .district,
+                               id: cartotekaId)
     }
     var baseResult: CaseSearchResult {
         CaseSearchResult(caseNumber: caseNumber, receiptDate: receiptDate,

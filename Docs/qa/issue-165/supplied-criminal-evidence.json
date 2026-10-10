@@ -1,0 +1,139 @@
+{
+  "reviewDate": "2026-10-10",
+  "captureDate": null,
+  "sources": [
+    {
+      "role": "search",
+      "URL": "https://www.vsrf.ru/lk/practice",
+      "HTMLSHA256": "cfb914b9826ca0a8f87dac47a3b8be7248a25b0a5899b6d5762e2a2919505648"
+    },
+    {
+      "role": "card",
+      "URL": "https://www.vsrf.ru/lk/practice/claims/17-35241305",
+      "HTMLSHA256": "f65a51c587f61a506d7a26403dc9ff6276c632c102162d81dfbe286b8a08f1ce"
+    }
+  ],
+  "search": {
+    "displayedCount": 7,
+    "criminalFilterVisible": true,
+    "resultLinks": [
+      {
+        "href": "/lk/practice/claims/17-35551714",
+        "visibleNumber": "222-Д24-2-А6"
+      },
+      {
+        "href": "/lk/practice/claims/22-35487586",
+        "visibleNumber": "222-УН24-137-А6"
+      },
+      {
+        "href": "/lk/practice/claims/22-35309375",
+        "visibleNumber": "222-УД24-28-А6"
+      },
+      {
+        "href": "/lk/practice/claims/22-35288352",
+        "visibleNumber": "222-УД24-28-А6"
+      },
+      {
+        "href": "/lk/practice/claims/17-35241305",
+        "visibleNumber": "222-УД24-28-А6"
+      },
+      {
+        "href": "/lk/practice/claims/17-35550509",
+        "visibleNumber": "222-УД24-63-А6"
+      },
+      {
+        "href": "/lk/practice/claims/22-288675",
+        "visibleNumber": "32-У04-199"
+      },
+      {
+        "href": "/lk/practice/claims/22-2181827",
+        "visibleNumber": "32-КПН01-47"
+      }
+    ]
+  },
+  "card": {
+    "id": "17-35241305",
+    "registerDate": "2024-05-02",
+    "caseType": "CRIMINAL",
+    "consolidatedNumber": "98967A12787F961A5A24D605FCAE0AB7",
+    "sddId": "222-УД24-28-А6",
+    "instance": "CASSATION_INTO_FORCE",
+    "claimType": "CASE",
+    "firstAct": {
+      "createDate": "2023-12-12",
+      "actTypeName": "Приговор",
+      "courtName": "2-й Западный окружной военный суд (г. Москва)",
+      "fullCaseNumber": "2-273/2023",
+      "firstInstanceNum": "2-273/2023"
+    },
+    "finalAct": {
+      "createDate": "2024-06-05",
+      "actTypeName": "Определение",
+      "downloadLink": "/lk/practice/stor_pdf/2374414",
+      "judgementTypeName": "Вынесено определение (постановление)",
+      "requisitionAvailable": false
+    },
+    "events": [
+      {
+        "eventDateTime": "2024-05-02T00:00:00+0300",
+        "hearing": false,
+        "eventTypeName": "Передано судье",
+        "type": "EVENT"
+      },
+      {
+        "eventDateTime": "2024-05-03T00:00:00+0300",
+        "hearing": false,
+        "eventTypeName": "Вынесено постановление о назначении судебного заседания",
+        "type": "EVENT"
+      },
+      {
+        "eventDateTime": "2024-06-05T00:00:00+0300",
+        "hearing": true,
+        "eventTypeName": "Слушание",
+        "judgementTypeName": "Вынесено определение (постановление)",
+        "type": "EVENT"
+      }
+    ],
+    "relatedCases": [
+      {
+        "id": "17-35550509",
+        "sddId": "222-УД24-63-А6"
+      }
+    ],
+    "associatedClaims": [
+      {
+        "id": "22-35288352",
+        "registerDate": "2024-05-21",
+        "caseType": "CRIMINAL",
+        "sddId": "У-24-16852",
+        "claimType": "APPEAL"
+      },
+      {
+        "id": "22-35309375",
+        "registerDate": "2024-05-27",
+        "caseType": "CRIMINAL",
+        "sddId": "У-24-17476",
+        "claimType": "APPEAL"
+      },
+      {
+        "id": "22-35487586",
+        "registerDate": "2024-08-16",
+        "caseType": "CRIMINAL",
+        "sddId": "У-24-27127",
+        "claimType": "APPEAL"
+      }
+    ]
+  },
+  "identityChecks": {
+    "matchingSearchHrefAndCardURL": true,
+    "queryClaimIdMatchesPrimaryClaim": true,
+    "consolidatedNumberIsJudicialUID": false
+  },
+  "limitations": [
+    "Search text and participants excluded",
+    "PDF linked, bytes not captured",
+    "No request method/API contract established by DOM",
+    "Duplicate visible number across CASE and APPEAL entities",
+    "No live test or production parser verification"
+  ]
+}

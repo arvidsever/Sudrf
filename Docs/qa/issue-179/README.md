@@ -23,9 +23,11 @@ AppRouter, shared settings, working database or application launch.
 The approved Treasury RSS journal dependency is tracked separately in
 [#454](https://github.com/arvidsever/Sudrf/issues/454): GUID identity, preservation
 of history and marks, and no repeated notification for persisted events.
-For new undated judge/production/result events the user chose detection date
-with an explicit application-detection label; its first mockup still requires
-approval before implementation. The full downstream gate and #179 remain open.
+For new undated judge/production/result events the user chose detection date.
+The first mockup was shown on 10 October 2026; the user then requested removal
+of the separate "Обнаружено приложением…" line. The revised accepted contract
+uses the existing feed row without that extra line. The full downstream gate
+and #179 remain open.
 Independent Astra review of the compatibility delta passed. The registry is
 current; all three released model assets were fetched and verified against their
 tracked manifests. XcodeGen regenerated the project and Xcode 27.0 (`27A266a`)

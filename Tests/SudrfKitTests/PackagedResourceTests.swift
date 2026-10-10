@@ -28,10 +28,17 @@ final class PackagedResourceTests: XCTestCase {
 
     func testLoadsCompleteLegalDeadlineRegistry() throws {
         let registry = try LegalDeadlineRegistry.load()
-        XCTAssertEqual(registry.coreRules.count, 67)
-        XCTAssertEqual(Set(registry.coreRules.map(\.ruleID)).count, 67)
+        XCTAssertEqual(registry.coreRules.count, 69)
+        XCTAssertEqual(Set(registry.coreRules.map(\.ruleID)).count, 69)
         XCTAssertEqual(registry.sources.count, 4)
-        XCTAssertEqual(registry.sources.map(\.revision), [3, 2, 1, 1])
+        XCTAssertEqual(registry.sources.map(\.revision), [3, 3, 1, 1])
+        for ruleID in ["KAS-CASSATION-REGIONAL-PRESIDIUM", "KAS-SUPERVISION-CHAIR"] {
+            let rule = try XCTUnwrap(registry.rule(id: ruleID))
+            XCTAssertEqual(rule.duration.kind, .months)
+            XCTAssertEqual(rule.duration.value, 6)
+            XCTAssertEqual(rule.sourceHash,
+                           "010b87c4a1a5a598df11b58145c4b48a1af67e602d576787d259c8146a2a5962")
+        }
         XCTAssertEqual(registry.rule(id: "GPK-APPEAL-GENERAL")?.duration.kind, .months)
         XCTAssertEqual(registry.rule(id: "KOAP-APPEAL-RETURN-DETERMINATION-ONE-SUTKI")?.duration.kind,
                        .calendarSutki)

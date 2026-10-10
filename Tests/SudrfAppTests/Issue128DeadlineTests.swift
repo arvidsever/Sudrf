@@ -135,6 +135,98 @@ final class Issue128DeadlineTests: XCTestCase {
         }
     }
 
+    func testForeignIntermediateFinalFormArchivesFalseDeadlineWithoutTransferringUserStatus() throws {
+        let number = "2-452/2026"
+        let value = context(number)
+        let current = movement(number, sessions: [
+            .init(date: "18.08.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            .init(date: "19.08.2026", event: "Решение изготовлено в окончательной форме"),
+            .init(date: "20.08.2026", event: "Промежуточное определение изготовлено в окончательной форме"),
+        ])
+        for status in [DeadlineStatus.proposed, .confirmed, .overridden] {
+            var old = snapshot(current, value)
+            var original = legacyDeadline(status: status, triggerDay: "20.08")
+            let foreign = current.instances[0].sessions[2]
+            let rule = try XCTUnwrap(LegalDeadlineRegistry.load().rule(id: "GPK-APPEAL-GENERAL"))
+            original.occurrenceKey = appealOccurrenceKey(for: movement(number, sessions: [foreign]))
+            original.provenance = DeadlineProvenance(
+                ruleID: rule.ruleID, registryRevision: rule.revision, sourceHash: rule.sourceHash,
+                trigger: .init(event: foreign.event, result: foreign.result, dateRaw: foreign.date,
+                               court: current.instances[0].court, levelRaw: "first", caseNumber: number),
+                policyIDs: [], formula: original.basis, source: rule.source, calculatedDateRef: original.dateRef)
+            old.deadlines = [original]
+            let initiallyPartial = movement(number, sessions: [])
+            let partialRepair = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(initiallyPartial, value), old: old, today: today,
+                preserveActiveProposedWhenMissing: true, movement: initiallyPartial, context: value)
+            XCTAssertFalse(partialRepair.deadlines.contains { $0.isActive }, status.rawValue)
+            let repaired = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(current, value), old: old, today: today, movement: current, context: value)
+            var expected = original
+            expected.lifecycleRaw = DeadlineLifecycle.superseded.rawValue
+            XCTAssertTrue(repaired.deadlines.contains(expected), status.rawValue)
+            let fresh = try XCTUnwrap(repaired.deadlines.first { $0.isActive })
+            XCTAssertEqual(fresh.status, .proposed)
+            XCTAssertEqual(fresh.provenance?.trigger.dateRaw, "19.08.2026")
+            let repeated = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(current, value), old: repaired, today: today, movement: current, context: value)
+            XCTAssertEqual(repeated.deadlines, repaired.deadlines)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("issue-452-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let url = directory.appendingPathComponent("store")
+            let store = try TrackedStore(container: SudrfModelContainerFactory.make(inMemory: false, storeURL: url), prepared: true)
+            let record = try store.reconcileAndUpsert(context: value, snapshot: repaired, movement: current,
+                                                       collections: ["Проверка"])
+            record.snapshot = old
+            let seed = CaseEvent.make(kind: .judicialActPublished, occurrence: ["issue-452-seed"],
+                                      observedAt: Date(timeIntervalSinceReferenceDate: 1), evidence: .init())
+            record.eventJournal = CaseEventJournal(events: [seed])
+            try store.save()
+            let fetchedAt = record.movementFetchedAt
+            _ = try TrackedStorePreparation.prepare(context: store.container.mainContext, today: today)
+            XCTAssertEqual(record.snapshot?.deadlines, [expected])
+            let partial = movement(number, sessions: [])
+            let partialSnapshot = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(partial, value), old: record.snapshot, today: today,
+                preserveActiveProposedWhenMissing: true, movement: partial, context: value)
+            record.snapshot = partialSnapshot
+            try store.save()
+            let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(inMemory: false, storeURL: url), prepared: true)
+            let persisted = try XCTUnwrap(reopened.record(forKey: record.key))
+            let fullSnapshot = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(current, value), old: persisted.snapshot, today: today, movement: current, context: value)
+            let refreshed = try reopened.reconcileAndUpsert(context: value, snapshot: fullSnapshot, movement: current,
+                                                            collections: ["Проверка"], updatesMovementFetchedAt: false)
+            XCTAssertEqual(refreshed.snapshot?.deadlines, repaired.deadlines)
+            XCTAssertEqual(refreshed.movement?.acts, current.acts)
+            XCTAssertEqual(refreshed.movementFetchedAt, fetchedAt)
+            XCTAssertEqual(persisted.collectionNames, ["Проверка"])
+            XCTAssertEqual(persisted.eventJournal?.events, [seed])
+        }
+    }
+
+    func testConflictingOwnFinalFormsPreserveSavedUserDeadlineWithWarning() throws {
+        let number = "2-453/2026"
+        let value = context(number)
+        let initial = movement(number, sessions: [
+            .init(date: "18.08.2026", event: "Судебное заседание", result: "Иск удовлетворён; вынесено решение"),
+            .init(date: "19.08.2026", event: "Решение изготовлено в окончательной форме"),
+        ])
+        var conflicting = initial
+        conflicting.instances[0].sessions.append(.init(date: "20.08.2026", event: "Решение изготовлено в окончательной форме"))
+        for status in [DeadlineStatus.proposed, .confirmed, .overridden] {
+            var old = snapshot(initial, value)
+            old.deadlines[0].statusRaw = status.rawValue
+            let stored = old.deadlines[0]
+            let repaired = MovementDerivation.preservingConfirmedDeadlines(
+                snapshot(conflicting, value), old: old, today: today,
+                preserveActiveProposedWhenMissing: true, movement: conflicting, context: value)
+            XCTAssertTrue(repaired.deadlines.contains(stored), status.rawValue)
+            XCTAssertEqual(repaired.deadlineAssessments?.first { $0.ruleID == "GPK-APPEAL-GENERAL" }?.status, .needsLegalReview)
+        }
+    }
+
     func testActualIssue128IntermediateRowsIndividuallyDisproveLegacyAppeal() {
         let value = context("2-6027/2026")
         let rows = [

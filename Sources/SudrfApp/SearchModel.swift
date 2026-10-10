@@ -303,7 +303,7 @@ final class SearchModel: ObservableObject {
     private let client: SudrfClient
     private let moscowMagistrateClient: MoscowMagistrateKoAPClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
-    private let vsrfClient = VSRFClient()
+    private lazy var vsrfClient = VSRFClient()
     private let mosGorSudClient: any MosGorSudProviding
     private let movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)?
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,

@@ -126,8 +126,12 @@ final class MoscowMagistrateSearchTests: XCTestCase {
     }
 
     func testNonUIDMovementCacheRequiresSelectedNativeCardIdentity() async throws {
+        let suiteName = "moscow-cache-identity-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let (model, session, corpusURL) = try await makeUIDSearchModel(
-            cardHTML: Self.cardHTML, cardDelay: 0, isolatedMovement: true)
+            cardHTML: Self.cardHTML, cardDelay: 0, isolatedMovement: true,
+            captchaSettings: CaptchaSettings(defaults: defaults))
         defer {
             session.invalidateAndCancel()
             MoscowUnitSearchURLProtocol.reset()
@@ -268,7 +272,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
     }
 
     private func makeUIDSearchModel(cardHTML: String, cardDelay: TimeInterval,
-                                    isolatedMovement: Bool = false) async throws
+                                    isolatedMovement: Bool = false,
+                                    captchaSettings: CaptchaSettings = .shared) async throws
         -> (model: SearchModel, session: URLSession, corpusURL: URL) {
         MoscowUnitSearchURLProtocol.configure(
             directory: Self.directoryHTML, results: Self.resultsHTML, card: cardHTML,
@@ -291,7 +296,7 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             provider: VisionOCRStrategy(), enabledKinds: [],
             log: CaptchaSolverLog(fileURL: nil, failuresDir: nil))
         let model = SearchModel(
-            captchaSolver: solver, captchaSettings: CaptchaSettings.shared,
+            captchaSolver: solver, captchaSettings: captchaSettings,
             corpusStore: CorpusStore(baseDir: corpusURL),
             client: ordinaryClient,
             resolver: DistrictCourtResolver(client: ordinaryClient, cacheURL: nil),

@@ -1,11 +1,33 @@
-# Issue #106: Moscow magistrate directory checkpoint
+# Issue #106: Moscow magistrate KoAP first stage
 
-This checkpoint adds a data-only parser for the official Moscow magistrate
-directory and routes subject code `77` through `MagistrateCourtResolver`.
-`moscowUnits()` returns active rows with the published `alias`, `code`, IDs,
-municipal title and canonical URL kept separately. `unitPathID` comes only from
-the numeric segment in that URL. The generic `MagistrateCourt.isSupported`
-check remains limited to `*.msudrf.ru`.
+## Current status — 10 October 2026
+
+The first KoAP stage is implemented: 471 active Moscow magistrate units appear
+separately, ordered by the published visible unit number; classification code,
+published title and native URL path ID remain distinct. Number/UID/participant
+search is scoped to the selected unit. Exact native card identity is preserved
+through card loading, saving, refresh and movement-cache admission.
+
+One authorized live UID search and its returned card passed on 9 October 2026.
+The native offline picker order and selection were accepted by the user on
+10 October 2026. Source completeness, pagination, verified empty search and the
+full live appeal chain remain unproved. Partial source results do not confirm
+magistrate journal events. Acts from the unit, GPK/KAS and Moscow CSV/direct-link
+import remain outside the completed first stage. Issue #106 stays open.
+
+The source-backed directory, synthetic card/movement regressions, saved-store
+checks and native fixture QA are different evidence. Current-head hosted CI and
+release gates are checked separately below; historical totals do not replace
+execution of the named disk regression. The actual main at integration is
+`8a7f0e8245d7275dcd879692b998560c33ef9d9f` (0.64.8, build260).
+
+## Historical directory/parser checkpoint — 9 October 2026
+
+This initial checkpoint added the official directory parser and subject77
+resolver routing. The directory fields remain separately preserved and the
+generic `MagistrateCourt.isSupported` check stays limited to `*.msudrf.ru`.
+The later search/card/movement implementation and acceptance evidence are
+recorded below; this initial parser checkpoint is not the final feature status.
 
 ## Source and fixture
 
@@ -294,3 +316,36 @@ Moscow mapping and one cache regression). Log:
 `/private/tmp/sudrf-106-cache-picker-final-profile.log`, SHA-256:
 `73bae2e31702a57088eeeb8fe2e36a118658f158db652c3bb9453be5b6e41bda`.
 This offline profile does not add live-source or native GUI acceptance evidence.
+
+## Main integration and private-settings follow-up — 10 October 2026
+
+Integrated actual `origin/main` `8a7f0e8245d7275dcd879692b998560c33ef9d9f`
+(0.64.8, build 260) without conflicts. Current roadmap and release-history entries
+are preserved; this feature branch has not assigned a release version.
+
+Reused the exact independently reviewed #241 `CaptchaSettings(defaults:)`
+injection. Production default and `CaptchaSettings.shared` still use `.standard`;
+registration, reads and writes use the injected defaults instance. The new native
+cache regression now supplies its own suite and removes that suite afterward.
+It does not create the shared settings instance, migrate preferences or read the
+standard preferences. The prior profile's legacy initialization boundary above
+remains historical evidence, not a claim about this follow-up.
+
+Only the safely scoped ordering, mapping and new cache regression profile was
+repeated: 15 tests, no failures or skips. Log:
+`/private/tmp/sudrf-106-cache-picker-main-integrated-private-profile.log`, SHA-256:
+`9b40a87dd65977f2ad9f474a07bcdcf1a5a01f0b1110552dec8a2a1b2728354c`.
+No full local suite, GUI or live-source request was repeated. Hosted current-head
+CI remains the final execution gate.
+
+The unused VSRF client is now created lazily, preserving the normal movement
+factory's default while avoiding eager common-cookie client construction when
+the injected offline factory bypasses that route. The final private profile
+above ran after this change.
+
+Historical hosted run38056295190 on `2b514b7` explicitly passed the named
+`testSyntheticCompleteMoscowAnchorTransitionPersistsOnceAcrossDiskReopen`
+(0.141s) and `testValidatedUnitContextPersistsAndRefreshesAfterDiskReopen`
+(12.558s), plus `testPickerSelectionScopesGlobalSearchAndOpensExactNativeCard`
+(0.026s) and the no-judicial-UID native identity test (0.001s). These were executed,
+not skipped. Final integrated-head CI must independently repeat these gates.

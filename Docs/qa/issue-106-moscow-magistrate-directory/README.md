@@ -282,8 +282,12 @@ injected offline URLProtocol: selected card B is fetched for cached A, absent
 and invalid source locators, despite equal unit/number and absent caseUID. The
 same B identity is reused without a request. Transport cookies/cache, tokens,
 corpus and higher-provider paths are isolated; the existing read-only
-CaptchaSettings.shared object is retained, with no preference mutation and no
-CAPTCHA challenge in the fixture. The previous in-memory cache entry is restored.
+CaptchaSettings.shared object is retained without explicit test property writes
+and with no CAPTCHA challenge in the fixture. Its legacy initialization still
+reads/registers process defaults and may normalize the stored max-attempts key;
+this profile does not establish zero common-settings access or mutation. No
+normal-state rollback was attempted without a known prior baseline. The previous
+in-memory cache entry is restored.
 
 Fifteen focused tests passed without failures or skips (five ordering, nine
 Moscow mapping and one cache regression). Log:

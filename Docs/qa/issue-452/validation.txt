@@ -16,3 +16,7 @@ SHA-256 final source/test files:
 c50282ffa20dbffcbd4922d573607bf623411370f79749398295affbfa2d9658  Sources/SudrfApp/DeadlineRuleEngine.swift
 1ba9bf31d756a37c38cc2f248fefb6de53fb236709ab840466b1c48b888c67f4  Tests/SudrfAppTests/DeadlineRuleEngineTests.swift
 2174e7d8ba6aa1f3982ebcdda1786100cc7a83e357dfdce053d271d8d4f05874  Tests/SudrfAppTests/Issue128DeadlineTests.swift
+
+Initial implementation CI: 38024142599, success, SHA d29168e2a04896ad59ce826c9c84b610e35d174d
+Hosted Xcode27 build/tests: skipped (SDK unavailable); local build confirmed above
+Assigned release: 0.64.8 (260); final release CI required before merge

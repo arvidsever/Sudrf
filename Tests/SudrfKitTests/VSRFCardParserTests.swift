@@ -80,6 +80,55 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertTrue(d.events.contains { $0.text.contains("Отказ в передаче") && $0.date == "10.03.2023" })
     }
 
+    func testCurrentComplaintStandaloneDispositionRetainsOwnFacts() throws {
+        let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_current_complaint_disposition"))
+        let row = try XCTUnwrap(card.productions.first)
+        XCTAssertEqual(row.cardID, "21-00000001")
+        XCTAssertEqual(row.number, "3-КФ26-1-К1")
+        XCTAssertEqual(row.kind, .complaint)
+        XCTAssertEqual(row.incomingDate, "02.01.2026")
+        XCTAssertTrue(row.events.contains { $0.date == "02.01.2026" && $0.text == "Поступило в ВС РФ" })
+        XCTAssertTrue(row.events.contains { $0.date == "03.02.2026" && ($0.text + " " + ($0.details ?? "")).contains("Отказано в передаче") })
+        XCTAssertEqual(row.publishedResult, "Отказано в передаче жалобы для рассмотрения")
+        XCTAssertTrue(row.publishedActs.isEmpty)
+    }
+
+    func testCurrentComplaintStandaloneDispositionRequiresDateAndValue() throws {
+        // Isolate disposition validation from the independently failing punctuated title.
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+            .replacingOccurrences(of: "3-КФ26-1-К1. ", with: "3-КФ26-1-К1")
+        let eventStart = try XCTUnwrap(html.range(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#))
+        let noEvent = String(html[..<eventStart.lowerBound]) + "</div></div>"
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: noEvent))
+        let noIntake = noEvent.replacingOccurrences(of: #"<div class="RowElement_container__OoOzI"><span class="CaseStyle_registerDateRow_attribute__bpl1j">Дата поступления:</span><span class="CaseStyle_case_value__0SnjY">02.01.2026</span></div>"#, with: "")
+        let blankDisposition = noIntake.replacingOccurrences(of: "</div></div>", with: #"<div class="CaseStyle_appealEventRow__lRXUi">   </div></div></div>"#)
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: blankDisposition))
+        for removed in [#"<div class="CaseStyle_appealEventRow_date__EYBoi">03.02.2026</div>"#,
+                        #"<div class="CaseStyle_case_value__0SnjY">Отказано в передаче жалобы для рассмотрения</div>"#] {
+            XCTAssertThrowsError(try VSRFCardParser.parse(html: html.replacingOccurrences(of: removed, with: "")))
+        }
+    }
+
+    func testCurrentComplaintDispositionDoesNotRelaxOtherCardShapes() throws {
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+        let duplicate = try XCTUnwrap(html.range(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#))
+        let event = String(html[duplicate.lowerBound...]).replacingOccurrences(of: "\n</div></div>\n", with: "")
+        let variants = [
+            html.replacingOccurrences(of: "21-00000001-TEST", with: "12-00000001-TEST"),
+            html.replacingOccurrences(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#, with: #"<div class="CaseStyle_eventsRow__test"></div><div class="CaseStyle_appealEventRow__lRXUi">"#),
+            html.replacingOccurrences(of: "\n</div></div>\n", with: event + "\n</div></div>\n"),
+            html.replacingOccurrences(of: ">03.02.2026</div>", with: ">   </div>"),
+            html.replacingOccurrences(of: ">Отказано в передаче жалобы для рассмотрения</div>", with: ">   </div>")
+        ]
+        for variant in variants { XCTAssertThrowsError(try VSRFCardParser.parse(html: variant)) }
+    }
+
+    func testCurrentComplaintAmbiguousTitleNumbersFailClosed() throws {
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+            .replacingOccurrences(of: "3-КФ26-1-К1. ", with: "3-КФ26-1-К1. 3-КФ26-2-К1.")
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: html))
+    }
+
     func testCurrentCardKeepsEventsAndPublishedResult() throws {
         let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_current_card_340"))
         let production = try XCTUnwrap(card.productions.first)

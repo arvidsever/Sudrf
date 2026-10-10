@@ -527,9 +527,18 @@ enum VSRFDOM {
         }
 
         let current = currentMetadata(in: item)
-        let uid = current.fields["уникальный идентификатор дела:"]
+        let meta = current.fields
+        let uid = meta["уникальный идентификатор дела:"]
         let kind: VSRFProductionKind = cardID.hasPrefix("12-") ? .caseFile : .complaint
-        var events = try currentCardEvents(in: item)
+        let complaintDisposition = kind == .complaint && firstEl(item, "[class*=CaseStyle_eventsRow__]") == nil
+        var events = try currentCardEvents(in: item, complaintDisposition: complaintDisposition)
+        let complaintResult = complaintDisposition ? events.last.map {
+            [$0.text, $0.details].compactMap { $0 }.joined(separator: " ")
+        } : nil
+        let incomingDate = meta["дата поступления:"].flatMap { firstDate(in: $0) } ?? meta["дата поступления:"]
+        if complaintDisposition, let date = incomingDate.flatMap({ firstDate(in: $0) }) {
+            events.insert(VSRFEvent(date: date, text: "Поступило в ВС РФ"), at: 0)
+        }
         let finalAct = try currentPublishedResult(in: item)
         let publishedActs = try currentPublishedActs(in: item)
         if let finalAct, let result = finalAct.text.nonEmpty {
@@ -548,13 +557,12 @@ enum VSRFDOM {
             }
         }
 
-        let meta = current.fields
         var production = VSRFProduction(
             cardID: cardID,
             cardSection: .claims,
             kind: kind,
             number: number,
-            incomingDate: meta["дата поступления:"].flatMap { firstDate(in: $0) } ?? meta["дата поступления:"],
+            incomingDate: incomingDate,
             procedureType: meta["вид судопроизводства:"],
             instanceType: meta["инстанция:"],
             uid: uid,
@@ -567,7 +575,7 @@ enum VSRFDOM {
             rapporteur: finalAct?.rapporteur,
             events: events,
             publishedActs: publishedActs)
-        production.publishedResult = finalAct?.text
+        production.publishedResult = finalAct?.text ?? complaintResult
         return production
     }
 
@@ -583,7 +591,8 @@ enum VSRFDOM {
     private static func currentCardNumber(in title: Element) -> String? {
         for span in (try? title.select("span").array()) ?? [] {
             guard let text = try? span.text() else { continue }
-            let value = clean(text)
+            var value = clean(text)
+            if value.hasSuffix(".") { value.removeLast() }
             if value.contains("-") && value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "/" }) {
                 return value
             }
@@ -591,13 +600,24 @@ enum VSRFDOM {
         return nil
     }
 
-    private static func currentCardEvents(in item: Element) throws -> [VSRFEvent] {
-        guard let section = firstEl(item, "[class*=CaseStyle_eventsRow__]"),
-              firstEl(section, "[class*=CaseStyle_eventsRow_title__]") != nil else {
-            throw SudrfError.parsing("В карточке ВС РФ отсутствует раздел движения по делу")
+    private static func currentCardEvents(in item: Element, complaintDisposition: Bool) throws -> [VSRFEvent] {
+        let rows: [Element]
+        if complaintDisposition {
+            rows = item.children().array().filter {
+                ((try? $0.attr("class")) ?? "").contains("CaseStyle_appealEventRow__")
+            }
+            guard rows.count == 1 else {
+                throw SudrfError.parsing("В карточке жалобы ВС РФ нет однозначного результата рассмотрения")
+            }
+        } else {
+            guard let section = firstEl(item, "[class*=CaseStyle_eventsRow__]"),
+                  firstEl(section, "[class*=CaseStyle_eventsRow_title__]") != nil else {
+                throw SudrfError.parsing("В карточке ВС РФ отсутствует раздел движения по делу")
+            }
+            rows = section.children().array()
         }
         var events: [VSRFEvent] = []
-        for row in section.children().array() {
+        for row in rows {
             let classes = (try? row.attr("class")) ?? ""
             if classes.contains("CaseStyle_eventsRow_title__") || classes.contains("CaseStyle_eventsRow_divider__") {
                 continue
@@ -615,6 +635,9 @@ enum VSRFDOM {
             }
             let details = segments.dropFirst().joined(separator: " ").nonEmpty
             events.append(VSRFEvent(date: date, text: text, details: details))
+        }
+        if complaintDisposition && events.isEmpty {
+            throw SudrfError.parsing("В карточке жалобы ВС РФ нет текста результата рассмотрения")
         }
         return events
     }

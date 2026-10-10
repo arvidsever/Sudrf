@@ -20,6 +20,38 @@ final class VSRFMovementTests: XCTestCase {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    func testCurrentComplaintDOMHydratesOwnMovementAndRoundTripsURLs() async throws {
+        let search = try VSRFSearchParser.parse(html: try fixture("vsrf_current_search_row_parties"))
+        let card = try VSRFCardParser.parse(html: try fixture("vsrf_current_complaint_disposition"))
+        let mock = MockVSRF(uidResults: .init(total: 0, results: []), numberResults: search,
+                            cardsByID: ["21-00000001": card])
+        let surnames = Set(["Тестовый получатель"].compactMap(VSRFLinkKey.surname))
+        let outcome = try await MovementService.vsrfInstancesOutcome(vsrf: mock, uid: nil,
+            firstInstanceCourt: "Тестовый городской суд", firstInstanceCaseNumber: "2-1/2026", partySurnames: surnames)
+        XCTAssertFalse(outcome.incomplete)
+        XCTAssertEqual(outcome.instances.count, 1)
+        let instance = try XCTUnwrap(outcome.instances.first)
+        XCTAssertEqual(instance.level, .vsCassation)
+        XCTAssertEqual(instance.caseNumber, "3-КФ26-1-К1")
+        let url = try XCTUnwrap(VSRFEndpoint.cardURL(productionID: "21-00000001", section: .claims))
+        XCTAssertEqual(instance.sourceURL, url)
+        XCTAssertEqual(outcome.loadedCardIdentities, [try XCTUnwrap(SourceNativeCardLocator.vsrf(url: url)).identity])
+        XCTAssertTrue(instance.sessions.contains { $0.date == "02.01.2026" && $0.event == "Поступило в ВС РФ" })
+        XCTAssertTrue(instance.sessions.contains { $0.date == "03.02.2026" && ($0.event + " " + ($0.result ?? "")).contains("Отказано в передаче") })
+        XCTAssertEqual(instance.result, "Отказано в передаче жалобы для рассмотрения")
+        XCTAssertTrue(outcome.acts.isEmpty)
+        let repeated = try await MovementService.vsrfInstancesOutcome(vsrf: mock, uid: nil,
+            firstInstanceCourt: "Тестовый городской суд", firstInstanceCaseNumber: "2-1/2026", partySurnames: surnames)
+        XCTAssertEqual(repeated.instances.count, 1)
+        XCTAssertEqual(repeated.loadedCardIdentities, outcome.loadedCardIdentities)
+        let movement = CaseMovement(uid: "", caseNumber: "2-1/2026", inForce: false,
+            instances: outcome.instances, complaints: [:], acts: outcome.acts)
+        let decoded = try JSONDecoder().decode(CaseMovement.self, from: JSONEncoder().encode(movement))
+        XCTAssertEqual(decoded.instances.map(\.sourceURL), [url])
+        XCTAssertEqual(decoded.instances.map(\.caseNumber), movement.instances.map(\.caseNumber))
+        XCTAssertTrue(decoded.acts.isEmpty)
+    }
+
     private let uid = "11RS0001-01-2021-021221-14"
 
     private func district() -> Court {

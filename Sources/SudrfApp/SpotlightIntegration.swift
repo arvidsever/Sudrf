@@ -1,6 +1,7 @@
 import AppIntents
 @preconcurrency import CoreSpotlight
 import Foundation
+import OSLog
 import SudrfKit
 
 // MARK: - Deep links
@@ -9,9 +10,11 @@ enum SudrfDeepLink: Sendable, Equatable {
     case caseRecord(key: String)
     case courtAct(caseKey: String, sourceActID: String)
 
-    var url: URL? {
+    var url: URL? { url(bundleIdentifier: Bundle.main.bundleIdentifier) }
+
+    func url(bundleIdentifier: String?) -> URL? {
         var components = URLComponents()
-        components.scheme = "sudrf"
+        components.scheme = AppIdentity.urlScheme(bundleIdentifier: bundleIdentifier)
         switch self {
         case .caseRecord(let key):
             components.host = "case"
@@ -26,8 +29,8 @@ enum SudrfDeepLink: Sendable, Equatable {
         return components.url
     }
 
-    init?(url: URL) {
-        guard url.scheme == "sudrf",
+    init?(url: URL, bundleIdentifier: String? = Bundle.main.bundleIdentifier) {
+        guard url.scheme == AppIdentity.urlScheme(bundleIdentifier: bundleIdentifier),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -381,6 +384,9 @@ final class SpotlightPreferenceStore: @unchecked Sendable {
 }
 
 actor SpotlightIndexer {
+    private static let scheduledRetryDelays: [Duration] = [.seconds(5), .seconds(30)]
+    private static let log = Logger(subsystem: AppIdentity.loggingSubsystem, category: "SpotlightSync")
+
     private let catalog: CaseCatalog
     private let writer: any SpotlightIndexWriting
     private let manifestStore: SpotlightManifestStore
@@ -390,6 +396,8 @@ actor SpotlightIndexer {
     private var writeTail: Task<Void, Never>?
     private var writeSequence: UInt64 = 0
     private var latestPreferenceRevision: UInt64 = 0
+    private var scheduledGeneration: UInt64 = 0
+    private var scheduledRetriesSuppressed = false
 
     init(catalog: CaseCatalog,
          writer: any SpotlightIndexWriting = SystemSpotlightWriter(),
@@ -405,10 +413,17 @@ actor SpotlightIndexer {
         guard revision >= latestPreferenceRevision else { return }
         latestPreferenceRevision = revision
         preferenceStore.setEnabled(enabled)
+        scheduledGeneration &+= 1
         scheduledTask?.cancel()
+        scheduledTask = nil
         pendingScope = nil
         if enabled {
             try await synchronize(scope: .full)
+            guard revision == latestPreferenceRevision, preferenceStore.isEnabled() else { return }
+            scheduledRetriesSuppressed = false
+            if pendingScope != nil, scheduledTask == nil {
+                scheduleScheduledSynchronization(after: .milliseconds(250), retry: 0)
+            }
         } else {
             try await enqueuePurge()
         }
@@ -416,12 +431,8 @@ actor SpotlightIndexer {
 
     func scheduleSynchronization(scope: SpotlightSyncScope) {
         pendingScope = pendingScope.map { $0.merging(scope) } ?? scope
-        scheduledTask?.cancel()
-        scheduledTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            try? await self?.runScheduledSynchronization()
-        }
+        guard !scheduledRetriesSuppressed, scheduledTask == nil else { return }
+        scheduleScheduledSynchronization(after: .milliseconds(250), retry: 0)
     }
 
     func synchronize() async throws {
@@ -528,11 +539,53 @@ actor SpotlightIndexer {
         }
     }
 
-    private func runScheduledSynchronization() async throws {
-        guard let scope = pendingScope else { return }
+    private func scheduleScheduledSynchronization(after delay: Duration, retry: Int) {
+        scheduledGeneration &+= 1
+        let generation = scheduledGeneration
+        scheduledTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.runScheduledSynchronization(retry: retry, generation: generation)
+        }
+    }
+
+    private func runScheduledSynchronization(retry: Int, generation: UInt64) async {
+        guard generation == scheduledGeneration else { return }
+        guard let scope = pendingScope else {
+            scheduledTask = nil
+            return
+        }
+        let preferenceRevision = latestPreferenceRevision
         pendingScope = nil
-        scheduledTask = nil
-        try await synchronize(scope: scope)
+        do {
+            try await synchronize(scope: scope)
+            guard generation == scheduledGeneration else { return }
+            scheduledTask = nil
+            if pendingScope != nil {
+                scheduleScheduledSynchronization(after: .milliseconds(250), retry: 0)
+            }
+        } catch {
+            let nsError = error as NSError
+            Self.log.error(
+                "Scheduled sync failed (domain: \(nsError.domain, privacy: .public), code: \(nsError.code, privacy: .public)).")
+            guard generation == scheduledGeneration else { return }
+            guard latestPreferenceRevision == preferenceRevision else {
+                scheduledTask = nil
+                return
+            }
+            pendingScope = pendingScope.map { $0.merging(scope) } ?? scope
+            guard retry < Self.scheduledRetryDelays.count else {
+                scheduledRetriesSuppressed = true
+                scheduledTask = nil
+                return
+            }
+            scheduleScheduledSynchronization(
+                after: Self.scheduledRetryDelays[retry], retry: retry + 1)
+        }
     }
 
     private func entities(for scope: SpotlightSyncScope) async throws

@@ -69,7 +69,7 @@
 | [#364](https://github.com/arvidsever/Sudrf/issues/364) | Выровнять карточки «Моих дел», показать вид производства и однозначную метку стадии. |
 | [#333](https://github.com/arvidsever/Sudrf/issues/333) | Gate исторических форматов #264 пройден в 0.62.12; далее — необязательное короткое название дела для календаря с согласованием интерфейса. |
 | [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. |
-| [#186](https://github.com/arvidsever/Sudrf/issues/186) | Проверить Spotlight identity Debug/Developer ID при общем bundle ID. |
+| [#186](https://github.com/arvidsever/Sudrf/issues/186) | Кодовое разделение Debug identity готово; оставить issue открытой до signed sandbox/CoreSpotlight-приёмки в отдельной macOS-учётной записи или VM. |
 | [#66](https://github.com/arvidsever/Sudrf/issues/66) | Завершить APPLE-6 системной матрицей после #46/#186; AI-зависимая часть ждёт отдельного решения. |
 | [#69](https://github.com/arvidsever/Sudrf/issues/69) | Собрать production Developer ID/notarization pipeline. |
 | [#93](https://github.com/arvidsever/Sudrf/issues/93) | После #179 добавить движение жалоб в общий event/feed contract. |

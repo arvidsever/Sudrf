@@ -26,7 +26,7 @@ enum AIProviderKind: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum AIKeychain {
-    private static let service = "ru.sudrf.app.ai-provider-key"
+    private static var service: String { AppIdentity.keychainService() }
 
     protocol Writing {
         func update(_ query: CFDictionary, attributes: CFDictionary) -> OSStatus

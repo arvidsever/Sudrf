@@ -62,12 +62,14 @@ enum TrackedStorePreparation {
     ) throws -> Bool {
         var paragraphSnapshots: [(record: CourtActRecord, version: Int, data: Data)] = []
         var moscowSnapshots: [(record: TrackedCaseRecord, snapshot: Data?, movement: Data?, journal: Data?)] = []
+        var treasurySnapshots: [(record: TrackedCaseRecord, journal: Data?)] = []
         do {
             try migrateFolders(context: context)
             try migrateJudicialUIDs(context: context)
             try migrateMoscowKeyAliases(context: context)
             try bootstrapPersistentIdentity(context: context)
             try bootstrapEventJournals(context: context)
+            try backfillTreasuryEvents(context: context, rollbackSnapshots: &treasurySnapshots)
             try normalizeMoscowOwnCourtCache(
                 context: context, rollbackSnapshots: &moscowSnapshots)
             try repairKoapPartySnapshots(context: context)
@@ -91,6 +93,9 @@ enum TrackedStorePreparation {
             for snapshot in moscowSnapshots {
                 snapshot.record.snapshotData = snapshot.snapshot
                 snapshot.record.movementData = snapshot.movement
+                snapshot.record.eventJournalData = snapshot.journal
+            }
+            for snapshot in treasurySnapshots {
                 snapshot.record.eventJournalData = snapshot.journal
             }
             context.rollback()
@@ -242,6 +247,28 @@ enum TrackedStorePreparation {
         let records = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
         for record in records where record.eventJournalData == nil {
             record.eventJournal = CaseEventJournal()
+        }
+    }
+
+    private static func backfillTreasuryEvents(
+        context: ModelContext,
+        rollbackSnapshots: inout [(record: TrackedCaseRecord, journal: Data?)]
+    ) throws {
+        for record in try context.fetch(FetchDescriptor<TrackedCaseRecord>()) {
+            guard record.enforcementRecords.contains(where: {
+                $0.source == .treasury && $0.events.contains { $0.guid?.isEmpty == false }
+            }) else { continue }
+            guard var journal = record.eventJournal else {
+                throw TrackedStoreCommitError.corruptedEventJournal(key: record.key)
+            }
+            let events = TreasuryEventJournal.additions(
+                records: record.enforcementRecords,
+                logicalCaseID: TrackedCaseIdentity.ensuredLogicalCaseID(for: record), journal: journal)
+            guard !events.isEmpty else { continue }
+            try journal.append(events)
+            let data = try JSONEncoder().encode(journal)
+            rollbackSnapshots.append((record, record.eventJournalData))
+            record.eventJournalData = data
         }
     }
 
@@ -955,6 +982,28 @@ final class TrackedStore {
             throw TrackedStoreCommitError.corruptedEventJournal(key: record.key)
         }
         return journal
+    }
+
+    @discardableResult
+    func applyEnforcementUpdates(forLocator locator: String,
+                                 updates: [EnforcementRecord],
+                                 openedKey: String?) throws -> String? {
+        try commit {
+            guard let record = try recordForMutation(forLocator: locator) else { return nil }
+            let previous = record.enforcementRecords
+            let documents = record.movement?.executionDocuments ?? []
+            let current = Self.reconciledEnforcementRecords(
+                existing: previous, updates: updates, courtDocuments: documents)
+            let changed = Self.enforcementHasUserVisibleChange(
+                previous: previous, current: current, courtDocuments: documents)
+            let journal = try requiredEventJournal(for: record)
+            let events = TreasuryEventJournal.additions(records: previous + current,
+                logicalCaseID: TrackedCaseIdentity.ensuredLogicalCaseID(for: record), journal: journal)
+            record.enforcementData = try JSONEncoder().encode(current)
+            try appendCaseEvents(events, to: record)
+            if changed && openedKey != record.key { record.seenAt = nil }
+            return record.key
+        }
     }
 
     func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord,

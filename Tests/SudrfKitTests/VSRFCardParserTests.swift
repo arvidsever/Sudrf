@@ -80,6 +80,55 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertTrue(d.events.contains { $0.text.contains("Отказ в передаче") && $0.date == "10.03.2023" })
     }
 
+    func testCurrentComplaintStandaloneDispositionRetainsOwnFacts() throws {
+        let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_current_complaint_disposition"))
+        let row = try XCTUnwrap(card.productions.first)
+        XCTAssertEqual(row.cardID, "21-00000001")
+        XCTAssertEqual(row.number, "3-КФ26-1-К1")
+        XCTAssertEqual(row.kind, .complaint)
+        XCTAssertEqual(row.incomingDate, "02.01.2026")
+        XCTAssertTrue(row.events.contains { $0.date == "02.01.2026" && $0.text == "Поступило в ВС РФ" })
+        XCTAssertTrue(row.events.contains { $0.date == "03.02.2026" && ($0.text + " " + ($0.details ?? "")).contains("Отказано в передаче") })
+        XCTAssertEqual(row.publishedResult, "Отказано в передаче жалобы для рассмотрения")
+        XCTAssertTrue(row.publishedActs.isEmpty)
+    }
+
+    func testCurrentComplaintStandaloneDispositionRequiresDateAndValue() throws {
+        // Isolate disposition validation from the independently failing punctuated title.
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+            .replacingOccurrences(of: "3-КФ26-1-К1. ", with: "3-КФ26-1-К1")
+        let eventStart = try XCTUnwrap(html.range(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#))
+        let noEvent = String(html[..<eventStart.lowerBound]) + "</div></div>"
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: noEvent))
+        let noIntake = noEvent.replacingOccurrences(of: #"<div class="RowElement_container__OoOzI"><span class="CaseStyle_registerDateRow_attribute__bpl1j">Дата поступления:</span><span class="CaseStyle_case_value__0SnjY">02.01.2026</span></div>"#, with: "")
+        let blankDisposition = noIntake.replacingOccurrences(of: "</div></div>", with: #"<div class="CaseStyle_appealEventRow__lRXUi">   </div></div></div>"#)
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: blankDisposition))
+        for removed in [#"<div class="CaseStyle_appealEventRow_date__EYBoi">03.02.2026</div>"#,
+                        #"<div class="CaseStyle_case_value__0SnjY">Отказано в передаче жалобы для рассмотрения</div>"#] {
+            XCTAssertThrowsError(try VSRFCardParser.parse(html: html.replacingOccurrences(of: removed, with: "")))
+        }
+    }
+
+    func testCurrentComplaintDispositionDoesNotRelaxOtherCardShapes() throws {
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+        let duplicate = try XCTUnwrap(html.range(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#))
+        let event = String(html[duplicate.lowerBound...]).replacingOccurrences(of: "\n</div></div>\n", with: "")
+        let variants = [
+            html.replacingOccurrences(of: "21-00000001-TEST", with: "12-00000001-TEST"),
+            html.replacingOccurrences(of: #"  <div class="CaseStyle_appealEventRow__lRXUi">"#, with: #"<div class="CaseStyle_eventsRow__test"></div><div class="CaseStyle_appealEventRow__lRXUi">"#),
+            html.replacingOccurrences(of: "\n</div></div>\n", with: event + "\n</div></div>\n"),
+            html.replacingOccurrences(of: ">03.02.2026</div>", with: ">   </div>"),
+            html.replacingOccurrences(of: ">Отказано в передаче жалобы для рассмотрения</div>", with: ">   </div>")
+        ]
+        for variant in variants { XCTAssertThrowsError(try VSRFCardParser.parse(html: variant)) }
+    }
+
+    func testCurrentComplaintAmbiguousTitleNumbersFailClosed() throws {
+        let html = try loadFixture("vsrf_current_complaint_disposition")
+            .replacingOccurrences(of: "3-КФ26-1-К1. ", with: "3-КФ26-1-К1. 3-КФ26-2-К1.")
+        XCTAssertThrowsError(try VSRFCardParser.parse(html: html))
+    }
+
     func testCurrentCardKeepsEventsAndPublishedResult() throws {
         let card = try VSRFCardParser.parse(html: try loadFixture("vsrf_current_card_340"))
         let production = try XCTUnwrap(card.productions.first)
@@ -279,6 +328,50 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertEqual(d.firstInstance.result, "Иск удовлетворён полностью")
         XCTAssertEqual(d.claimants, ["Заявитель"])
         XCTAssertEqual(d.respondents, ["Ответчик"])
+    }
+
+    func testCurrentSearchRowPartiesWithoutUIDRetainPublishedLinkage() throws {
+        let page = try VSRFSearchParser.parse(html: try loadFixture("vsrf_current_search_row_parties"))
+        XCTAssertEqual(page.total, 1)
+        XCTAssertTrue(page.hasPublishedTotal)
+        let row = try XCTUnwrap(page.results.first)
+        XCTAssertNil(row.uid)
+        XCTAssertEqual(row.claimants, ["Тестовый заявитель"])
+        XCTAssertEqual(row.respondents, ["Тестовый ответчик"])
+        XCTAssertEqual(row.applicant, "Тестовый получатель")
+        XCTAssertEqual(row.firstInstance.caseNumber, "2-1/2026")
+    }
+
+    func testCurrentSearchRowPartiesAndLegacyNamesKeepBeneficiaryPriority() throws {
+        var html = try loadFixture("vsrf_current_search_row_parties")
+        let legacy = #"<div class="CaseStyle_case_personalList_item__test"><span class="CaseStyle_registerDateRow_attribute__test">Заявители:</span><div class="CaseStyle_case_personalListName__test"><span>Первый заявитель</span><span>Второй заявитель</span></div></div>"#
+        html = html.replacingOccurrences(of: #"<div class="RowElement_container__OoOzI"><span class="CaseStyle_registerDateRow_attribute__bpl1j">Заявитель:</span><span class="CaseStyle_case_value__0SnjY">Тестовый заявитель</span></div>"#, with: legacy)
+        let row = try XCTUnwrap(VSRFSearchParser.parse(html: html).results.first)
+        XCTAssertEqual(row.claimants, ["Первый заявитель", "Второй заявитель"])
+        XCTAssertEqual(row.applicant, "Тестовый получатель")
+        XCTAssertEqual(row.respondents, ["Тестовый ответчик"])
+    }
+
+    func testCurrentCardRowPartiesUseTheSamePublishedMetadata() throws {
+        var html = try loadFixture("vsrf_current_search_row_parties")
+        html = html.replacingOccurrences(of: #"<a class="CaseStyle_case_link__xA_5_" href="/lk/practice/claims/21-00000001">3-КФ26-1-К1</a>"#,
+            with: #"<div class="CaseStyle_cardTitleRow__test"><a id="anchor21-00000001"></a><span>3-КФ26-1-К1</span></div><div class="CaseStyle_eventsRow__test"><div class="CaseStyle_eventsRow_title__test">Движение</div></div>"#)
+        let row = try XCTUnwrap(VSRFCardParser.parse(html: html).productions.first)
+        XCTAssertEqual(row.claimants, ["Тестовый заявитель"])
+        XCTAssertEqual(row.respondents, ["Тестовый ответчик"])
+        XCTAssertEqual(row.applicant, "Тестовый получатель")
+    }
+
+    func testCurrentSearchRowPartiesStillRequireNonemptyApplicant() throws {
+        let html = try loadFixture("vsrf_current_search_row_parties")
+        let missingValues = html.replacingOccurrences(of: #"<span class="CaseStyle_case_value__0SnjY">Тестовый заявитель</span>"#, with: "")
+            .replacingOccurrences(of: #"<span class="CaseStyle_case_value__0SnjY">Тестовый получатель</span>"#, with: "")
+        XCTAssertThrowsError(try VSRFSearchParser.parse(html: missingValues))
+        for replacement in ["", "   "] {
+            let missing = html.replacingOccurrences(of: "Тестовый заявитель", with: replacement)
+                .replacingOccurrences(of: "Тестовый получатель", with: replacement)
+            XCTAssertThrowsError(try VSRFSearchParser.parse(html: missing))
+        }
     }
 
     func testCurrentSearchEmptyResultRequiresExplicitZeroEvidence() throws {

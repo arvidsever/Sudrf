@@ -2855,7 +2855,6 @@ extension MovementService {
         let note: String?
         if joined.contains("возврат") { note = "возврат без рассмотрения" }
         else if joined.contains("отказ в передаче") { note = "отказ в передаче" }
-        else if p.kind == .complaint && p.uid == nil && !p.caseRequested { note = "жалоба отклонена" }
         else { note = nil }
 
         let publishedActs = mapPublishedActs(p)

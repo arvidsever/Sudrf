@@ -25,12 +25,31 @@ Log `/private/tmp/sudrf-179-persistence-compatibility.log`, SHA-256
 The refresh uses a private settings suite, guarded offline client and explicit
 provider overrides; it does not enter the shared CAPTCHA token path. Disk stores
 are generated temporary fixtures and removed afterward. No live request or
-application launch occurred. Independent review and final current-head CI remain
-pending at this preparation checkpoint.
+application launch occurred. Independent persistence review passed after replacing tolerant source decoding
+with throwing decoding. Final current-head CI remains pending at this checkpoint.
 
 The existing feed, read/known preferences, badges and notification consumers
 remain unchanged. Import is quiet persistence, not event delivery or full #179
 cutover. Runtime projection and mark replay remain a separate required stage.
+
+## Integration after #104 — 10 October 2026
+
+Quiet persistence commit `b33f563` is integrated with actual released main
+`7062c547` (0.65.3 / 264), conflict-free merge `6e2e5a6`. The inherited
+RefreshCenter private CAPTCHA token-store parameter is preserved; all three
+RefreshCenter initializer paths in the narrow profile explicitly use own tokens.
+No extra production source change was needed.
+
+The post-integration isolated profile passed **27 XCTest, zero failures/skips**.
+Log `/private/tmp/sudrf-179-persistence-after104-profile.log`, SHA-256
+`200dab8b7bd8dc7122bc20e6292f0fe2b8d52b485fc8cd6e8dace9f74a70b69d`.
+Registry generation check passed. Separate own Xcode Debug build passed, inheriting
+main 0.65.3 / 264, all three compiled models present, no app launch:
+`/private/tmp/sudrf-179-persistence-xcodebuild.log`, SHA-256
+`c7a260dd24819fb31d2ad3deba9058f9f95c9cbb451370d64a5f94147a0f316b`.
+These are private synthetic/offline checks, not live court or global feed delivery
+acceptance. #179 remains draft/open; final CI and full runtime/marks/notifier
+cutover remain required.
 
 ## Released-prerequisite integration — 10 October 2026
 

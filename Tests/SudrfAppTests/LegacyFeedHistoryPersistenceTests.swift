@@ -238,6 +238,7 @@ final class LegacyFeedHistoryPersistenceTests: XCTestCase {
                 complaints: [:], acts: [])
             let center = RefreshCenter(store: store, client: TestNetworkGuard.sudrfClient(),
                 captchaSettings: CaptchaSettings(defaults: defaults),
+                captchaTokenStore: CaptchaTokenStore(),
                 serviceBuilder: { _ in LegacyHistory179Movement(value: fresh) },
                 treasuryDiscover: { _, _, _ in throw CancellationError() },
                 vsrfProvider: LegacyHistory179UnusedVSRF(), fsspAutoModelEnabled: false,

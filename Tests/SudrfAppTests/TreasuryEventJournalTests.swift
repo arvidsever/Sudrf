@@ -238,6 +238,7 @@ final class TreasuryEventJournalTests: XCTestCase {
             let client = TreasuryClient(session: session, minInterval: 0,
                 baseURL: URL(string: "https://treasury454.test")!, maxAttempts: 1)
             let center = RefreshCenter(store: store, client: TestNetworkGuard.sudrfClient(),
+                captchaTokenStore: CaptchaTokenStore(),
                 serviceBuilder: { _ in Treasury454UnusedMovement() },
                 treasuryDiscover: { document, number, court in
                     try await client.discover(document: document, caseNumber: number, court: court)
@@ -281,6 +282,7 @@ final class TreasuryEventJournalTests: XCTestCase {
             refreshCenterFactory: { store, client in
                 capturedStore = store
                 return RefreshCenter(store: store, client: client,
+                    captchaTokenStore: CaptchaTokenStore(),
                     serviceBuilder: { _ in Treasury454UnusedMovement() },
                     treasuryDiscover: { document, number, court in
                         try await treasury.discover(document: document, caseNumber: number, court: court)

@@ -1002,7 +1002,10 @@ final class AppRouter: ObservableObject {
         do {
             try mutateJournalFeedMarks { record, state in
                 let ownIDs = Set((record.eventJournal?.events ?? []).map(\.id))
-                state.readEventIDs.formUnion(ids.intersection(ownIDs))
+                if let journal = record.eventJournal {
+                    state.readEventIDs.formUnion(JournalFeedProjection.displayMemberIDs(
+                        ids.intersection(ownIDs), journal: journal))
+                }
             }
             reload()
             feedBadgePublisher(newBadge)
@@ -1012,8 +1015,9 @@ final class AppRouter: ObservableObject {
     private func markFeedEntryRead(_ id: String) {
         do {
             try mutateJournalFeedMarks { record, state in
-                if record.eventJournal?.events.contains(where: { $0.id == id }) == true {
-                    state.readEventIDs.insert(id)
+                if let journal = record.eventJournal,
+                   journal.events.contains(where: { $0.id == id }) {
+                    state.readEventIDs.formUnion(JournalFeedProjection.displayMemberIDs([id], journal: journal))
                 }
             }
             reload()
@@ -2362,15 +2366,21 @@ final class AppRouter: ObservableObject {
     /// которых ещё не было в knownFeedIDs и которые непрочитаны. Бейдж —
     /// число дел с обновлениями — обновляется всегда.
     private func reconcileFeed(notify: Bool) {
-        let states = Dictionary(uniqueKeysWithValues: store.all().compactMap { record in
-            record.eventJournal?.feedState.map { (record.key, $0) }
+        let journals = Dictionary(uniqueKeysWithValues: store.all().compactMap { record in
+            record.eventJournal.map { (record.key, $0) }
         })
         let fresh = feed.filter { entry in
-            entry.isUnread && states[entry.recordKey]?.knownEventIDs.contains(entry.id) == false
+            guard entry.isUnread, let journal = journals[entry.recordKey],
+                  let state = journal.feedState else { return false }
+            let members = JournalFeedProjection.displayMemberIDs([entry.id], journal: journal)
+            return members.isDisjoint(with: state.knownEventIDs)
         }
         do {
             try mutateJournalFeedMarks { record, state in
-                state.knownEventIDs.formUnion(feed.filter { $0.recordKey == record.key }.map(\.id))
+                if let journal = record.eventJournal {
+                    let ids = Set(feed.filter { $0.recordKey == record.key }.map(\.id))
+                    state.knownEventIDs.formUnion(JournalFeedProjection.displayMemberIDs(ids, journal: journal))
+                }
             }
         } catch {
             persistenceError = "Изменения не сохранены. Повторите попытку."
@@ -2690,7 +2700,7 @@ final class AppRouter: ObservableObject {
         guard let journal = record.eventJournal, let state = journal.feedState else {
             return record.seenAt == nil
         }
-        let replaced = Set(state.bindings.flatMap(\.historyEventIDs))
+        let replaced = JournalFeedProjection.replacedHistoryIDs(journal: journal)
         let visibleKinds = Set(state.bindings.map(\.eventID))
         return journal.events.contains { event in
             !replaced.contains(event.id) && !state.readEventIDs.contains(event.id)

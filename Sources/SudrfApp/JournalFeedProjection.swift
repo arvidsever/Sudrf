@@ -114,11 +114,50 @@ enum JournalFeedProjection {
         return state
     }
 
+    /// Old material display collapsed exact qualified duplicates. Preserve
+    /// their immutable events and use current authority for the whole group.
+    static func replacedHistoryIDs(journal: CaseEventJournal) -> Set<String> {
+        var ids = Set((journal.feedState?.bindings ?? []).flatMap(\.historyEventIDs))
+        for (original, publication) in journal.feedState?.materialHistoryReplacements ?? [:] {
+            guard original != publication,
+                  let old = journal.events.first(where: { $0.id == original }),
+                  let fresh = journal.events.first(where: { $0.id == publication }),
+                  old.evidence.legacyFeedHistory?.sourceCardID == nil,
+                  JournalFeedState.materialPayloadMatches(old, fresh) else { continue }
+            ids.insert(original)
+        }
+        return ids
+    }
+
+    static func historyDisplayGroups(journal: CaseEventJournal) -> [[CaseEvent]] {
+        let replaced = replacedHistoryIDs(journal: journal)
+        var groups = [[CaseEvent]]()
+        for event in journal.events where !replaced.contains(event.id) {
+            guard let history = event.evidence.legacyFeedHistory else { continue }
+            if history.instanceLevelRaw == CaseInstance.Level.material.rawValue,
+               history.sourceCardID != nil,
+               let index = groups.firstIndex(where: { $0.first?.evidence.legacyFeedHistory == history }) {
+                groups[index].append(event)
+            } else { groups.append([event]) }
+        }
+        return groups
+    }
+
+    static func displayMemberIDs(_ ids: Set<String>, journal: CaseEventJournal) -> Set<String> {
+        var result = ids
+        for group in historyDisplayGroups(journal: journal) {
+            let members = Set(group.map(\.id))
+            if !members.isDisjoint(with: ids) { result.formUnion(members) }
+        }
+        return result
+    }
+
     static func entries(record: LegacyFeedRecordInput, journal: CaseEventJournal, today: Date) -> [FeedEntry] {
         guard let state = journal.feedState else { return [] }
-        let replaced = Set(state.bindings.flatMap(\.historyEventIDs))
-        var rows = journal.events.filter { !replaced.contains($0.id) }.compactMap {
-            historyEntry($0, record: record, read: state.readEventIDs.contains($0.id))
+        var rows = historyDisplayGroups(journal: journal).compactMap { group -> FeedEntry? in
+            guard let event = group.first else { return nil }
+            return historyEntry(event, record: record,
+                read: group.allSatisfy { state.readEventIDs.contains($0.id) })
         }
         rows += journal.events.filter { $0.kind == .treasuryRSSPublished }.compactMap { event in
             guard let text = event.evidence.event,

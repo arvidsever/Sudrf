@@ -1,0 +1,42 @@
+{
+  "source_head": "8ffe9fe9d054ea32395b7416671a6488310b4372",
+  "app_path": "/private/tmp/sudrf-179-native-host/xcode-qa/DerivedData/Build/Products/Debug/Sudrf179QA.app",
+  "bundle_id": "ru.sudrf.qa.issue179",
+  "executable": "Sudrf179QA",
+  "inherited_version": "0.65.3",
+  "build": "264",
+  "sandbox": true,
+  "outbound_network": false,
+  "url_schemes": [],
+  "container_migration": false,
+  "application_groups": [],
+  "store": "private in-memory synthetic only",
+  "production_entry": "excluded SudrfApp.swift",
+  "launch_status": "rebuilt material-display follow-up; not launched; user authorization and native acceptance pending",
+  "menus": [
+    "Quit CmdQ",
+    "QA light CmdL",
+    "QA dark CmdD"
+  ],
+  "ui": "existing OverviewView full feed; no new layout/detection caption",
+  "hashes": {
+    "/Users/arvidsever/.codex/worktrees/journal-shadow-179-resume/Sudrf/Docs/qa/issue-179/GUIHost.swift": "09c7972623c66e9f915e983c52ecce2cdafc22925313c46ccad99d49246f6746",
+    "/Users/arvidsever/.codex/worktrees/journal-shadow-179-resume/Sudrf/Docs/qa/issue-179/build-ui.sh": "f950838b0b146ecb14b4c981adae7497f8151e4d3dce9ca14d1a88dc7a6d75ae",
+    "/private/tmp/sudrf-179-native-host/xcode-qa-build.log": "caba7bbf5e1ba96e199d0c66e0c9d36ad26897b7553e95048cee46d23e3d3962",
+    "/private/tmp/sudrf-179-native-host/xcode-qa/DerivedData/Build/Products/Debug/Sudrf179QA.app/Contents/MacOS/Sudrf179QA": "b98aea2a15e11f4ef2a42d7e204b453420ffa55fe40e022b8ebbdfd1ec3e5089",
+    "/private/tmp/sudrf-179-native-host/xcode-qa/DerivedData/Build/Products/Debug/Sudrf179QA.app/Contents/MacOS/Sudrf179QA.debug.dylib": "b8553ee87aceb14b432d964d375c15f8a3a3bf4a16bce8dfb9e42f566813af6d"
+  },
+  "source_state": "reviewed material-display follow-up atop 8ffe9fe; uncommitted source hashes recorded; no app launch",
+  "source_files": {
+    "Sources/SudrfApp/AppModel.swift": "19e1931f551c57bc4e5193ebc65b9e1402e430b241159f16fbcb2f080b17f247",
+    "Sources/SudrfApp/JournalFeedProjection.swift": "ee43335c46a662585d3c9648b566f500f9d1f8e1a5188db938f93308ae0daa4a",
+    "Sources/SudrfApp/JournalFeedState.swift": "2af919dc6f010644c2375cbd231429d504328157e3a1136cc00a2c691853c240",
+    "Sources/SudrfApp/TrackedCaseRepair.swift": "30a0d8e9df5b4056982a502c56f08579c6a08b7163281c7569382412bc789cb6"
+  },
+  "signed_entitlements": {
+    "com.apple.security.app-sandbox": true,
+    "com.apple.security.files.user-selected.read-write": false,
+    "com.apple.security.get-task-allow": true,
+    "com.apple.security.network.client": false
+  }
+}

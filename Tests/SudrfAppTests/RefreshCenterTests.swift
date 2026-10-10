@@ -11,6 +11,48 @@ import CaptchaSolver
 @MainActor
 final class RefreshCenterTests: XCTestCase {
 
+    private actor NoopRefreshCenterSpotlightWriter: SpotlightIndexWriting {
+        func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {}
+        func delete(caseIDs: [String], actIDs: [String]) async throws {}
+        func deleteAll() async throws {}
+    }
+
+    private actor OfflineRefreshCenterVSRFProvider: VSRFProviding {
+        func search(uniqueNumber: String?, oldCaseNumber: String?,
+                    keywords: String?) async throws -> VSRFSearchResults {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(productionID: String,
+                       section: VSRFCardSection) async throws -> VSRFCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineRefreshCenterMosGorSudProvider: MosGorSudProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineRefreshCenterMoscowOriginProvider: MoscowOriginProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
     // MARK: - Fakes
 
     /// `MovementProviding`-мок: первый вызов `movement(...)` бросает
@@ -509,6 +551,68 @@ final class RefreshCenterTests: XCTestCase {
         return baseline
     }
 
+    private func assertKoAPComplaintTimelineEvidence(
+        journal: CaseEventJournal?, sessions: [StoredSession]
+    ) throws -> [CaseEvent] {
+        let expectedKinds: Set<CaseEventKind> = [
+            .caseFileRequested, .requestedCaseReceived, .complaintReviewResult,
+        ]
+        let events = try XCTUnwrap(semanticJournalEvents(journal))
+        XCTAssertEqual(events.count, expectedKinds.count)
+        XCTAssertEqual(Set(events.map(\.kind)), expectedKinds)
+        for (kind, sourceEvent) in [
+            (CaseEventKind.caseFileRequested, "Истребование дела (материала)"),
+            (CaseEventKind.requestedCaseReceived, "Поступление истребованного дела (материала)"),
+            (CaseEventKind.complaintReviewResult, "Результат рассмотрения жалобы"),
+        ] {
+            let event = try XCTUnwrap(events.first { $0.kind == kind })
+            let matchingSessions = sessions.filter { $0.event == sourceEvent }
+            XCTAssertEqual(matchingSessions.count, 1)
+            let session = try XCTUnwrap(matchingSessions.first)
+            let occurrence = try XCTUnwrap(
+                CaseEventDeriver.complaintTimelineCandidate(session)?.key)
+            XCTAssertEqual(event.evidence, CaseEventEvidence(
+                sourceCardID: session.sourceCardID,
+                instanceLevelRaw: session.levelRaw,
+                caseNumber: session.caseNumber,
+                dateRaw: session.dateRaw,
+                time: session.time,
+                event: session.event,
+                value: session.result,
+                occurrenceKey: occurrence))
+        }
+        return events
+    }
+
+    private func assertKoAPComplaintSourceRows(
+        journal: CaseEventJournal?, sessions: [StoredSession]
+    ) throws -> [CaseEvent] {
+        let rows = try XCTUnwrap(assertSourceRowPublications(
+            journal, expectedCount: sessions.count, notificationEligible: true))
+        XCTAssertEqual(Set(rows.map(\.id)).count, sessions.count)
+        XCTAssertEqual(Set(rows.compactMap { $0.evidence.sourceRowBinding?.fingerprint }).count,
+                       sessions.count)
+        let publishedSessions = try rows.map { row -> StoredSession in
+            let history = try XCTUnwrap(row.evidence.legacyFeedHistory)
+            let candidateSession: StoredSession?
+            switch history.source {
+            case .session(let value): candidateSession = value
+            case .act: candidateSession = nil
+            }
+            let session = try XCTUnwrap(
+                candidateSession, "KoAP timeline source rows must retain their native session payload")
+            XCTAssertEqual(history.sourceCardID, session.sourceCardID)
+            XCTAssertEqual(row.evidence.sourceCardID, session.sourceCardID)
+            return session
+        }
+        func key(_ session: StoredSession) -> String {
+            [session.sourceCardID ?? "", session.dateRaw, session.time ?? "",
+             session.event, session.result ?? "", session.caseNumber ?? ""].joined(separator: "|")
+        }
+        XCTAssertEqual(publishedSessions.map(key).sorted(), sessions.map(key).sorted())
+        return rows
+    }
+
     private func paperWrit(_ id: String = "court-writ-1",
                             blank: String = "ФС № 123456") -> CourtEnforcementDocument {
         CourtEnforcementDocument(id: id, blankNumber: blank, courtStatus: "Выдан")
@@ -550,47 +654,36 @@ final class RefreshCenterTests: XCTestCase {
     private var formURL: URL!
     private var scripted: ScriptedMovement!
     private var successMV: CaseMovement!
-
-    // Состояние `CaptchaSettings.shared` — save/restore, тест не должен
-    // оставлять побочных эффектов в UserDefaults пользователя.
-    private var savedAutoSolve: Bool!
-    private var savedForceDisabled: Bool!
-    private var savedMinConf: Double!
-    private var savedMaxAttempts: Int!
+    private var captchaSettings: CaptchaSettings!
+    private var captchaTokenStore: CaptchaTokenStore!
+    private var testDefaults: UserDefaults!
+    private var testDefaultsSuite: String!
+    private var testDirectory: URL!
 
     override func setUp() async throws {
         try await super.setUp()
         store = TrackedStore(inMemory: true)
+        testDefaultsSuite = "Sudrf.RefreshCenterTests.\(UUID().uuidString)"
+        testDefaults = try XCTUnwrap(UserDefaults(suiteName: testDefaultsSuite))
+        testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("refresh-center-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        captchaSettings = CaptchaSettings(defaults: testDefaults)
+        captchaTokenStore = CaptchaTokenStore()
+        captchaSettings.autoSolveEnabled = true
+        captchaSettings.forceDisabled = false
+        captchaSettings.minConfidence = 0.5
+        captchaSettings.maxAttempts = 3
         let ctx = makeContext()
         successMV = makeSuccessMovement(court: ctx.searchCourt)
         formURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php?g1")!
         scripted = ScriptedMovement(formURL: formURL, successMV: successMV)
         _ = try store.upsert(context: ctx, snapshot: nil, movement: nil, collections: [])
-        // Чистый стор на нужный домен — иначе возможный хвост от
-        // предыдущего тестового прогона даст ложный «успех без solve».
-        await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
-        await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
-        await CaptchaTokenStore.shared.invalidate(domain: "vs--komi.sudrf.ru")
-
-        let s = CaptchaSettings.shared
-        savedAutoSolve = s.autoSolveEnabled
-        savedForceDisabled = s.forceDisabled
-        savedMinConf = s.minConfidence
-        savedMaxAttempts = s.maxAttempts
-        s.autoSolveEnabled = true
-        s.forceDisabled = false
-        s.minConfidence = 0.5
     }
 
     override func tearDown() async throws {
-        let s = CaptchaSettings.shared
-        s.autoSolveEnabled = savedAutoSolve
-        s.forceDisabled = savedForceDisabled
-        s.minConfidence = savedMinConf
-        s.maxAttempts = savedMaxAttempts
-        await CaptchaTokenStore.shared.invalidate(domain: "syktsud--komi.sudrf.ru")
-        await CaptchaTokenStore.shared.invalidate(domain: "3kas.sudrf.ru")
-        await CaptchaTokenStore.shared.invalidate(domain: "vs--komi.sudrf.ru")
+        testDefaults.removePersistentDomain(forName: testDefaultsSuite)
+        if let testDirectory { try? FileManager.default.removeItem(at: testDirectory) }
         store = nil
         scripted = nil
         try await super.tearDown()
@@ -606,12 +699,80 @@ final class RefreshCenterTests: XCTestCase {
         let provider: any MovementProviding = service ?? scripted
         return RefreshCenter(
             store: store,
-            client: SudrfClient(),
+            client: TestNetworkGuard.sudrfClient(),
             captchaSolver: solver,
-            captchaSettings: CaptchaSettings.shared,
+            captchaSettings: captchaSettings,
             autoSolve: autoSolve,
+            captchaTokenStore: captchaTokenStore,
             serviceBuilder: { _ in provider }
         )
+    }
+
+    private func makeIsolatedRouter(for store: TrackedStore) throws -> AppRouter {
+        let defaults = try XCTUnwrap(testDefaults)
+        let settings = try XCTUnwrap(captchaSettings)
+        let tokens = try XCTUnwrap(captchaTokenStore)
+        let directory = try XCTUnwrap(testDirectory)
+        let movement = try XCTUnwrap(successMV)
+        let client = TestNetworkGuard.sudrfClient()
+        return try AppRouter(
+            captchaSettings: settings,
+            modelContainer: store.container,
+            modelContainerIsPrepared: true,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("router-captcha")),
+            refreshCenterFactory: { privateStore, privateClient in
+                RefreshCenter(
+                    store: privateStore, client: privateClient,
+                    captchaSettings: settings, captchaTokenStore: tokens,
+                    serviceBuilder: { _ in FixedMovement(movement) },
+                    treasuryDiscover: { _, _, _ in throw CancellationError() },
+                    vsrfProvider: OfflineRefreshCenterVSRFProvider(),
+                    mosGorSudProvider: OfflineRefreshCenterMosGorSudProvider(),
+                    moscowMagistrateProvider: privateClient,
+                    fsspAutoModelEnabled: false,
+                    fsspDiscover: { _ in throw CancellationError() },
+                    initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600))
+            },
+            importVSRFProvider: OfflineRefreshCenterVSRFProvider(),
+            importMosGorSudProvider: OfflineRefreshCenterMosGorSudProvider(),
+            selectedPublishedAct: PublishedActSelection(
+                cache: ActFileCache(directory: directory.appendingPathComponent("router-acts")),
+                fetch: { _, _ in throw URLError(.unsupportedURL) }),
+            summaryConfigurationProvider: { throw CancellationError() },
+            userDefaults: defaults,
+            client: client,
+            captchaTokenStore: tokens,
+            directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(
+                fetchCard: { _ in throw CancellationError() },
+                districtCourts: { _ in throw CancellationError() }) },
+            spotlightIndexerFactory: { catalog in
+                SpotlightIndexer(
+                    catalog: catalog,
+                    writer: NoopRefreshCenterSpotlightWriter(),
+                    manifestStore: SpotlightManifestStore(suiteName: testDefaultsSuite),
+                    preferenceStore: SpotlightPreferenceStore(suiteName: testDefaultsSuite))
+            },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { _ in },
+            feedBadgePublisher: { _ in },
+            notificationOpenInstaller: { _ in },
+            intentInstaller: { _ in },
+            captchaSolverFactory: { _ in nil },
+            repairCoordinatorFactory: { privateStore, privateClient in
+                let districtResolver = DistrictCourtResolver(client: privateClient, cacheURL: nil)
+                let magistrateResolver = MagistrateCourtResolver(
+                    client: privateClient, cacheURL: nil, moscowDirectoryClient: nil)
+                let originResolver = CaseOriginResolver(
+                    client: privateClient, districtResolver: districtResolver,
+                    magistrateResolver: magistrateResolver,
+                    regularProvider: privateClient, magistrateProvider: privateClient,
+                    moscowProvider: OfflineRefreshCenterMoscowOriginProvider())
+                return TrackedCaseRepairCoordinator(
+                    store: privateStore, client: privateClient,
+                    originResolver: originResolver,
+                    defaults: defaults,
+                    anchorCardResolver: { _ in throw CancellationError() })
+            })
     }
 
     func testRepairPreflightRefreshesRemappedKey() async throws {
@@ -695,17 +856,43 @@ final class RefreshCenterTests: XCTestCase {
             date: "10.03.2027", time: "10:00", room: "1",
             event: "Судебное заседание", result: nil)]
         let service = SequencedCaptchaMovement([oldMovement, refreshed, refreshed])
-        let center = RefreshCenter(store: localStore, client: SudrfClient(),
-                                   serviceBuilder: { _ in service })
+        let privateClient = TestNetworkGuard.sudrfClient()
+        let center = RefreshCenter(
+            store: localStore, client: privateClient,
+            captchaTokenStore: CaptchaTokenStore(),
+            serviceBuilder: { _ in service },
+            treasuryDiscover: { _, _, _ in throw CancellationError() },
+            vsrfProvider: OfflineRefreshCenterVSRFProvider(),
+            mosGorSudProvider: OfflineRefreshCenterMosGorSudProvider(),
+            moscowMagistrateProvider: privateClient,
+            fsspAutoModelEnabled: false,
+            fsspDiscover: { _ in throw CancellationError() })
 
         // Existing cache is not proof of prior handling. Establish the first
         // confirmed baseline, then exercise the transition and its replay.
-        _ = await center.refresh(key: record.key)?.value
-        _ = await center.refresh(key: record.key)?.value
-        _ = await center.refresh(key: record.key)?.value
+        let baselineResult = await center.refresh(key: record.key)?.value
+        XCTAssertEqual(baselineResult?.outcome, .refreshed)
+        let baselineJournal = try XCTUnwrap(localStore.record(forKey: record.key)?.eventJournal)
+        let quietRows = try XCTUnwrap(assertQuietSourceRowPublications(baselineJournal))
+        XCTAssertTrue(semanticJournalEvents(baselineJournal)?.isEmpty == true)
+
+        let transitionResult = await center.refresh(key: record.key)?.value
+        XCTAssertEqual(transitionResult?.outcome, .refreshed)
+        let transitionedJournal = try XCTUnwrap(localStore.record(forKey: record.key)?.eventJournal)
+        let semanticEvents = try XCTUnwrap(semanticJournalEvents(transitionedJournal))
+        XCTAssertEqual(semanticEvents.map(\.kind), [.hearingScheduled])
+        XCTAssertTrue(Set(quietRows.map(\.id)).isSubset(of: Set(transitionedJournal.events.map(\.id))),
+                      "quiet raw source-row IDs remain in the complete history")
+        let completeIDs = transitionedJournal.events.map(\.id)
+        XCTAssertEqual(Set(completeIDs).count, completeIDs.count)
+
+        let repeatedResult = await center.refresh(key: record.key)?.value
+        XCTAssertEqual(repeatedResult?.outcome, .refreshed)
 
         let saved = try XCTUnwrap(localStore.record(forKey: record.key))
-        XCTAssertEqual(saved.eventJournal?.events.map(\.kind), [.hearingScheduled])
+        XCTAssertEqual(saved.eventJournal?.events.map(\.id), completeIDs,
+                       "replay preserves quiet source and semantic event IDs")
+        XCTAssertEqual(semanticJournalEvents(saved.eventJournal)?.map(\.kind), [.hearingScheduled])
         let reopened = try TrackedStore(container: localStore.container)
         XCTAssertEqual(reopened.record(forKey: record.key)?.eventJournal,
                        saved.eventJournal)
@@ -1390,7 +1577,7 @@ final class RefreshCenterTests: XCTestCase {
                        successMV.instances.first?.domain)
         // Подтверждаем, что токен действительно был положен в стор
         // (это часть потока, который A1 чинит).
-        let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
+        let stored = await captchaTokenStore.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertEqual(stored?.value, "12345")
     }
 
@@ -1716,7 +1903,7 @@ final class RefreshCenterTests: XCTestCase {
     }
 
     func testDisabledAutoSolveQueuesLinkedCourtWithoutCallingSolver() async throws {
-        CaptchaSettings.shared.forceDisabled = true
+        captchaSettings.forceDisabled = true
         let key = store.all()[0].key
         let url = URL(string: "https://3kas.sudrf.ru/modules.php?name=sud_delo")!
         var partial = successMV!
@@ -1920,7 +2107,7 @@ final class RefreshCenterTests: XCTestCase {
     }
 
     func testBackgroundAutoSolveUsesCaptchaSettings() async throws {
-        let settings = CaptchaSettings.shared
+        let settings = try XCTUnwrap(captchaSettings)
         settings.minConfidence = 0.95
         settings.maxAttempts = 4
         var receivedSettings: AutoCaptchaSolver.Settings?
@@ -1956,7 +2143,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertNotNil(center.lastErrors[key],
                         "ошибка должна быть записана в lastErrors")
         XCTAssertEqual(store.record(forKey: key)?.sourceRefreshAttempt?.kind, .captcha)
-        let stored = await CaptchaTokenStore.shared.token(forDomain: "syktsud--komi.sudrf.ru")
+        let stored = await captchaTokenStore.token(forDomain: "syktsud--komi.sudrf.ru")
         XCTAssertNil(stored, "без токена стор должен остаться пустым")
     }
 
@@ -1995,10 +2182,11 @@ final class RefreshCenterTests: XCTestCase {
                 store: scenarioStore,
                 client: SudrfClient(),
                 captchaSolver: CaptchaSolver(provider: NeverUsedProvider()),
-                captchaSettings: CaptchaSettings.shared,
+                captchaSettings: captchaSettings,
                 autoSolve: { _, _, _, _ in
                     AutoCaptchaSolver.SolveResult(token: nil, png: nil)
                 },
+                captchaTokenStore: captchaTokenStore,
                 serviceBuilder: { _ in service })
             let captchaOutcome = await center.refreshForIntent(key: key)
             XCTAssertEqual(captchaOutcome, .captchaRequired, scenario)
@@ -2381,8 +2569,16 @@ final class RefreshCenterTests: XCTestCase {
         let service = try fixtureService(
             "ksoyu_koap_complaint_timeline_3kas", context: context,
             searchRows: [context.baseResult])
+        let privateClient = TestNetworkGuard.sudrfClient()
         let center = RefreshCenter(
-            store: store, client: SudrfClient(), serviceBuilder: { _ in service })
+            store: store, client: privateClient,
+            captchaTokenStore: CaptchaTokenStore(), serviceBuilder: { _ in service },
+            treasuryDiscover: { _, _, _ in throw CancellationError() },
+            vsrfProvider: OfflineRefreshCenterVSRFProvider(),
+            mosGorSudProvider: OfflineRefreshCenterMosGorSudProvider(),
+            moscowMagistrateProvider: privateClient,
+            fsspAutoModelEnabled: false,
+            fsspDiscover: { _ in throw CancellationError() })
 
         let execution = await center.refresh(key: record.key)?.value
 
@@ -2405,12 +2601,16 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(snapshot.sessions.map(\.event), instance.sessions.map(\.event))
         XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(snapshot.statusText, normalizedResult)
-        XCTAssertEqual(Set(semanticJournalEvents(refreshed.eventJournal)?.map(\.kind) ?? []), [
-            .caseFileRequested, .requestedCaseReceived, .complaintReviewResult,
-        ])
+        let semanticEvents = try assertKoAPComplaintTimelineEvidence(
+            journal: refreshed.eventJournal, sessions: snapshot.sessions)
+        let rawPublications = try assertKoAPComplaintSourceRows(
+            journal: refreshed.eventJournal,
+            sessions: snapshot.sessions.filter {
+                CaseEventDeriver.complaintTimelineCandidate($0) != nil
+            })
+        let eventIDs = refreshed.eventJournal?.events.map(\.id)
 
-        let router = try AppRouter(
-            modelContainer: store.container, modelContainerIsPrepared: true)
+        let router = try makeIsolatedRouter(for: store)
         router.reload(today: try XCTUnwrap(DateUtil.parse("18.05.2023")))
         let entries = router.feed.filter { $0.recordKey == refreshed.key }
         XCTAssertEqual(Set(entries.map(\.text)), [
@@ -2425,6 +2625,13 @@ final class RefreshCenterTests: XCTestCase {
         router.reload(today: try XCTUnwrap(DateUtil.parse("03.07.2023")))
         XCTAssertFalse(router.feed.contains { $0.recordKey == refreshed.key },
                        "обычное 45-дневное окно ленты не расширяется")
+        let reloadedJournal = try XCTUnwrap(store.record(forKey: refreshed.key)?.eventJournal)
+        XCTAssertEqual(reloadedJournal.events.map(\.id), eventIDs)
+        let reloadedSemanticEvents = try assertKoAPComplaintTimelineEvidence(
+            journal: reloadedJournal, sessions: snapshot.sessions)
+        XCTAssertEqual(Set(reloadedSemanticEvents.map(\.id)), Set(semanticEvents.map(\.id)))
+        XCTAssertEqual(assertSourceRowPublications(reloadedJournal)?.map(\.id),
+                       rawPublications.map(\.id))
     }
 
     func testKoAPComplaintTimelineRefreshRollsBackAtomically() async throws {
@@ -2441,7 +2648,8 @@ final class RefreshCenterTests: XCTestCase {
         let before = [record.snapshotData, record.movementData, record.eventJournalData]
         localStore.failNextSaveForTesting = true
         let center = RefreshCenter(
-            store: localStore, client: SudrfClient(),
+            store: localStore, client: TestNetworkGuard.sudrfClient(),
+            captchaTokenStore: CaptchaTokenStore(),
             serviceBuilder: { _ in FixedMovement(full) })
 
         let execution = await center.refresh(key: record.key)?.value
@@ -2496,9 +2704,17 @@ final class RefreshCenterTests: XCTestCase {
         try localStore.save()
         let ttlBefore = record.movementFetchedAt
         full.incompleteHigherCourtDomains = ["unrelated.sudrf.ru"]
+        let privateClient = TestNetworkGuard.sudrfClient()
         let center = RefreshCenter(
-            store: localStore, client: SudrfClient(),
-            serviceBuilder: { _ in FixedMovement(full) })
+            store: localStore, client: privateClient,
+            captchaTokenStore: CaptchaTokenStore(),
+            serviceBuilder: { _ in FixedMovement(full) },
+            treasuryDiscover: { _, _, _ in throw CancellationError() },
+            vsrfProvider: OfflineRefreshCenterVSRFProvider(),
+            mosGorSudProvider: OfflineRefreshCenterMosGorSudProvider(),
+            moscowMagistrateProvider: privateClient,
+            fsspAutoModelEnabled: false,
+            fsspDiscover: { _ in throw CancellationError() })
 
         let execution = await center.refresh(key: record.key)?.value
 
@@ -2508,13 +2724,26 @@ final class RefreshCenterTests: XCTestCase {
         let refreshed = try XCTUnwrap(localStore.record(forKey: record.key))
         XCTAssertEqual(refreshed.movement?.instances.first?.sessions.count, 4)
         XCTAssertEqual(refreshed.snapshot?.sessions.count, 4)
-        XCTAssertEqual(Set(semanticJournalEvents(refreshed.eventJournal)?.map(\.kind) ?? []),
-                       [.caseFileRequested, .requestedCaseReceived, .complaintReviewResult])
+        let semanticEvents = try assertKoAPComplaintTimelineEvidence(
+            journal: refreshed.eventJournal, sessions: try XCTUnwrap(refreshed.snapshot).sessions)
         XCTAssertEqual(refreshed.sourceRefreshAttempt?.kind, .partial)
         XCTAssertEqual(refreshed.movementFetchedAt, ttlBefore)
         let journal = refreshed.eventJournal
+        let sessions = try XCTUnwrap(refreshed.snapshot).sessions.filter {
+            CaseEventDeriver.complaintTimelineCandidate($0) != nil
+        }
+        let rawPublications = try assertKoAPComplaintSourceRows(
+            journal: journal, sessions: sessions)
+        let eventIDs = journal?.events.map(\.id)
         _ = await center.refresh(key: record.key)?.value
-        XCTAssertEqual(localStore.record(forKey: record.key)?.eventJournal, journal)
+        let repeatedJournal = localStore.record(forKey: record.key)?.eventJournal
+        XCTAssertEqual(repeatedJournal, journal)
+        XCTAssertEqual(repeatedJournal?.events.map(\.id), eventIDs)
+        let repeatedSemanticEvents = try assertKoAPComplaintTimelineEvidence(
+            journal: repeatedJournal, sessions: sessions)
+        XCTAssertEqual(Set(repeatedSemanticEvents.map(\.id)), Set(semanticEvents.map(\.id)))
+        XCTAssertEqual(assertSourceRowPublications(repeatedJournal)?.map(\.id),
+                       rawPublications.map(\.id))
     }
 
     func testDeletingTrackedCaseCancelsLateKoAPComplaintTimelineRefresh() async throws {

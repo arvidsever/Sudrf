@@ -135,6 +135,9 @@ final class JournalFeedStateTests: XCTestCase {
         XCTAssertEqual(state.materialMigrationState.pendingUnresolvedCounts[base], 1)
         XCTAssertFalse(state.materialMigrationState.consumedLegacyIDs.contains(base))
         try store.commit { try store.appendCaseEvents([oldA, oldB, newA], to: record, feedState: state) }
+        XCTAssertEqual(state.materialHistoryReplacements, [oldA.id: newA.id])
+        XCTAssertEqual(JournalFeedProjection.historyDisplayGroups(journal: try store.requiredEventJournal(for: record))
+            .flatMap { $0 }.map(\.id), [oldB.id, newA.id], "Blocked B stays visible; only admitted A replaces its original")
         let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
         let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
         let saved = try XCTUnwrap(reopened.record(forKey: record.key))
@@ -183,6 +186,9 @@ final class JournalFeedStateTests: XCTestCase {
             XCTAssertEqual(state.knownEventIDs.contains(fresh.id), proved)
             XCTAssertEqual(state.materialMigrationState.consumedLegacyIDs.contains(base), proved)
             XCTAssertTrue(state.readEventIDs.contains(old.id), "Unknown history and mark survive")
+            try journal.append([fresh])
+            journal.feedState = state
+            XCTAssertEqual(JournalFeedProjection.replacedHistoryIDs(journal: journal).contains(old.id), proved)
         }
     }
 
@@ -200,7 +206,7 @@ final class JournalFeedStateTests: XCTestCase {
                 isUnread: true, instanceLevel: .material, sourceCardID: published ? "owner" : nil)
             var evidence = CaseEventEvidence()
             evidence.legacyFeedHistory = LegacyFeedHistoryEvidence(entry, source: .session(session))
-            if published { evidence.sourceRowBinding = SourceRowBinding(courtScope: "A", nativeCardID: "A",
+            if published { evidence.sourceCardID = "owner"; evidence.sourceRowBinding = SourceRowBinding(courtScope: "A", nativeCardID: "A",
                 sourceCardID: "owner", fingerprint: hearing ? "hearing" : "movement", ordinal: 0,
                 notificationEligible: true) }
             return CaseEvent.make(kind: published ? .sourceRowPublished : .legacyFeedImported,
@@ -248,6 +254,84 @@ final class JournalFeedStateTests: XCTestCase {
         XCTAssertTrue(reversedState.readEventIDs.contains(late.id))
         XCTAssertEqual(reversedState.materialResolvedHistoryIDs, [oldH.id])
         XCTAssertTrue(reversedState.materialMigrationState.consumedLegacyIDs.contains(base))
+    }
+
+    func testMaterialReplacementMergeCanonicalizesIDsAndRejectsConflicts() throws {
+        var evidence = CaseEventEvidence()
+        evidence.eventIDAliases = ["previous-publication"]
+        let publication = CaseEvent.make(kind: .sourceRowPublished, occurrence: ["canonical-publication"],
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000), evidence: evidence)
+        var first = JournalFeedState()
+        first.materialHistoryReplacements = ["original": "previous-publication"]
+        var second = JournalFeedState()
+        second.materialHistoryReplacements = ["original": publication.id]
+        let merged = try XCTUnwrap(JournalFeedState.merged([first, second], events: [publication]))
+        XCTAssertEqual(merged.materialHistoryReplacements, ["original": publication.id])
+        second.materialHistoryReplacements = ["original": "conflicting-publication"]
+        XCTAssertThrowsError(try JournalFeedState.merged([first, second], events: [publication]))
+        second.materialHistoryReplacements = ["another-original": publication.id]
+        XCTAssertThrowsError(try JournalFeedState.merged([first, second], events: [publication]))
+        second.materialHistoryReplacements = ["same": "same"]
+        XCTAssertThrowsError(try JournalFeedState.merged([second], events: []))
+        let encoded = try JSONEncoder().encode(JournalFeedState())
+        let decoded = try JSONDecoder().decode(JournalFeedState.self, from: encoded)
+        XCTAssertNil(decoded.materialHistoryReplacements, "Old state without the optional pair remains readable")
+    }
+
+    func testMaterialReplacementRejectsOrphanWrongOwnerAndAmbiguousSuccessors() throws {
+        let date = try XCTUnwrap(DateUtil.parse("01.10.2026"))
+        let base = AppRouter.feedID(recordKey: "origin", date: date, time: "—", text: "Принято")
+        func event(published: Bool, owner: String = "owner", occurrence: String = "one",
+                   court: String = "Суд A", kind: CaseEventKind? = nil) -> CaseEvent {
+            let source = StoredSession(dateRaw: "01.10.2026", time: nil, room: nil,
+                event: "Принято", result: nil, court: court,
+                levelRaw: CaseInstance.Level.material.rawValue, caseNumber: "13-179/2026",
+                sourceCardID: published ? owner : nil)
+            let entry = FeedEntry(id: published ? AppRouter.materialFeedID(legacyID: base, sourceCardID: owner) : base,
+                dayHead: nil, date: date, time: "—", recordKey: "origin", caseNumber: "2-179/2026",
+                client: "Тест", kind: .movement, text: "Принято", actID: nil, isUnread: true,
+                instanceLevel: .material, sourceCardID: published ? owner : nil)
+            var evidence = CaseEventEvidence()
+            evidence.legacyFeedHistory = LegacyFeedHistoryEvidence(entry, source: .session(source))
+            if published {
+                evidence.sourceCardID = owner
+                evidence.sourceRowBinding = SourceRowBinding(courtScope: "A", nativeCardID: owner,
+                    sourceCardID: owner, fingerprint: "movement", ordinal: 0, notificationEligible: true)
+            }
+            return CaseEvent.make(kind: kind ?? (published ? .sourceRowPublished : .legacyFeedImported),
+                occurrence: [occurrence, published ? owner : "original"], observedAt: date, evidence: evidence)
+        }
+        let old = event(published: false), fresh = event(published: true)
+        var journal = CaseEventJournal()
+        try journal.append([old, fresh])
+        var state = JournalFeedState()
+        state.materialResolvedHistoryIDs = [old.id]
+        journal.feedState = state
+        XCTAssertFalse(JournalFeedProjection.replacedHistoryIDs(journal: journal).contains(old.id),
+            "A resolved receipt alone cannot suppress history")
+        for candidate in [event(published: true, court: "Чужой суд"),
+                          event(published: true, kind: .legacyFeedImported)] {
+            var invalid = CaseEventJournal()
+            try invalid.append([old, candidate])
+            state.materialHistoryReplacements = [old.id: candidate.id]
+            invalid.feedState = state
+            XCTAssertFalse(JournalFeedProjection.replacedHistoryIDs(journal: invalid).contains(old.id))
+        }
+        state.materialHistoryReplacements = [old.id: "missing"]
+        journal.feedState = state
+        XCTAssertFalse(JournalFeedProjection.replacedHistoryIDs(journal: journal).contains(old.id))
+        var pending = JournalFeedState()
+        pending.readEventIDs = [old.id]
+        pending.knownEventIDs = [old.id]
+        pending.materialMigrationState.pendingUnresolvedCounts[base] = 1
+        let second = event(published: true, owner: "other-owner", occurrence: "two")
+        pending.admitMaterialEnrichment(events: [fresh, second], journal: journal)
+        XCTAssertNil(pending.materialHistoryReplacements)
+        XCTAssertEqual(pending.readEventIDs, [old.id])
+        XCTAssertEqual(pending.knownEventIDs, [old.id])
+        XCTAssertTrue(pending.materialResolvedHistoryIDs.isEmpty)
+        XCTAssertEqual(pending.materialMigrationState.pendingUnresolvedCounts[base], 1)
+        XCTAssertFalse(pending.materialMigrationState.consumedLegacyIDs.contains(base))
     }
 
 }

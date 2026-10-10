@@ -524,7 +524,14 @@ final class MoscowMagistrateSearchTests: XCTestCase {
                 .filter { $0.sourceFamily == "msudrf" }.count, 0)
             let center = RefreshCenter(
                 store: store, client: client,
-                serviceBuilder: { _ in sequence }, fsspAutoModelEnabled: false,
+                captchaTokenStore: CaptchaTokenStore(),
+                serviceBuilder: { _ in sequence },
+                treasuryDiscover: { _, _, _ in throw CancellationError() },
+                vsrfProvider: MoscowRefreshVSRFStub(),
+                mosGorSudProvider: MoscowRefreshMosGorSudStub(),
+                moscowMagistrateProvider: client,
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw CancellationError() },
                 initialTimerDelay: .seconds(3600), timerInterval: .seconds(3600))
             let first = await center.refresh(key: record.key, manually: true)?.value
             XCTAssertEqual(first?.outcome, .refreshed)
@@ -533,8 +540,23 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(saved.key, trackedKey)
             XCTAssertEqual(saved.logicalCaseID, logicalCaseID)
             XCTAssertEqual(TrackedCaseIdentity.state(for: saved).cards.map(\.identity), [identity])
-            let events = try XCTUnwrap(saved.eventJournal).events
-            XCTAssertTrue(events.isEmpty, "An initial verified refresh seeds the journal quietly")
+            let journal = try XCTUnwrap(saved.eventJournal)
+            let quietRows = try XCTUnwrap(assertQuietSourceRowPublications(journal, expectedCount: 1))
+            let publication = try XCTUnwrap(quietRows.first)
+            let binding = try XCTUnwrap(publication.evidence.sourceRowBinding)
+            XCTAssertEqual(binding.nativeCardID, identity.id)
+            XCTAssertEqual(publication.evidence.sourceCardID, identity.id)
+            let history = try XCTUnwrap(publication.evidence.legacyFeedHistory)
+            guard case .session(let sourceSession) = history.source else {
+                return XCTFail("initial carrier retains the native Moscow session")
+            }
+            XCTAssertEqual(sourceSession.sourceCardID, identity.id)
+            XCTAssertEqual(sourceSession.dateRaw, firstSession.date)
+            XCTAssertEqual(sourceSession.time, firstSession.time)
+            XCTAssertEqual(sourceSession.event, firstSession.event)
+            XCTAssertEqual(sourceSession.result, firstSession.result)
+            XCTAssertTrue(semanticJournalEvents(journal)?.isEmpty == true,
+                          "An initial verified refresh seeds semantic history quietly")
             XCTAssertNil(saved.movement?.sourceRefreshCoverage,
                          "Ephemeral movement coverage is not persisted")
             XCTAssertEqual(saved.sourceRefreshAttempt?.kind, .usableSnapshot)
@@ -543,7 +565,8 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(baseline.cards, [identity.id: identity.id])
             XCTAssertEqual(baseline.sessions.count, 1)
             XCTAssertEqual(baseline.sessions.first?.sourceCardID, identity.id)
-            baselineIDs = events.map(\.id)
+            baselineIDs = journal.events.map(\.id)
+            XCTAssertEqual(Set(quietRows.map(\.id)), Set(baselineIDs))
         }
 
         do {
@@ -555,10 +578,18 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(loaded.key, trackedKey)
             XCTAssertEqual(loaded.logicalCaseID, logicalCaseID)
             XCTAssertEqual(TrackedCaseIdentity.state(for: loaded).cards.map(\.identity), [identity])
-            XCTAssertEqual(try XCTUnwrap(loaded.eventJournal).events.map(\.id), baselineIDs)
+            XCTAssertEqual(try XCTUnwrap(loaded.eventJournal).events.map(\.id), baselineIDs,
+                           "all quietly admitted raw rows survive disk reopen")
             let center = RefreshCenter(
                 store: store, client: client,
-                serviceBuilder: { _ in sequence }, fsspAutoModelEnabled: false,
+                captchaTokenStore: CaptchaTokenStore(),
+                serviceBuilder: { _ in sequence },
+                treasuryDiscover: { _, _, _ in throw CancellationError() },
+                vsrfProvider: MoscowRefreshVSRFStub(),
+                mosGorSudProvider: MoscowRefreshMosGorSudStub(),
+                moscowMagistrateProvider: client,
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw CancellationError() },
                 initialTimerDelay: .seconds(3600), timerInterval: .seconds(3600))
             let changed = await center.refresh(key: loaded.key, manually: true)?.value
             XCTAssertEqual(changed?.outcome, .refreshed)
@@ -567,13 +598,18 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(saved.key, trackedKey)
             XCTAssertEqual(saved.logicalCaseID, logicalCaseID)
             XCTAssertEqual(TrackedCaseIdentity.state(for: saved).cards.map(\.identity), [identity])
-            let events = try XCTUnwrap(saved.eventJournal).events
-            XCTAssertEqual(events.count, 1)
-            XCTAssertEqual(events.map(\.kind), [.hearingRescheduled])
-            XCTAssertEqual(events.filter { $0.kind == .hearingRescheduled }
+            let journal = try XCTUnwrap(saved.eventJournal)
+            let semanticEvents = try XCTUnwrap(semanticJournalEvents(journal))
+            XCTAssertEqual(semanticEvents.count, 1)
+            XCTAssertEqual(semanticEvents.map(\.kind), [.hearingRescheduled])
+            XCTAssertEqual(semanticEvents.filter { $0.kind == .hearingRescheduled }
                 .compactMap(\.evidence.sourceCardID), [identity.id])
-            XCTAssertEqual(Set(events.map(\.id)).count, 1)
-            baselineIDs = events.map(\.id)
+            let allIDs = journal.events.map(\.id)
+            XCTAssertTrue(Set(baselineIDs).isSubset(of: Set(allIDs)),
+                          "the initial quiet raw-row IDs remain in the complete journal")
+            XCTAssertEqual(Set(allIDs).count, allIDs.count,
+                           "quiet carriers and semantic transitions keep distinct IDs")
+            baselineIDs = allIDs
         }
 
         do {
@@ -586,10 +622,18 @@ final class MoscowMagistrateSearchTests: XCTestCase {
             XCTAssertEqual(loaded.logicalCaseID, logicalCaseID)
             XCTAssertEqual(TrackedCaseIdentity.state(for: loaded).cards.map(\.identity), [identity])
             let priorJournal = try XCTUnwrap(loaded.eventJournal)
-            XCTAssertEqual(priorJournal.events.map(\.id), baselineIDs)
+            XCTAssertEqual(priorJournal.events.map(\.id), baselineIDs,
+                           "every admitted source row and transition survives the next reopen")
             let center = RefreshCenter(
                 store: store, client: client,
-                serviceBuilder: { _ in sequence }, fsspAutoModelEnabled: false,
+                captchaTokenStore: CaptchaTokenStore(),
+                serviceBuilder: { _ in sequence },
+                treasuryDiscover: { _, _, _ in throw CancellationError() },
+                vsrfProvider: MoscowRefreshVSRFStub(),
+                mosGorSudProvider: MoscowRefreshMosGorSudStub(),
+                moscowMagistrateProvider: client,
+                fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in throw CancellationError() },
                 initialTimerDelay: .seconds(3600), timerInterval: .seconds(3600))
             let repeated = await center.refresh(key: loaded.key, manually: true)?.value
             XCTAssertEqual(repeated?.outcome, .refreshed)

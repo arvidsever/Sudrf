@@ -67,6 +67,7 @@ struct JournalFeedState: Codable, Equatable, Sendable {
     var initializedEventIDs: Set<String> = []
     var materialMigrationState = MaterialFeedMigrationState()
     var materialResolvedHistoryIDs: Set<String> = []
+    var materialHistoryReplacements: [String: String]?
 
     static func initial(recordKey: String, journal: CaseEventJournal,
                         legacyReadIDs: Set<String>, legacyKnownIDs: Set<String>,
@@ -120,11 +121,17 @@ struct JournalFeedState: Codable, Equatable, Sendable {
         var readEvents = Set<String>()
         var knownEvents = Set<String>()
         var resolvedByBase = [String: Set<String>]()
+        var replacementsByBase = [String: [String: String]]()
+        let candidates = events.compactMap { event -> (CaseEvent, CaseEvent)? in
+            guard let origin = Self.materialEnrichmentOrigin(event, journal: journal) else { return nil }
+            return (origin, event)
+        }
         for event in events {
             guard event.kind == .sourceRowPublished,
                   event.evidence.sourceRowBinding != nil,
                   let history = event.evidence.legacyFeedHistory,
                   history.instanceLevelRaw == CaseInstance.Level.material.rawValue,
+                  history.publishedAtRef.isFinite,
                   history.sourceCardID != nil else { continue }
             let flatText: String
             switch history.source {
@@ -135,32 +142,14 @@ struct JournalFeedState: Codable, Equatable, Sendable {
                 date: Date(timeIntervalSinceReferenceDate: history.publishedAtRef),
                 time: history.time, text: flatText)
             guard materialMigrationState.pendingUnresolvedCounts[base] != nil else { continue }
-            let matchingOrigins = originalHistory.filter { old in
-                guard let payload = old.evidence.legacyFeedHistory,
-                      payload.originRecordKey == history.originRecordKey,
-                      (payload.legacyID == base || payload.legacyID == history.legacyID),
-                      payload.sourceCardID == nil || payload.sourceCardID == history.sourceCardID else { return false }
-                // Existing flat-ID equality alone cannot identify a new court.
-                switch (payload.source, history.source) {
-                case (.session(let oldSource), .session(let newSource)):
-                    return oldSource.court == newSource.court && oldSource.caseNumber == newSource.caseNumber
-                        && SourceRowPublication.sessionPublication(oldSource)
-                            == SourceRowPublication.sessionPublication(newSource)
-                case (.act(let oldAct), .act(let newAct)):
-                    return oldAct.id == newAct.id && oldAct.title == newAct.title && oldAct.date == newAct.date
-                        && old.evidence.sourceCardID == event.evidence.sourceCardID
-                        && old.evidence.sourceCardID != nil
-                default: return false
-                }
-            }
-            // Source publication ordinals reserve the prior handled prefix.
-            // Import order must not put an unresolved occurrence in that prefix.
-            let origins = matchingOrigins.filter { $0.evidence.legacyFeedHistory?.sourceCardID != nil }
-                + matchingOrigins.filter { $0.evidence.legacyFeedHistory?.sourceCardID == nil }
-            guard let ordinal = event.evidence.sourceRowBinding?.ordinal,
-                  origins.indices.contains(ordinal) else { continue }
-            let origin = origins[ordinal]
-            guard origin.evidence.legacyFeedHistory?.sourceCardID == nil else { continue }
+            let matches = candidates.filter { $0.1.id == event.id }
+            guard matches.count == 1, let origin = matches.first?.0,
+                  Set(candidates.filter { $0.0.id == origin.id }.map { $0.1.id }).count == 1,
+                  materialHistoryReplacements?[origin.id].map({ $0 == event.id }) != false,
+                  !(materialHistoryReplacements ?? [:]).contains(where: {
+                      $0.key != origin.id && $0.value == event.id
+                  }) else { continue }
+            replacementsByBase[base, default: [:]][origin.id] = event.id
             resolvedByBase[base, default: []].insert(origin.id)
             transitions[base, default: []].insert(history.legacyID)
             eventByLegacy[history.legacyID, default: []].insert(event.id)
@@ -192,6 +181,58 @@ struct JournalFeedState: Codable, Equatable, Sendable {
             readEventIDs.formUnion(eventIDs.intersection(readEvents))
             knownEventIDs.formUnion(eventIDs.intersection(knownEvents))
             materialResolvedHistoryIDs.formUnion(resolvedByBase[base] ?? [])
+            if materialHistoryReplacements == nil { materialHistoryReplacements = [:] }
+            for (original, publication) in replacementsByBase[base] ?? [:] {
+                materialHistoryReplacements?[original] = publication
+            }
+        }
+    }
+
+    private static func materialEnrichmentOrigin(_ fresh: CaseEvent, journal: CaseEventJournal) -> CaseEvent? {
+        let matching = journal.events.filter { materialPayloadMatches($0, fresh) }
+        // Qualified occurrences reserve the already handled ordinal prefix.
+        let origins = matching.filter { $0.evidence.legacyFeedHistory?.sourceCardID != nil }
+            + matching.filter { $0.evidence.legacyFeedHistory?.sourceCardID == nil }
+        guard let ordinal = fresh.evidence.sourceRowBinding?.ordinal,
+              origins.indices.contains(ordinal),
+              origins[ordinal].evidence.legacyFeedHistory?.sourceCardID == nil else { return nil }
+        return origins[ordinal]
+    }
+
+    /// The stored pair proves display replacement; the original archive stays intact.
+    static func materialPayloadMatches(_ old: CaseEvent, _ fresh: CaseEvent) -> Bool {
+        guard old.kind == .legacyFeedImported, fresh.kind == .sourceRowPublished,
+              let payload = old.evidence.legacyFeedHistory,
+              let history = fresh.evidence.legacyFeedHistory,
+              payload.instanceLevelRaw == CaseInstance.Level.material.rawValue,
+              history.instanceLevelRaw == CaseInstance.Level.material.rawValue,
+              payload.publishedAtRef.isFinite, history.publishedAtRef.isFinite,
+              let sourceID = history.sourceCardID, !sourceID.isEmpty,
+              let binding = fresh.evidence.sourceRowBinding,
+              !binding.nativeCardID.isEmpty, !binding.courtScope.isEmpty,
+              binding.sourceCardID == sourceID, fresh.evidence.sourceCardID == sourceID,
+              payload.originRecordKey == history.originRecordKey,
+              payload.sourceCardID == nil || payload.sourceCardID == sourceID else { return false }
+        let flatText: String
+        switch history.source {
+        case .session: flatText = history.text
+        case .act(let act): flatText = act.id
+        }
+        let base = AppRouter.feedID(recordKey: history.originRecordKey,
+            date: Date(timeIntervalSinceReferenceDate: history.publishedAtRef),
+            time: history.time, text: flatText)
+        guard (payload.legacyID == base || payload.legacyID == history.legacyID),
+              history.legacyID == AppRouter.materialFeedID(legacyID: base, sourceCardID: sourceID) else { return false }
+        switch (payload.source, history.source) {
+        case (.session(let oldSource), .session(let newSource)):
+            return newSource.sourceCardID == sourceID
+                && oldSource.court == newSource.court && oldSource.caseNumber == newSource.caseNumber
+                && SourceRowPublication.sessionPublication(oldSource)
+                    == SourceRowPublication.sessionPublication(newSource)
+        case (.act(let oldAct), .act(let newAct)):
+            return oldAct.id == newAct.id && oldAct.title == newAct.title && oldAct.date == newAct.date
+                && old.evidence.sourceCardID == sourceID
+        default: return false
         }
     }
 
@@ -237,6 +278,18 @@ struct JournalFeedState: Codable, Equatable, Sendable {
             result.knownEventIDs.formUnion(value.knownEventIDs.map(canonical))
             result.initializedEventIDs.formUnion(value.initializedEventIDs.map(canonical))
             result.materialResolvedHistoryIDs.formUnion(value.materialResolvedHistoryIDs.map(canonical))
+            for (original, publication) in value.materialHistoryReplacements ?? [:] {
+                let oldID = canonical(original), newID = canonical(publication)
+                guard oldID != newID,
+                      result.materialHistoryReplacements?[oldID].map({ $0 == newID }) != false,
+                      !(result.materialHistoryReplacements ?? [:]).contains(where: {
+                          $0.key != oldID && $0.value == newID
+                      }) else {
+                    throw CaseEventJournalError.conflictingEventID("material-feed-replacement:" + oldID)
+                }
+                if result.materialHistoryReplacements == nil { result.materialHistoryReplacements = [:] }
+                result.materialHistoryReplacements?[oldID] = newID
+            }
             result.materialMigrationState.consumedLegacyIDs.formUnion(
                 value.materialMigrationState.consumedLegacyIDs)
             for (id, count) in value.materialMigrationState.pendingUnresolvedCounts {

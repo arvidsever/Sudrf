@@ -2,6 +2,7 @@ import XCTest
 import Combine
 import SwiftData
 import SudrfKit
+import CaptchaSolver
 @testable import SudrfApp
 
 @MainActor
@@ -11,6 +12,70 @@ final class CaseOpeningSeenStateTests: XCTestCase {
     private static let consumedMaterialIDsKey = "materialFeedConsumedLegacyIDs.v1"
     private static let pendingMaterialCountsKey = "materialFeedPendingCounts.v1"
     private static let collectionsKey = "myCollections"
+    private var defaultsSuite: String!
+    private var testDefaults: UserDefaults!
+    private var testDirectory: URL!
+    private var captchaSettings: CaptchaSettings!
+    private var captchaTokenStore: CaptchaTokenStore!
+
+    private actor NoopSpotlightWriter: SpotlightIndexWriting {
+        func index(cases: [CaseEntity], acts: [CourtActEntity]) async throws {}
+        func delete(caseIDs: [String], actIDs: [String]) async throws {}
+        func deleteAll() async throws {}
+    }
+
+    private actor OfflineVSRFProvider: VSRFProviding {
+        func search(uniqueNumber: String?, oldCaseNumber: String?,
+                    keywords: String?) async throws -> VSRFSearchResults {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(productionID: String,
+                       section: VSRFCardSection) async throws -> VSRFCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineMosGorSudProvider: MosGorSudProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchPublishedAct(url: URL) async throws -> PublishedActFile {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    private actor OfflineMoscowOriginProvider: MoscowOriginProviding {
+        func search(courtAlias: String?, uid: String?, caseNumber: String?,
+                    participant: String?, instance: Int,
+                    processType: MosGorSudProcessType) async throws -> [MosGorSudResult] {
+            throw URLError(.notConnectedToInternet)
+        }
+        func fetchCard(url: URL) async throws -> MosGorSudCard {
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+
+    override func setUp() async throws {
+        try await super.setUp()
+        defaultsSuite = "Sudrf.CaseOpeningSeenStateTests.\(UUID().uuidString)"
+        testDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("case-opening-profile-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        captchaSettings = CaptchaSettings(defaults: testDefaults)
+        captchaTokenStore = CaptchaTokenStore()
+    }
+
+    override func tearDown() async throws {
+        testDefaults.removePersistentDomain(forName: defaultsSuite)
+        if let testDirectory { try? FileManager.default.removeItem(at: testDirectory) }
+        try await super.tearDown()
+    }
 
     private actor FixedMovement: MovementProviding {
         let value: CaseMovement
@@ -23,18 +88,86 @@ final class CaseOpeningSeenStateTests: XCTestCase {
     }
 
     private func isolateFeedDefaults() -> () -> Void {
-        let defaults = UserDefaults.standard
-        let keys = [Self.readIDsKey, Self.knownIDsKey,
-                    Self.consumedMaterialIDsKey, Self.pendingMaterialCountsKey,
-                    Self.collectionsKey]
-        let saved = keys.map { ($0, defaults.object(forKey: $0)) }
-        for key in keys { defaults.removeObject(forKey: key) }
-        return {
-            for (key, value) in saved {
-                if let value { defaults.set(value, forKey: key) }
-                else { defaults.removeObject(forKey: key) }
-            }
+        testDefaults.removePersistentDomain(forName: defaultsSuite)
+        return {}
+    }
+
+    private func makeRouter(
+        container: ModelContainer,
+        refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil
+    ) throws -> AppRouter {
+        let defaults = try XCTUnwrap(testDefaults)
+        let directory = try XCTUnwrap(testDirectory)
+        let settings = try XCTUnwrap(captchaSettings)
+        let tokens = try XCTUnwrap(captchaTokenStore)
+        let client = TestNetworkGuard.sudrfClient()
+        let factory = refreshCenterFactory ?? { store, privateClient in
+            self.makeRefreshCenter(store: store, client: privateClient)
         }
+        return try AppRouter(
+            captchaSettings: settings,
+            modelContainer: container,
+            modelContainerIsPrepared: true,
+            captchaCorpus: CorpusStore(baseDir: directory.appendingPathComponent("captcha")),
+            refreshCenterFactory: factory,
+            importVSRFProvider: OfflineVSRFProvider(),
+            importMosGorSudProvider: OfflineMosGorSudProvider(),
+            selectedPublishedAct: PublishedActSelection(
+                cache: ActFileCache(directory: directory.appendingPathComponent("acts")),
+                fetch: { _, _ in throw CancellationError() }),
+            summaryConfigurationProvider: { throw CancellationError() },
+            userDefaults: defaults,
+            client: client,
+            captchaTokenStore: tokens,
+            directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(
+                fetchCard: { _ in throw CancellationError() },
+                districtCourts: { _ in throw CancellationError() }) },
+            spotlightIndexerFactory: { catalog in
+                SpotlightIndexer(catalog: catalog, writer: NoopSpotlightWriter(),
+                    manifestStore: SpotlightManifestStore(suiteName: defaultsSuite),
+                    preferenceStore: SpotlightPreferenceStore(suiteName: defaultsSuite))
+            },
+            currentEntityActivityPublisher: { _ in },
+            feedNotificationPublisher: { _ in },
+            feedBadgePublisher: { _ in },
+            notificationOpenInstaller: { _ in },
+            intentInstaller: { _ in },
+            captchaSolverFactory: { _ in nil },
+            repairCoordinatorFactory: { store, privateClient in
+                let districtResolver = DistrictCourtResolver(client: privateClient, cacheURL: nil)
+                let magistrateResolver = MagistrateCourtResolver(
+                    client: privateClient, cacheURL: nil, moscowDirectoryClient: nil)
+                let originResolver = CaseOriginResolver(
+                    client: privateClient, districtResolver: districtResolver,
+                    magistrateResolver: magistrateResolver,
+                    regularProvider: privateClient, magistrateProvider: privateClient,
+                    moscowProvider: OfflineMoscowOriginProvider())
+                return TrackedCaseRepairCoordinator(
+                    store: store, client: privateClient,
+                    originResolver: originResolver,
+                    defaults: defaults,
+                    anchorCardResolver: { _ in throw CancellationError() })
+            })
+    }
+
+    private func makeRefreshCenter(
+        store: TrackedStore, client: SudrfClient,
+        movementProvider: (any MovementProviding)? = nil
+    ) -> RefreshCenter {
+        let settings = captchaSettings!
+        let tokens = captchaTokenStore!
+        return RefreshCenter(
+            store: store, client: client,
+            captchaSettings: settings, captchaTokenStore: tokens,
+            serviceBuilder: movementProvider.map { provider in { _ in provider } },
+            treasuryDiscover: { _, _, _ in throw CancellationError() },
+            vsrfProvider: OfflineVSRFProvider(),
+            mosGorSudProvider: OfflineMosGorSudProvider(),
+            moscowMagistrateProvider: client,
+            fsspAutoModelEnabled: false,
+            fsspDiscover: { _ in throw CancellationError() },
+            initialTimerDelay: .seconds(3_600), timerInterval: .seconds(3_600),
+            walkDiagnostics: .disabled)
     }
 
     private func context(_ number: String) -> MovementContext {
@@ -121,7 +254,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         first.legacyKeyAliases = ["old-display-key"]
         let other = try record(context("2-386/2026"))
         let container = try container(with: [first, other])
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try makeRouter(container: container)
 
         var hearingPublications = 0
         var calendarPublications = 0
@@ -156,8 +289,13 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         XCTAssertTrue(router.feed.filter { firstNormalIDs.contains($0.id) }.allSatisfy { !$0.isUnread })
         XCTAssertTrue(router.feed.filter { $0.recordKey == other.key && $0.kind != .enforcement }
             .allSatisfy(\.isUnread))
-        XCTAssertNil(UserDefaults.standard.object(forKey: Self.readIDsKey),
-                     "opening a case must not persist every feed ID as read")
+        let firstReadIDs = Set(try XCTUnwrap(
+            TrackedStore(container: container, prepared: true).record(forKey: first.key)?
+                .eventJournal?.feedState?.readEventIDs))
+        XCTAssertTrue(firstNormalIDs.isSubset(of: firstReadIDs))
+        XCTAssertTrue(firstReadIDs.isDisjoint(with: Set(router.feed.filter {
+            $0.recordKey == other.key
+        }.map(\.id))), "opening one case must not mark another case's feed entries read")
         XCTAssertEqual(hearingPublications, 0)
         XCTAssertEqual(calendarPublications, 0)
         XCTAssertEqual(deadlinePublications, 0)
@@ -199,7 +337,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         let context = context("2-387/2026")
         let record = try record(context, withMaterial: true, actID: "opening-act")
         let container = try container(with: [record])
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try makeRouter(container: container)
         let material = try XCTUnwrap(router.feed.first {
             $0.recordKey == record.key && $0.instanceLevel == .material
         })
@@ -218,7 +356,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
 
         XCTAssertEqual(router.selectedActID, "opening-act")
         XCTAssertFalse(try XCTUnwrap(router.feed.first { $0.id == act.id }).isUnread)
-        XCTAssertTrue(UserDefaults.standard.stringArray(forKey: Self.readIDsKey)?.contains(act.id) == true)
+        XCTAssertTrue(try XCTUnwrap(record.eventJournal?.feedState?.readEventIDs).contains(act.id))
     }
 
     func testOpeningCaseLeavesEnforcementUnreadUntilItsEntryIsOpened() throws {
@@ -226,14 +364,16 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         defer { restoreDefaults() }
 
         let record = try record(context("2-388/2026"))
-        record.enforcementRecords = [EnforcementRecord(
+        let updates = [EnforcementRecord(
             courtDocumentID: "writ-388", source: .treasury, status: "Исполняется",
             events: [
                 EnforcementEvent(guid: "rss-388-a", date: date(-1), text: "Первое событие", sourceOrder: 0),
                 EnforcementEvent(guid: "rss-388-b", date: date(-2), text: "Второе событие", sourceOrder: 1),
             ])]
         let container = try container(with: [record])
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let store = try TrackedStore(container: container, prepared: true)
+        _ = try store.applyEnforcementUpdates(forLocator: record.key, updates: updates, openedKey: nil)
+        let router = try makeRouter(container: container)
         let enforcement = router.feed.filter {
             $0.recordKey == record.key && $0.kind == .enforcement
         }
@@ -242,7 +382,11 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         router.openCase(key: record.key)
 
         XCTAssertTrue(router.feed.filter { $0.kind == .enforcement }.allSatisfy(\.isUnread))
-        XCTAssertNil(UserDefaults.standard.object(forKey: Self.readIDsKey))
+        let enforcementIDs = Set(try XCTUnwrap(record.eventJournal?.events
+            .filter { $0.kind == .treasuryRSSPublished }.map(\.id)))
+        XCTAssertEqual(enforcementIDs.count, 2)
+        XCTAssertTrue(enforcementIDs.isDisjoint(with:
+            try XCTUnwrap(record.eventJournal?.feedState?.readEventIDs)))
 
         let chosen = try XCTUnwrap(enforcement.first)
         router.openFeedEntry(chosen)
@@ -253,7 +397,9 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         XCTAssertTrue(router.feed.first {
             $0.recordKey == record.key && $0.kind == .enforcement && $0.id != chosen.id
         }?.isUnread ?? false)
-        XCTAssertEqual(UserDefaults.standard.stringArray(forKey: Self.readIDsKey), [chosen.id])
+        let readIDs = try XCTUnwrap(record.eventJournal?.feedState?.readEventIDs)
+        XCTAssertTrue(readIDs.contains(chosen.id))
+        XCTAssertEqual(readIDs.intersection(enforcementIDs), [chosen.id])
     }
 
     func testFailedSeenSaveRollsBackRecordAndPublishedUnreadState() throws {
@@ -265,11 +411,10 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         record.seenAt = priorSeenAt
         let container = try container(with: [record])
         var capturedStore: TrackedStore?
-        let router = try AppRouter(
-            modelContainer: container, modelContainerIsPrepared: true,
+        let router = try makeRouter(container: container,
             refreshCenterFactory: { store, client in
                 capturedStore = store
-                return RefreshCenter(store: store, client: client)
+                return self.makeRefreshCenter(store: store, client: client)
             })
         capturedStore?.failNextSaveForTesting = true
 
@@ -298,7 +443,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         container.mainContext.insert(record)
         try container.mainContext.save()
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try makeRouter(container: container)
 
         router.openCase(key: record.key)
         let savedSeenAt = try XCTUnwrap(record.seenAt)
@@ -306,8 +451,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: storeURL)
         let reopenedStore = try TrackedStore(container: reopenedContainer, prepared: true)
         XCTAssertEqual(reopenedStore.record(forKey: record.key)?.seenAt, savedSeenAt)
-        let reopenedRouter = try AppRouter(
-            modelContainer: reopenedContainer, modelContainerIsPrepared: true)
+        let reopenedRouter = try makeRouter(container: reopenedContainer)
         XCTAssertFalse(reopenedRouter.cases.first?.isNew ?? true)
     }
 
@@ -317,7 +461,7 @@ final class CaseOpeningSeenStateTests: XCTestCase {
 
         let record = try record(context("2-391/2026"))
         let container = try container(with: [record])
-        let router = try AppRouter(modelContainer: container, modelContainerIsPrepared: true)
+        let router = try makeRouter(container: container)
         router.reload(today: DateUtil.addDays(DateUtil.today, -1))
         var calendarPublications = 0
         let subscription = router.$calendarHearings.sink { _ in calendarPublications += 1 }
@@ -339,18 +483,26 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         let restoreDefaults = isolateFeedDefaults()
         defer { restoreDefaults() }
 
-        let context = context("2-392/2026")
+        var context = context("2-392/2026")
+        context.caseID = "seen-state-refresh-card"
         let record = try record(context)
         record.seenAt = Date(timeIntervalSince1970: 1_700_000_100)
         var updated = try XCTUnwrap(record.movement)
         updated.instances[0].sessions.append(CaseSession(
             date: dateText(0), time: "14:30", event: "Поступление нового документа"))
+        let cartoteka = try XCTUnwrap(context.cartoteka)
+        let nativeCaseID = try XCTUnwrap(context.caseID)
+        let native = try XCTUnwrap(SourceNativeCardLocator.sudrf(
+            court: context.searchCourt, cartoteka: cartoteka, caseID: nativeCaseID))
+        updated.sourceRefreshCoverage = [MovementCourtCoverage(
+            sourceFamily: native.sourceFamily, courtKey: native.courtKey,
+            kind: .usableSnapshot, loadedCardIdentities: [native.identity])]
         let container = try container(with: [record])
         let provider = FixedMovement(updated)
-        let router = try AppRouter(
-            modelContainer: container, modelContainerIsPrepared: true,
+        let router = try makeRouter(container: container,
             refreshCenterFactory: { store, client in
-                RefreshCenter(store: store, client: client, serviceBuilder: { _ in provider })
+                self.makeRefreshCenter(store: store, client: client,
+                                       movementProvider: provider)
             })
         router.refreshCenter.repairBeforeRefresh = { key, _ in key }
         // Avoid UNUserNotificationCenter in xctest; project persisted state explicitly below.
@@ -363,9 +515,22 @@ final class CaseOpeningSeenStateTests: XCTestCase {
         XCTAssertEqual(execution?.outcome, .refreshed)
         XCTAssertNil(record.seenAt)
         router.reload(notifyNew: false, changedCaseKeys: [record.key])
-        XCTAssertTrue(router.feed.contains {
-            $0.recordKey == record.key && $0.text == "Поступление нового документа" && $0.isUnread
+        let addedRow = try XCTUnwrap(router.feed.first {
+            $0.recordKey == record.key && $0.text == "Поступление нового документа"
         })
+        XCTAssertTrue(addedRow.isUnread)
+        let journal = try XCTUnwrap(record.eventJournal)
+        let publications = try XCTUnwrap(assertSourceRowPublications(journal))
+        let publication = try XCTUnwrap(publications.first {
+            $0.evidence.legacyFeedHistory?.text == "Поступление нового документа"
+        })
+        let binding = try XCTUnwrap(publication.evidence.sourceRowBinding)
+        let history = try XCTUnwrap(publication.evidence.legacyFeedHistory)
+        XCTAssertEqual(binding.nativeCardID, native.id)
+        XCTAssertEqual(binding.sourceCardID, history.sourceCardID)
+        XCTAssertEqual(history.sourceCardID, CaseSnapshotSourceIdentity.sourceCardID(
+            for: updated.instances[0], context: context))
+        XCTAssertEqual(publication.evidence.sourceCardID, binding.sourceCardID)
     }
 
     func testLifecycleCacheIsCurrentOnlyForPreparedDay() {

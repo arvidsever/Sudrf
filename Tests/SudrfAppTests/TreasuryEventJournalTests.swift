@@ -323,6 +323,8 @@ final class TreasuryEventJournalTests: XCTestCase {
             defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
             var key = ""
             var oldID = ""
+            var persistedReadIDs = Set<String>()
+            var persistedKnownIDs = Set<String>()
             do {
                 let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
                 let store = try TrackedStore(container: container, prepared: true)
@@ -345,18 +347,33 @@ final class TreasuryEventJournalTests: XCTestCase {
                     suite: suite, directory: directory, notifications: { batches.append($0) })
                 defer { session.invalidateAndCancel() }
                 XCTAssertEqual(batches.count, pass == 0 ? 0 : 1)
+                let beforeRefresh = try XCTUnwrap(store.record(forKey: key))
                 if hasOldHistory {
-                    XCTAssertEqual(router.feed.first { $0.id == oldID }?.isUnread, false)
+                    let oldEvent = try XCTUnwrap(beforeRefresh.eventJournal?.events.first {
+                        $0.kind == .treasuryRSSPublished && $0.evidence.rssGUID == "native-guid-1"
+                    })
+                    XCTAssertEqual(router.feed.first { $0.id == oldEvent.id }?.isUnread, false,
+                                   "legacy read preference maps to the persisted RSS event identity")
+                    let state = try XCTUnwrap(beforeRefresh.eventJournal?.feedState)
+                    XCTAssertTrue(state.readEventIDs.contains(oldEvent.id))
+                    XCTAssertTrue(state.knownEventIDs.contains(oldEvent.id))
+                    let receipt = try XCTUnwrap(state.receipts.first)
+                    XCTAssertTrue(receipt.originalReadIDs.contains(oldID))
+                    XCTAssertTrue(receipt.originalKnownIDs.contains(oldID))
                 }
                 let task = try XCTUnwrap(router.refreshCenter.refreshEnforcement(key: key))
                 await task.value
                 XCTAssertNil(router.refreshCenter.enforcementError(forKey: key))
                 let expectedGUIDs = hasOldHistory ? ["native-guid-2"] : ["native-guid-1", "native-guid-2"]
-                XCTAssertEqual(batches.count, 1)
-                XCTAssertEqual(Set(batches[0].map(\.id)), Set(expectedGUIDs.map {
-                    AppRouter.enforcementFeedID(recordKey: key, guid: $0)
-                }))
                 let record = try XCTUnwrap(store.record(forKey: key))
+                let expectedEventIDs = Set(try expectedGUIDs.map { guid in
+                    try XCTUnwrap(record.eventJournal?.events.first {
+                        $0.kind == .treasuryRSSPublished && $0.evidence.rssGUID == guid
+                    }).id
+                })
+                XCTAssertEqual(batches.count, 1)
+                XCTAssertEqual(Set(batches[0].map(\.id)), expectedEventIDs,
+                               "notifier uses canonical persisted IDs selected by exact RSS GUID")
                 XCTAssertEqual(record.eventJournal?.events.filter { $0.kind == .treasuryRSSPublished }.count, 2)
                 XCTAssertEqual(record.collectionNames, ["Пользовательская"])
                 if pass == 0 {
@@ -365,10 +382,27 @@ final class TreasuryEventJournalTests: XCTestCase {
                     XCTAssertEqual(batches.count, 1)
                     XCTAssertTrue(router.feed.contains { $0.isUnread })
                     router.markAllFeedRead()
+                    let readState = try XCTUnwrap(store.record(forKey: key)?.eventJournal?.feedState)
+                    persistedReadIDs = readState.readEventIDs
+                    persistedKnownIDs = readState.knownEventIDs
+                    XCTAssertEqual(persistedReadIDs, Set(try XCTUnwrap(
+                        store.record(forKey: key)?.eventJournal?.events
+                            .filter { $0.kind == .treasuryRSSPublished }.map(\.id))))
+                    // Once imported, preferences are only a compatibility mirror; a stale
+                    // snapshot must not overwrite the journal's durable read/known authority.
                     let repeated = try XCTUnwrap(router.refreshCenter.refreshEnforcement(key: key))
                     await repeated.value
                     XCTAssertEqual(batches.count, 1)
+                    // Corrupt the mirrors after the current process has finished syncing them;
+                    // the next router must still honor the persisted journal state.
+                    defaults.set(["stale-preimport-read"], forKey: "overviewReadFeedIDs.v1")
+                    defaults.set(["stale-preimport-known"], forKey: "notifiedFeedIDs.v1")
                 } else {
+                    let feedState = try XCTUnwrap(record.eventJournal?.feedState)
+                    XCTAssertEqual(feedState.readEventIDs, persistedReadIDs,
+                                   "restart uses the persisted read authority after preference corruption")
+                    XCTAssertEqual(feedState.knownEventIDs, persistedKnownIDs,
+                                   "restart does not replay stale known preferences")
                     XCTAssertTrue(router.feed.allSatisfy { !$0.isUnread })
                     // Exercise the existing remap callback after the real disk merge.
                     var duplicateContext = context("М-454/2026")
@@ -379,11 +413,14 @@ final class TreasuryEventJournalTests: XCTestCase {
                     try store.applyEnforcementUpdates(forLocator: duplicate.key,
                         updates: [source([rss("native-guid-3", date: DateUtil.today)])], openedKey: nil)
                     let duplicateKey = duplicate.key
-                    let duplicateID = AppRouter.enforcementFeedID(recordKey: duplicateKey, guid: "native-guid-3")
+                    let duplicateEventID = try XCTUnwrap(duplicate.eventJournal?.events.first {
+                        $0.kind == .treasuryRSSPublished && $0.evidence.rssGUID == "native-guid-3"
+                    }).id
                     router.reload()
                     router.markAllFeedRead()
-                    XCTAssertTrue((defaults.stringArray(forKey: "overviewReadFeedIDs.v1") ?? []).contains(duplicateID))
-                    XCTAssertTrue((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(duplicateID))
+                    let duplicateState = try XCTUnwrap(duplicate.eventJournal?.feedState)
+                    XCTAssertTrue(duplicateState.readEventIDs.contains(duplicateEventID))
+                    XCTAssertTrue(duplicateState.knownEventIDs.contains(duplicateEventID))
                     var canonical = context("2-454-REANCHORED/2026")
                     canonical.caseID = "reanchored-454"
                     canonical.caseUID = "reanchored-guid-454"
@@ -398,13 +435,16 @@ final class TreasuryEventJournalTests: XCTestCase {
                     router.refreshCenter.onRefreshed?(key, try XCTUnwrap(record.movement), remaps)
                     XCTAssertEqual(batches.count, 1)
                     XCTAssertTrue(router.feed.allSatisfy { !$0.isUnread })
-                    XCTAssertEqual(Set(defaults.stringArray(forKey: "overviewReadFeedIDs.v1") ?? []),
-                        Set(["native-guid-1", "native-guid-2", "native-guid-3"].map {
-                            AppRouter.enforcementFeedID(recordKey: key, guid: $0)
-                        }))
-                    XCTAssertFalse((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(duplicateID))
-                    XCTAssertTrue((defaults.stringArray(forKey: "notifiedFeedIDs.v1") ?? []).contains(
-                        AppRouter.enforcementFeedID(recordKey: key, guid: "native-guid-3")))
+                    let canonicalReadIDs = Set(try ["native-guid-1", "native-guid-2", "native-guid-3"].map { guid in
+                        try XCTUnwrap(record.eventJournal?.events.first {
+                            $0.kind == .treasuryRSSPublished && $0.evidence.rssGUID == guid
+                        }).id
+                    })
+                    let mergedState = try XCTUnwrap(record.eventJournal?.feedState)
+                    XCTAssertEqual(mergedState.readEventIDs, canonicalReadIDs,
+                                   "merge keeps every read mark on its persisted event identity")
+                    XCTAssertEqual(mergedState.knownEventIDs, canonicalReadIDs,
+                                   "merge keeps known/read marks on the exact RSS event IDs")
                 }
             }
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)

@@ -1,0 +1,43 @@
+#!/bin/bash
+# Build only; never launches an app. Isolated QA bundle and in-memory store.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+QA_BUILD="/private/tmp/sudrf-179-native-host/xcode-qa"
+mkdir -p "$QA_BUILD"
+python3 - "$ROOT" "$QA_BUILD" <<'PYCONFIG'
+from pathlib import Path
+import sys
+root, build = map(Path, sys.argv[1:])
+text = (root / 'project.yml').read_text()
+text = text.replace('    path: .', '    path: ' + str(root))
+text = text.replace('- path: Sources/SudrfApp', '- path: ' + str(root / 'Sources/SudrfApp') + '\n        excludes: [SudrfApp.swift]')
+text = text.replace('- path: Assets.xcassets', '- path: ' + str(root / 'Assets.xcassets'))
+text = text.replace('- path: Tests/', '- path: ' + str(root / 'Tests') + '/')
+text = text.replace('    dependencies:', '      - path: ' + str(root / 'Docs/qa/issue-179/GUIHost.swift') + '\n    dependencies:', 1)
+text = text.replace('path: Generated/', 'path: ' + str(build / 'Generated') + '/')
+text = text.replace('PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app', 'PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.qa.issue179')
+text = text.replace('CFBundleName: Sudrf', 'CFBundleName: Sudrf179QA')
+text = text.replace('CFBundleDisplayName: Sudrf', 'CFBundleDisplayName: Sudrf179QA')
+text = text.replace('CODE_SIGN_STYLE: Automatic', 'CODE_SIGN_STYLE: Manual')
+text = text.replace('PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.qa.issue179', 'PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.qa.issue179\n        PRODUCT_NAME: Sudrf179QA')
+text = text.replace('com.apple.security.network.client: true', 'com.apple.security.network.client: false')
+text = text.replace('com.apple.security.files.user-selected.read-write: true', 'com.apple.security.files.user-selected.read-write: false')
+lines = text.splitlines(keepends=True)
+filtered = []
+skipping = False
+for line in lines:
+    if line.strip() == 'CFBundleURLTypes:':
+        skipping = True
+        continue
+    if skipping and line.strip() and len(line) - len(line.lstrip()) <= 8:
+        skipping = False
+    if not skipping:
+        filtered.append(line)
+text = ''.join(filtered)
+(build / 'project.yml').write_text(text)
+PYCONFIG
+(cd "$QA_BUILD" && xcodegen generate)
+xcodebuild -project "$QA_BUILD/Sudrf.xcodeproj" -scheme Sudrf -configuration Debug \
+  -derivedDataPath "$QA_BUILD/DerivedData" CODE_SIGN_IDENTITY=- \
+  CODE_SIGNING_ALLOWED=YES build > /private/tmp/sudrf-179-native-host/xcode-qa-build.log 2>&1
+printf '%s\n' "$QA_BUILD/DerivedData/Build/Products/Debug/Sudrf179QA.app"

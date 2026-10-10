@@ -122,7 +122,7 @@ final class SourceRowPublicationTests: XCTestCase {
             spotlightIndexerFactory: { catalog in SpotlightIndexer(catalog: catalog,
                 writer: Source179NoSpotlight(), manifestStore: SpotlightManifestStore(suiteName: suite),
                 preferenceStore: SpotlightPreferenceStore(suiteName: suite)) },
-            currentEntityActivityPublisher: { _ in XCTFail("unexpected activity publication") },
+            currentEntityActivityPublisher: { _ in },
             feedNotificationPublisher: notifications,
             feedBadgePublisher: { _ in }, notificationOpenInstaller: { _ in }, intentInstaller: { _ in },
             captchaSolverFactory: { _ in nil },
@@ -134,6 +134,260 @@ final class SourceRowPublicationTests: XCTestCase {
 
     private func publications(_ store: TrackedStore, key: String) -> [CaseEvent] {
         store.record(forKey: key)?.eventJournal?.events.filter { $0.kind == .sourceRowPublished && $0.evidence.sourceRowBinding?.notificationEligible == true } ?? []
+    }
+
+    func testActualRouterExactMaterialDuplicatesKeepHistoryAndShareDisplayMarks() async throws {
+        try await fixture { url, defaults in
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container, prepared: true)
+            var value = try movement(root: [], other: ["Точная строка"], otherLevel: .material)
+            value.instances[1].sessions.append(try XCTUnwrap(value.instances[1].sessions.first))
+            let record = try store.upsert(context: context(),
+                snapshot: MovementDerivation.snapshot(from: value, context: context()), movement: value, collections: [])
+            let (router, routerStore, session) = try makeRouter(container: container, defaults: defaults,
+                suite: "Sudrf.Source179.Duplicate.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: Source179Movement(value), notifications: { _ in XCTFail("Initial duplicate alert") })
+            defer { session.invalidateAndCancel() }
+            let rows = router.feed.filter { $0.text == "Точная строка" }
+            XCTAssertEqual(rows.count, 1)
+            let entry = try XCTUnwrap(rows.first)
+            let originals = try XCTUnwrap(record.eventJournal).events.filter {
+                $0.evidence.legacyFeedHistory?.text == "Точная строка"
+            }
+            XCTAssertEqual(originals.count, 2, "Raw multiplicity stays archived")
+            var state = try XCTUnwrap(record.eventJournal?.feedState)
+            state.readEventIDs.insert(entry.id)
+            state.knownEventIDs.subtract(originals.map(\.id))
+            state.knownEventIDs.insert(try XCTUnwrap(originals.first { $0.id != entry.id }?.id))
+            try routerStore.commit { try routerStore.appendCaseEvents([], to: record, feedState: state) }
+            router.refreshCenter.onRefreshed?(record.key, value, [:])
+            XCTAssertTrue(Set(originals.map(\.id)).isSubset(of: record.eventJournal?.feedState?.knownEventIDs ?? []),
+                "One familiar member suppresses the duplicate display alert and mirrors the group")
+            XCTAssertTrue(router.feed.first { $0.id == entry.id }?.isUnread == true, "Group read requires all members")
+            router.openFeedEntry(try XCTUnwrap(router.feed.first { $0.id == entry.id }))
+            XCTAssertTrue(Set(originals.map(\.id)).isSubset(of: record.eventJournal?.feedState?.readEventIDs ?? []))
+            XCTAssertFalse(router.feed.first { $0.id == entry.id }?.isUnread ?? true)
+            XCTAssertFalse(router.cases.first?.isNew ?? true)
+            let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(inMemory: false, storeURL: url), prepared: true)
+            XCTAssertEqual(reopened.record(forKey: record.key)?.eventJournal?.events, record.eventJournal?.events)
+            XCTAssertTrue(Set(originals.map(\.id)).isSubset(of: reopened.record(forKey: record.key)?.eventJournal?.feedState?.readEventIDs ?? []))
+        }
+    }
+
+    func testAllUnmigratedMergeRetainsOneTimeOriginalFlatMarks() async throws {
+        try await fixture { url, defaults in
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container, prepared: true)
+            let value = try movement(root: ["Исходная A"])
+            let first = try store.upsert(context: context(),
+                snapshot: MovementDerivation.snapshot(from: value, context: context()), movement: value, collections: [])
+            var secondContext = context(); secondContext.caseNumber = "2-180/2026"; secondContext.caseID = "source-180"
+            var secondValue = try movement(root: ["Исходная B"])
+            secondValue.caseNumber = secondContext.caseNumber
+            secondValue.instances[0].caseNumber = secondContext.caseNumber
+            let second = try store.upsert(context: secondContext,
+                snapshot: MovementDerivation.snapshot(from: secondValue, context: secondContext), movement: secondValue, collections: [])
+            let original = try XCTUnwrap(second.eventJournal?.events.first { $0.evidence.legacyFeedHistory != nil })
+            let flatID = try XCTUnwrap(original.evidence.legacyFeedHistory?.legacyID)
+            defaults.set([flatID], forKey: "overviewReadFeedIDs.v1")
+            XCTAssertNil(first.eventJournal?.feedState); XCTAssertNil(second.eventJournal?.feedState)
+            _ = try TrackedCaseRepairCoordinator.atomicMerge(store: store, survivor: first,
+                duplicates: [second], canonicalContext: context(), canonicalCard: nil)
+            XCTAssertNil(first.eventJournal?.feedState, "Pre-cutover merge must leave original flat input available")
+            let (router, _, session) = try makeRouter(container: container, defaults: defaults,
+                suite: "Sudrf.Source179.AllNil.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: Source179Movement(value), notifications: { _ in XCTFail("Historical notification") })
+            defer { session.invalidateAndCancel() }
+            XCTAssertFalse(router.feed.first { $0.id == original.id }?.isUnread ?? true)
+            XCTAssertTrue(first.eventJournal?.feedState?.readEventIDs.contains(original.id) == true)
+        }
+    }
+
+    func testActualRouterMergeBootstrapsReadIncomingWithoutAuthorityReceiptReplay() async throws {
+        for incomingSeen in [false, true] {
+            try await fixture { url, defaults in
+                defaults.set(false, forKey: SpotlightPreferenceStore.key)
+                defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+                let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let seed = try TrackedStore(container: container, prepared: true)
+                let firstMovement = try movement(root: ["Непрочитанная A"])
+                let first = try seed.upsert(context: context(),
+                    snapshot: MovementDerivation.snapshot(from: firstMovement, context: context()), movement: firstMovement, collections: [])
+                let (router, store, session) = try makeRouter(container: container, defaults: defaults,
+                    suite: "Sudrf.Source179.NilMerge.\(UUID())", directory: url.deletingLastPathComponent(),
+                    provider: Source179Movement(firstMovement), notifications: { _ in XCTFail("Incoming historical alert") })
+                defer { session.invalidateAndCancel() }
+                var incomingContext = context(); incomingContext.caseNumber = "2-180/2026"; incomingContext.caseID = "source-180"
+                var incomingMovement = try movement(root: ["Прочитанная B"])
+                incomingMovement.caseNumber = incomingContext.caseNumber
+                incomingMovement.instances[0].caseNumber = incomingContext.caseNumber
+                let incoming = try store.upsert(context: incomingContext,
+                    snapshot: MovementDerivation.snapshot(from: incomingMovement, context: incomingContext), movement: incomingMovement, collections: [])
+                let treasury = CaseEvent.make(kind: .treasuryRSSPublished, occurrence: ["nil-incoming-treasury"],
+                    observedAt: DateUtil.today, evidence: .init(rssGUID: "own-incoming-guid"))
+                try store.commit { try store.appendCaseEvents([treasury], to: incoming) }
+                incoming.seenAt = incomingSeen ? DateUtil.today : nil; try store.save()
+                var firstState = try XCTUnwrap(first.eventJournal?.feedState)
+                let firstID = try XCTUnwrap(first.eventJournal?.events.first?.id)
+                firstState.receipts = [.init(originRecordKey: first.key,
+                    originalReadIDs: [firstID], originalKnownIDs: [firstID])]
+                firstState.readEventIDs.remove(firstID)
+                let originalReceipts = firstState.receipts
+                try store.commit { try store.appendCaseEvents([], to: first, feedState: firstState) }
+                XCTAssertNil(incoming.eventJournal?.feedState)
+                let readID = try XCTUnwrap(incoming.eventJournal?.events.first { $0.evidence.legacyFeedHistory != nil }?.id)
+                let remaps = try TrackedCaseRepairCoordinator.atomicMerge(store: store,
+                    survivor: first, duplicates: [incoming], canonicalContext: context(), canonicalCard: nil)
+                router.refreshCenter.onRefreshed?(first.key, try XCTUnwrap(first.movement), remaps)
+                XCTAssertEqual(router.feed.first { $0.id == readID }?.isUnread, !incomingSeen)
+                XCTAssertEqual(first.eventJournal?.feedState?.readEventIDs.contains(readID), incomingSeen)
+                XCTAssertFalse(first.eventJournal?.feedState?.readEventIDs.contains(treasury.id) ?? true)
+                XCTAssertFalse(first.eventJournal?.feedState?.readEventIDs.contains(firstID) ?? true)
+                XCTAssertTrue(originalReceipts.allSatisfy { first.eventJournal?.feedState?.receipts.contains($0) == true })
+                XCTAssertTrue(router.feed.first { $0.text == "Непрочитанная A" }?.isUnread == true)
+                let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+                XCTAssertEqual(reopened.record(forKey: first.key)?.eventJournal?.feedState?.readEventIDs.contains(readID), incomingSeen)
+        }
+        }
+    }
+
+    func testActualRouterJournalMaterialActOpensItsOwnPublishedSourceAndBody() async throws {
+        try await fixture { url, defaults in
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let seed = try TrackedStore(container: container, prepared: true)
+            var value = try movement(root: [], other: [], otherLevel: .material)
+            let actURL = try XCTUnwrap(URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000179"))
+            let act = CaseAct(id: "own-material-act-179", title: "Определение", date: "01.10.2026",
+                courtShort: "Другой суд", instanceLevel: .material,
+                sourceFileURL: actURL, productionNumber: value.instances[1].caseNumber)
+            let decoyURL = try XCTUnwrap(URL(string: "https://www.vsrf.ru/lk/practice/stor_pdf/34000180"))
+            let decoy = CaseAct(id: "base-act-decoy-179", title: "Решение", date: "02.10.2026",
+                courtShort: context().courtTitle, instanceLevel: .first,
+                sourceFileURL: decoyURL, productionNumber: context().caseNumber)
+            value.instances[0].actIDs = [decoy.id]
+            value.instances[1].actIDs = [act.id]
+            value.acts = [decoy, act]
+            value.actBodies = [decoy.id: "Другой текст основного производства",
+                act.id: "Сохранённый текст собственного материала"]
+            let owner = value.instances[1]
+            let record = try seed.upsert(context: context(),
+                snapshot: MovementDerivation.snapshot(from: value, context: context()), movement: value, collections: [])
+            let (router, store, session) = try makeRouter(container: container, defaults: defaults,
+                suite: "Sudrf.Source179.ActNavigation.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: Source179Movement(value), notifications: { _ in XCTFail("Historical act alert") })
+            defer { session.invalidateAndCancel() }
+            let entry = try XCTUnwrap(router.feed.first { $0.actID == act.id })
+            XCTAssertEqual(entry.sourceCardID, CaseSnapshotSourceIdentity.sourceCardID(for: owner, context: context()))
+            XCTAssertEqual(entry.sourceInstanceID, owner.id)
+            router.openFeedEntry(entry, preferAct: true)
+            XCTAssertEqual(router.focusedMaterialInstanceID, owner.id)
+            let selected = try XCTUnwrap(CourtActPresentation.row(for: try XCTUnwrap(router.selectedActID),
+                in: try XCTUnwrap(router.liveMovement)))
+            XCTAssertEqual(selected.sourceIDs, [act.id])
+            XCTAssertFalse(selected.sourceIDs.contains(decoy.id))
+            XCTAssertNotEqual(router.selectedActText, value.actBodies[decoy.id])
+            XCTAssertNotEqual(selected.sourceFileURL, decoyURL)
+            XCTAssertEqual(selected.sourceFileURL, actURL)
+            XCTAssertEqual(router.selectedActText, value.actBodies[act.id])
+            XCTAssertEqual(router.liveMovement?.instances.first { $0.id == owner.id }?.sourceURL, owner.sourceURL)
+            XCTAssertTrue(store.record(forKey: record.key)?.eventJournal?.feedState?.readEventIDs.contains(entry.id) == true)
+            XCTAssertFalse(router.feed.first { $0.id == entry.id }?.isUnread ?? true)
+            let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(inMemory: false, storeURL: url), prepared: true)
+            XCTAssertTrue(reopened.record(forKey: record.key)?.eventJournal?.feedState?.readEventIDs.contains(entry.id) == true)
+        }
+    }
+
+    func testActualRouterJournalMaterialRowOpensItsOwnExactSource() async throws {
+        try await fixture { url, defaults in
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let seed = try TrackedStore(container: container, prepared: true)
+            let value = try movement(root: [], other: [], otherLevel: .material)
+            let owner = value.instances[1]
+            let record = try seed.upsert(context: context(),
+                snapshot: MovementDerivation.snapshot(from: value, context: context()), movement: value, collections: [])
+            let source = try XCTUnwrap(CaseSnapshotSourceIdentity.sourceCardID(for: owner, context: context()))
+            let event = CaseEvent.make(kind: .instanceDiscovered, occurrence: ["own-material", source],
+                observedAt: DateUtil.today, evidence: .init(sourceCardID: source,
+                    instanceLevelRaw: owner.level.rawValue, caseNumber: owner.caseNumber))
+            try seed.commit { try seed.appendCaseEvents([event], to: record) }
+            let (router, store, session) = try makeRouter(container: container, defaults: defaults,
+                suite: "Sudrf.Source179.Navigation.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: Source179Movement(value), notifications: { _ in XCTFail("Initial semantic notification") })
+            defer { session.invalidateAndCancel() }
+            let entry = try XCTUnwrap(router.feed.first { $0.text.hasPrefix("Новое производство:") })
+            XCTAssertEqual(entry.sourceCardID, source)
+            XCTAssertEqual(entry.sourceInstanceID, owner.id)
+            router.openFeedEntry(entry)
+            XCTAssertEqual(router.focusedMaterialInstanceID, owner.id)
+            XCTAssertEqual(router.liveMovement?.instances.first { $0.id == owner.id }?.sourceURL, owner.sourceURL)
+            XCTAssertEqual(router.openedCase, record.caseNumber)
+            XCTAssertTrue(store.record(forKey: record.key)?.eventJournal?.feedState?.readEventIDs.contains(entry.id) == true)
+            XCTAssertFalse(router.feed.first { $0.id == entry.id }?.isUnread ?? true)
+        }
+    }
+
+    func testActualRouterMergedAuthorityNotifierRollbackAndRestart() async throws {
+        try await fixture { url, defaults in
+            defaults.set(false, forKey: SpotlightPreferenceStore.key)
+            defaults.set(true, forKey: SpotlightPreferenceStore.onboardingKey)
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let seed = try TrackedStore(container: container, prepared: true)
+            let firstMovement = try movement(root: ["Старая строка A"])
+            let first = try seed.upsert(context: context(),
+                snapshot: MovementDerivation.snapshot(from: firstMovement, context: context()),
+                movement: firstMovement, collections: ["Первая"])
+            var secondContext = context(); secondContext.caseNumber = "2-180/2026"; secondContext.caseID = "source-180"
+            var secondMovement = try movement(root: ["Старая строка B"])
+            secondMovement.caseNumber = secondContext.caseNumber
+            secondMovement.instances[0].caseNumber = secondContext.caseNumber
+            let second = try seed.upsert(context: secondContext,
+                snapshot: MovementDerivation.snapshot(from: secondMovement, context: secondContext),
+                movement: secondMovement, collections: ["Вторая"])
+            let firstKey = first.key, secondKey = second.key
+            var batches = [[FeedEntry]]()
+            let provider = Source179Movement(firstMovement)
+            let (router, store, session) = try makeRouter(container: container, defaults: defaults,
+                suite: "Sudrf.Source179.Merge.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: provider, notifications: { batches.append($0) })
+            defer { session.invalidateAndCancel() }
+            router.markAllFeedRead()
+            let originals = [first.eventJournalData, second.eventJournalData]
+            let read = try XCTUnwrap(first.eventJournal?.feedState).readEventIDs
+                .union(try XCTUnwrap(second.eventJournal?.feedState).readEventIDs)
+            store.failNextSaveForTesting = true
+            XCTAssertThrowsError(try TrackedCaseRepairCoordinator.atomicMerge(store: store,
+                survivor: first, duplicates: [second], canonicalContext: context(), canonicalCard: nil))
+            XCTAssertEqual([first.eventJournalData, second.eventJournalData], originals)
+            XCTAssertEqual(store.all().count, 2)
+            XCTAssertFalse(container.mainContext.hasChanges)
+            let remaps = try TrackedCaseRepairCoordinator.atomicMerge(store: store,
+                survivor: first, duplicates: [second], canonicalContext: context(), canonicalCard: nil)
+            XCTAssertEqual(remaps[secondKey], firstKey)
+            router.refreshCenter.onRefreshed?(firstKey, try XCTUnwrap(first.movement), remaps)
+            XCTAssertTrue(batches.isEmpty, "Merging known history does not emit a new notification")
+            XCTAssertTrue(router.feed.allSatisfy { !$0.isUnread })
+            XCTAssertEqual(first.eventJournal?.feedState?.readEventIDs, read)
+            XCTAssertEqual(first.eventJournal?.feedState?.receipts.count, 2)
+            XCTAssertEqual(Set(router.feed.map(\.text)), ["Старая строка A", "Старая строка B"])
+            let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let (reopened, persisted, reopenedSession) = try makeRouter(container: reopenedContainer, defaults: defaults,
+                suite: "Sudrf.Source179.MergeRestart.\(UUID())", directory: url.deletingLastPathComponent(),
+                provider: provider, notifications: { batches.append($0) })
+            defer { reopenedSession.invalidateAndCancel() }
+            XCTAssertEqual(persisted.all().count, 1)
+            XCTAssertTrue(reopened.feed.allSatisfy { !$0.isUnread })
+            XCTAssertTrue(batches.isEmpty)
+            XCTAssertEqual(persisted.record(forKey: firstKey)?.eventJournal?.feedState?.readEventIDs, read)
+        }
     }
 
     func testActualRouterPendingMaterialAdmissionAndReadResetAcrossRestart() async throws {
@@ -153,30 +407,99 @@ final class SourceRowPublicationTests: XCTestCase {
                 defaults.set([base], forKey: "notifiedFeedIDs.v1")
                 let partial = try movement(root: [], other: ["Принято"], otherKind: .partial, otherLevel: .material)
                 let provider = Source179Movement(partial)
+                let suite = "Sudrf.Source179.Material.\(UUID())"
                 let (router, store, session) = try makeRouter(container: container, defaults: defaults,
-                    suite: "Sudrf.Source179.Material.\(UUID())", directory: url.deletingLastPathComponent(),
+                    suite: suite, directory: url.deletingLastPathComponent(),
                     provider: provider, notifications: { _ in XCTFail("Historical material alert") })
                 defer { session.invalidateAndCancel() }
                 let record = try XCTUnwrap(store.record(forKey: key))
                 XCTAssertEqual(record.eventJournal?.feedState?.materialMigrationState.pendingUnresolvedCounts[base], 1)
+                let oldArchive = record.eventJournal?.events.filter {
+                    $0.kind == .legacyFeedImported
+                        && $0.evidence.legacyFeedHistory?.legacyID == base
+                } ?? []
+                XCTAssertEqual(oldArchive.count, 1)
+                @MainActor func assertSingleMaterialRow(in current: AppRouter, stage: String) -> FeedEntry? {
+                    let rows = current.feed.filter { $0.recordKey == key && $0.text == "Принято" }
+                    XCTAssertEqual(rows.count, 1, "\(stage): a material must have one feed row")
+                    return rows.first
+                }
+                _ = assertSingleMaterialRow(in: router, stage: "Before partial refresh")
                 if resetRead {
                     var state = try XCTUnwrap(record.eventJournal?.feedState)
                     state.readEventIDs.removeAll()
                     try store.commit { try store.appendCaseEvents([], to: record, feedState: state) }
                 }
                 await router.refreshCenter.refresh(key: key, manually: true)?.value
+                let partialRow = assertSingleMaterialRow(in: router, stage: "After partial refresh")
+                XCTAssertEqual(partialRow?.isUnread, resetRead)
                 XCTAssertFalse(record.eventJournal?.events.contains { $0.kind == .sourceRowPublished } ?? true)
+                XCTAssertEqual(record.eventJournal?.events.filter {
+                    $0.kind == .legacyFeedImported && $0.evidence.legacyFeedHistory?.legacyID == base
+                }, oldArchive, "Partial refresh must preserve the immutable original archive")
                 await provider.set(complete)
                 await router.refreshCenter.refresh(key: key, manually: true)?.value
-                let publication = try XCTUnwrap(record.eventJournal?.events.first { $0.kind == .sourceRowPublished })
+                let publicationEvents = record.eventJournal?.events.filter { $0.kind == .sourceRowPublished } ?? []
+                XCTAssertEqual(publicationEvents.count, 1)
+                let publication = try XCTUnwrap(publicationEvents.first)
+                let freshSourceID = try XCTUnwrap(CaseSnapshotSourceIdentity.sourceCardID(
+                    for: try XCTUnwrap(complete.instances.first { $0.level == .material }), context: context()))
+                XCTAssertEqual(publication.evidence.sourceCardID, freshSourceID)
+                XCTAssertEqual(publication.evidence.sourceRowBinding?.sourceCardID, freshSourceID)
                 XCTAssertEqual(record.eventJournal?.feedState?.readEventIDs.contains(publication.id), !resetRead)
                 XCTAssertTrue(record.eventJournal?.feedState?.materialMigrationState.consumedLegacyIDs.contains(base) == true)
-                let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
-                let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
-                XCTAssertEqual(reopened.record(forKey: key)?.eventJournal?.feedState?.readEventIDs.contains(publication.id), !resetRead)
+                let fullRow = assertSingleMaterialRow(in: router, stage: "After full refresh")
+                XCTAssertEqual(fullRow?.sourceCardID, freshSourceID)
+                XCTAssertEqual(fullRow?.isUnread, resetRead)
+                let fullState = try XCTUnwrap(record.eventJournal?.feedState)
+                XCTAssertTrue(fullState.knownEventIDs.contains(publication.id))
+                XCTAssertEqual(record.eventJournal?.events.filter {
+                    $0.kind == .legacyFeedImported && $0.evidence.legacyFeedHistory?.legacyID == base
+                }, oldArchive, "Full refresh must preserve the immutable original archive")
+                let readAfterFull = fullState.readEventIDs
+                let knownAfterFull = fullState.knownEventIDs
                 let bytes = record.eventJournalData
                 await router.refreshCenter.refresh(key: key, manually: true)?.value
                 XCTAssertEqual(record.eventJournalData, bytes)
+                _ = assertSingleMaterialRow(in: router, stage: "After repeat full refresh")
+                XCTAssertEqual(record.eventJournal?.feedState?.readEventIDs, readAfterFull)
+                XCTAssertEqual(record.eventJournal?.feedState?.knownEventIDs, knownAfterFull)
+                XCTAssertEqual(record.eventJournal?.events.filter {
+                    $0.kind == .legacyFeedImported && $0.evidence.legacyFeedHistory?.legacyID == base
+                }, oldArchive, "Repeated refresh must preserve the immutable original archive")
+
+                let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let (reopened, persisted, reopenedSession) = try makeRouter(container: reopenedContainer,
+                    defaults: defaults, suite: suite, directory: url.deletingLastPathComponent(),
+                    provider: Source179Movement(complete),
+                    notifications: { _ in XCTFail("Restart must not replay a historical material alert") })
+                defer { reopenedSession.invalidateAndCancel() }
+                let reopenedRecord = try XCTUnwrap(persisted.record(forKey: key))
+                let reopenedRow = assertSingleMaterialRow(in: reopened, stage: "After restart")
+                XCTAssertEqual(reopenedRow?.sourceCardID, freshSourceID)
+                XCTAssertEqual(reopenedRow?.isUnread, resetRead)
+                XCTAssertEqual(reopenedRecord.eventJournal?.feedState?.readEventIDs, readAfterFull)
+                XCTAssertEqual(reopenedRecord.eventJournal?.feedState?.knownEventIDs, knownAfterFull)
+                var cleared = try XCTUnwrap(reopenedRecord.eventJournal?.feedState)
+                cleared.readEventIDs.remove(publication.id)
+                try persisted.commit { try persisted.appendCaseEvents([], to: reopenedRecord, feedState: cleared) }
+                await reopened.refreshCenter.refresh(key: key, manually: true)?.value
+                XCTAssertTrue(assertSingleMaterialRow(in: reopened, stage: "After fresh read reset")?.isUnread == true)
+                XCTAssertTrue(reopened.cases.first { $0.recordKey == key }?.isNew == true)
+                let resetContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let (resetRouter, _, resetSession) = try makeRouter(container: resetContainer,
+                    defaults: defaults, suite: suite, directory: url.deletingLastPathComponent(),
+                    provider: Source179Movement(complete),
+                    notifications: { _ in XCTFail("Read reset must not replay a historical alert") })
+                defer { resetSession.invalidateAndCancel() }
+                let resetRow = try XCTUnwrap(assertSingleMaterialRow(in: resetRouter, stage: "Fresh read reset after restart"))
+                XCTAssertTrue(resetRow.isUnread)
+                resetRouter.openFeedEntry(resetRow)
+                XCTAssertFalse(resetRouter.cases.first { $0.recordKey == key }?.isNew ?? true,
+                    "Reading the current publication clears its badge despite immutable unread original")
+                XCTAssertEqual(reopenedRecord.eventJournal?.events.filter {
+                    $0.kind == .legacyFeedImported && $0.evidence.legacyFeedHistory?.legacyID == base
+                }, oldArchive, "Restart must preserve the immutable original archive")
             }
         }
     }

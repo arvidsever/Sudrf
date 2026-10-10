@@ -1,8 +1,124 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Current gate and private follow-up — 10 October 2026
+
+Hosted run `38073559728` at `8ffe9fe` failed: **2237 XCTest, 21 skips,
+48 failed assertions in 15 methods**; 28 Swift Testing cases passed. Full log
+`/private/tmp/sudrf-179-ci-8ffe9fe.log`, SHA-256
+`9ead7abeaa1ff8ee8f9eb184a3f698960302b06d6c150425bb9df252c2434fd9`.
+This checkpoint is not a successful full-runtime gate. Independent review separates
+legacy flat-ID/all-event-count expectations from actual product regressions.
+
+The uncommitted narrow follow-up fixes original-record mark loss in a mixed
+merge: only when authority already exists, each incoming nil-authority journal
+initializes from its own seen state before merge. Unknown flat marks remain unknown;
+existing authority and receipts are not replayed. All-nil pre-cutover merges retain
+later one-time preference input. Seen incoming records keep ordinary history read,
+Treasury events stay separately unread, and an existing DB read reset survives.
+
+Exact qualified material duplicates retain both immutable archived events but use
+one display group from their identical complete source/presentation evidence.
+Current group read is AND, familiar/known is OR; selecting the displayed row marks
+all exact members. Unknown owners and independent origins are not collapsed.
+Actual private AppRouter tests cover merge failure/retry/restart, mixed authority,
+all-nil input, exact material navigation and duplicate display/marks/notifier.
+
+Private follow-up profile: **35 XCTest, zero failures**, log
+`/private/tmp/sudrf-179-runtime-followup-fullprivate.log`, SHA-256
+`3fffee7b4f6a748c2edfa87e049617ef3605f6f114c3d8b1b7a8511656819d95`.
+The additional final known-OR notifier assertion passed separately (1/0):
+`/private/tmp/sudrf-179-runtime-duplicate-known.log`, SHA-256
+`6abe2137b152db2b04d0854deb0c00ee7996182440685e932787ebde192145ae`.
+These are audited own-store/defaults/network fixtures, not a broad local run.
+The additional actual material-act navigation test passed (1/0), with a distinct
+base-production act placed before the target material act (different IDs, text
+and file URL): journal act entry
+→ `openFeedEntry(preferAct: true)` → its exact material, selected source ID,
+policy-approved file URL and saved text, explicitly excluding the competing act,
+with committed read state retained after
+disk reopen. All network/system hooks remain denied/private. Log
+`/private/tmp/sudrf-179-runtime-act-navigation-competing-final.log`, SHA-256
+`6aa190db5b38a5488d8d738ae2e9f7b6a242ff3a4e8e25538f02247a0c3a94e2`.
+The first fixture used an unsupported synthetic file path, correctly rejected by
+existing URL policy; replacing it with a supported synthetic `stor_pdf` path
+required no product change. No remote file was fetched.
+The follow-up unsigned Xcode 27 Debug app compile also passed without launch or
+registration: `/private/tmp/sudrf-179-runtime-followup-native-final.log`, SHA-256
+`c53f76c2a532158f00f4ca862b0b3f38219c8a38b5af36af63dc1b22d0c055ae`.
+Independent source/test review passed (Ship to draft publication and new CI).
+Compatibility follow-up is documented below; a new hosted current-head gate remains pending.
+
+A separate native host rebuilt from the independently reviewed production follow-up
+including the exact material replacement on top of checkpoint `8ffe9fe` is prepared at
+`/private/tmp/sudrf-179-native-host/xcode-qa/DerivedData/Build/Products/Debug/Sudrf179QA.app`.
+Its required bundle guard is `ru.sudrf.qa.issue179`; sandbox is enabled and outbound
+network is disabled. It uses only in-memory synthetic data/private preferences,
+no production entry, URL schemes, app groups or container migration. Provenance
+and hashes are in `native-host-build-plan.json`. It has not been launched; native acceptance requires user/root authorization. The current build
+plan records exact follow-up source hashes and signed entitlements; any further
+product changes require another build before acceptance. The host uses existing feed UI,
+without a visible detection caption. Automated material-source navigation passed;
+OS delivery is not asserted by this host/build evidence.
+
+## Compatibility and material display follow-up — 10 October 2026
+
+The original 15 failing CI methods now pass in a strictly private exact profile:
+15 XCTest, zero failures. Log `/private/tmp/sudrf-179-compat9-final15.log`,
+SHA-256 `1c236cb0a51f6b561e4e805d57c82c4b59426553adada65072eb21bbaf489fbd`.
+Assertions now distinguish immutable source archive from displayed rows, require
+native source confirmation for a new refresh event, and check current journal
+IDs for Treasury marks. Private dependencies include tokens, preferences,
+transport, caches and OS sinks. Treasury stale preference input is deliberately
+written after the current mirror sync, immediately before restart.
+
+An actual AppRouter material display oracle exposed a separate product failure:
+full refresh, repeat and restart displayed both an unresolved archived row and
+its freshly qualified counterpart (two instead of one). The RED ran one test
+with ten assertion failures; log
+`/private/tmp/sudrf-179-source-row-retest-runtime-red.log`, SHA-256
+`a7b871918666ed1d621f3c0f64c8d925e9947d80b991eabcbb46b53389e43c34`.
+The archive/read/known preservation assertions already passed in that RED.
+
+The admission transaction now stores an optional exact original→publication
+pair after the existing payload/ordinal and pending-family checks. Ambiguous
+successors remain unresolved. Display and case badges suppress only a pair
+whose two immutable events and material source payload still validate; a
+resolved-ID receipt alone is insufficient. Archived events and marks are not
+removed. Later read/known edits belong to the new event and are not replayed.
+Merge canonicalizes both IDs and rejects conflicting successors. Old JSON
+without the optional pair remains readable; receipt-only checkpoints without
+a verifiable pair keep their original display. No SwiftData schema changes.
+
+Current audited profile: **44 XCTest, zero failures/skips** (source publication,
+feed authority, exact legacy renderer and undated projections). The actual
+router verifies partial→full→repeat→disk restart with one row, exact qualified
+source ID, read reset after admission surviving restart, and badge clearing
+when that current row is read. Negative checks cover orphan/wrong-source pairs,
+unknown act ownership, conflicting successors and an independently blocked
+material B. Original archived IDs/payloads remain intact.
+Log `/private/tmp/sudrf-179-material-replacement-final.log`, SHA-256
+`1849ec377a293169a9d6dcf9e8325de73e7e40b76c503b5591fc3d1a12ae525a`.
+The 15 compatibility methods were rerun after the product fix: 15/0,
+log `/private/tmp/sudrf-179-compatibility-after-material-fix.log`, SHA-256
+`aa3d638ba6101f0a9c890a77571a38f9be265ae0acb6086eb40ce11a7f2a5d19`.
+The final independent Astra review is Ship for coherent commit/new full CI;
+no P1/P2 remain in this narrow delta.
+
+Regenerated Xcode 27 Debug app build passed without launch:
+`/private/tmp/sudrf-179-material-replacement-native.log`, SHA-256
+`0e00695303c3b12886cadc03d532242779346d0242c60a75cf4eecd0770af828`.
+This is a local compile, not native UI/OS-delivery acceptance. The isolated QA bundle was rebuilt from the current reviewed files and checked
+for its separate bundle ID, disabled outbound-network entitlement and absent
+URL schemes; build log SHA-256
+`caba7bbf5e1ba96e199d0c66e0c9d36ad26897b7553e95048cee46d23e3d3962`.
+No QA launch occurred. New hosted current-head CI and user-authorized native
+acceptance still remain required;
+verified host-repair material enrichment and complete downstream gates remain
+open. No version or issue closure is assigned by this checkpoint.
+
 ## Fresh source publication and persisted mark-state preparation — 10 October 2026
 
-Uncommitted runtime preparation captures the fresh normalized snapshot, complete
+Runtime checkpoint `8ffe9fe` captures the fresh normalized snapshot, complete
 raw session/act rows and per-court admission before display-cache merge. It compares
 only the corresponding last confirmed court baseline. Each accepted publication
 stores frozen source evidence and an exact court/native/source binding with a
@@ -30,7 +146,7 @@ exact host repair, complete reschedule mark algebra, durable clear without repla
 and merge preservation/conflict rejection. All fixtures/settings/tokens and network
 providers are private; no broad test setup, live request or app launch was used.
 
-The uncommitted AppRouter now projects journal history/bindings and commits marks
+The checkpoint AppRouter projects journal history/bindings and commits marks
 in the journal DB before compatibility preference mirrors. Its private disk test
 proves historical A quiet → partial B absent → admitted full B one alert → read →
 new container/router → repeated B no alert. Case indicators derive journal unread;

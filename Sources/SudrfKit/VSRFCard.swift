@@ -500,10 +500,14 @@ enum VSRFDOM {
             if key.hasPrefix("суд 1-й инстанции") { current.firstInstanceCell = value }
             if !raw.isEmpty { current.fields[key] = raw }
         }
-        for row in (try? item.select("[class*=CaseStyle_case_personalList_item__]").array()) ?? [] {
+        for row in (try? item.select("[class*=CaseStyle_case_personalList_item__], [class*=RowElement_container__]").array()) ?? [] {
             guard let label = firstEl(row, "[class*=CaseStyle_registerDateRow_attribute__]") else { continue }
             let key = clean((try? label.text()) ?? "").lowercased()
-            let value = firstEl(row, "[class*=CaseStyle_case_personalListName__]") ?? row
+            let isLegacyPersonalRow = ((try? row.attr("class")) ?? "").contains("CaseStyle_case_personalList_item__")
+            // A new row without a value must not turn its label into an applicant.
+            guard let value = firstEl(row, "[class*=CaseStyle_case_personalListName__]")
+                ?? firstEl(row, "[class*=CaseStyle_case_value__]")
+                ?? (isLegacyPersonalRow ? row : nil) else { continue }
             if key.hasPrefix("в интересах") { current.applicant = names(in: value).first }
             else if key.hasPrefix("заявител") {
                 current.claimants = names(in: value)

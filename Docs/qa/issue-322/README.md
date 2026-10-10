@@ -460,3 +460,23 @@ main integration: **8 PASS, 0 failures/skips**, 26.056 seconds; build2.87 second
 Private log `/private/tmp/sudrf-322-main-integration-final.log`, SHA-256
 `f3415fb1b56e7016e8920f23844b3c1c060058dce871c7a52e45ef61fe9332d3`.
 No live rerun, GUI launch or product-parser fix was performed for this gate.
+
+### Hosted CI and own Xcode build of the integrated checkpoint
+
+On 10 October 2026, hosted [run 38073558741](https://github.com/arvidsever/Sudrf/actions/runs/38073558741)
+completed successfully on exact head `ecf7672875646a984e231304cd6e8c54004f5fb7`:
+2143 XCTest, 22 skipped, zero failures; 28 Swift Testing; 27 Python checks,
+six skipped, zero failures. Registry verification, Xcode app target, app/CLI
+build and packaging passed. The opt-in live test was skipped; hosted CI does
+not add a successful live attempt. The conditional Xcode 27 build/test steps
+were skipped because that SDK was absent. Private full CI-log SHA-256:
+`193fa4de0eab89956fa17c9becf3b7b9ce1db477261ebd6952908d0d44060c0d`.
+
+The integrated project was regenerated separately on the development Mac.
+Own unsigned Xcode Debug build completed successfully, without launching the
+application; the built product reports 0.65.3 (264). Private build log
+`/private/tmp/sudrf-322-ecf7672-xcode.log`, SHA-256
+`c2bf52cc3e1361383f81e510bb7ca1a12c5b10130eac09b2757db6a714372a85`.
+These gates validate the integrated harness. The original live partial remains
+partial; the separate empty-Moscow-response fix still awaits the author's
+decision. PR #438 and issue #322 remain open, without a release assignment.

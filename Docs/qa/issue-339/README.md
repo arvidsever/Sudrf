@@ -102,3 +102,23 @@ The stable hosted job now starts this six-test class in a fresh process before t
 All test targets compile after this adjustment. Log: `/private/tmp/sudrf-339-focused-gate-compile.log`; SHA-256 `172183a26b3ccfb870def1b12db574c1c06b52ef1a48ae44d69c42c865a447e1`. Focused runtime results remain pending until the new hosted run finishes. No local AppRouter execution or new live request is claimed.
 
 Own Xcode 27 build on `f82c4a1` succeeded without launch: `/private/tmp/sudrf-339-current-xcodebuild.log`; SHA-256 `122eafc061750b6bdfb2713c5d9fbf26a563a6b174a0e47e807ded7839317115`. The later adjustment touches only tests and CI.
+
+
+## Native offline runtime checkpoint - 10 October 2026
+
+The isolated QA product was rebuilt from head
+`1f26560af69c5d8eba99b0ef9aebc3c2a811101c` in the restored existing branch.
+Bundle guard and signed bundle ID match `ru.sudrf.qa.issue339`; sandbox/network
+and file-access restrictions, no migration/URL schemes/intents, private
+settings/storage/providers and publication substitutions were rechecked.
+Build log SHA-256: `22b619e888a2dcfebbea6592a4eb2e0bfd5ac4e1155ab1f3754e8183b09ff3cb`. Preparation did not launch the product.
+
+During the subsequent root CUA session, the real direct-link sheet resolved the
+synthetic test URL for case 12-538/2026. Add opened the real CaseMovementView
+after the two scripted CAPTCHA continuations. Root CUA emitted the form and movement-card screenshots, then quit
+Sudrf339QA through Activity Monitor; the subsequent CUA inventory contained no
+running QA applications. User acceptance of this native offline result remains
+pending.
+These are synthetic native UI observations, not a new live-source attempt or
+a full live-chain success. The earlier separate live component evidence retains
+its partial outcome and its own boundaries.

@@ -1,5 +1,34 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Cutover coverage inventory — 10 October 2026
+
+This inventory follows the actual `LegacyFeedProjection.project` branches and
+`AppRouter.reload`/`reconcileFeed` callers. It is a gate list, not completed
+production acceptance.
+
+| Current source | Prepared journal shadow | Remaining cutover gate |
+| --- | --- | --- |
+| Dated Treasury RSS rows with a nonempty GUID | Persistence prerequisite #454, separate PR #457 | Journal feed projection, exact retired-key/ID aliases, private router read/known/notified migration |
+| Every dated snapshot session classified as a hearing by the shared lifecycle predicate | Scheduled/postponed/rescheduled hearing projection | Quiet historical import, all retained history, explicit published cancellation evidence; absence or partial responses never mean cancellation |
+| Every other dated snapshot session | Three KoAP movement kinds only | Preserve remaining published movement rows, including technical rows; do not relabel them as hearings |
+| Dated published acts | Act projection | Quiet historical import and retained source/record identity across merge/reopen |
+| New approved judge/production/result rows without a published date (no legacy feed branch) | New movement projection | Aggregate integration with the accepted detection date and no extra label |
+| Automatic/manual deadlines | No current feed branch in `LegacyFeedProjection` | Keep existing Overview/calendar behavior; any journal row must satisfy its own confirmed-source and identity gate |
+
+Records lacking `eventJournalData` are initialized with empty journals by
+`bootstrapEventJournals`; changing the renderer now would lose their existing
+act/session feed history. Import must preserve original row IDs as immutable
+migration aliases and retain marks, avoid promoting source baselines, and
+commit before a notifying reload. Unresolved rows and cross-family ID/alias
+collisions must remain explicit failed gates, rather than silently disappearing.
+
+`reconcileFeed` currently replaces known IDs with the visible 45-day set. The
+journal adapter must retain durable familiarity/notified identity so an event
+returning after leaving that window is not announced again. Case badges remain
+case counts; existing case-open/read behavior and independent enforcement marks
+must be checked through the actual private AppRouter. Pure projection success
+alone does not pass these storage, notification or badge gates.
+
 ## Retained occurrence origins — 10 October 2026
 
 The movement shadow accepts an immutable occurrence origin from a retained

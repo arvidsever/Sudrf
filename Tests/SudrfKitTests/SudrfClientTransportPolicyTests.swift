@@ -23,10 +23,69 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
                        accuracy: 0.001,
                        "после второй попытки пауза должна быть 4 секунды")
 
-        let client = SudrfClient(minInterval: 0)
+        let client = SudrfClient(minInterval: 0, variantStore: WorkingVariantStore(cacheURL: nil),
+            captchaStore: CaptchaTokenStore())
         let maxAttempts = await client.maxAttempts
         XCTAssertEqual(maxAttempts, 3,
                        "должна остаться одна начальная попытка и два повтора")
+    }
+
+    func testQueuedInteractiveOvertakesBackgroundWithoutPreemptingActiveRequest() async throws {
+        let (client, session) = makeClient(minInterval: 0)
+        defer { session.invalidateAndCancel(); SerializedTransportStub.releaseHeld() }
+        await client.setMaxAttemptsForTesting(1)
+        SerializedTransportStub.heldPaths = ["/active"]
+        let active = Task.detached(priority: .background) { try await client.fetchHTML(URL(string: "https://one.sudrf.ru/active")!) }
+        try await waitUntil { SerializedTransportStub.snapshot().held == 1 }
+        let background = Task.detached(priority: .background) { try await client.fetchHTML(URL(string: "https://two.sudrf.ru/background")!) }
+        try await waitForWaiters(1, client: client)
+        let interactive = Task.detached(priority: .userInitiated) { try await client.fetchHTML(URL(string: "https://three.sudrf.ru/interactive")!) }
+        try await waitForWaiters(2, client: client)
+        XCTAssertEqual(SerializedTransportStub.snapshot().started, ["/active"])
+        SerializedTransportStub.releaseHeld()
+        try await waitUntil { SerializedTransportStub.snapshot().completed == 3 }
+        // Inspect order before awaiting values, which can escalate task priority.
+        XCTAssertEqual(SerializedTransportStub.snapshot().started, ["/active", "/interactive", "/background"])
+        XCTAssertEqual(SerializedTransportStub.snapshot().peak, 1)
+        _ = try await (active.value, background.value, interactive.value)
+    }
+
+    func testEqualPriorityWaitersKeepEnqueueFIFO() async throws {
+        let (client, session) = makeClient(minInterval: 0)
+        defer { session.invalidateAndCancel(); SerializedTransportStub.releaseHeld() }
+        await client.setMaxAttemptsForTesting(1)
+        SerializedTransportStub.heldPaths = ["/active"]
+        let active = Task.detached(priority: .background) { try await client.fetchHTML(URL(string: "https://one.sudrf.ru/active")!) }
+        try await waitUntil { SerializedTransportStub.snapshot().held == 1 }
+        let first = Task.detached(priority: .userInitiated) { try await client.fetchHTML(URL(string: "https://two.sudrf.ru/first-equal")!) }
+        try await waitForWaiters(1, client: client)
+        let second = Task.detached(priority: .userInitiated) { try await client.fetchHTML(URL(string: "https://three.sudrf.ru/second-equal")!) }
+        try await waitForWaiters(2, client: client)
+        SerializedTransportStub.releaseHeld()
+        try await waitUntil { SerializedTransportStub.snapshot().completed == 3 }
+        XCTAssertEqual(SerializedTransportStub.snapshot().started, ["/active", "/first-equal", "/second-equal"])
+        _ = try await (active.value, first.value, second.value)
+    }
+
+    func testCancelledHighPriorityWaiterDoesNotStrandBackground() async throws {
+        let (client, session) = makeClient(minInterval: 0)
+        defer { session.invalidateAndCancel(); SerializedTransportStub.releaseHeld() }
+        await client.setMaxAttemptsForTesting(1)
+        SerializedTransportStub.heldPaths = ["/active"]
+        let active = Task.detached(priority: .background) { try await client.fetchHTML(URL(string: "https://one.sudrf.ru/active")!) }
+        try await waitUntil { SerializedTransportStub.snapshot().held == 1 }
+        let cancelled = Task.detached(priority: .userInitiated) { try await client.fetchHTML(URL(string: "https://two.sudrf.ru/cancelled-high")!) }
+        try await waitForWaiters(1, client: client)
+        let background = Task.detached(priority: .background) { try await client.fetchHTML(URL(string: "https://three.sudrf.ru/background")!) }
+        try await waitForWaiters(2, client: client)
+        cancelled.cancel()
+        try await waitForWaiters(1, client: client)
+        SerializedTransportStub.releaseHeld()
+        try await waitUntil { SerializedTransportStub.snapshot().completed == 2 }
+        XCTAssertEqual(SerializedTransportStub.snapshot().started, ["/active", "/background"])
+        do { _ = try await cancelled.value; XCTFail("Cancelled waiter must not fetch") }
+        catch is CancellationError { }
+        _ = try await (active.value, background.value)
     }
 
     func testRequestsAcrossHostsAreFIFOAndNeverOverlap() async throws {
@@ -133,7 +192,7 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
             factory.makeSession(delegate: delegate)
         }, minInterval: 0, sessionInvalidationObserver: {
             factory.recordInvalidation()
-        })
+        }, variantStore: WorkingVariantStore(cacheURL: nil), captchaStore: CaptchaTokenStore())
         await client.setMaxAttemptsForTesting(1)
 
         _ = try await client.fetchHTML(URL(string: "https://ONE.sudrf.ru/first")!)
@@ -150,7 +209,7 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
         let factory = RotatingSessionFactory()
         let client = SudrfClient(sessionFactory: { delegate in
             factory.makeSession(delegate: delegate)
-        }, minInterval: 0.04)
+        }, minInterval: 0.04, variantStore: WorkingVariantStore(cacheURL: nil), captchaStore: CaptchaTokenStore())
         await client.setMaxAttemptsForTesting(1)
         RotatingTransportStub.setRedirect(
             from: "/redirect", to: URL(string: "https://two.sudrf.ru/final")!, delay: 0.08)
@@ -179,7 +238,7 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
             factory.makeSession(delegate: delegate)
         }, minInterval: 0, sessionInvalidationObserver: {
             gate.waitForRelease()
-        })
+        }, variantStore: WorkingVariantStore(cacheURL: nil), captchaStore: CaptchaTokenStore())
         await client.setMaxAttemptsForTesting(1)
 
         _ = try await client.fetchHTML(URL(string: "https://one.sudrf.ru/first")!)
@@ -206,7 +265,18 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [SerializedTransportStub.self]
         let session = URLSession(configuration: configuration)
-        return (SudrfClient(session: session, minInterval: minInterval), session)
+        return (SudrfClient(session: session, minInterval: minInterval,
+            variantStore: WorkingVariantStore(cacheURL: nil), captchaStore: CaptchaTokenStore()), session)
+    }
+
+    private func waitForWaiters(_ count: Int, client: SudrfClient) async throws {
+        let deadline = Date().addingTimeInterval(1)
+        while await client.requestWaiterCountForTesting() != count, Date() < deadline {
+            await Task.yield()
+        }
+        let actual = await client.requestWaiterCountForTesting()
+        XCTAssertEqual(actual, count, "Queue readiness timed out")
+        if actual != count { throw URLError(.timedOut) }
     }
 
     private func waitUntil(
@@ -218,6 +288,7 @@ final class SudrfClientTransportPolicyTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertTrue(condition(), "условие тестового транспорта не выполнено вовремя")
+        if !condition() { throw URLError(.timedOut) }
     }
 }
 
@@ -368,6 +439,7 @@ private final class SerializedTransportStub: URLProtocol {
         let startDates: [Date]
         let completed: Int
         let peak: Int
+        let held: Int
     }
 
     private static let lock = NSLock()
@@ -379,6 +451,16 @@ private final class SerializedTransportStub: URLProtocol {
     nonisolated(unsafe) private static var pathCounts: [String: Int] = [:]
     nonisolated(unsafe) static var failFirstPath: String?
     nonisolated(unsafe) static var slowPaths = Set<String>()
+    nonisolated(unsafe) static var heldPaths = Set<String>()
+    nonisolated(unsafe) private static var heldItems: [DispatchWorkItem] = []
+
+    static func releaseHeld() {
+        lock.lock()
+        let items = heldItems
+        heldItems = []
+        lock.unlock()
+        items.forEach { $0.perform() }
+    }
 
     private let stateLock = NSLock()
     private var workItem: DispatchWorkItem?
@@ -394,13 +476,15 @@ private final class SerializedTransportStub: URLProtocol {
         pathCounts = [:]
         failFirstPath = nil
         slowPaths = []
+        heldPaths = []
+        heldItems = []
         lock.unlock()
     }
 
     static func snapshot() -> Snapshot {
         lock.lock(); defer { lock.unlock() }
         return Snapshot(started: started, startDates: startDates,
-                        completed: completed, peak: peak)
+                        completed: completed, peak: peak, held: heldItems.count)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -425,6 +509,11 @@ private final class SerializedTransportStub: URLProtocol {
             self?.finish(path: path, shouldFail: shouldFail)
         }
         workItem = item
+        Self.lock.lock()
+        let held = Self.heldPaths.contains(path)
+        if held { Self.heldItems.append(item) }
+        Self.lock.unlock()
+        if held { return }
         DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: item)
     }
 

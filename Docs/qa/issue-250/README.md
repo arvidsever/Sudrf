@@ -1,0 +1,262 @@
+# #250 — фоновая проверка связей после CSV-импорта
+
+Начальная база: `origin/main` `bd06f4ef19922f311ece19df3167296a80d26756`,
+0.64.6 (258). Диагностика проведена 10 октября 2026 года.
+Ветка: `codex/csv-background-repair-250`.
+
+## Текущий checkpoint — 10 октября 2026 года
+
+Интегрирован `origin/main` `8a7f0e8` с сохранением первого транспортного слоя.
+Пользователь согласовал прогресс под существующей навигацией и мягкую остановку:
+активная карточка завершается и сохраняется, следующая не допускается.
+После атомарного сохранения CSV операция принадлежит AppRouter; закрытие листа
+только скрывает его, команда импорта возвращает текущую операцию/отчёт. Из
+завершённого отчёта доступен выбор другого файла.
+
+Оригинальные ключи задают неизменный знаменатель. Каждый исходный ключ учитывается
+ровно один раз после попытки или явного пропуска, в том числе при объединении
+ключей. Сбой сохранения оставляет предыдущий результат и непроверенный остаток.
+Интерактивный repair preflight резервирует следующий допуск раньше следующей
+CSV-карточки; существующий длительный startup runAll этим изменением не сокращён.
+CAPTCHA хранит происхождение операции в контексте формы: остановленный старый
+callback не запускает scoped/global repair; обычная CAPTCHA того же суда независима.
+Повторная проверка сохраняет предыдущие изменения и исходный знаменатель, снова
+показывает мягкую остановку.
+
+### Выполненная изолированная проверка
+
+`swift test --filter CSVBackgroundRepairTests`: **8 тестов, 0 ошибок, 0 пропусков,
+0,255 секунды**. Лог `/private/tmp/sudrf-250-background-focused.log`, SHA-256
+`741cacddf438be72ac07bf292b25cb86b3aa8d3b20b394a987396452fba733c8`.
+Независимое ревью исходников и восьми сценариев: PASS.
+
+Проверены приоритет A→interactive X→B; скрытие/возврат отчёта; мягкая остановка
+активной карточки и остановка во время ожидания чужого repair; fixed denominator
+для missing/ineligible/backoff; частичный сбой сохранения; повтор CAPTCHA без
+двойного счёта и поздняя форма; объединение alias без повторного запроса и потерянных
+исторических изменений; остановка во время повторной CAPTCHA-проверки.
+Также проверен обычный repair report после скрытого завершённого импорта.
+
+Тесты начинают второй этап через тот же postcommit entry point после создания
+синтетических записей. Первый этап чтения CSV/атомарного commit не объявляется
+заново проверенным этими сценариями. Router/coordinator используют частные suites,
+корпус, act cache, token store, отклоняющие ephemeral clients и подмены системных
+эффектов. Автосолвер в coordinator явно не включён; его shared-token путь не
+исполнялся. Полный локальный suite не запускался из-за исторической границы общих
+настроек. GUI, основное приложение, рабочая база и live-запросы не запускались.
+
+### QA-host подготовлен без запуска
+
+`GUIHost.swift` показывает настоящий `OperationalRootView`, существующую навигацию,
+полосу прогресса и карточку из частного in-memory store. Частный suite заранее
+помечает onboarding Spotlight завершённым и отключает Spotlight, поэтому штатный
+guard также блокирует системный поиск, независимо от writer подмены. Синтетическая проверка
+удерживает активную карточку continuation; команда QA «Завершить текущую
+синтетическую карточку» (⌘F) освобождает её, продуктовая кнопка остановки остаётся
+штатной. Окно 1180 × 720 — минимальная штатная ширина OperationalRootView.
+
+Bundle ID `ru.sudrf.qa.csv250` проверяется до создания состояния. Host не использует
+AppBootstrap; частные UUID suite/corpus/cache/token store, ephemeral rejecting
+clients без cookies/cache, nil resolver/variant caches, частный nil-dir solver log,
+подмены Spotlight/notification/activity/intent. Внешние ссылки блокируются openURL;
+⌘Q и закрытие последнего окна завершают процесс. SearchModel передаётся через
+минимальный внутренний initializer, штатные defaults сохранены.
+
+Сборка host без запуска прошла. Лог `/private/tmp/sudrf-250-native-build.log`, SHA-256
+`9667f271ba432c250da5d7675ba58c46a2a8e4ea8e47a8c365d5014b543148e2`.
+Повтор восьми сценариев после добавления внутренних view seams: 0 ошибок/пропусков,
+0,244 секунды, лог `/private/tmp/sudrf-250-background-final-profile.log`, SHA-256
+`2fba7cd9ab2182cb9614a51428dda3e310aa2c6a04293e8e3a41980d5b4799e3`.
+Независимое ревью host и внутренних view/SearchModel seams: PASS для названного
+синтетического сценария навигации/прогресса/отчёта. Host не зарегистрирован и не
+запускался. Он не доказывает CSV parser/atomic commit или disk reopen. SceneStorage
+и стандартные OS-настройки принадлежат отдельному QA bundle; отсутствие любых OS
+артефактов не заявляется. Несвязанные FSSP/AI операции не входят в сценарий, не
+разрешены и не должны запускаться: их ленивые production пути этой QA не покрывает.
+Для проверки выбора нового файла подготовлен только синтетический
+`new-import-synthetic.csv`; неизвестные сети по-прежнему отклоняются.
+
+Генератор legal registry `--check` актуален. Первая попытка xcodegen остановилась
+на трёх отсутствующих ignored CoreML resources. Существующие assets из собственного
+#104 QA worktree сверены со всеми тремя текущими tracked manifests и скопированы
+в ignored fixtures этой ветки. Затем `xcodegen generate` и unsigned Xcode 27 Debug
+`Sudrf` прошли, без запуска приложения. Лог
+`/private/tmp/sudrf-250-background-xcode-build.log`, SHA-256
+`05a29dbd7b4b74bb65bf21a501a4cfb3c6ed42ce37bec55359a88eecccd140e9`.
+
+
+### Интеграция актуального main после первого push
+
+Первый background HEAD `1e9a3d8` оказался конфликтующим с уже вошедшим #106:
+GitHub не создал CI этого HEAD. Интегрирован `origin/main` `fb3e2c7` merge commit
+без переписывания истории. Default RefreshCenter сохраняет маршрут #106
+`mos-sud.ru` + `adm` → MoscowMagistrateKoAPClient, обычный magistrate и general
+providers; custom builder сохраняет отсутствие создания ненужных клиентов.
+SearchModel сохраняет main lazy VSRF default и частную provider injection.
+QA-host дополнительно передаёт частный Moscow client и в MagistrateCourtResolver.
+Независимое ревью разрешения конфликтов: PASS.
+
+После интеграции: 8 тестов, 0 ошибок/пропусков, 0,248 секунды;
+`/private/tmp/sudrf-250-main-integration-profile.log`, SHA-256
+`051cd81dcbb41fc7fbdb5fb9938b97d93d8ad444d86187b92de65accefb5f2d3`.
+Повтор сборки QA host без запуска: PASS, SHA-256
+`9667f271ba432c250da5d7675ba58c46a2a8e4ea8e47a8c365d5014b543148e2`.
+Xcode 27 unsigned Debug: BUILD SUCCEEDED без запуска;
+`/private/tmp/sudrf-250-main-integration-xcode-build.log`, SHA-256
+`473d19d7b6d310030d14879fe377dfa1ca27c1c704089806b4d1e69b58b4f8e6`.
+
+### Оставшиеся gates
+
+Изолированный host с настоящими OperationalRootView/навигацией/карточкой готовится
+без AppBootstrap; нужна отдельная разрешённая native-проверка 38 px резерва при
+высоте окна 720 px, переходов поиска/«Мои дела», скрытия/возврата отчёта и нового
+файла. Запуск #250 разрешён; попытка native-проверки остановлена из-за заблокированного экрана, приёмка ожидает разблокировки. Current-SHA CI — после готового diff;
+merge/release и закрытие issue не выполнены.
+
+## Историческая диагностика первого слоя
+
+Ниже сохранены исходные препятствия и доказательства начального transport checkpoint.
+
+## Подтверждённые препятствия полного пути
+
+| Исходники основной базы | Наблюдение | Необходимая проверка |
+| --- | --- | --- |
+| `AppModel.swift:1339–1405` | Импорт атомарно сохраняется до scoped repair; при частичном сбое формируется warning report | Отмена второго этапа сохраняет импорт и накопленный отчёт |
+| `RootView.swift:260,315,481–495` | Представление листа связано со состоянием операции; второй этап блокирует закрытие, новый импорт не открывает прежний отчёт | Отделить закрытие листа от отмены операции; повторная команда возвращает текущий прогресс |
+| `TrackedCaseRepair.swift:386–427` | Scoped pass ждёт текущий global/scoped task, затем создаёт собственную unstructured task | Не считать отмену внешней задачи автоматической отменой coordinator |
+| `AppModel.swift:466`, `TrackedCaseRepair.swift:537` | Интерактивный refresh вызывает repair preflight до запроса движения | Приоритет transport waiter не устраняет ожидание всего scoped batch до транспорта |
+| `TrackedCaseRepair.swift:505–524` | Предварительный фильтр исключает неподходящие/отсутствующие ключи | Progress должен учитывать каждый исходный ключ ровно один раз, включая пропуск и remap; отменённый остаток не считается проверенным |
+| `AppModel.swift:1926–1954` | Повтор после CAPTCHA имеет отдельную последовательность и generation guards | Закрытие листа сохраняет report/keys; отмена не позволяет старому callback возобновить остановленный проход |
+
+Одного `Task(priority: .background)` недостаточно: ожидание результата из
+задачи более высокого приоритета может повысить приоритет ожидаемой задачи.
+Это учитывается при дальнейшем выделении владельца фоновой операции, согласно
+[SE-0304](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md#priority-escalation).
+
+## Первый независимый слой: очередь SUDRF
+
+Существующий actor-owned gate `SudrfClient` сериализует физические запросы,
+включая повторные попытки и каждый redirect hop. Первый ограниченный patch
+сохраняет текущий активный запрос и выбирает следующего ожидающего по приоритету
+его задачи при постановке; равный приоритет сохраняет FIFO. Путь отмены и
+освобождения слота переиспользуется.
+
+Не вводятся новый клиент, планировщик, формат базы или публичный API. Это очередь
+`SudrfClient`, а не единая очередь всех порталов: `HTMLCourtTransport` обслуживает
+Мосгорсуд/ВС РФ отдельно. Изменение этого gate не доказывает готовность полного
+фонового импорта и не гарантирует приоритет интерактивного repair preflight.
+
+Изолированные проверки используют подменённые ответы `URLProtocol`, временное
+состояние variant/CAPTCHA и существующий actor-isolated счётчик ожидания. Порядок
+постановки подтверждается счётчиком, активный ответ удерживается явным барьером;
+порядок старта проверяется до ожидания `.value`, которое могло бы повысить
+приоритет фоновой задачи. Живые сайты, рабочая база и приложения не используются.
+
+Приоритет фиксируется один раз при постановке, последующее повышение приоритета
+задачи не переставляет сохранённый waiter. Непрерывный поток приоритетных запросов
+может откладывать фоновый запрос; дополнительная политика fairness не вводилась.
+
+## Профильная проверка первого слоя
+
+На исходной FIFO-реализации три новых регрессии дали один ожидаемый RED: порядок
+`active → background → interactive` вместо требуемого
+`active → interactive → background`. После изменения весь класс transport policy
+прошёл: **11 тестов, 0 ошибок, без пропусков**.
+
+Оркестратор независимо повторил класс вместе с `TransportTimingTests` и
+`SudrfCaseCardLinkTests`: **27 тестов, 0 ошибок, без пропусков**. Это подменённые
+ответы и профильная проверка gate, не живой импорт или проверка интерфейса.
+
+| Лог | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-250-priority-red.log` | `4d5fa62fe5e0130821cea57b67e9ecb20234412ccbc38f2272f5526fc74639b4` |
+| `/private/tmp/sudrf-250-priority-green.log` | `ade8f5a94859cc4e712c5d1318a01c77a2b029cf4052615668f20f33c62f98f6` |
+| `/private/tmp/sudrf-250-priority-root-profile.log` | `790ef56546473ce8e85ce97cebc2eb478534ab6c4402ac8d23ab9de646703d57` |
+
+Независимый Astra review первого слоя: Ship, блокирующих замечаний нет.
+Обнаруженный устаревший комментарий о FIFO уточнён; алгоритм не менялся.
+
+## Полный набор и сборка
+
+Первый полный локальный прогон завершился с ошибкой: **2038 XCTest,
+26 пропусков, 3 ошибки** в существующих Vision-проверках; отдельно прошли
+28 Swift Testing. Две проверки флага preprocessing получили `false`, третья —
+`TextRecognition.CRImageReaderError error 1` от `VNImageRequestHandler.perform`.
+`CaptchaSolver.topCandidates` перехватывает OCR-ошибку и возвращает `([], false)`,
+поэтому эти результаты не доказывают сбой переключения preprocessing.
+
+При отдельном повторе тех же трёх тестов — **3 теста, 0 ошибок**. Код CAPTCHA
+не изменялся; точная причина первого сбоя не установлена. Отдельный успешный
+повтор не заменяет итог полного набора.
+
+После проверки SHA-256 по трём текущим model manifests существующие CoreML
+assets скопированы в ignored test fixtures. Повтор полного набора завершён
+с ними: **2038 XCTest, 21 пропуск, 0 ошибок**; отдельно прошли
+**28 Swift Testing**. Успех отдельного Vision-повтора был получен до этого копирования;
+влияние assets на первый сбой не установлено.
+
+Генератор legal registry: `--check` прошёл, артефакт актуален. `xcodegen generate`
+и локальная Xcode 27 Debug-сборка `Sudrf` с `CODE_SIGNING_ALLOWED=NO` прошли:
+`BUILD SUCCEEDED`. Derived data: `/private/tmp/sudrf-250-xcode-20261010`.
+Приложение не запускалось; это сборка без подписи, не релизная приёмка.
+
+Профиль queue использует изолированные stores. Полный существующий набор не
+заявляется полностью hermetic: отдельные CAPTCHA-тесты создают штатный локальный
+логгер. Рабочая база и TestFlight не открывались.
+
+| Лог | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-250-priority-full.log` | `07a6f6816e91b93ac7a79fe621ccc89676d34f72529df614c6c7fccfd9d5bf5d` |
+| `/private/tmp/sudrf-250-vision-repeat.log` | `5481d8c17b52c66c3b90060109f9ea51c110dee8bf083f82b902340506b75724` |
+| `/private/tmp/sudrf-250-priority-full-final.log` | `b806eac2008e659d70eda9966269f90abf8b577eef6fc329a605211918b4c434` |
+| `/private/tmp/sudrf-250-xcode-20261010.log` | `d1caa925c96203b4d7929def30c9241570b95997af2caf6c7e1fd741221cd1de` |
+
+## Progress: независимая диагностика следующего слоя
+
+Точный callback должен подтверждать каждый исходный ключ один раз, а не размер
+набора, оставшегося после `compactMap` или расширения remap. Missing, неподходящие
+карточки и backoff являются обработанными пропусками; CAPTCHA-рекурсия не должна
+считать один ключ повторно. Ошибка сохранения не подтверждает неудавшийся ключ и
+остаток batch. При объединении два исходных ключа могут соответствовать одному
+сетевому проходу, но знаменатель исходной операции сохраняется.
+
+`repairHigherAnchor` сейчас перехватывает отмену и возвращается нормально. Поэтому
+return нельзя безусловно считать завершённой проверкой. Callback и владение
+фоновой задачей будут реализованы после согласования отмены; текущее исследование
+не меняет поведение coordinator.
+
+## Следующие gates
+
+1. RED/GREEN профиль очереди; независимый review и сохранённые результаты.
+2. Точный callback progress для исходного набора ключей: пропуск, отсутствие,
+   backoff, remap, частичная ошибка, остановленный остаток.
+3. Владение фоновой задачей и выбранная семантика отмены; интерактивный preflight
+   не ждёт весь batch; сохранность атомарного импорта и отчёта.
+4. Согласованный макет, реализация состояния листа/общего индикатора и отдельная
+   нативная приёмка. Затем полный набор, CI и Xcode-сборка.
+
+#250 остаётся открытой. Текущий checkpoint не является релизом, завершённой
+операцией в фоне, визуальной приёмкой или основанием для слияния полного feature.
+
+## Disk CSV regression after current main integration
+
+Merge checkpoint `e10bcd0` integrates main7062c54 separately from the test change.
+Actual focused profile: **9 PASS,0 failures/skips**,0.399 seconds. New test calls
+real `beginImport(csvText:)`, private SudrfClient/URLProtocol and CaseCardParser;
+asserts two exact successful card GETs and first-stage report cold/parsing/transient
+all zero before background repair. Two records are atomically present on disk.
+Hide/reopen preserves the running operation; soft stop completes only the current
+card. Reopened disk preserves exact keys, numbers, collections, contexts, movement,
+snapshot, full journal bytes and logical case IDs. CSV commit intentionally starts
+with nil snapshot/movement (actual commitImport contract); this test does not claim
+a persisted initial card snapshot. All fixture names/data are synthetic.
+
+Profile log `/private/tmp/sudrf-250-current-nine-final.log`, SHA-256
+`ba7a101c2cadc5fecf923da341bb38a11c08205d35f9ad1b08f91bfe93dad977`.
+Current QA host build PASS, log SHA-256
+`9667f271ba432c250da5d7675ba58c46a2a8e4ea8e47a8c365d5014b543148e2`.
+Current unsigned Xcode build PASS, log `/private/tmp/sudrf-250-current-xcode.log`,
+SHA-256 `21c1742f55474ea1c1705cf5ca4a79776a6a0202c55c2dff09429d73735a5eb2`.
+Independent Astra review of the final test and merged source: Ship for commit,
+push and new CI; no blocking P1/P2 finding. No application launch or full local
+suite. Current-SHA CI and native acceptance remain separate gates.

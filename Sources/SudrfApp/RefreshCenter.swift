@@ -313,8 +313,7 @@ final class RefreshCenter: ObservableObject {
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
         // Локальные копии — чтобы default-замыкания не захватывали self
-        // до завершения инициализации (клиенты — let stored,
-        // self в escaping-замыкании до init-completion = ошибка компиляции).
+        // Default clients are constructed only for the default service path.
         if let serviceBuilder {
             self.serviceBuilder = serviceBuilder
         } else {

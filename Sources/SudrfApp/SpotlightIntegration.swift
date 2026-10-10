@@ -169,15 +169,42 @@ actor CaseCatalogRegistry {
     static let shared = CaseCatalogRegistry()
     private var catalog: CaseCatalog?
 
-    func install(_ catalog: CaseCatalog) { self.catalog = catalog }
+    func install(_ catalog: CaseCatalog) {
+        self.catalog = catalog
+        #if SUDRF_QA_46
+        Issue46Trace.emit("registry.install")
+        #endif
+    }
 
     func caseEntities() async throws -> [CaseEntity] {
-        guard let catalog else { return [] }
-        return try await catalog.cases().map(CaseEntity.init(snapshot:))
+        #if SUDRF_QA_46
+        Issue46Trace.emit("query.cases.all.begin installed=\(catalog != nil)")
+        defer { Issue46Trace.emit("query.cases.all.end installed=\(catalog != nil)") }
+        #endif
+        guard let catalog else {
+            #if SUDRF_QA_46
+            Issue46Trace.emit("query.result count=0 installed=false")
+            #endif
+            return []
+        }
+        let entities = try await catalog.cases().map(CaseEntity.init(snapshot:))
+        #if SUDRF_QA_46
+        Issue46Trace.emit("query.result count=\(entities.count) installed=true")
+        #endif
+        return entities
     }
 
     func caseEntities(for identifiers: [CaseEntity.ID]) async throws -> [CaseEntity] {
-        guard let catalog else { return [] }
+        #if SUDRF_QA_46
+        Issue46Trace.emit("query.cases.identifiers.begin installed=\(catalog != nil)")
+        defer { Issue46Trace.emit("query.cases.identifiers.end installed=\(catalog != nil)") }
+        #endif
+        guard let catalog else {
+            #if SUDRF_QA_46
+            Issue46Trace.emit("query.result count=0 installed=false")
+            #endif
+            return []
+        }
         var seen = Set<CaseEntity.ID>()
         var entities: [CaseEntity] = []
         for identifier in identifiers {
@@ -185,6 +212,9 @@ actor CaseCatalogRegistry {
             let entity = CaseEntity(snapshot: snapshot)
             if seen.insert(entity.id).inserted { entities.append(entity) }
         }
+        #if SUDRF_QA_46
+        Issue46Trace.emit("query.result count=\(entities.count) installed=true")
+        #endif
         return entities
     }
 

@@ -303,7 +303,8 @@ final class SearchModel: ObservableObject {
     private let client: SudrfClient
     private let moscowMagistrateClient: MoscowMagistrateKoAPClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
-    private lazy var vsrfClient = VSRFClient()
+    private let configuredVSRFProvider: (any VSRFProviding)?
+    private lazy var vsrfClient: any VSRFProviding = configuredVSRFProvider ?? VSRFClient()
     private let mosGorSudClient: any MosGorSudProviding
     private let movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)?
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,
@@ -340,6 +341,7 @@ final class SearchModel: ObservableObject {
          resolver: DistrictCourtResolver? = nil,
          magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
+         vsrfProvider: (any VSRFProviding)? = nil,
          moscowMagistrateClient: MoscowMagistrateKoAPClient = MoscowMagistrateKoAPClient(),
          movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
@@ -359,6 +361,7 @@ final class SearchModel: ObservableObject {
         self.magistrateResolver = magistrateResolver
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
+        self.configuredVSRFProvider = vsrfProvider
         self.moscowMagistrateClient = moscowMagistrateClient
         self.movementServiceFactory = movementServiceFactory
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()

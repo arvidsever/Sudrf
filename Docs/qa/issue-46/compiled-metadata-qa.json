@@ -1,0 +1,45 @@
+{
+  "checkedAtUTC": "2026-10-10T15:16:21.930827+00:00",
+  "baseMain": "7f869f1",
+  "bundleIdentifier": "ru.sudrf.qa.issue46",
+  "configuration": "Debug; SUDRF_QA_46; ad hoc own sandbox entitlements",
+  "metadataSHA256": "77337ebe4f34244e0e6b6c418093e9f5c808f7f3a5abeed2303fa606e1bbc872",
+  "buildLogSHA256": "abc64d3680ebc066551ebc29480b75904a5eee41a011a80c57494d2822eae410",
+  "appLaunched": false,
+  "launchBoundary": "First CUA request blocked by locked Mac; no native setup or Shortcuts created",
+  "actions": [
+    {
+      "identifier": "AddCaseToCollectionIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.AddCaseToCollectionIntent"
+    },
+    {
+      "identifier": "ExportCourtActPDFIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.ExportCourtActPDFIntent"
+    },
+    {
+      "identifier": "OpenCaseIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.OpenCaseIntent"
+    },
+    {
+      "identifier": "OpenCourtActIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.OpenCourtActIntent"
+    },
+    {
+      "identifier": "RefreshCaseIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.RefreshCaseIntent"
+    },
+    {
+      "identifier": "ShowUpcomingHearingsIntent",
+      "fullyQualifiedTypeName": "SudrfQA46.ShowUpcomingHearingsIntent"
+    }
+  ],
+  "entities": [
+    "CaseEntity",
+    "CourtActEntity"
+  ],
+  "queries": [
+    "CaseEntityQuery",
+    "CourtActEntityQuery"
+  ],
+  "nativeColdStartVerified": false
+}

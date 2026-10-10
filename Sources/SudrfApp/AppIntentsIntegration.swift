@@ -15,9 +15,17 @@ final class SudrfIntentRuntime {
 
     private init() {}
 
-    func install(_ router: AppRouter) { self.router = router }
+    func install(_ router: AppRouter) {
+        self.router = router
+        #if SUDRF_QA_46
+        Issue46Trace.emit("runtime.install")
+        #endif
+    }
 
     func requireRouter() throws -> AppRouter {
+        #if SUDRF_QA_46
+        Issue46Trace.emit("runtime.requireRouter installed=\(router != nil)")
+        #endif
         guard let router else {
             throw SudrfIntentError.applicationUnavailable
         }
@@ -127,10 +135,17 @@ struct AddCaseToCollectionIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        #if SUDRF_QA_46
+        Issue46Trace.emit("intent.add.begin")
+        defer { Issue46Trace.emit("intent.add.end") }
+        #endif
         let added = try await MainActor.run {
             try SudrfIntentRuntime.shared.requireRouter().intentAddCase(
                 key: courtCase.id, collection: collectionName)
         }
+        #if SUDRF_QA_46
+        Issue46Trace.emit("intent.add.result added=\(added)")
+        #endif
         return .result(dialog: added
             ? "Дело добавлено в подборку."
             : "Не удалось добавить дело: проверьте название и наличие дела.")
@@ -145,9 +160,16 @@ struct ShowUpcomingHearingsIntent: AppIntent {
     static var supportedModes: IntentModes { .background }
 
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        #if SUDRF_QA_46
+        Issue46Trace.emit("intent.hearings.begin")
+        defer { Issue46Trace.emit("intent.hearings.end") }
+        #endif
         let text = try await MainActor.run {
             try SudrfIntentRuntime.shared.requireRouter().intentUpcomingHearings()
         }
+        #if SUDRF_QA_46
+        Issue46Trace.emit("intent.hearings.result lines=\(text.split(separator: "\n").count)")
+        #endif
         return .result(value: text, dialog: IntentDialog(LocalizedStringResource(stringLiteral: text)))
     }
 }

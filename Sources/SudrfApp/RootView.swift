@@ -36,14 +36,19 @@ final class AppBootstrap: ObservableObject {
     @Published private(set) var state: State = .loading
     private var operationInFlight = false
     private let loader: @Sendable () async throws -> ModelContainer
+    private let routerFactory: @MainActor (ModelContainer) throws -> AppRouter
     private let quarantine: @Sendable (URL, String) async throws -> URL
 
     init(loader: @escaping @Sendable () async throws -> ModelContainer = {
         try await Task.detached(priority: .userInitiated) {
             try PersistentStoreBootstrapper().prepareProduction()
         }.value
-    }, quarantine: (@Sendable (URL, String) async throws -> URL)? = nil) {
+    }, quarantine: (@Sendable (URL, String) async throws -> URL)? = nil,
+         routerFactory: @escaping @MainActor (ModelContainer) throws -> AppRouter = {
+             try AppRouter(modelContainer: $0, modelContainerIsPrepared: true)
+         }) {
         self.loader = loader
+        self.routerFactory = routerFactory
         self.quarantine = quarantine ?? { storeURL, message in
             try await Task.detached(priority: .userInitiated) {
                 let error = NSError(
@@ -102,11 +107,22 @@ final class AppBootstrap: ObservableObject {
         guard !operationInFlight else { return }
         operationInFlight = true
         do {
+            #if SUDRF_QA_46
+            Issue46Trace.emit("bootstrap.loader.begin")
+            #endif
             let container = try await loader()
-            let router = try AppRouter(
-                modelContainer: container, modelContainerIsPrepared: true)
+            #if SUDRF_QA_46
+            Issue46Trace.emit("bootstrap.loader.result")
+            #endif
+            let router = try routerFactory(container)
+            #if SUDRF_QA_46
+            Issue46Trace.emit("bootstrap.background.begin")
+            #endif
             router.startBackgroundWork()
             state = .ready(router)
+            #if SUDRF_QA_46
+            Issue46Trace.emit("bootstrap.ready")
+            #endif
         } catch {
             let failure = makeFailure(from: error)
             if let quarantined {
@@ -133,15 +149,26 @@ final class AppBootstrap: ObservableObject {
 }
 
 struct RootView: View {
-    @StateObject private var bootstrap = AppBootstrap()
+    @StateObject private var bootstrap: AppBootstrap
+    private let searchModel: SearchModel?
+
+    init(bootstrap: AppBootstrap? = nil, searchModel: SearchModel? = nil) {
+        _bootstrap = StateObject(wrappedValue: bootstrap ?? AppBootstrap())
+        self.searchModel = searchModel
+    }
 
     var body: some View {
         switch bootstrap.state {
         case .loading:
             StorageStartupLoadingView()
-                .task { await bootstrap.start() }
+                .task {
+                    #if SUDRF_QA_46
+                    Issue46Trace.emit("root.task")
+                    #endif
+                    await bootstrap.start()
+                }
         case .ready(let router):
-            OperationalRootView(router: router)
+            OperationalRootView(router: router, searchModel: searchModel)
         case .failed(let failure):
             StorageStartupFailureView(failure: failure,
                                       onRetry: { Task { await bootstrap.retry() } },
@@ -169,19 +196,25 @@ private struct StorageStartupLoadingView: View {
 /// Рабочее дерево создаётся только после успешного открытия persistent store.
 /// В аварийном состоянии нет ни ModelContainer, ни меню/обработчиков импорта,
 /// поэтому записать данные во временную базу невозможно.
-private struct OperationalRootView: View {
+struct OperationalRootView: View {
     @ObservedObject var router: AppRouter
+    var searchModel: SearchModel? = nil
     @SceneStorage("myCases.productionFilters") private var storedProductionFilters = ""
     @SceneStorage("myCases.stageFilters") private var storedStageFilters = ""
     @SceneStorage("myCases.tierFilters") private var storedTierFilters = ""
     @SceneStorage("myCases.showCompleted") private var storedShowCompleted = false
     @State private var restoredMyCasesFilters = false
 
+    @ViewBuilder private var searchContent: some View {
+        if let searchModel { ContentView(model: searchModel) }
+        else { ContentView(client: router.client) }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color(nsColor: .sudrfContent).ignoresSafeArea()
 
-            ContentView(client: router.client)
+            searchContent
                 .environmentObject(router)
                 .opacity(router.section == .search ? 1 : 0)
                 .allowsHitTesting(router.section == .search)

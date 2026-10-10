@@ -69,7 +69,7 @@
 | [#357](https://github.com/arvidsever/Sudrf/issues/357) | Убрать внутренние ID правил из колонки «Дальше» и перенос посреди слов. |
 | [#364](https://github.com/arvidsever/Sudrf/issues/364) | Выровнять карточки «Моих дел», показать вид производства и однозначную метку стадии. |
 | [#333](https://github.com/arvidsever/Sudrf/issues/333) | Gate исторических форматов #264 пройден в 0.62.12; далее — необязательное короткое название дела для календаря с согласованием интерфейса. |
-| [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. [Диагностика текущего bootstrap](qa/issue-46/README.md): повторное открытие store → catalog и метаданные собственной Xcode-сборки проверены; гипотеза OS-сбоя не доказана, отдельный системный запуск ещё не выполнен. |
+| [#46](https://github.com/arvidsever/Sudrf/issues/46) | Проверить cold-start App Intents и background resolution. [Диагностика текущего bootstrap](qa/issue-46/README.md): 3 профильных теста bootstrap/runtime/catalog пройдены; подготовлен собственный sandbox Xcode QA target с настоящими App Intents и штатным порядком запуска. Холодные OS-запуски двух собственных Shortcuts разрешены, ещё не выполнены; гипотеза OS-сбоя не доказана. |
 | [#186](https://github.com/arvidsever/Sudrf/issues/186) | Проверить Spotlight identity Debug/Developer ID при общем bundle ID. |
 | [#66](https://github.com/arvidsever/Sudrf/issues/66) | Завершить APPLE-6 системной матрицей после #46/#186; AI-зависимая часть ждёт отдельного решения. |
 | [#69](https://github.com/arvidsever/Sudrf/issues/69) | Собрать production Developer ID/notarization pipeline. |

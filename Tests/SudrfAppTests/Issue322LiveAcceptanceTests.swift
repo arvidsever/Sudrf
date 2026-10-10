@@ -298,9 +298,11 @@ final class Issue322LiveAcceptanceTests: XCTestCase {
         guard path.hasPrefix("/private/tmp/sudrf-322-"),
               supplied.deletingLastPathComponent().path == "/private/tmp",
               supplied.lastPathComponent.hasPrefix("sudrf-322-") else { throw GateFailure.manifest }
-        let root = supplied.standardizedFileURL.resolvingSymlinksInPath()
         let parent = URL(fileURLWithPath: "/private/tmp").standardizedFileURL.resolvingSymlinksInPath()
-        guard root.deletingLastPathComponent() == parent,
+        // Resolve the existing parent first: Foundation leaves an absent child's
+        // original /private/tmp prefix unresolved. Existing child symlinks still resolve.
+        let root = parent.appendingPathComponent(supplied.lastPathComponent).standardizedFileURL.resolvingSymlinksInPath()
+        guard root.deletingLastPathComponent().path == parent.path,
               root.lastPathComponent == supplied.lastPathComponent else { throw GateFailure.manifest }
         return root
     }
@@ -309,6 +311,12 @@ final class Issue322LiveAcceptanceTests: XCTestCase {
         let path = "/private/tmp/sudrf-322-root-\(UUID().uuidString)"
         let outside = "/private/tmp/issue322-outside-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: path); try? FileManager.default.removeItem(atPath: outside) }
+        let absentRoot = try Self.privateRoot(path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        XCTAssertEqual(absentRoot.deletingLastPathComponent().path,
+            URL(fileURLWithPath: "/private/tmp").standardizedFileURL.resolvingSymlinksInPath().path)
+        XCTAssertThrowsError(try Self.privateRoot("/tmp/" + absentRoot.lastPathComponent))
+        XCTAssertThrowsError(try Self.privateRoot(path + "/child"))
         try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let root = try Self.privateRoot(path)
         XCTAssertEqual(root.deletingLastPathComponent(), URL(fileURLWithPath: "/private/tmp").standardizedFileURL.resolvingSymlinksInPath())

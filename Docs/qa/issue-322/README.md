@@ -445,3 +445,18 @@ remains. No new diagnostic or network run was performed for this cleanup.
 
 Private diagnostic snippet SHA-256:
 `20b3e550d708a4d80990ae2ef5d17a4fdb8c59d982043733e93b088fc1530d49`.
+
+Source provenance clarification: the one actual live attempt used version0.64.8
+(build260), base `2c4360f` plus the source delta later committed as `d0bd57d`;
+root verified exact equality of all three source-file hashes to that checkpoint.
+Subsequent integration `4821163` with main7062c54/version0.65.3 is a separate
+offline checkpoint, not a live rerun. Its first offline profile exposed the
+absent-root canonicalization difference; the harness now resolves the existing
+canonical temporary parent before appending the exact validated child name.
+Existing and absent private roots are covered in the same focused test; external
+symlinks and literal `/tmp` input remain rejected. Independent review: Ship
+for draft/push/CI, not full acceptance. Final sequential offline profile after
+main integration: **8 PASS, 0 failures/skips**, 26.056 seconds; build2.87 seconds.
+Private log `/private/tmp/sudrf-322-main-integration-final.log`, SHA-256
+`f3415fb1b56e7016e8920f23844b3c1c060058dce871c7a52e45ef61fe9332d3`.
+No live rerun, GUI launch or product-parser fix was performed for this gate.

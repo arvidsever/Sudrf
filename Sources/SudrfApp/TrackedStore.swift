@@ -1121,12 +1121,17 @@ final class TrackedStore {
     func appendCaseEvents(_ events: [CaseEvent], to record: TrackedCaseRecord,
                           derivationVersion: Int? = nil,
                           originKey: String? = nil,
-                          semanticBaselines: CaseEventBaselines? = nil) throws {
-        guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil else { return }
+                          semanticBaselines: CaseEventBaselines? = nil,
+                          sourceRowContinuities: [String: String]? = nil,
+                          feedState: JournalFeedState? = nil) throws {
+        guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil
+                || sourceRowContinuities != nil || feedState != nil else { return }
         let originalJournal = try requiredEventJournal(for: record)
         var journal = originalJournal
         if let derivationVersion { journal.derivationVersion = derivationVersion }
         if let semanticBaselines { journal.semanticBaselines = semanticBaselines }
+        if let sourceRowContinuities { journal.sourceRowContinuities = sourceRowContinuities }
+        if let feedState { journal.feedState = feedState }
         do {
             if failNextJournalAppendForTesting {
                 failNextJournalAppendForTesting = false
@@ -1134,6 +1139,16 @@ final class TrackedStore {
             }
             try journal.append(journal.identifyingOccurrences(
                 events, originKey: originKey ?? record.key))
+            if journal.feedState != nil {
+                let input = LegacyFeedRecordInput(recordKey: record.key, caseNumber: record.caseNumber,
+                    client: record.courtTitle, unreadByCase: record.seenAt == nil,
+                    snapshot: record.snapshot, movement: record.movement, context: record.context,
+                    enforcementRecords: record.enforcementRecords,
+                    recordKeyAliases: Set(record.legacyKeyAliases),
+                    canUseRecordKeyAliases: TrackedCaseIdentity.persistedState(for: record) != nil)
+                journal.feedState = try JournalFeedProjection.synchronize(record: input,
+                    journal: journal, legacyReadIDs: [], legacyKnownIDs: [])
+            }
         } catch {
             storeLog.error("Не удалось дополнить журнал событий: \(error, privacy: .public)")
             throw TrackedStoreCommitError.eventJournalAppend(details: error.localizedDescription)

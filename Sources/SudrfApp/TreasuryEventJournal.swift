@@ -53,6 +53,8 @@ enum TreasuryEventJournal {
                 observedAtRef: selected.observedAtRef, evidence: evidence,
                 occurrence: selected.occurrence)])
         }
+        combined.feedState = try JournalFeedState.merged(
+            journals.compactMap(\.feedState), events: combined.events)
         return combined
     }
 

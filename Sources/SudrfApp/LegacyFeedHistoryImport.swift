@@ -72,6 +72,14 @@ enum LegacyFeedHistoryImport {
                 duplicateCounts[fingerprint] = ordinal + 1
                 var evidence = CaseEventEvidence()
                 evidence.legacyFeedHistory = history
+                switch source {
+                case .session(let session): evidence.sourceCardID = session.sourceCardID
+                case .act(let act):
+                    let owners = Set((record.snapshot?.actObservations ?? []).filter {
+                        $0.sourceActID == act.id
+                    }.compactMap(\.sourceCardID))
+                    if owners.count == 1 { evidence.sourceCardID = owners.first }
+                }
                 // Distinct payloads and repeated rows survive legacy-ID collisions.
                 return CaseEvent.make(kind: .legacyFeedImported,
                     occurrence: ["legacy-feed-import-v1", logicalCaseID.uuidString.lowercased(),

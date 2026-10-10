@@ -20,7 +20,7 @@ import SudrfKit
 import CaptchaSolver
 import SwiftData
 
-struct MaterialFeedMigrationState: Equatable {
+struct MaterialFeedMigrationState: Codable, Equatable, Sendable {
     var consumedLegacyIDs = Set<String>()
     var pendingUnresolvedCounts = [String: Int]()
 }
@@ -884,7 +884,7 @@ final class AppRouter: ObservableObject {
 
     var isEmpty: Bool { cases.isEmpty }
     var caseCount: Int { cases.count }
-    var newBadge: Int { cases.filter { $0.isNew }.count }
+    var newBadge: Int { cases.filter(\.isNew).count }
     var waitingCount: Int { Self.pendingDeadlines(deadlines, today: DateUtil.today).count }
     var overdueDeadlineCount: Int {
         Self.overdueDeadlines(deadlines, today: DateUtil.today).count
@@ -957,9 +957,19 @@ final class AppRouter: ObservableObject {
     }
 
     private func markSeen(_ rec: TrackedCaseRecord) {
-        rec.seenAt = Date()
         do {
-            try store.save()
+            try store.commit {
+                try store.ensureLegacyFeedHistory(for: rec)
+                rec.seenAt = Date()
+                let journal = try store.requiredEventJournal(for: rec)
+                if var state = journal.feedState {
+                    state.readEventIDs.formUnion(journal.events.filter {
+                        $0.kind != .treasuryRSSPublished
+                    }.map(\.id))
+                    try store.appendCaseEvents([], to: rec, feedState: state)
+                }
+            }
+            mirrorJournalFeedMarks()
             guard lifecyclePresentationCache.isCurrent(for: DateUtil.today) else {
                 reload()
                 return
@@ -989,19 +999,26 @@ final class AppRouter: ObservableObject {
     func markAllFeedRead() {
         let ids = Set(fullFeedEntries.map(\.id))
         guard !ids.isEmpty else { return }
-        readFeedIDs.formUnion(ids)
-        saveReadFeedIDs()
-        for i in feed.indices where ids.contains(feed[i].id) {
-            feed[i].isUnread = false
-        }
+        do {
+            try mutateJournalFeedMarks { record, state in
+                let ownIDs = Set((record.eventJournal?.events ?? []).map(\.id))
+                state.readEventIDs.formUnion(ids.intersection(ownIDs))
+            }
+            reload()
+            feedBadgePublisher(newBadge)
+        } catch { reportPersistenceFailure(error) }
     }
 
     private func markFeedEntryRead(_ id: String) {
-        guard readFeedIDs.insert(id).inserted else { return }
-        saveReadFeedIDs()
-        if let i = feed.firstIndex(where: { $0.id == id }) {
-            feed[i].isUnread = false
-        }
+        do {
+            try mutateJournalFeedMarks { record, state in
+                if record.eventJournal?.events.contains(where: { $0.id == id }) == true {
+                    state.readEventIDs.insert(id)
+                }
+            }
+            reload()
+            feedBadgePublisher(newBadge)
+        } catch { reportPersistenceFailure(error) }
     }
 
     private func saveReadFeedIDs() {
@@ -2189,7 +2206,6 @@ final class AppRouter: ObservableObject {
         var legacyFeedRecords = [LegacyFeedRecordInput]()
         let readIDs = readFeedIDs
         let knownIDs = knownFeedIDs
-        let oldMigrationState = materialFeedMigrationState
 
         for rec in recs {
             let snap = rec.snapshot
@@ -2283,22 +2299,26 @@ final class AppRouter: ObservableObject {
             }
         }
 
-        let projection = LegacyFeedProjection.project(
-            records: legacyFeedRecords, today: today,
-            readIDs: readIDs, knownIDs: knownIDs,
-            migrationState: oldMigrationState)
-        if projection.migratedReadIDs != readFeedIDs {
-            readFeedIDs = projection.migratedReadIDs
-            saveReadFeedIDs()
+        var journalEntries = [FeedEntry]()
+        do {
+            try store.commit {
+                for input in legacyFeedRecords {
+                    guard let record = store.record(forKey: input.recordKey) else { continue }
+                    try store.ensureLegacyFeedHistory(for: record)
+                    let journal = try store.requiredEventJournal(for: record)
+                    let state = try JournalFeedProjection.synchronize(record: input, journal: journal,
+                        legacyReadIDs: readIDs, legacyKnownIDs: knownIDs,
+                        materialMigrationState: materialFeedMigrationState, migrationDay: today)
+                    try store.appendCaseEvents([], to: record, feedState: state)
+                    journalEntries += JournalFeedProjection.entries(record: input,
+                        journal: try store.requiredEventJournal(for: record), today: today)
+                }
+            }
+        } catch {
+            persistenceError = "Изменения не сохранены. Повторите попытку."
+            return
         }
-        if projection.migratedKnownIDs != knownFeedIDs {
-            knownFeedIDs = projection.migratedKnownIDs
-            userDefaults.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
-        }
-        materialFeedMigrationState = projection.migrationState
-        if materialFeedMigrationState != oldMigrationState {
-            saveMaterialFeedMigrationState()
-        }
+        mirrorJournalFeedMarks()
 
         calendarHs.sort {
             if $0.date != $1.date { return $0.date < $1.date }
@@ -2314,12 +2334,19 @@ final class AppRouter: ObservableObject {
         dls.sort { $0.date < $1.date }
         inactiveDls.sort { $0.date < $1.date }
 
+        // Migration may have established authority during this same reload.
+        for index in cs.indices {
+            guard let record = store.record(forKey: cs[index].recordKey) else { continue }
+            let unread = Self.hasUnreadJournalFeed(record)
+            cs[index].isNew = unread
+            cs[index].newDot = unread
+        }
         cases = cs
         hearings = hs
         calendarHearings = calendarHs
         deadlines = dls
         inactiveDeadlines = inactiveDls
-        feed = buildFeed(projection.entries)
+        feed = buildFeed(journalEntries)
         collections = buildCollections(cs)
         stageCounts = buildStageCounts(cs)
         tierCounts = Self.buildTierCounts(cs)
@@ -2335,16 +2362,51 @@ final class AppRouter: ObservableObject {
     /// которых ещё не было в knownFeedIDs и которые непрочитаны. Бейдж —
     /// число дел с обновлениями — обновляется всегда.
     private func reconcileFeed(notify: Bool) {
-        if notify {
-            let fresh = feed.filter { $0.isUnread && !knownFeedIDs.contains($0.id) }
-            if !fresh.isEmpty { feedNotificationPublisher(fresh) }
+        let states = Dictionary(uniqueKeysWithValues: store.all().compactMap { record in
+            record.eventJournal?.feedState.map { (record.key, $0) }
+        })
+        let fresh = feed.filter { entry in
+            entry.isUnread && states[entry.recordKey]?.knownEventIDs.contains(entry.id) == false
         }
-        let ids = Set(feed.map(\.id))
-        if ids != knownFeedIDs {
-            knownFeedIDs = ids
-            userDefaults.set(Array(ids), forKey: Self.knownFeedIDsKey)
+        do {
+            try mutateJournalFeedMarks { record, state in
+                state.knownEventIDs.formUnion(feed.filter { $0.recordKey == record.key }.map(\.id))
+            }
+        } catch {
+            persistenceError = "Изменения не сохранены. Повторите попытку."
+            return
         }
+        if notify && !fresh.isEmpty { feedNotificationPublisher(fresh) }
         feedBadgePublisher(newBadge)
+    }
+
+    private func mutateJournalFeedMarks(_ update: (TrackedCaseRecord, inout JournalFeedState) -> Void) throws {
+        try store.commit {
+            for record in try store.allForMutation() {
+                guard var state = try store.requiredEventJournal(for: record).feedState else { continue }
+                try store.ensureLegacyFeedHistory(for: record)
+                update(record, &state)
+                try store.appendCaseEvents([], to: record, feedState: state)
+            }
+        }
+        mirrorJournalFeedMarks()
+    }
+
+    private func mirrorJournalFeedMarks() {
+        let records = store.all()
+        let ownedIDs = Set(records.flatMap { record in
+            (record.eventJournal?.events ?? []).flatMap { [$0.id] + ($0.evidence.eventIDAliases ?? []) }
+        })
+        // Retain historical legacy IDs; current journal IDs mirror DB authority.
+        readFeedIDs.subtract(ownedIDs)
+        knownFeedIDs.subtract(ownedIDs)
+        for record in records {
+            guard let state = record.eventJournal?.feedState else { continue }
+            readFeedIDs.formUnion(state.readEventIDs)
+            knownFeedIDs.formUnion(state.knownEventIDs)
+        }
+        saveReadFeedIDs()
+        userDefaults.set(Array(knownFeedIDs), forKey: Self.knownFeedIDsKey)
     }
 
     /// Вид производства строки. Приоритет: точная картотека из контекста
@@ -2624,10 +2686,23 @@ final class AppRouter: ObservableObject {
         return value.lowercased().split(separator: "/").first.map(String.init) ?? value.lowercased()
     }
 
+    private static func hasUnreadJournalFeed(_ record: TrackedCaseRecord) -> Bool {
+        guard let journal = record.eventJournal, let state = journal.feedState else {
+            return record.seenAt == nil
+        }
+        let replaced = Set(state.bindings.flatMap(\.historyEventIDs))
+        let visibleKinds = Set(state.bindings.map(\.eventID))
+        return journal.events.contains { event in
+            !replaced.contains(event.id) && !state.readEventIDs.contains(event.id)
+                && (event.evidence.legacyFeedHistory != nil
+                    || visibleKinds.contains(event.id))
+        }
+    }
+
     private func makeTrackedCase(rec: TrackedCaseRecord, snap: CaseSnapshot?,
                                  stage: CaseStageKind,
                                  presentation: CaseLifecyclePresentation? = nil) -> TrackedCase {
-        let isNew = rec.seenAt == nil
+        let isNew = Self.hasUnreadJournalFeed(rec)
         let today = DateUtil.today
         let production = productionType(for: rec)
         let ctx = rec.context
@@ -2724,7 +2799,7 @@ final class AppRouter: ObservableObject {
             statusChip: sourceStatus?.chip ?? .gray,
             last: sourceStatus?.detail ?? "движение ещё не загружено",
             next: "—", nextChip: sourceStatus?.chip ?? .gray,
-            isNew: rec.seenAt == nil,
+            isNew: Self.hasUnreadJournalFeed(rec),
             steps: makeSteps(["active", "todo", "todo", "todo"],
                              production: production), newDot: false,
             lastEventDate: rec.addedAt, nextEventDate: nil)

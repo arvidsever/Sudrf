@@ -208,7 +208,9 @@ enum CaseEventBaselineTransition {
                         admittedCourts: [String: [String: String]],
                         attempt: SourceAttempt, isComplete: Bool,
                         actBodies: [String: String] = [:],
-                        nativeContinuities: [String: String] = [:])
+                        nativeContinuities: [String: String] = [:],
+                        publicationRows: [LegacyFeedProjection.RawRow] = [],
+                        logicalCaseID: UUID? = nil)
         -> (baselines: CaseEventBaselines?, derivation: CaseEventDerivationResult) {
         var state = journal.semanticBaselines ?? CaseEventBaselines()
         var events: [CaseEvent] = []
@@ -260,6 +262,12 @@ enum CaseEventBaselineTransition {
                 old: old?.snapshot(using: freshSnapshot),
                 new: updated.snapshot(using: freshSnapshot), attempt: usable,
                 observedAt: attempt.provenance.observedAt)
+            if let logicalCaseID {
+                events += SourceRowPublication.events(rows: publicationRows,
+                    snapshot: freshSnapshot, fresh: fresh, old: old,
+                    scope: scope, journal: journal, logicalCaseID: logicalCaseID,
+                    observedAt: attempt.provenance.observedAt)
+            }
             events += result.events
             diagnostics += result.diagnostics
             state.courts[scope] = updated

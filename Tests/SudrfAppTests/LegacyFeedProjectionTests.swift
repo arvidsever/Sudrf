@@ -258,7 +258,7 @@ final class LegacyFeedProjectionTests: XCTestCase {
                        "Предыдущая регистрация № 9а-104/2026")
     }
 
-    func testReadKnownAndUnresolvedMaterialMigrationReturnsReusableState() {
+    func testReadKnownAndUnresolvedMaterialMigrationReturnsReusableState() throws {
         var context = fixtureContext()
         context.knownCards = [knownCard(id: "material-card-1", number: "13-2471/2026",
                                         level: .material)]
@@ -290,6 +290,15 @@ final class LegacyFeedProjectionTests: XCTestCase {
         XCTAssertEqual(first.migrationState.pendingUnresolvedCounts[legacyID], 1)
         XCTAssertFalse(first.migrationState.consumedLegacyIDs.contains(legacyID))
 
+        let initialJournal = try LegacyFeedHistoryImport.journal(record: unresolved,
+            logicalCaseID: UUID(), existing: CaseEventJournal(), importedAt: today)
+        let authority = try JournalFeedProjection.synchronize(record: unresolved,
+            journal: initialJournal, legacyReadIDs: [legacyID], legacyKnownIDs: [legacyID],
+            migrationDay: today)
+        XCTAssertEqual(authority.materialMigrationState, first.migrationState)
+        XCTAssertEqual(authority.readEventIDs, Set(initialJournal.events.map(\.id)))
+        XCTAssertEqual(authority.receipts.first?.originalReadIDs, [legacyID])
+
         let enriched = LegacyFeedProjection.project(
             records: [resolved], today: today, readIDs: [legacyID],
             knownIDs: [legacyID], migrationState: first.migrationState)
@@ -299,6 +308,45 @@ final class LegacyFeedProjectionTests: XCTestCase {
         XCTAssertFalse(enriched.entries[0].isUnread)
         XCTAssertTrue(enriched.migrationState.consumedLegacyIDs.contains(legacyID))
         XCTAssertNil(enriched.migrationState.pendingUnresolvedCounts[legacyID])
+
+        let resolvedJournal = try LegacyFeedHistoryImport.journal(record: resolved,
+            logicalCaseID: UUID(), existing: CaseEventJournal(), importedAt: today)
+        var publishedEvidence = resolvedJournal.events[0].evidence
+        publishedEvidence.sourceRowBinding = SourceRowBinding(courtScope: "proved-scope",
+            nativeCardID: "proved-native", sourceCardID: sourceID, fingerprint: "proved-row",
+            ordinal: 0, notificationEligible: true)
+        let publication = CaseEvent.make(kind: .sourceRowPublished,
+            occurrence: ["proved-row"], observedAt: today, evidence: publishedEvidence)
+        var lateAuthority = authority
+        lateAuthority.admitMaterialEnrichment(events: [publication], journal: initialJournal)
+        XCTAssertTrue(lateAuthority.readEventIDs.contains(publication.id))
+        XCTAssertTrue(lateAuthority.knownEventIDs.contains(publication.id))
+        XCTAssertEqual(lateAuthority.materialMigrationState, enriched.migrationState)
+        XCTAssertEqual(initialJournal.events.count, 1, "Unknown history remains intact")
+        var clearedAuthority = authority
+        clearedAuthority.readEventIDs.removeAll()
+        clearedAuthority.admitMaterialEnrichment(events: [publication], journal: initialJournal)
+        XCTAssertFalse(clearedAuthority.readEventIDs.contains(publication.id),
+            "Late enrichment reads current DB marks, not original preference receipt")
+        let consumed = lateAuthority
+        lateAuthority.readEventIDs.remove(publication.id)
+        lateAuthority.admitMaterialEnrichment(events: [publication], journal: initialJournal)
+        XCTAssertFalse(lateAuthority.readEventIDs.contains(publication.id))
+        XCTAssertEqual(lateAuthority.materialMigrationState, consumed.materialMigrationState)
+
+        let resolvedAuthority = try JournalFeedProjection.synchronize(record: resolved,
+            journal: resolvedJournal, legacyReadIDs: [legacyID], legacyKnownIDs: [legacyID],
+            materialMigrationState: first.migrationState, migrationDay: today)
+        XCTAssertEqual(resolvedAuthority.materialMigrationState, enriched.migrationState)
+        XCTAssertEqual(resolvedAuthority.readEventIDs, Set(resolvedJournal.events.map(\.id)))
+        var resetJournal = resolvedJournal
+        resetJournal.feedState = resolvedAuthority
+        resetJournal.feedState?.readEventIDs.removeAll()
+        let restarted = try JournalFeedProjection.synchronize(record: resolved,
+            journal: resetJournal, legacyReadIDs: [legacyID], legacyKnownIDs: [legacyID],
+            materialMigrationState: first.migrationState, migrationDay: today)
+        XCTAssertTrue(restarted.readEventIDs.isEmpty, "Original preference input is never replayed")
+        XCTAssertEqual(restarted.materialMigrationState, resolvedAuthority.materialMigrationState)
 
         let repeated = LegacyFeedProjection.project(
             records: [resolved], today: today,

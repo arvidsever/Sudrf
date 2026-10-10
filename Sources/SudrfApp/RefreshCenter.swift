@@ -1656,8 +1656,19 @@ final class RefreshCenter: ObservableObject {
             key: key, at: walkDiagnostics.now())
         let verifiedContext = isComplete
             ? Self.latestVerifiedRegistration(in: mv, replacing: ctx) : nil
-        var merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
         let projectionContext = verifiedContext ?? ctx
+        // Capture court facts and raw row provenance before any display-cache merge.
+        let freshMovement = MovementDerivation.normalizedMoscowOwnCourtFacts(
+            in: mv, context: projectionContext)
+        let freshSnapshot = MovementDerivation.snapshot(from: freshMovement,
+                                                       context: projectionContext)
+        let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)
+        let publicationRows = LegacyFeedProjection.rawRows(records: [LegacyFeedRecordInput(
+            recordKey: rec.key, caseNumber: projectionContext.caseNumber,
+            client: rec.courtTitle, unreadByCase: rec.seenAt == nil,
+            snapshot: freshSnapshot, movement: freshMovement, context: projectionContext,
+            enforcementRecords: [])], readIDs: [])
+        var merged = MovementCachePolicy.merge(fresh: mv, cached: rec.movement)
         if verifiedContext != nil {
             merged = Self.removingVerifiedHostMirrors(
                 from: merged, cached: rec.movement, fresh: mv)
@@ -1826,11 +1837,6 @@ final class RefreshCenter: ObservableObject {
                     from: oldMovement, context: projectionContext)
             }
             let finalSnapshot = persisted.snapshot ?? newSnap
-            let freshMovement = MovementDerivation.normalizedMoscowOwnCourtFacts(
-                in: mv, context: projectionContext)
-            let freshSnapshot = MovementDerivation.snapshot(from: freshMovement,
-                                                           context: projectionContext)
-            let admittedCourts = CaseEventSourceAdmission.courts(in: mv, context: projectionContext)
             // The legacy refresh outcome treats a recognized empty listing as
             // partial. Fresh per-court proof can still confirm the whole journal
             // comparison, without changing that outcome or its cache TTL policy.
@@ -1845,6 +1851,11 @@ final class RefreshCenter: ObservableObject {
             }
             let onlyRecognizedEmptySources = (mv.incompleteHigherCourtDomains ?? []).isEmpty
                 && !zeroDomains.isEmpty && !hasUnconfirmedZeroHistory
+            let nativeContinuities = verifiedContext == nil ? [:] : Self.verifiedMirrorContinuities(
+                fresh: mv, cached: oldMovement, admitted: admittedCourts)
+            let persistedContinuities = try SourceRowPublication.mergingContinuities([
+                journal.sourceRowContinuities ?? [:], nativeContinuities])
+            journal.sourceRowContinuities = persistedContinuities.isEmpty ? nil : persistedContinuities
             let transition = CaseEventBaselineTransition.refresh(
                 journal: journal, freshSnapshot: freshSnapshot, globalSnapshot: finalSnapshot,
                 admittedCourts: admittedCourts,
@@ -1852,13 +1863,18 @@ final class RefreshCenter: ObservableObject {
                     && CaseEventSourceAdmission.chainIsConfirmed(
                     in: mv, context: projectionContext, admitted: admittedCourts),
                 actBodies: mv.actBodies,
-                nativeContinuities: verifiedContext == nil ? [:] : Self.verifiedMirrorContinuities(
-                    fresh: mv, cached: oldMovement, admitted: admittedCourts))
+                nativeContinuities: nativeContinuities,
+                publicationRows: publicationRows, logicalCaseID: persisted.logicalCaseID)
             let derivation = transition.derivation
+            var feedState = journal.feedState
+            feedState?.admitMaterialEnrichment(events: derivation.events,
+                journal: journal)
             try store.appendCaseEvents(derivation.events, to: persisted,
                                        derivationVersion: CaseEventJournal.currentDerivationVersion,
                                        originKey: persisted.key,
-                                       semanticBaselines: transition.baselines)
+                                       semanticBaselines: transition.baselines,
+                                       sourceRowContinuities: journal.sourceRowContinuities,
+                                       feedState: feedState)
             // Фон нашёл изменения → бейдж «обновлено» загорается вновь;
             // кроме дела, открытого прямо сейчас (пользователь его и так видит).
             if changed && openedKey?() != persisted.key { persisted.seenAt = nil }

@@ -1,5 +1,71 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Fresh source publication and persisted mark-state preparation — 10 October 2026
+
+Uncommitted runtime preparation captures the fresh normalized snapshot, complete
+raw session/act rows and per-court admission before display-cache merge. It compares
+only the corresponding last confirmed court baseline. Each accepted publication
+stores frozen source evidence and an exact court/native/source binding with a
+publication fingerprint and duplicate ordinal. First confirmed history is retained
+quietly; a partial display response cannot seed or consume a publication. No global
+date/text deduplication is used. Proven native host-repair continuity is persisted
+and merged with collision/cycle rejection, preserving the original event across
+absence, repair, restart and reappearance.
+
+The optional JSON feed state prepares DB authority for read/known marks, immutable
+semantic bindings and a one-time original-input receipt. The receipt is audit data,
+not a replay command. Existing bindings do not reapply transferred marks after a
+later unread/known clear. Complete two-row reschedules use read AND / known OR;
+direct journal-ID reads remain independent. Historical flat legacy-ID marks are
+preserved for all previously matching rows, including two independent courts with
+the same old ID; that transfer does not prove semantic/source ownership.
+
+Thirty isolated tests pass (seven actual RefreshCenter/private disk source tests,
+three actual private AppRouter lifecycles, six value/disk mark-state tests,
+one actual-oldrenderer material migration oracle and thirteen pure undated
+movement projections). They cover A→partial B→full B→restart/repeat,
+independent admitted courts, multiplicity, identical legacy IDs with separate native
+bindings, immutable payload after disappearance/judge change, failed append/retry,
+exact host repair, complete reschedule mark algebra, durable clear without replay,
+and merge preservation/conflict rejection. All fixtures/settings/tokens and network
+providers are private; no broad test setup, live request or app launch was used.
+
+The uncommitted AppRouter now projects journal history/bindings and commits marks
+in the journal DB before compatibility preference mirrors. Its private disk test
+proves historical A quiet → partial B absent → admitted full B one alert → read →
+new container/router → repeated B no alert. Case indicators derive journal unread;
+mark-all refreshes those indicators. This verifies the injected notifier boundary,
+not actual OS delivery. Initial material cutover reuses the exact old renderer's
+consumed/pending policy once, retaining the original receipt; cleared DB marks are
+not replayed from preferences. Subsequent admitted material enrichment uses
+current DB marks, persisted exact resolved-history IDs, the original publication
+kind/ordinal namespace and the existing consumed/pending policy. A missing/partial
+court cannot consume another occurrence in the same old flat-ID family. Read A
+cannot mark independently unread B. Qualified/unresolved occurrence order is covered
+in both directions. Material acts require immutable exact owner proof; unknown
+owners retain their original history and marks without inferred ownership.
+
+Actual private AppRouter material tests cover partial → full admission, both original
+read and post-cutover read reset, disk reopen, consumed state and exact repeat bytes.
+An additional actual router proves unread case badges remain outside the 45-day
+feed window. The initial reload recalculates case indicators after authority commit.
+
+Remaining boundaries: late material enrichment across verified host repair remains
+unmapped if immutable original semantic source ID no longer equals the admitted
+owner; no fuzzy alias is inferred. Current native source-publication continuity is
+separately covered. Actual merge/notifier lifecycle coverage, hosted current-head
+full CI, private native GUI evidence and complete downstream acceptance remain
+required. This is not full #179 completion.
+
+Current narrow log: `/private/tmp/sudrf-179-runtime-current-profile.log`, 30/0,
+SHA-256 `d1376b6484703fa80dfe7626f9d25451c7a54c787d69d360cfa75f463447bc8a`.
+Own unsigned Xcode 27 Debug build succeeded without launch or registration:
+`/private/tmp/sudrf-179-runtime-native-build.log`, SHA-256
+`f25ef42d2929fb3f9fdd6be18af58372d88b374efe8985d987bb0cd7fe879ee4`.
+Derived data: `/private/tmp/sudrf-179-runtime-native`. The accepted UI rule
+is no visible «Обнаружено приложением…» line and no replacement caption; observed
+sorting timestamps, 7/45-day windows and internal provenance remain required.
+
 ## No-op journal bytes follow-up — 10 October 2026
 
 Hosted run `38068780197` at `1f4aedee85eff47b9795d6d56b83324346e30522`

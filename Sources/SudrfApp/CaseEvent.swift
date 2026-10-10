@@ -24,6 +24,7 @@ enum CaseEventKind: String, Codable, CaseIterable, Sendable {
     case deadlineExpired
     case deadlineSuperseded
     case legacyFeedImported
+    case sourceRowPublished
     case treasuryRSSPublished
 }
 
@@ -42,6 +43,7 @@ struct CaseEventEvidence: Codable, Equatable, Sendable {
     var occurrenceKey: String? = nil
     var relatedOccurrenceKey: String? = nil
     var legacyFeedHistory: LegacyFeedHistoryEvidence? = nil
+    var sourceRowBinding: SourceRowBinding? = nil
     var rssGUID: String? = nil
     var rssPublishedAtRef: Double? = nil
     var eventIDAliases: [String]? = nil
@@ -111,6 +113,8 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
     var events: [CaseEvent]
     var semanticBaselines: CaseEventBaselines? = nil
     var legacyFeedImportVersion: Int? = nil
+    var sourceRowContinuities: [String: String]? = nil
+    var feedState: JournalFeedState? = nil
 
     init(schemaVersion: Int = Self.currentSchemaVersion,
          derivationVersion: Int = Self.currentDerivationVersion,
@@ -197,10 +201,15 @@ struct CaseEventJournal: Codable, Equatable, Sendable {
             $0.derivationVersion == currentDerivationVersion
         }.compactMap(\.semanticBaselines)
         if !baselines.isEmpty { merged.semanticBaselines = CaseEventBaselines.merged(baselines) }
+        let continuities = try SourceRowPublication.mergingContinuities(
+            journals.compactMap(\.sourceRowContinuities))
+        if !continuities.isEmpty { merged.sourceRowContinuities = continuities }
+
         if !journals.isEmpty,
            journals.allSatisfy({ $0.legacyFeedImportVersion == LegacyFeedHistoryImport.currentVersion }) {
             merged.legacyFeedImportVersion = LegacyFeedHistoryImport.currentVersion
         }
+        merged.feedState = try JournalFeedState.merged(journals.compactMap(\.feedState), events: merged.events)
         return merged
     }
 }

@@ -26,7 +26,7 @@ Native SwiftUI sheet, pasteboard and visual acceptance remain pending. No ordina
 
 Independent review caught and corrected three native-specific boundaries before launch: external links are discarded through the QA view environment; the production sandbox migration resource is excluded; production intent actions and shortcuts are excluded. A clean rebuild asserts absence of `container-migration.plist`, empty intent/shortcut metadata, no URL schemes, and actual signed sandbox entitlements with network and selected-file access disabled. These safeguards are QA-only; production files and interface are unchanged.
 
-The clean own Xcode build passed. Build log SHA-256: `032b4e7a8152184aeacbbf82b87eb5995dd1aef4f80427164688307428b0da67`; binary SHA-256: `7bdb09fcd4a70a0cd55861562a09a2a009d22adbb1241d5db3bcfcb4912d5538`. Independent artifact recheck: Ship for requesting launch permission. **The QA app has not been launched.** Native runtime, pasteboard and visual acceptance remain pending; synthetic providers do not stand in for the separately recorded live CAPTCHA run.
+The clean own Xcode build passed. Build log SHA-256: `032b4e7a8152184aeacbbf82b87eb5995dd1aef4f80427164688307428b0da67`; binary SHA-256: `7bdb09fcd4a70a0cd55861562a09a2a009d22adbb1241d5db3bcfcb4912d5538`. Independent artifact recheck: Ship for requesting launch permission. **At that preparation checkpoint, the QA app had not been launched.** The later native runtime and accepted screens are recorded below; pasteboard remains a separate criterion; synthetic providers do not stand in for the separately recorded live CAPTCHA run.
 
 ## Test-only system publication boundaries
 
@@ -117,8 +117,24 @@ During the subsequent root CUA session, the real direct-link sheet resolved the
 synthetic test URL for case 12-538/2026. Add opened the real CaseMovementView
 after the two scripted CAPTCHA continuations. Root CUA emitted the form and movement-card screenshots, then quit
 Sudrf339QA through Activity Monitor; the subsequent CUA inventory contained no
-running QA applications. User acceptance of this native offline result remains
-pending.
+running QA applications. Root repeated only the own QA capture to save the
+actual CUA JPEGs, then quit the QA app again; CUA inventory again contained no
+running QA applications. On 10 October 2026 the user accepted both screens
+with the explicit reply: "Да, оба экрана приняты".
 These are synthetic native UI observations, not a new live-source attempt or
 a full live-chain success. The earlier separate live component evidence retains
 its partial outcome and its own boundaries.
+
+
+Accepted native offline screenshots (actual CUA captures, synthetic QA data):
+
+- [Direct-link form](screenshots/issue-339-native-form.jpg).
+- [Movement card](screenshots/issue-339-native-card.jpg).
+
+These two screens and the observed offline add route are accepted. Pasteboard
+behavior was not separately verified; this approval does not expand the earlier
+live component result into full live-chain acceptance.
+
+Original capture paths and SHA-256:
+- `/Users/arvidsever/.codex/visualizations/2026/09/26/01a0dd3e-f51f-73a3-94a6-d6008364562e/issue-339-native-form.jpg`: `cb2c67fa1986fc54e7eccfa4c5d708d89ecc85ed7abf7ff39139266b55c342d4`.
+- `/Users/arvidsever/.codex/visualizations/2026/09/26/01a0dd3e-f51f-73a3-94a6-d6008364562e/issue-339-native-card.jpg`: `7e280d26c04ae2acb85d6583fee883b2581f25aaeae9cf1c2957b36e8c9fad2c`.

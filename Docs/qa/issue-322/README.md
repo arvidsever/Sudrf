@@ -236,3 +236,212 @@ XcodeGen пересоздал проект; unsigned Debug build `Sudrf` зав�
 не означает запуск. Полный suite, новые живые попытки и GUI не выполнялись.
 Hosted CI должен подтвердить новый head после push; старые проверки его не
 заменяют. Issue #322 остаётся открытой.
+
+## Private prerequisite gate — 10 October 2026
+
+Source base `2c4360f2382618dd92f6ad5ec92d4a4b90ad52ee` plus the uncommitted
+`SearchDiagnostics.swift` and `Issue322PrivateHarnessTests.swift` changes.
+The diagnostic directory initialization is reused from #339; the private
+`enabled` override is reused from #241. Production defaults remain unchanged.
+The process-global diagnostic overrides must be tested serially/exclusively.
+
+Actual sequential local checks (no live requests or AppRouter):
+
+| Check | Actual result | Private log SHA-256 |
+|---|---|---|
+| `swift build --build-tests` | PASS, 2.53 s | `efbdbf29ece7c9367754d872edeb360c28b8bf05e61c48e0e480be7ff2ab889a` |
+| `swift test --skip-build --filter Issue322PrivateHarnessTests` | 2 PASS, 0 failures/skips, 0.018 s | `d06b5094f32929492e8fd94b6af2bf10f79affa34f4af4c5f74c788b7ed0c90b` |
+| `swift test --skip-build --filter Issue322AcceptanceTests` | 2 PASS, 0 failures/skips, 0.667 s | `05a8b63b9fd3dec91b307b6e94ea5e76f0b9aeea4d932cac68513fe1f83796dd` |
+| `swift test --skip-build --filter Issue322SourceFixtureTests` | 3 PASS, 0 failures/skips, 0.025 s | `270aa8750a4bbbafd7e1c68223e7190a615e6444a84bcde2049e20dec5182ba7` |
+
+Logs are `/private/tmp/sudrf-322-private-gate-compile.log`,
+`/private/tmp/sudrf-322-private-gate-tests.log`,
+`/private/tmp/sudrf-322-offline-acceptance-current.log`, and
+`/private/tmp/sudrf-322-source-fixtures-current.log` respectively.
+An initial compile found an actor-isolation annotation missing on the test's
+configuration factory; marking that pure factory `nonisolated` fixed it before
+any test execution.
+
+The new gate proves private diagnostic writing and construction of clients,
+resolver, repair coordinator and refresh center with private settings/tokens,
+nil caches/cookies, rejecting transport and unused providers. It does not prove
+live chain acceptance, OCR model eligibility, request scope, or cold AppRouter/UI.
+The actual opt-in live profile still needs its final private pipeline audit,
+explicit model paths verified against the tracked artifact manifest, and source
+locators from `Tests/SudrfKitTests/Fixtures/issue322_provenance.md`. No installed
+application model discovery is permitted. No full local suite was run.
+
+### Complete opt-in pipeline preparation (no live execution)
+
+`Issue322LiveAcceptanceTests` now prepares the real `SudrfClient` /
+`MosGorSudClient` → `CaseOriginResolver` → repair coordinator → `RefreshCenter`
+→ private disk store → reopen → repeat path. Its live method remains disabled
+unless `SUDRF_322_LIVE=1`. It requires `SUDRF_322_MANIFEST` and the exact
+`SUDRF_322_MANIFEST_SHA256`. The JSON manifest contains `outputRoot`, `sourceURLs`
+(the exact six URLs, in source-table order), `numericModel`, and `specialistModel`.
+The models must be in this checkout's `Tests/CaptchaSolverTests/Fixtures`, pass
+its tracked `MODEL_MANIFEST.sha256` / `MODEL_NUMERIC_SPECIALIST_MANIFEST.sha256`
+through `Scripts/verify-model.sh`, and are loaded explicitly. There is no installed
+application model discovery, model fetch, normal app launch or background timer.
+
+The forwarding transport permits only HTTPS on `1ap.sudrf.ru`, `2kas.sudrf.ru`
+and `mos-gorsud.ru`; it rejects other hosts/HTTP/credentials/ports, redirects
+outside that set, responses over 5 MiB and resource lifetimes over 30 seconds.
+Every consumed body and response record is retained under a fresh private run
+in a 0700 root, with files set to 0600. Request/effective URLs are in private
+response records only; public reports contain stages/status/timing/count/hash.
+Cookies and URL cache are nil. The normal numeric-token contract passes
+`captcha`/`captchaid` as search parameters (`SudrfClient` and `SudrfURLBuilder`);
+this establishes the client contract, not server acceptance without cookies.
+The unchanged solver logger may emit ordinary local macOS diagnostic entries;
+nil log directories prevent file output but do not disable that system logger.
+This local diagnostic allowance was explicitly retained; no logger API changed.
+
+Actual offline preparation checks, sequential and without any live method:
+
+- Compile: `/private/tmp/sudrf-322-live-harness-compile.log`, PASS,
+  SHA-256 `94fdebff8c4461cbc7c445042fe10dd4f344ddbcce95ad7222345b468512cb31`.
+- Exact filter `Issue322LiveAcceptanceTests.testOfflineReplayUsesRealClientsRepairRefreshAndReopen|Issue322LiveAcceptanceTests.testPreflightRejectsHTTPWrongSourceAndInvalidManifest`:
+  **2 PASS, 0 failures/skips**, 34.338 seconds;
+  `/private/tmp/sudrf-322-live-harness-offline-preflight.log`, SHA-256
+  `dfea78d2fd4685238f2e5aa2096981cc0663ef054aa9c8073ff3514400ee486d`.
+
+Replay forwards committed HTML through the actual clients/parsers and the same
+repair/refresh/store code. Its additional empty higher-search responses are
+explicit synthetic controls with source-shaped count metadata, never claims
+about the portals. It proves convergence of the two appellate anchors on the
+Moscow card, their distinct own native locators, disk reopen and repeat. Its
+outcome is explicitly **expected partial**, with affected sources Moscow,
+2 KSOYu and VS RF; the VS provider rejects out-of-scope discovery. No provider
+was disabled merely to force a complete result. The full live method still
+requires `.refreshed` and its full movement/act/original-query assertions.
+
+A first application of those full live assertions to the excerpts failed:
+`/private/tmp/sudrf-322-live-harness-replay-full-oracle-failure.log`, SHA-256
+`f61bcfa562880bf111afd5655776bf1b8c0e151f40247ef128d9a4bec1d6ea80`.
+The excerpts omit both ASOY session tables and linked act bytes, and the current
+Moscow movement builder canonicalizes away the `caseNumber` query while retaining
+the own native path. Replay explicitly observes these facts; it does not claim
+exact legacy query retention or live act success. The raw journal rewrites had
+different 1182-byte encodings; **whole decoded journal equality now
+passes after repeat**, including imported history and metadata. Reopen still
+compares exact saved bytes. This is an existing serialization dependency of the
+#179 work, not a newly inferred #322 semantic mutation.
+
+The KSOYu context/expected number is parsed from the published excerpt:
+`8а-7078/2022 [88а-8501/2022]`, not an invented `8а-8501/2022` primary number.
+Its original URL/native ID remains unchanged. Current live alias/number changes
+must be validated from the actual own card, not substituted silently.
+
+Remaining gates before live: independent review of the final full private
+pipeline; verify the explicit model artifacts; root review of any scope fork
+(including required directory hosts outside the allowlist); retain honest partial
+outcomes for VS RF (outside #322 source scope). Before closure, still required:
+all three original anchors and the independent `3а-1318/2021 → 66а-4009/2021`
+positive control (no published control locator is in these six supplied URLs),
+actual own movement/acts/user data and no historical notification, repeat after
+partial response, reopen, and the separately isolated cold AppRouter/UI gate.
+No full local suite, live request or native launch was performed here.
+
+### Review corrections and final offline gate
+
+The initial forwarding transport privately followed an allowed redirect inside
+its inner URLSession. Independent review rejected that path because it bypassed
+the ordinary `SudrfClient` redirect capture, origin-session rotation and rate
+admission. The private transport now stops its inner redirect with
+`completionHandler(nil)` and passes it to `URLProtocolClient.wasRedirectedTo`,
+then completes the original 302 in the same way as the existing
+`SudrfClientTransportPolicyTests` fixture. The outer client handles the new hop.
+Private hop JSON retains request/effective/redirect URLs. A synthetic cross-origin
+test verifies both admitted requests and exactly `create → invalidate → create`.
+
+The chain oracle now requires exact registration sets, verifies own levels and
+source court/native locators, and rejects an extra `13-1388/2023` material rather
+than accepting any superset. The original full-live oracles, missing positive
+control and published-query limits remain unchanged.
+
+Final actual sequential offline filter: the cross-origin redirect test, extra
+registration test, real-client replay/reopen/repeat test, and negative preflight.
+**4 PASS, 0 failures/skips**, 34.558 seconds. Log:
+`/private/tmp/sudrf-322-final-offline-harness.log`, SHA-256
+`f0704fe2f96429dcdedf44c8d6bd7ad5e64b6873c343d8e029d53fa8a66389e5`.
+Compile-only build PASS (2.46 seconds):
+`/private/tmp/sudrf-322-redirect-compile.log`, SHA-256
+`2652ab31035019b0c856cafab8e568fe1ac09e663f203ce0df0627413398fca9`.
+One intermediate synthetic redirect test lacked the original-response callback
+and exited with signal 5; it was corrected using the existing transport fixture
+before this final passing profile. No portal request or application launch was
+made. Final full-source review is still required before any live execution.
+
+### Additional ordinary stages authorized (pending execution)
+
+The user explicitly approved ordinary Supreme Court and published court-directory
+stages. The live profile now uses `VSRFClient(session:)` with the same bounded
+private ephemeral transport and admits only `vsrf.ru`, `www.vsrf.ru`, `sudrf.ru`,
+and `www.sudrf.ru` in addition to the original three exact hosts. No wildcard
+subdomains are admitted; an unexpected necessary published host remains a denied
+partial result. Offline excerpt replay retains RejectVS and its expected partial
+boundary. Model manifests and verification are unchanged. No live execution has
+been performed; final provider/model/source review remains required.
+
+Current additional-stage offline profile: **5 PASS, 0 failures**, 34.443 seconds
+(provider construction/private configuration/exact host denial, redirect policy,
+foreign registration rejection, actual replay pipeline and manifest preflight).
+Log `/private/tmp/sudrf-322-vs-directory-offline.log`, SHA-256
+`caec6b1be82523112eb562833729347cc3bd206561903f8a014b4dbdf5821c02`.
+Compile-only PASS, 3.42 seconds; log
+`/private/tmp/sudrf-322-vs-directory-compile.log`, SHA-256
+`fbac751cc3e314360b8642d415dfa09615c4f00a6ec55fb4e91febe3cb732e5d`.
+Both private logs have mode0600. No live or model execution occurred.
+
+Private-root preflight correction: Foundation resolves existing `/private/tmp`
+to `/tmp`. The original supplied parent must still be exactly `/private/tmp`,
+and canonical parent/name must match the canonical temporary parent and original
+`sudrf-322-` name. Outside symlinks and nested/traversal paths are rejected;
+existing root0700 validation remains. Two exact root/preflight tests PASS,
+0 failures,0.007 seconds. `/private/tmp/sudrf-322-root-tests.log` SHA-256
+`bff6fb6cd875959349df28370532391148116f29aeab629d22bfab5e7df39510`.
+Compile-only PASS2.91 seconds. This correction made no network request.
+
+### Actual bounded live run: partial (10 October 2026)
+
+Root executed one authorized run. It stopped at first ordinal0 partial after
+70,891ms (test duration71.866s), not a PASS. Private root:
+`/private/tmp/sudrf-322-live-e53c4438-07ec-4531-88e2-8bf482e07e08`.
+Network log0600 SHA-256
+`0f48bf725684fea3c54bca50c8a005b6e1a1ed40ac00722f28076501d1853a55`.
+The persisted partial snapshot is the cassation-anchor chain, not the first
+source-array appeal: three own registrations (02а-0419/2021,33а-6088/2021,
+8а-7078/2022 [88а-8501/2022]), session counts2/1/4, five acts and five bodies.
+Other anchors, reopen/repeat and full assertions were not reached.
+
+Saved responses: Moscow ten200,2KSOYU four200, VS two302 redirect hops and two
+www-host200. No1ASOY response in this stopped run does not prove its failure.
+Actual offline parsers on the captured bytes returned two Moscow searches with
+one row each; the third search has explicit empty content, no thead/number header
+and no detail rows, and MosGorSudResultsParser throws at its required header guard.
+This is a demonstrated parser-contract rejection of an empty published response,
+not a transport/CAPTCHA failure. Merely including CAPTCHA resources is not proof
+of an active challenge. Both captured VS responses parse as zero rows; therefore
+VS in affectedSources is not evidence of a failed HTTP/search parse. RefreshCenter
+promotes verified VS-empty only when there are no incomplete higher sources;
+the Moscow incomplete source prevents that promotion in this result.
+
+Offline captured-parser diagnostic tool executed successfully in3.087s (not a
+regression test: it printed parser counts/caught error types without assertions); log0600
+`/private/tmp/sudrf-322-captured-parsers.log`, SHA-256
+`a4c535940697eece46376c411df779781e7e1ccb48380d6b4143a1127958c0bc`.
+No new request, GUI or product change during diagnosis. Raw bodies remain private.
+The working source checkpoint is base2c4360f plus the uncommitted four-file
+harness/diagnostics/evidence allowlist; no publication or acceptance implied.
+
+Root independently verified the empty marker is visible standalone
+`h1.noty__headline` (17 characters: «Ничего не найдено»), under `section.noty`
+in `div.search-form__results`/`vue-form`; it is not script/style or a library
+literal. The temporary diagnostic method was removed from the versioned harness
+after execution; its exact source is retained privately mode0600 beside the
+capture as `captured-parser-diagnostic.swift`. No extra skipped XCTest gate
+remains. No new diagnostic or network run was performed for this cleanup.
+
+Private diagnostic snippet SHA-256:
+`20b3e550d708a4d80990ae2ef5d17a4fdb8c59d982043733e93b088fc1530d49`.

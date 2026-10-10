@@ -157,6 +157,7 @@ final class RefreshCenter: ObservableObject {
     private let store: TrackedStore
     private let client: SudrfClient
     private let vsrfClient: any VSRFProviding
+    private let captchaTokenStore: CaptchaTokenStore
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
     /// в init.
@@ -288,6 +289,7 @@ final class RefreshCenter: ObservableObject {
          captchaSettings: CaptchaSettings? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
+         captchaTokenStore: CaptchaTokenStore = .shared,
          serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil,
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
             -> EnforcementLookup)? = nil,
@@ -302,6 +304,7 @@ final class RefreshCenter: ObservableObject {
          walkDiagnostics: RefreshWalkDiagnostics = .disabled) {
         self.store = store
         self.client = client
+        self.captchaTokenStore = captchaTokenStore
         let vsrf = vsrfProvider ?? VSRFClient()
         self.vsrfClient = vsrf
         self.captchaSolver = captchaSolver
@@ -309,9 +312,7 @@ final class RefreshCenter: ObservableObject {
         self.initialTimerDelay = initialTimerDelay
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
-        // Локальные копии — чтобы default-замыкания не захватывали self
-        // до завершения инициализации (клиенты — let stored,
-        // self в escaping-замыкании до init-completion = ошибка компиляции).
+        // Default clients are local captures, created only when no builder is injected.
         if let serviceBuilder {
             self.serviceBuilder = serviceBuilder
         } else {
@@ -1386,10 +1387,11 @@ final class RefreshCenter: ObservableObject {
         let solve = autoSolve
         let c = client
         let solverSettings = settings.autoSolverSettings
+        let tokenStore = captchaTokenStore
         let task = Task {
             let result = await solve(formURL, c, solver, solverSettings)
             if let token = result.token {
-                await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+                await tokenStore.store(token, domain: formURL.host ?? "")
             }
             return result
         }

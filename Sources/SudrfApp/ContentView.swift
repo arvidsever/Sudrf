@@ -31,6 +31,10 @@ struct ContentView: View {
         _model = StateObject(wrappedValue: SearchModel(client: client))
     }
 
+    init(model: SearchModel) {
+        _model = StateObject(wrappedValue: model)
+    }
+
     private var inspectorVisible: Bool { model.selectedResultIndex != nil }
     // В режиме «движение дела» (провал в карточку) панель поиска скрывается,
     // чтобы движение по инстанциям занимало всю ширину. Просмотрщик актов справа

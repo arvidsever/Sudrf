@@ -1,0 +1,102 @@
+{
+  "checkedAtUTC": "2026-10-10T01:29:50Z",
+  "sourceCommit": "530bb0e31a7322de722b6ac54912216bc1a5909b",
+  "bundleIdentifier": "ru.sudrf.app",
+  "marketingVersion": "0.64.6",
+  "buildNumber": "258",
+  "configuration": "Debug; CODE_SIGNING_ALLOWED=NO",
+  "buildToolVersion": "Xcode 27.0\nBuild version 27A266a",
+  "appLaunched": false,
+  "launchServicesRegistration": "Automatic registration by normal Xcode build; authorized without app launch",
+  "actions": [
+    {
+      "identifier": "OpenCaseIntent",
+      "openAppWhenRun": true,
+      "requiredParameters": {
+        "courtCase": "CaseEntity"
+      },
+      "supportedModesRaw": 2,
+      "outputTypeRaw": null
+    },
+    {
+      "identifier": "OpenCourtActIntent",
+      "openAppWhenRun": true,
+      "requiredParameters": {
+        "courtAct": "CourtActEntity"
+      },
+      "supportedModesRaw": 2,
+      "outputTypeRaw": null
+    },
+    {
+      "identifier": "RefreshCaseIntent",
+      "openAppWhenRun": false,
+      "requiredParameters": {
+        "courtCase": "CaseEntity"
+      },
+      "supportedModesRaw": 9,
+      "outputTypeRaw": null
+    },
+    {
+      "identifier": "AddCaseToCollectionIntent",
+      "openAppWhenRun": false,
+      "requiredParameters": {
+        "courtCase": "CaseEntity",
+        "collectionName": "string"
+      },
+      "supportedModesRaw": 1,
+      "outputTypeRaw": null
+    },
+    {
+      "identifier": "ShowUpcomingHearingsIntent",
+      "openAppWhenRun": false,
+      "requiredParameters": {},
+      "supportedModesRaw": 1,
+      "outputTypeRaw": {
+        "primitive": {
+          "wrapper": {
+            "typeIdentifier": 0
+          }
+        }
+      }
+    },
+    {
+      "identifier": "ExportCourtActPDFIntent",
+      "openAppWhenRun": true,
+      "requiredParameters": {
+        "courtAct": "CourtActEntity"
+      },
+      "supportedModesRaw": 2,
+      "outputTypeRaw": {
+        "intents": {
+          "wrapper": {
+            "typeIdentifier": 12
+          }
+        }
+      }
+    }
+  ],
+  "entities": [
+    "CaseEntity",
+    "CourtActEntity"
+  ],
+  "queries": [
+    "CaseEntityQuery",
+    "CourtActEntityQuery"
+  ],
+  "automaticShortcuts": [
+    "OpenCaseIntent",
+    "RefreshCaseIntent",
+    "ShowUpcomingHearingsIntent"
+  ],
+  "metadataVersion": {
+    "toolsVersion": "27A266a",
+    "version": "3.0"
+  },
+  "hashes": {
+    "extract.actionsdata": "ef928bbdcc59fd93235ec823b0ebed42a6cb78555d019bdfd77f787cd37333e5",
+    "version.json": "dd4247d69cd8c750931505420148b52da7955333be2932b866fef83e3c713ac4",
+    "Sudrf executable": "599d724d657103fdf3109abc402e40b065c77810f378ba137823b3ccb2de4e08",
+    "buildLog": "a3bf0ccdab8d6bee09ff8c58f6dc79e1b681453a159e525d6b6692e8dc901ca3"
+  },
+  "result": "Static compiled metadata assertions passed; OS cold launch and parameter resolution not tested"
+}

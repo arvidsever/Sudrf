@@ -6,6 +6,7 @@ QA_BUILD="/private/tmp/sudrf-414/xcode-qa"
 mkdir -p "$QA_BUILD"
 python3 - "$ROOT" "$QA_BUILD" <<'PYCONFIG'
 from pathlib import Path
+import re
 import sys
 root, build = map(Path, sys.argv[1:])
 text = (root / 'project.yml').read_text()
@@ -21,6 +22,8 @@ text = text.replace('PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.app\n',
                     'PRODUCT_BUNDLE_IDENTIFIER: ru.sudrf.qa.issue414\n')
 text = text.replace('SUDRF_DISPLAY_NAME: Sudrf Debug\n',
                     'SUDRF_DISPLAY_NAME: Sudrf414QA\n')
+text = re.sub(r'(?m)^([ \t]*SUDRF_URL_SCHEME:)[^\n]*$',
+              r'\1 sudrf-qa-414', text)
 text = text.replace('CODE_SIGN_STYLE: Automatic', 'CODE_SIGN_STYLE: Manual')
 (build / 'project.yml').write_text(text)
 PYCONFIG

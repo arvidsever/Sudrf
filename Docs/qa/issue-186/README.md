@@ -103,3 +103,55 @@ Keychain, URL-схемы и фактического Spotlight-индекса, �
 автоматического переноса данных. Эта системная проверка отложена; #186 остаётся
 открытым до её выполнения. Успех unsigned build или мок-тестов не подтверждает
 подписанное поведение macOS.
+
+### Обновление на main 10 октября 2026 года
+
+Чистая feature-ветка перенесена на `origin/main`
+`bd06f4ef19922f311ece19df3167296a80d26756`; новый source HEAD —
+`df398a3b09567bb1031469d5f9040b5ed4f3e6c9`. Rebase четырёх коммитов завершился
+без конфликтов. `range-diff` подтвердил сохранение feature-кода и QA #324:
+единственное различие контекста — актуальная версия main `0.64.6` в
+`project.yml`; номер версии в этой работе не назначался.
+
+Перед переносом draft PR #430 был OPEN/MERGEABLE на `a20dd0e`, его hosted CI
+прошёл. Это историческое доказательство: перенесённый HEAD не опубликован,
+новая CI-проверка ещё не выполнена. Xcode build в этом этапе не запускался;
+прежний unsigned build не подтверждает signed launch или системную изоляцию.
+Решение автора о отдельной учётной записи/VM и signed системная приёмка
+по-прежнему ожидаются. Приложение, системный Spotlight, пользовательское
+хранилище и настройки не использовались.
+
+На этом HEAD выполнен только pure
+`SpotlightIntegrationTests.testAppIdentityKeepsDebugLinksAndKeychainSeparate`:
+**1 XCTest, 0 failures/skips**; другие таргеты не исполнили тестов.
+Проверка вычисляет identity/URL/Keychain service strings, не обращается к
+Keychain или системному индексу. SwiftPM собрал актуальные таргеты в отдельном
+scratch `/private/tmp/sudrf-186-swiftpm-build`; приложение не запускалось.
+Лог `/private/tmp/sudrf-186-main-rebase-identity-20261010.log`, SHA-256
+`4709bfd03f6389cb2deb38b180ae41f937fd0aec4e2a387e0e48b31adb536200`.
+Широкий runtime-профиль и Xcode build в этом проходе не выполнялись.
+
+### Проверка сборки и QA-схем после обновления на main — 10 октября
+
+Root пересоздал проект и собрал Debug Xcode 27.0 (27A266a) на rebased
+`df398a3b09567bb1031469d5f9040b5ed4f3e6c9`: **BUILD SUCCEEDED**.
+Собранный plist подтверждает `ru.sudrf.app.debug`, `Sudrf Debug`, только
+URL-схему `sudrf-debug`, базовую версию 0.64.6 (258). Журнал содержит
+`RegisterWithLaunchServices` только для `Sudrf-Debug.app`; приложение не запускалось.
+SHA-256 журнала `/private/tmp/sudrf-186-main-rebase-xcodebuild-20261010.log`:
+`f7b83777eaa890e894752a0bfbb67737f192f1f51aea91bf5171192f5953bda2`.
+
+Независимый Astra review обнаружил P2: старые QA-генераторы #406/#414
+меняли bundle ID, но наследовали URL-схему Debug. Исправлено локально в
+двух генераторах: собственные `sudrf-qa-406` и `sudrf-qa-414` во всех
+конфигурациях. `bash -n`, XcodeGen и `xcodebuild -showBuildSettings -json`
+подтвердили пары `ru.sudrf.qa.issue406 / sudrf-qa-406` и
+`ru.sudrf.qa.issue414 / sudrf-qa-414`. QA-приложения не собирались и не запускались.
+Отдельные параметры конфигураций сохранены локально в
+`/private/tmp/sudrf-186-qa-{406,414}-identity-20261010/build-settings.json`.
+После исправления независимый review: **Ship для кодового checkpoint**.
+
+Эти проверки не подтверждают подписанную системную изоляцию sandbox,
+defaults, Keychain и Spotlight. Приёмка отдельного пользователя/VM остаётся
+отложенной; #186 открыта, PR остаётся draft. Current-HEAD CI обязателен
+после публикации rebase.

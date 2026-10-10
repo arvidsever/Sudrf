@@ -110,7 +110,7 @@ Xcode 27 unsigned Debug: BUILD SUCCEEDED без запуска;
 Изолированный host с настоящими OperationalRootView/навигацией/карточкой готовится
 без AppBootstrap; нужна отдельная разрешённая native-проверка 38 px резерва при
 высоте окна 720 px, переходов поиска/«Мои дела», скрытия/возврата отчёта и нового
-файла. Запуск #250 ещё не разрешён. Current-SHA CI — после готового diff;
+файла. Запуск #250 разрешён; попытка native-проверки остановлена из-за заблокированного экрана, приёмка ожидает разблокировки. Current-SHA CI — после готового diff;
 merge/release и закрытие issue не выполнены.
 
 ## Историческая диагностика первого слоя
@@ -237,3 +237,26 @@ return нельзя безусловно считать завершённой �
 
 #250 остаётся открытой. Текущий checkpoint не является релизом, завершённой
 операцией в фоне, визуальной приёмкой или основанием для слияния полного feature.
+
+## Disk CSV regression after current main integration
+
+Merge checkpoint `e10bcd0` integrates main7062c54 separately from the test change.
+Actual focused profile: **9 PASS,0 failures/skips**,0.399 seconds. New test calls
+real `beginImport(csvText:)`, private SudrfClient/URLProtocol and CaseCardParser;
+asserts two exact successful card GETs and first-stage report cold/parsing/transient
+all zero before background repair. Two records are atomically present on disk.
+Hide/reopen preserves the running operation; soft stop completes only the current
+card. Reopened disk preserves exact keys, numbers, collections, contexts, movement,
+snapshot, full journal bytes and logical case IDs. CSV commit intentionally starts
+with nil snapshot/movement (actual commitImport contract); this test does not claim
+a persisted initial card snapshot. All fixture names/data are synthetic.
+
+Profile log `/private/tmp/sudrf-250-current-nine-final.log`, SHA-256
+`ba7a101c2cadc5fecf923da341bb38a11c08205d35f9ad1b08f91bfe93dad977`.
+Current QA host build PASS, log SHA-256
+`9667f271ba432c250da5d7675ba58c46a2a8e4ea8e47a8c365d5014b543148e2`.
+Current unsigned Xcode build PASS, log `/private/tmp/sudrf-250-current-xcode.log`,
+SHA-256 `21c1742f55474ea1c1705cf5ca4a79776a6a0202c55c2dff09429d73735a5eb2`.
+Independent Astra review of the final test and merged source: Ship for commit,
+push and new CI; no blocking P1/P2 finding. No application launch or full local
+suite. Current-SHA CI and native acceptance remain separate gates.

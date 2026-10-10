@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import Synchronization
 @testable import SudrfKit
 @testable import SudrfApp
 import CaptchaSolver
@@ -31,12 +32,37 @@ private final class CSVRejectNetwork: URLProtocol {
     }
     override func stopLoading() {}
 }
+private final class CSVImportCardProtocol: URLProtocol {
+    static let requests = Mutex<[URL]>([])
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard request.httpMethod == "GET", let url = request.url, url.host == "test--region.sudrf.ru", url.path == "/modules.php",
+              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              query.contains(where: { $0.name == "name_op" && $0.value == "sf" }) || query.contains(where: { $0.name == "case_id" && ["1", "2"].contains($0.value ?? "") }) else {
+            XCTFail("Unexpected CSV fixture request: \(request.url?.absoluteString ?? "nil")"); client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
+        Self.requests.withLock { $0.append(url) }
+        let id = query.first(where: { $0.name == "case_id" })?.value ?? ""
+        let html = id.isEmpty ? "<html><form id='search-form'></form></html>" : "<html><body><h2 class='casenumber'>ДЕЛО № 33-\(id)/2026</h2><table><tr><td>Номер дела</td><td>33-\(id)/2026</td></tr></table></body></html>"
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type":"text/html; charset=utf-8"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(html.utf8)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
 @MainActor private final class CSVCardBarrier {
     var calls: [String] = []
+    private var anyStarted: CheckedContinuation<String, Never>?
+    func waitAny() async -> String {
+        if let number = pending.keys.first { return number }
+        return await withCheckedContinuation { anyStarted = $0 }
+    }
     private var started: [String: CheckedContinuation<Void, Never>] = [:]
     private var pending: [String: CheckedContinuation<CaseCard, Never>] = [:]
     func fetch(_ context: MovementContext) async -> CaseCard {
         calls.append(context.caseNumber)
+        anyStarted?.resume(returning: context.caseNumber); anyStarted = nil
         return await withCheckedContinuation {
             pending[context.caseNumber] = $0
             started.removeValue(forKey: context.caseNumber)?.resume()
@@ -68,6 +94,60 @@ private final class CSVRejectNetwork: URLProtocol {
         let suite = "Sudrf.CSVBackgroundRepairTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         return (defaults, suite)
+    }
+
+    func testCSVAtomicCommitSoftStopAndDiskReopenPreserveImportedRecords() async throws {
+        let (defaults, suite) = try privateDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("csv250-disk-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let disk = root.appendingPathComponent("fixture.store")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CSVImportCardProtocol.self]; config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false; config.urlCache = nil
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        CSVImportCardProtocol.requests.withLock { $0 = [] }
+        defer { CSVImportCardProtocol.requests.withLock { $0 = [] } }
+        let client = SudrfClient(session: session, minInterval: 0, variantStore: WorkingVariantStore(cacheURL: nil), captchaStore: CaptchaTokenStore())
+        let barrier = CSVCardBarrier()
+        var pair: (AppRouter, TrackedStore)? = try makeRouter(defaults: defaults, suite: suite, root: root,
+            diskURL: disk, importClient: client, fetch: { await barrier.fetch($0) })
+        let csv = "number,court,parties,url\n" + ["1", "2"].map {
+            "33-\($0)/2026,Тестовый областной суд,Тестовый участник,https://test--region.sudrf.ru/modules.php?name=sud_delo&name_op=case&case_id=\($0)&case_uid=00000000-0000-0000-0000-00000000000\($0)&delo_id=5"
+        }.joined(separator: "\n")
+        pair!.0.beginImport(csvText: csv)
+        let number = await barrier.waitAny()
+        XCTAssertEqual(pair!.1.all().count, 2)
+        guard case .finished(let initial) = pair!.0.importState else { return XCTFail("Initial atomic import report missing") }
+        XCTAssertEqual(initial.cases, 2); XCTAssertEqual(initial.cold, 0)
+        XCTAssertEqual(initial.parsing, 0); XCTAssertEqual(initial.transient, 0)
+        let ids = CSVImportCardProtocol.requests.withLock { urls in urls.compactMap {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "case_id" })?.value
+        } }
+        XCTAssertEqual(ids, ["1", "2"])
+        XCTAssertEqual(Set(pair!.1.all().map(\.caseNumber)), Set(["33-1/2026", "33-2/2026"]))
+        let first = try XCTUnwrap(pair!.1.all().first(where: { $0.caseNumber == number })).key
+        pair!.0.dismissImportSummary(); XCTAssertFalse(pair!.0.importSheetPresented)
+        pair!.0.showImportProgress(); XCTAssertTrue(pair!.0.importSheetPresented)
+        pair!.0.stopImportRepair(); barrier.finish(number)
+        await pair!.0.importRepairTask?.value
+        XCTAssertEqual(barrier.calls, [number])
+        XCTAssertEqual(pair!.0.completedImportKeys, [first])
+        XCTAssertEqual(pair!.0.originalImportKeys.count, 2)
+        let saved = pair!.1.all().map { ($0.key, $0.caseNumber, $0.collectionNames, $0.contextData, $0.movementData, $0.snapshotData, $0.eventJournalData, $0.logicalCaseID) }
+        XCTAssertTrue(saved.allSatisfy { !$0.2.isEmpty })
+        pair = nil
+        let reopened = try TrackedStore(container: try SudrfModelContainerFactory.make(inMemory: false, storeURL: disk), prepared: true)
+        XCTAssertEqual(reopened.all().count, 2)
+        for expected in saved {
+            let actual = try XCTUnwrap(reopened.record(forKey: expected.0))
+            XCTAssertEqual(actual.caseNumber, expected.1); XCTAssertEqual(actual.collectionNames, expected.2)
+            XCTAssertEqual(actual.contextData, expected.3); XCTAssertEqual(actual.movementData, expected.4)
+            XCTAssertEqual(actual.snapshotData, expected.5); XCTAssertEqual(actual.eventJournalData, expected.6)
+            XCTAssertEqual(actual.logicalCaseID, expected.7)
+        }
     }
 
     func testForegroundPreflightCompletesBeforeNextBackgroundAdmission() async throws {
@@ -107,6 +187,7 @@ private final class CSVRejectNetwork: URLProtocol {
     private func makeRouter(defaults: UserDefaults, suite: String, root: URL,
                             originResolver: any CaseOriginResolving = CSVRepairOrigin(),
                             tokens: CaptchaTokenStore = CaptchaTokenStore(),
+                            diskURL: URL? = nil, importClient: SudrfClient? = nil,
                             fetch: @escaping (MovementContext) async throws -> CaseCard) throws
         -> (AppRouter, TrackedStore) {
         let configuration = URLSessionConfiguration.ephemeral
@@ -118,7 +199,7 @@ private final class CSVRejectNetwork: URLProtocol {
         let settings = CaptchaSettings(defaults: defaults)
         var store: TrackedStore!
         let router = try AppRouter(captchaSettings: settings,
-            modelContainer: SudrfModelContainerFactory.make(inMemory: true), modelContainerIsPrepared: true,
+            modelContainer: SudrfModelContainerFactory.make(inMemory: diskURL == nil, storeURL: diskURL), modelContainerIsPrepared: true,
             captchaCorpus: CorpusStore(baseDir: root.appendingPathComponent("corpus")),
             refreshCenterFactory: { suppliedStore, client in
                 store = suppliedStore
@@ -129,7 +210,7 @@ private final class CSVRejectNetwork: URLProtocol {
             }, importVSRFProvider: vsrf, importMosGorSudProvider: moscow,
             selectedPublishedAct: PublishedActSelection(cache: ActFileCache(directory: root.appendingPathComponent("acts")),
                 fetch: { _, _ in throw URLError(.unsupportedURL) }),
-            userDefaults: defaults, client: TestNetworkGuard.sudrfClient(), captchaTokenStore: tokens,
+            userDefaults: defaults, client: importClient ?? TestNetworkGuard.sudrfClient(), captchaTokenStore: tokens,
             directCaseLinkResolverFactory: { _ in DirectCaseLinkResolver(fetchCard: { _ in throw URLError(.unsupportedURL) },
                 districtCourts: { _ in throw URLError(.unsupportedURL) }) },
             spotlightIndexerFactory: { catalog in SpotlightIndexer(catalog: catalog,

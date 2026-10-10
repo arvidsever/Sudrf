@@ -53,6 +53,52 @@ LaunchServices не выполнялись. Лог —
 Офлайн-профиль остаётся доказательством поведения на сохранённых фрагментах
 и синтетических данных; живая приёмка #322 остаётся незавершённой.
 
+## Изоляция CAPTCHA recovery — 10 октября 2026 года
+
+По согласованному контракту `TrackedCaseRepairCoordinator` принимает
+`captchaStore: CaptchaTokenStore = .shared`. При автоматическом решении токен
+записывается в переданное хранилище; обычные production-вызовы используют
+прежнее общее хранилище. В изолированном запуске клиент и координатор должны
+получить один и тот же отдельный экземпляр, чтобы повторный запрос прочитал
+решённый токен. Офлайн-профиль явно передаёт координатору отдельное хранилище;
+солвер и настройки CAPTCHA в этом профиле отсутствуют.
+
+Также согласована инъекция `CaptchaSettings(defaults: UserDefaults = .standard)`:
+чтение, регистрация defaults и сохранение свойств идут в переданный suite.
+Обычные вызовы и `CaptchaSettings.shared` сохраняют `.standard`. Для живого
+изолированного запуска настройки должны создаваться с отдельным suite.
+
+До исправления конструктора логгера в профильном тесте выполнена команда:
+
+```sh
+swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter 'Issue322AcceptanceTests|TrackedCaseRepairTests.testRegularSudrfCaptchaIsAutoSolvedOnceBeforeReporting|TrackedCaseRepairTests.testCaptchaSettingsPersistOnlyInInjectedDefaults'
+```
+
+Результат: 4 XCTest, 0 ошибок, 0 пропусков, 0,773 секунды. Два теста
+`Issue322AcceptanceTests` проверяют прежний офлайн-профиль. Тест автоматического
+решения использует отдельные settings suite, CAPTCHA store и WorkingVariantStore
+без дискового кеша; проверяет запись решённого токена именно в переданный store.
+Вызовы solver, fetcher и origin resolver подменены. Однако конструктор
+`CaptchaSolver()` в этом запуске использовал `CaptchaSolverLog.shared`,
+который мог создать общие каталоги Application Support. Поэтому этот запуск
+не подтверждает полную изоляцию от общей файловой системы. Содержимое общих
+каталогов не проверялось и не удалялось. После review тест изменён на явный
+логгер с `fileURL`, `failuresDir`, `diagnosticsDir`, равными nil. Исправленная
+редакция проверена той же командой: 4 XCTest, 0 ошибок и пропусков. Лог —
+`/private/tmp/sudrf-322-captcha-final-isolated-profile.log`, SHA-256:
+`b47e95593e8dcdaf3d2e4b88b656c13bbd8262fa1e42a62830e1dbf8d22265db`. Тест настроек проверяет
+сохранение всех пяти свойств, нормализацию числа попыток, повторное открытие
+и отсутствие этих значений в другом suite. Лог —
+`/private/tmp/sudrf-322-captcha-isolated-profile.log`, SHA-256:
+`022e20d1e8b0a91a257bccc609f8fa1f5e6e2dad576206f3227aab136b57cc52`.
+
+Эти проверки подтверждают изоляцию CAPTCHA на подменённых вызовах.
+Живые запросы, UI, установленное приложение, рабочая база и TestFlight не
+использовались. До живой приёмки требуется собрать и проверить полностью
+изолированный клиент/координатор/refresh-профиль (включая cookies, кеши,
+диагностику OCR и provider/resolver dependencies). Само наличие двух DI-параметров
+не подтверждает изоляцию произвольного живого запуска.
+
 ## Офлайн-профиль — 9 октября 2026 года
 
 Проверено на ветке `codex/moscow-chain-acceptance-322-post434`, основание —

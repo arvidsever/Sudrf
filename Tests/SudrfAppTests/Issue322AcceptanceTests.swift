@@ -318,7 +318,7 @@ final class Issue322AcceptanceTests: XCTestCase {
             moscowProvider: moscow)
         return TrackedCaseRepairCoordinator(
             store: store, client: client, originResolver: resolver,
-            defaults: defaults,
+            defaults: defaults, captchaStore: CaptchaTokenStore(),
             anchorCardFetcher: { context in
                 guard let value = context.cardURLString, let url = URL(string: value) else {
                     throw SudrfError.parsing("missing issue322 fixture URL")

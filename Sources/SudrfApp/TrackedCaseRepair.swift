@@ -315,6 +315,7 @@ final class TrackedCaseRepairCoordinator {
     private let now: () -> Date
     private let captchaSolver: CaptchaSolver?
     private let captchaSettings: CaptchaSettings?
+    private let captchaStore: CaptchaTokenStore
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,
                             AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult
     // v6 повторно прогоняет v5 и дополнительно пересаживает предварительные
@@ -342,6 +343,7 @@ final class TrackedCaseRepairCoordinator {
          defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init,
          captchaSolver: CaptchaSolver? = nil,
          captchaSettings: CaptchaSettings? = nil,
+         captchaStore: CaptchaTokenStore = .shared,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
          anchorCardResolver: ((MovementContext) async throws -> CaseCardRecoveryResolution)? = nil,
@@ -350,6 +352,7 @@ final class TrackedCaseRepairCoordinator {
         self.defaults = defaults; self.now = now
         self.captchaSolver = captchaSolver
         self.captchaSettings = captchaSettings
+        self.captchaStore = captchaStore
         self.autoSolve = autoSolve ?? { url, client, solver, settings in
             await AutoCaptchaSolver.solve(formURL: url, client: client,
                                           solver: solver, settings: settings)
@@ -779,7 +782,7 @@ final class TrackedCaseRepairCoordinator {
                         return
                     }
                     if let token = solved.token {
-                        await CaptchaTokenStore.shared.store(
+                        await captchaStore.store(
                             token, domain: formURL.host ?? anchorContext.searchDomain)
                         try await repairHigherAnchor(
                             key: key, caseKey: eventKey, summary: &summary, allowAutoSolve: false)

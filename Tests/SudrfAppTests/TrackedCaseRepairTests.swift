@@ -1,6 +1,6 @@
 import XCTest
 import SudrfKit
-import CaptchaSolver
+@testable import CaptchaSolver
 @testable import SudrfApp
 
 private actor StubOriginResolver: CaseOriginResolving {
@@ -1192,6 +1192,25 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertTrue(summary.hasReport)
     }
 
+    func testCaptchaSettingsPersistOnlyInInjectedDefaults() {
+        let isolated = defaults()
+        let other = defaults()
+        let settings = CaptchaSettings(defaults: isolated)
+        settings.autoSolveEnabled = false
+        settings.minConfidence = 0.75
+        settings.maxAttempts = 99
+        settings.preprocessorEnabled = true
+        settings.preprocessorHosts = ["example.sudrf.ru"]
+        let reopened = CaptchaSettings(defaults: isolated)
+        XCTAssertFalse(reopened.autoSolveEnabled)
+        XCTAssertEqual(reopened.minConfidence, 0.75)
+        XCTAssertEqual(reopened.maxAttempts, CaptchaSettings.maxAttemptsRange.upperBound)
+        XCTAssertTrue(reopened.preprocessorEnabled)
+        XCTAssertEqual(reopened.preprocessorHosts, ["example.sudrf.ru"])
+        XCTAssertTrue(CaptchaSettings(defaults: other).autoSolveEnabled)
+        XCTAssertTrue(CaptchaSettings(defaults: other).preprocessorHosts.isEmpty)
+    }
+
     func testRegularSudrfCaptchaIsAutoSolvedOnceBeforeReporting() async throws {
         let store = TrackedStore(inMemory: true)
         let appeal = context(level: .appeal, number: "33-4818/2025",
@@ -1210,23 +1229,20 @@ final class TrackedCaseRepairTests: XCTestCase {
         let formURL = URL(string: "https://syktsud--komi.sudrf.ru/modules.php?name=sud_delo")!
         var fetchCalls = 0
         var solveCalls = 0
-        let settings = CaptchaSettings.shared
-        let wasDisabled = settings.forceDisabled
-        let wasEnabled = settings.autoSolveEnabled
-        settings.forceDisabled = false
+        let settings = CaptchaSettings(defaults: defaults())
         settings.autoSolveEnabled = true
-        defer {
-            settings.forceDisabled = wasDisabled
-            settings.autoSolveEnabled = wasEnabled
-        }
+        let captchaStore = CaptchaTokenStore()
+        let token = CaptchaToken(value: "12345", id: "captcha-id")
         let coordinator = TrackedCaseRepairCoordinator(
-            store: store, client: SudrfClient(),
+            store: store, client: SudrfClient(variantStore: WorkingVariantStore(cacheURL: nil),
+                                            captchaStore: captchaStore),
             originResolver: StubOriginResolver(.resolved(origin)), defaults: defaults(),
-            captchaSolver: CaptchaSolver(), captchaSettings: settings,
+            captchaSolver: CaptchaSolver(log: CaptchaSolverLog(
+                fileURL: nil, failuresDir: nil, diagnosticsDir: nil)), captchaSettings: settings, captchaStore: captchaStore,
             autoSolve: { _, _, _, _ in
                 solveCalls += 1
                 return AutoCaptchaSolver.SolveResult(
-                    token: CaptchaToken(value: "12345", id: "captcha-id"), png: nil)
+                    token: token, png: nil)
             },
             anchorCardFetcher: { _ in
                 fetchCalls += 1
@@ -1245,6 +1261,8 @@ final class TrackedCaseRepairTests: XCTestCase {
         XCTAssertEqual(fetchCalls, 2)
         XCTAssertTrue(summary.captchaRequests.isEmpty)
         XCTAssertEqual(summary.reanchored, 1)
+        let storedToken = await captchaStore.token(forDomain: formURL.host!)
+        XCTAssertEqual(storedToken, token)
     }
 
     func testTransientAnchorFetchUsesVerifiedCachedLowerReferenceAndMerges() async throws {

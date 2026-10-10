@@ -11,6 +11,11 @@ import Foundation
 /// TLS-политику и позволяет подменять URLSession в тестах.
 actor HTMLCourtTransport {
 
+    struct DownloadedHTML: Sendable {
+        let html: String
+        let finalURL: URL
+    }
+
     struct DownloadedFile: Sendable {
         let data: Data
         let finalURL: URL
@@ -64,7 +69,14 @@ actor HTMLCourtTransport {
         self.throttleSemantics = throttleSemantics
     }
 
-    func fetch(_ url: URL, maxAttempts: Int) async throws -> String {
+    func fetch(_ url: URL, maxAttempts: Int, referer: URL? = nil,
+               allowedFinalHosts: Set<String>? = nil) async throws -> String {
+        try await fetchHTML(url, maxAttempts: maxAttempts, referer: referer,
+                            allowedFinalHosts: allowedFinalHosts).html
+    }
+
+    func fetchHTML(_ url: URL, maxAttempts: Int, referer: URL? = nil,
+                   allowedFinalHosts: Set<String>? = nil) async throws -> DownloadedHTML {
         var lastError: Error = SudrfError.http(status: 0)
         let attempts = max(1, maxAttempts)
 
@@ -103,6 +115,9 @@ actor HTMLCourtTransport {
                 request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
                 request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
                 request.setValue("ru,en;q=0.8", forHTTPHeaderField: "Accept-Language")
+                if let referer {
+                    request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                }
 
                 let networkStartedAt = SuspendingClock.now
                 didStartNetwork = true
@@ -125,7 +140,16 @@ actor HTMLCourtTransport {
                     failed = true
                     throw SudrfError.http(status: http.statusCode)
                 }
-                if let html = decodingPolicy.decode(data) { return html }
+                let finalURL = response.url ?? url
+                if let allowedFinalHosts,
+                   !Self.isAllowedHTMLSourceURL(finalURL, hosts: allowedFinalHosts) {
+                    failed = true
+                    throw SudrfError.searchModuleUnavailable(
+                        domain: url.host ?? "неизвестный источник")
+                }
+                if let html = decodingPolicy.decode(data) {
+                    return DownloadedHTML(html: html, finalURL: finalURL)
+                }
                 throw SudrfError.decodingFailed
             } catch is CancellationError {
                 cancelled = true
@@ -270,6 +294,11 @@ actor HTMLCourtTransport {
             return false
         }
         return hosts.contains(host)
+    }
+
+    private static func isAllowedHTMLSourceURL(_ url: URL, hosts: Set<String>) -> Bool {
+        guard url.port == nil else { return false }
+        return isAllowedSecureURL(url, hosts: hosts)
     }
 
     private static func contentLength(_ response: HTTPURLResponse) -> Int? {

@@ -175,19 +175,21 @@ final class AppRouter: ObservableObject {
         return Self.caseNumberAliases(for: record).previous
     }
 
-    private let store: TrackedStore
+    private let captchaTokenStore: CaptchaTokenStore
     private let userDefaults: UserDefaults
+    private let currentEntityActivityPublisher: @MainActor (NSUserActivity) -> Void
+    private let feedNotificationPublisher: @MainActor ([FeedEntry]) -> Void
+    private let feedBadgePublisher: @MainActor (Int) -> Void
+    private let store: TrackedStore
     let modelContainer: ModelContainer
     let caseCatalog: CaseCatalog
     let spotlightIndexer: SpotlightIndexer
-    private let currentEntityActivityPublisher: @MainActor (NSUserActivity) -> Void
-    private let feedNotificationPublisher: @MainActor ([FeedEntry]) -> Void
     private let spotlightSearch = SpotlightSearchSession()
     private let directCaseLinkResolver: DirectCaseLinkResolver
     /// Один транспорт SUDRF на всё приложение: фоновые обновления, ремонт
     /// контекста и экран поиска делят одну FIFO-очередь и одну активную
     /// origin-scoped URLSession.
-    let client = SudrfClient()
+    let client: SudrfClient
     private let cardRecovery: CaseCardRecovery
     private let importVSRFProvider: any VSRFProviding
     private let importMosGorSudProvider: any MosGorSudProviding
@@ -197,7 +199,13 @@ final class AppRouter: ObservableObject {
     /// Hosts, для которых captcha была открыта именно из отчёта ремонта.
     /// Это отличает успешный ввод от обычной заглушки движения дела.
     private var repairCaptchaHosts = Set<String>()
-    private let fsspClient: FSSPClient
+    private var cachedFSSPClient: FSSPClient?
+    private var fsspClient: FSSPClient {
+        if let cachedFSSPClient { return cachedFSSPClient }
+        let client = FSSPClient()
+        cachedFSSPClient = client
+        return client
+    }
     private let captchaCorpus: CorpusStore
     private var fsspCaptchaRequestID: UUID?
     private let summaryConfigurationProvider: @MainActor @Sendable () throws
@@ -412,14 +420,18 @@ final class AppRouter: ObservableObject {
          summaryConfigurationProvider: @escaping @MainActor @Sendable () throws
             -> ConfiguredActSummarizer = { try ActSummarizerFactory.configured() },
          trackedStoreProjectionSynchronizer: TrackedStore.ProjectionSynchronizer? = nil,
-         userDefaults suppliedUserDefaults: UserDefaults = .standard,
-         spotlightIndexerFactory: ((CaseCatalog) -> SpotlightIndexer)? = nil,
-         currentEntityActivityPublisher: @escaping @MainActor (NSUserActivity) -> Void = {
-             $0.becomeCurrent()
-         },
-         feedNotificationPublisher: @escaping @MainActor ([FeedEntry]) -> Void = {
-             FeedNotifier.shared.notify(newEntries: $0)
-         }) throws {
+         userDefaults: UserDefaults = .standard,
+         client suppliedClient: SudrfClient? = nil,
+         captchaTokenStore: CaptchaTokenStore = .shared,
+         directCaseLinkResolverFactory: @MainActor (SudrfClient) -> DirectCaseLinkResolver = { DirectCaseLinkResolver(client: $0) },
+         spotlightIndexerFactory: @MainActor (CaseCatalog) -> SpotlightIndexer = { SpotlightIndexer(catalog: $0) },
+         currentEntityActivityPublisher: @escaping @MainActor (NSUserActivity) -> Void = { $0.becomeCurrent() },
+         feedNotificationPublisher: @escaping @MainActor ([FeedEntry]) -> Void = { FeedNotifier.shared.notify(newEntries: $0) },
+         feedBadgePublisher: @escaping @MainActor (Int) -> Void = { FeedNotifier.shared.setBadge($0) },
+         notificationOpenInstaller: @MainActor (@escaping @MainActor (String) -> Void) -> Void = { FeedNotifier.shared.onOpen = $0 },
+         intentInstaller: @MainActor (AppRouter) -> Void = { SudrfIntentRuntime.shared.install($0) },
+         captchaSolverFactory: @MainActor (CaptchaSettings) -> CaptchaSolver? = { CaptchaSolverFactory.make(settings: $0) },
+         repairCoordinatorFactory: (@MainActor (TrackedStore, SudrfClient) -> TrackedCaseRepairCoordinator)? = nil) throws {
         let store: TrackedStore
         if let trackedStoreProjectionSynchronizer {
             store = try TrackedStore(
@@ -430,52 +442,57 @@ final class AppRouter: ObservableObject {
             store = try TrackedStore(container: suppliedModelContainer,
                                      prepared: modelContainerIsPrepared)
         }
-        self.store = store
-        self.userDefaults = suppliedUserDefaults
-        self.readFeedIDs = Set((suppliedUserDefaults.stringArray(forKey: Self.readFeedIDsKey) ?? [])
+        self.captchaTokenStore = captchaTokenStore
+        self.client = suppliedClient ?? SudrfClient()
+        self.feedBadgePublisher = feedBadgePublisher
+        self.currentEntityActivityPublisher = currentEntityActivityPublisher
+        self.feedNotificationPublisher = feedNotificationPublisher
+        self.userDefaults = userDefaults
+        self.readFeedIDs = Set((userDefaults.stringArray(forKey: Self.readFeedIDsKey) ?? [])
             .map(AppRouter.feedIDDroppingKind))
-        self.knownFeedIDs = Set((suppliedUserDefaults.stringArray(forKey: Self.knownFeedIDsKey) ?? [])
+        self.knownFeedIDs = Set((userDefaults.stringArray(forKey: Self.knownFeedIDsKey) ?? [])
             .map(AppRouter.feedIDDroppingKind))
         self.materialFeedMigrationState = MaterialFeedMigrationState(
-            consumedLegacyIDs: Set(suppliedUserDefaults.stringArray(
+            consumedLegacyIDs: Set(userDefaults.stringArray(
                 forKey: Self.materialFeedConsumedLegacyIDsKey) ?? []),
-            pendingUnresolvedCounts: (suppliedUserDefaults.dictionary(
+            pendingUnresolvedCounts: (userDefaults.dictionary(
                 forKey: Self.materialFeedPendingCountsKey) ?? [:]).compactMapValues { $0 as? Int })
+        self.store = store
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.modelContainer = store.container
         self.caseCatalog = CaseCatalog(container: store.container)
-        self.spotlightIndexer = spotlightIndexerFactory?(self.caseCatalog)
-            ?? SpotlightIndexer(catalog: self.caseCatalog)
-        self.currentEntityActivityPublisher = currentEntityActivityPublisher
-        self.feedNotificationPublisher = feedNotificationPublisher
-        self.directCaseLinkResolver = DirectCaseLinkResolver(client: client)
+        self.spotlightIndexer = spotlightIndexerFactory(self.caseCatalog)
+        self.directCaseLinkResolver = directCaseLinkResolverFactory(client)
         self.summaryConfigurationProvider = summaryConfigurationProvider
         self.captchaCorpus = captchaCorpus
-        let savedSpotlightEnabled = suppliedUserDefaults.object(
+        let savedSpotlightEnabled = userDefaults.object(
             forKey: SpotlightPreferenceStore.key).map { _ in
-                suppliedUserDefaults.bool(forKey: SpotlightPreferenceStore.key)
+                userDefaults.bool(forKey: SpotlightPreferenceStore.key)
             } ?? true
         self.spotlightEnabled = savedSpotlightEnabled
         self.spotlightOnboardingDraft = savedSpotlightEnabled
-        self.spotlightOnboardingRequired = !suppliedUserDefaults.bool(
+        self.spotlightOnboardingRequired = !userDefaults.bool(
             forKey: SpotlightPreferenceStore.onboardingKey)
         let captchaSettings = suppliedCaptchaSettings ?? .shared
-        let fsspClient = FSSPClient()
-        self.fsspClient = fsspClient
+        let fsspClient = refreshCenterFactory == nil ? FSSPClient() : nil
+        self.cachedFSSPClient = fsspClient
         let vsrfProvider = importVSRFProvider ?? VSRFClient()
         let mosGorSudProvider = importMosGorSudProvider ?? MosGorSudClient()
         self.importVSRFProvider = vsrfProvider
         self.importMosGorSudProvider = mosGorSudProvider
-        let configuredSolver = suppliedCaptchaSolver
-            ?? CaptchaSolverFactory.make(settings: captchaSettings)
+        let configuredSolver = suppliedCaptchaSolver ?? captchaSolverFactory(captchaSettings)
         self.cardRecovery = CaseCardRecovery(provider: client)
-        let originResolver = CaseOriginResolver(client: client)
-        self.repairCoordinator = TrackedCaseRepairCoordinator(
-            store: store, client: client, originResolver: originResolver,
-            captchaSolver: configuredSolver, captchaSettings: captchaSettings,
-            anchorCardResolver: { [cardRecovery] context in
-                try await cardRecovery.resolve(context: context)
-            })
+        if let repairCoordinatorFactory {
+            self.repairCoordinator = repairCoordinatorFactory(store, client)
+        } else {
+            let originResolver = CaseOriginResolver(client: client)
+            self.repairCoordinator = TrackedCaseRepairCoordinator(
+                store: store, client: client, originResolver: originResolver,
+                captchaSolver: configuredSolver, captchaSettings: captchaSettings,
+                anchorCardResolver: { [cardRecovery] context in
+                    try await cardRecovery.resolve(context: context)
+                })
+        }
         refreshCenter = refreshCenterFactory?(store, client)
             ?? RefreshCenter(store: store, client: client,
                              captchaSolver: configuredSolver,
@@ -520,12 +537,12 @@ final class AppRouter: ObservableObject {
         refreshCenterSink = refreshCenter.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
         // Клик по системному уведомлению — поднять окно и открыть дело.
-        FeedNotifier.shared.onOpen = { [weak self] key in
+        notificationOpenInstaller { [weak self] key in
             NSApp.activate(ignoringOtherApps: true)
             self?.openCase(key: key)
         }
         reload()
-        SudrfIntentRuntime.shared.install(self)
+        intentInstaller(self)
     }
 
     /// Production bootstrap calls this once after the persistent store is
@@ -959,7 +976,7 @@ final class AppRouter: ObservableObject {
                     && feed[index].kind != .enforcement && feed[index].isUnread {
                 feed[index].isUnread = false
             }
-            FeedNotifier.shared.setBadge(newBadge)
+            feedBadgePublisher(newBadge)
         } catch {
             reportPersistenceFailure(error)
         }
@@ -1891,8 +1908,9 @@ final class AppRouter: ObservableObject {
     /// дозагрузятся уже с парой в URL.
     func storeCaptchaPair(host: String, token: CaptchaToken) {
         pendingCaptchaRefresh = true
+        let tokenStore = captchaTokenStore
         Task { [weak self] in
-            await CaptchaTokenStore.shared.store(token, domain: host)
+            await tokenStore.store(token, domain: host)
             await MainActor.run {
                 guard let self else { return }
                 self.captcha = nil
@@ -2483,7 +2501,7 @@ final class AppRouter: ObservableObject {
             knownFeedIDs = ids
             userDefaults.set(Array(ids), forKey: Self.knownFeedIDsKey)
         }
-        FeedNotifier.shared.setBadge(newBadge)
+        feedBadgePublisher(newBadge)
     }
 
     /// Вид производства строки. Приоритет: точная картотека из контекста

@@ -11,6 +11,8 @@ final class CaptchaSettings: ObservableObject {
 
     static let shared = CaptchaSettings()
 
+    private let defaults: UserDefaults
+
     private static let enabledKey = "captcha.autoSolve"
     private static let minConfidenceKey = "captcha.minConfidence"
     private static let maxAttemptsKey = "captcha.maxAttempts"
@@ -19,8 +21,6 @@ final class CaptchaSettings: ObservableObject {
 
     static let defaultMaxAttempts = 3
     static let maxAttemptsRange = 1...5
-
-    private let defaults: UserDefaults
 
     /// Принудительно выключает солвер независимо от настройки — для
     /// тестов, в которых нужен детерминированный «как без солвера»

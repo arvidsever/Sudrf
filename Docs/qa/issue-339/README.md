@@ -159,3 +159,26 @@ outcome remains partial.
 
 Root then quit the own QA app with the native Quit shortcut. A fresh CUA app
 inventory returned no `ru.sudrf.qa.issue339` entry, confirming cleanup.
+
+## Интеграция актуального main — 10 октября 2026 года
+
+Ветка обновлена на `origin/main` `7062c547eb9e0ee40d073ea3a232e6ec133aa28e`,
+0.65.3 (264). При разрешении конфликтов сохранены текущие зависимости
+AppRouter и RefreshCenter, московский маршрут и журнал Казначейства.
+Подмена готового CAPTCHA-солвера из этой ветки сохранена; при её отсутствии
+используется нынешняя фабрика. Spotlight-onboarding использует переданные
+настройки. Дублирующее поле настроек, появившееся при автоматическом merge,
+удалено. Независимый Astra review этой интеграции — PASS.
+
+Компиляция всех тестов прошла; тесты в локальном процессе не запускались.
+Лог `/private/tmp/sudrf-339-main-integration-compile.log`, SHA-256:
+`7875d319e0e542c715894b742d430c43a85c91fff7547452ed3fa4ca318011f5`.
+Registry `--check`, пересоздание проекта и собственная Xcode Debug-сборка
+прошли. Три готовые модели взяты из отдельной рабочей копии и проверены
+по неизменным manifest этой ветки перед копированием. Лог сборки
+`/private/tmp/sudrf-339-main-integration-xcodebuild.log`, SHA-256:
+`6c0fc6daea57f72ea721d1366b900edcd1e8fe992a6a6359a3465e8ea1cffc3a`.
+
+Приложение и QA не запускались; рабочая база и TestFlight не использовались.
+Новых живых попыток нет. Прежняя визуальная приёмка сохраняется; актуальный
+head требует нового hosted CI. Полная живая цепочка остаётся незавершённой.

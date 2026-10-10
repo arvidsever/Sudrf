@@ -23,6 +23,7 @@ enum CaseEventKind: String, Codable, CaseIterable, Sendable {
     case deadlineChanged
     case deadlineExpired
     case deadlineSuperseded
+    case treasuryRSSPublished
 }
 
 struct CaseEventEvidence: Codable, Equatable, Sendable {
@@ -39,6 +40,9 @@ struct CaseEventEvidence: Codable, Equatable, Sendable {
     var ruleID: String? = nil
     var occurrenceKey: String? = nil
     var relatedOccurrenceKey: String? = nil
+    var rssGUID: String? = nil
+    var rssPublishedAtRef: Double? = nil
+    var eventIDAliases: [String]? = nil
 }
 
 /// Stable identity for a repeatable transition inside one persisted event stream.
@@ -850,6 +854,16 @@ enum CaseSnapshotSourceIdentity {
                              context: MovementContext) -> String? {
         if let url = instance.sourceURL,
            let native = SourceNativeCardLocator.vsrf(url: url) {
+            return native.identity.id
+        }
+        let hasMoscowSource = instance.domain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame
+            || instance.sourceURL?.host?.caseInsensitiveCompare(
+                "mos-sud.ru") == .orderedSame
+        if hasMoscowSource {
+            guard let url = instance.sourceURL,
+                  let cart = CartotekaRegistry.find(level: .magistrate, id: "adm"),
+                  let native = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart) else { return nil }
             return native.identity.id
         }
         if MosGorSudRouting.isMosGorSud(domain: instance.domain), let url = instance.sourceURL {

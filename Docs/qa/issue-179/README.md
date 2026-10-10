@@ -1,5 +1,26 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## No-op journal bytes follow-up — 10 October 2026
+
+Hosted run `38068780197` at `1f4aedee85eff47b9795d6d56b83324346e30522`
+executed **2220 XCTest tests, 21 skipped, one failure**. All new retained-object
+rollback and preparation tests passed. The sole failure was the existing
+repeated-refresh byte equality assertion: decoded full journal equality passed,
+but an unchanged journal was unnecessarily encoded again with unordered JSON keys.
+Full log `/private/tmp/sudrf-179-ci-1f4aedee.log`, SHA-256
+`dbe59604c161d305aa90c48dad98f27b5a2dd1c801ad3ca937749a11c08fbf1d`.
+
+The write now preserves existing bytes when the resulting decoded journal is
+unchanged. Both forced append/encoding failure gates still execute, and a missing
+journal still receives encoded data. A deterministic private disk oracle uses
+formatted original JSON and asserts exact retained and reopened bytes, unchanged
+journal contents and a clean context. The existing byte assertion is retained.
+Private profile: **30 XCTest passed, zero failures** (12 disk, eight importer,
+ten Treasury); `/private/tmp/sudrf-179-journal-byte-profile.log`, SHA-256
+`8ecb403077be949b527cbff2ed0c93313f485ef8ca11fcfeddbf631fef58610e`.
+A new hosted current-head run is still required. This follow-up changes no feed,
+marks, notifications, UI, settings or runtime cutover claim.
+
 ## Quiet history persistence — 10 October 2026
 
 The existing store transaction now imports each original record's full dated

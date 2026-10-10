@@ -1123,7 +1123,8 @@ final class TrackedStore {
                           originKey: String? = nil,
                           semanticBaselines: CaseEventBaselines? = nil) throws {
         guard !events.isEmpty || derivationVersion != nil || semanticBaselines != nil else { return }
-        var journal = try requiredEventJournal(for: record)
+        let originalJournal = try requiredEventJournal(for: record)
+        var journal = originalJournal
         if let derivationVersion { journal.derivationVersion = derivationVersion }
         if let semanticBaselines { journal.semanticBaselines = semanticBaselines }
         do {
@@ -1142,7 +1143,10 @@ final class TrackedStore {
                 failNextJournalEncodingForTesting = false
                 throw TestJournalEncodingFailure.forced
             }
-            record.eventJournalData = try JSONEncoder().encode(journal)
+            // Preserve the original bytes when a refresh adds no journal changes.
+            if record.eventJournalData == nil || journal != originalJournal {
+                record.eventJournalData = try JSONEncoder().encode(journal)
+            }
         } catch {
             storeLog.error("Не удалось закодировать журнал событий: \(error, privacy: .public)")
             throw TrackedStoreCommitError.eventJournalEncoding(details: error.localizedDescription)

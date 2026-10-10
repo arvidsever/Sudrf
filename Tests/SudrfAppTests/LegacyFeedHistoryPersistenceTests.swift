@@ -43,6 +43,31 @@ final class LegacyFeedHistoryPersistenceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try test(directory.appendingPathComponent("fixture.store"))
     }
+    func testUnchangedJournalAppendPreservesOriginalBytesAcrossDiskReopen() throws {
+        try disk { url in
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container, prepared: true)
+            let record = try seed(container)
+            try store.commit { try store.ensureLegacyFeedHistory(for: record) }
+            let journal = try XCTUnwrap(record.eventJournal)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let originalBytes = try encoder.encode(journal)
+            record.eventJournalData = originalBytes
+            try container.mainContext.save()
+            try store.commit {
+                try store.appendCaseEvents([], to: record,
+                                           derivationVersion: journal.derivationVersion)
+            }
+            XCTAssertEqual(record.eventJournalData, originalBytes)
+            XCTAssertEqual(record.eventJournal, journal)
+            XCTAssertFalse(container.mainContext.hasChanges)
+            let reopened = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let saved = try XCTUnwrap(try reopened.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first)
+            XCTAssertEqual(saved.eventJournalData, originalBytes)
+            XCTAssertEqual(saved.eventJournal, journal)
+        }
+    }
     func testPreparationImportsAllPublishedHistoryAndReopensWithoutAdvancingState() throws {
         try disk { url in
             var key = ""

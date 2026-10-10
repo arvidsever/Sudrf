@@ -282,6 +282,17 @@ final class PortalCanaryTests: XCTestCase {
         XCTAssertEqual(report.requests.first?.safeDOM?.hasKnownListingStructure, true)
     }
 
+    func testClientCertificateFailuresAreReportedAsTLS() async throws {
+        let target = try XCTUnwrap(PortalCanaryTargets.make().first)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ClientCertificateFailureStub.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let report = await PortalCanaryRunner(session: session).run([target])
+        XCTAssertEqual(report.requests.first?.outcome, .networkFailure)
+        XCTAssertEqual(report.requests.first?.stage, "tls")
+    }
+
     func testHttpFailureIsReportedAfterExactlyOneRequest() async throws {
         let target = try XCTUnwrap(PortalCanaryTargets.make().first)
         PortalCanaryStub.reset(status: 503, contentType: "text/html", body: Data())
@@ -392,5 +403,14 @@ private final class PortalCanaryStub: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
 
+    override func stopLoading() {}
+}
+
+private final class ClientCertificateFailureStub: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.clientCertificateRequired))
+    }
     override func stopLoading() {}
 }

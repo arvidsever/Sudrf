@@ -5,6 +5,60 @@ import XCTest
 final class SourceOutcomeTests: XCTestCase {
     private let observedAt = Date(timeIntervalSince1970: 1_700_000_000)
 
+    func testTransportFailureCategoryMatrix() {
+        let groups: [(SourceTransportFailureCategory, [URLError.Code])] = [
+            (.timeout, [.timedOut]), (.dns, [.cannotFindHost, .dnsLookupFailed]),
+            (.tls, [.secureConnectionFailed, .serverCertificateHasBadDate,
+                    .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                    .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired]),
+            (.connection, [.cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet]),
+            (.cancelled, [.cancelled]), (.network, [.badURL, URLError.Code(rawValue: -99999)])
+        ]
+        for (category, codes) in groups {
+            for code in codes { XCTAssertEqual(SourceTransportFailureCategory.classify(code), category) }
+        }
+    }
+
+    func testDerivedTransportCategoryUsesExistingProvenanceOnly() throws {
+        let errors: [Error] = [
+            NSError(domain: NSURLErrorDomain, code: -1200,
+                    userInfo: [NSLocalizedDescriptionKey: "private sentinel"]),
+            SudrfError.transientNetworkError(domain: "court.invalid", code: .timedOut, attempt: 3),
+            URLError(.cancelled)
+        ]
+        for (error, category) in zip(errors, [SourceTransportFailureCategory.tls, .timeout, .cancelled]) {
+            let attempt = SourceOutcomeClassifier.attempt(for: error, operation: .search,
+                sourceFamily: "sudrf", host: "court.invalid", observedAt: observedAt)
+            XCTAssertEqual(attempt.kind, .transportFailure)
+            XCTAssertEqual(attempt.transportFailureCategory, category)
+            let data = try JSONEncoder().encode(attempt)
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("private sentinel"))
+            XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("transportFailureCategory"))
+            let decoded = try JSONDecoder().decode(SourceAttempt.self, from: data)
+            XCTAssertEqual(decoded, attempt)
+            XCTAssertEqual(decoded.transportFailureCategory, category)
+        }
+    }
+
+    func testDerivedTransportCategoryExcludesMissingMalformedHTTPAndOtherOutcomes() throws {
+        for code in [nil, "", "not-a-number"] as [String?] {
+            let attempt = SourceAttempt(kind: .transportFailure,
+                provenance: .init(operation: .search, sourceFamily: "sudrf", host: "court.invalid", errorCode: code))
+            XCTAssertNil(attempt.transportFailureCategory)
+        }
+        for kind in [SourceOutcomeKind.parserFailure, .captcha, .maintenance, .partial, .usableSnapshot] {
+            XCTAssertNil(SourceAttempt(kind: kind, provenance: .init(operation: .search,
+                sourceFamily: "sudrf", host: "court.invalid", errorCode: "-1200")).transportFailureCategory)
+        }
+        XCTAssertNil(SourceAttempt(kind: .transportFailure, provenance: .init(operation: .search,
+            sourceFamily: "sudrf", host: "court.invalid", httpStatus: 503, errorCode: "-1200")).transportFailureCategory)
+        let legacy = Data(#"{"kind":"transportFailure","provenance":{"operation":"search","sourceFamily":"sudrf","host":"court.invalid","observedAt":0,"errorCode":"-1200"}}"#.utf8)
+        let decoded = try JSONDecoder().decode(SourceAttempt.self, from: legacy)
+        XCTAssertEqual(decoded.transportFailureCategory, .tls)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["kind", "provenance"])
+    }
+
     func testSearchPageKindsMapToTypedOutcomes() {
         XCTAssertEqual(SearchPageKind.results.sourceOutcomeKind, .usableSnapshot)
         XCTAssertEqual(SearchPageKind.empty.sourceOutcomeKind, .honestZero)

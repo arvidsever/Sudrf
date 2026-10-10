@@ -279,7 +279,7 @@ struct PortalCanaryRunner {
             return row(target, outcome, stage, http.statusCode, data.count,
                        hash, declared, decoded.encoding.rawValue, artifact)
         } catch let error as URLError {
-            return row(target, .networkFailure, networkCategory(error.code), nil,
+            return row(target, .networkFailure, SourceTransportFailureCategory.classify(error.code).rawValue, nil,
                        nil, nil, "unspecified", nil, nil)
         } catch {
             return row(target, .networkFailure, "network", nil, nil, nil,
@@ -472,20 +472,6 @@ struct PortalCanaryRunner {
         case "windows-1251", "cp1251", "windows1251": return "windows-1251"
         case "iso-8859-1", "latin1": return "iso-8859-1"
         default: return "other"
-        }
-    }
-
-    private func networkCategory(_ code: URLError.Code) -> String {
-        switch code {
-        case .timedOut: return "timeout"
-        case .cannotFindHost, .dnsLookupFailed: return "dns"
-        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
-             .serverCertificateHasBadDate, .serverCertificateNotYetValid:
-            return "tls"
-        case .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet:
-            return "connection"
-        case .cancelled: return "cancelled"
-        default: return "network"
         }
     }
 

@@ -216,3 +216,30 @@ reschedule and no duplicate after cold reopening and repeated refresh.
 Independent Astra review passed for this delta. App test targets compiled
 locally without execution; hosted CI must be repeated on the new commit.
 Existing persisted identity graphs are not silently rebuilt by this change.
+
+
+## Numeric picker order regression
+
+Native acceptance found lexicographic ordering such as 8, 89, 9, 90.
+`moscowCourtOption(for:)` omitted `CourtOption.number`, so the existing shared
+numeric comparator fell back to the published title. The mapping now forwards
+`unit.magistrateCourt.number`, derived from the classification code. Published
+title, classification code and native `/rs/<id>` remain separate fields.
+
+The decoded Moscow-unit regression exercises the actual mapping followed by
+`SearchModel.ordered`, expecting `[1, 2, 8, 9, 10, 89, 90, 100, 471]`.
+Its titles and native IDs deliberately run in reverse numerical order to prove
+that neither supplies the numeric sorting key. The existing classification,
+canceled-unit and higher-court ordering checks remain in the focused profile.
+
+On 10 October 2026 the focused command executed 13 App tests (5
+`CourtOptionOrderTests`, 8 `MoscowCourtOptionTests`), all passed:
+
+```sh
+swift test --scratch-path /private/tmp/sudrf-106-spm --filter 'CourtOptionOrderTests|MoscowCourtOptionTests'
+```
+
+Log: `/private/tmp/sudrf-106-picker-order-tests.log`, SHA-256
+`6de9b0e64da8950214922d88c1ba63195a88e4cec5fcee50ac79d4e7abd2ac30`.
+This regression run used synthetic units and no live requests. Native UI
+acceptance and hosted current-commit CI remain separate gates.

@@ -170,6 +170,7 @@ final class SearchModel: ObservableObject {
         return CourtOption(domain: MoscowMagistrateDirectoryParser.host,
                            title: unit.courtFullNameWithMunicipal,
                            level: .magistrate, code: unit.code,
+                           number: unit.magistrateCourt.number,
                            moscowMagistrateUnitPathID: unitPathID)
     }
 

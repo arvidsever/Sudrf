@@ -18,6 +18,26 @@ public enum SourceOutcomeKind: String, Codable, Sendable {
     case parserFailure
 }
 
+/// Shared machine-readable classification; no retry or certificate trust policy.
+public enum SourceTransportFailureCategory: String, Sendable {
+    case timeout, dns, tls, connection, cancelled, network
+
+    public static func classify(_ code: URLError.Code) -> Self {
+        switch code {
+        case .timedOut: return .timeout
+        case .cannotFindHost, .dnsLookupFailed: return .dns
+        case .secureConnectionFailed, .serverCertificateHasBadDate,
+             .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid, .clientCertificateRejected,
+             .clientCertificateRequired: return .tls
+        case .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet:
+            return .connection
+        case .cancelled: return .cancelled
+        default: return .network
+        }
+    }
+}
+
 /// Безопасный provenance: только источник и машинные коды, без URL query,
 /// cookies, токенов и введённых CAPTCHA-кодов.
 public struct SourceProvenance: Codable, Equatable, Sendable {
@@ -63,6 +83,13 @@ public struct SourceAttempt: Codable, Equatable, Sendable {
     /// Зафиксированная граница следующей фоновой попытки (jitter выбирается один
     /// раз), чтобы перезапуск приложения не передвигал её заново.
     public var retryNotBefore: Date? = nil
+
+    /// Derived from existing provenance, without adding a persisted field.
+    public var transportFailureCategory: SourceTransportFailureCategory? {
+        guard kind == .transportFailure, provenance.httpStatus == nil,
+              let raw = provenance.errorCode, let code = Int(raw) else { return nil }
+        return SourceTransportFailureCategory.classify(URLError.Code(rawValue: code))
+    }
 
     public init(kind: SourceOutcomeKind, provenance: SourceProvenance,
                 consecutiveRefreshFailures: Int? = nil, retryNotBefore: Date? = nil) {

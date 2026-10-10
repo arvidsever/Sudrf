@@ -1240,18 +1240,7 @@ final class MagistrateCaptchaRedirectDelegate: NSObject, URLSessionTaskDelegate,
 
 private extension URLError {
     var isTLSError: Bool {
-        switch code {
-        case .secureConnectionFailed,
-             .serverCertificateHasBadDate,
-             .serverCertificateUntrusted,
-             .serverCertificateHasUnknownRoot,
-             .serverCertificateNotYetValid,
-             .clientCertificateRejected,
-             .clientCertificateRequired:
-            return true
-        default:
-            return false
-        }
+        SourceTransportFailureCategory.classify(code) == .tls
     }
 
     /// Transient (сетевые) коды — суд «не ответил» (timeout, DNS, нет сети),

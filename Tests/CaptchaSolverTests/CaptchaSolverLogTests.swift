@@ -9,6 +9,7 @@ final class CaptchaSolverLogTests: XCTestCase {
     private var tmpDir: URL!
     private var logFile: URL!
     private var failuresDir: URL!
+    private var diagnosticsDir: URL!
     private var log: CaptchaSolverLog!
 
     override func setUpWithError() throws {
@@ -18,8 +19,11 @@ final class CaptchaSolverLogTests: XCTestCase {
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         logFile = tmpDir.appendingPathComponent("captcha-solve.log")
         failuresDir = tmpDir.appendingPathComponent("captcha-failures")
+        diagnosticsDir = tmpDir.appendingPathComponent("diagnostics")
         try FileManager.default.createDirectory(at: failuresDir, withIntermediateDirectories: true)
-        log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir)
+        try FileManager.default.createDirectory(at: diagnosticsDir, withIntermediateDirectories: true)
+        log = CaptchaSolverLog(fileURL: logFile, failuresDir: failuresDir,
+                               diagnosticsDir: diagnosticsDir)
     }
 
     override func tearDownWithError() throws {
@@ -137,6 +141,57 @@ final class CaptchaSolverLogTests: XCTestCase {
             entries.contains(where: { $0.lastPathComponent == "test-000.png" }),
             "oldest file should have been evicted"
         )
+    }
+
+    func testEvictionAtMaxFailureImagesIncludesUppercaseExtension() throws {
+        for i in 0..<50 {
+            let ext = i == 49 ? "PNG" : "png"
+            let url = failuresDir.appendingPathComponent("test-\(String(format: "%03d", i)).\(ext)")
+            try Data([0x89, 0x50, 0x4E, 0x47]).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(i))],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let savedURL = log.logFailedImage(png: Data([0x89, 0x50, 0x4E, 0x47]),
+                                          host: "new.sudrf.ru", kind: .sudrfToken)
+        XCTAssertNotNil(savedURL)
+
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: failuresDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )
+        let pngs = entries.filter { $0.pathExtension.lowercased() == "png" }
+        XCTAssertEqual(pngs.count, 50)
+        XCTAssertTrue(pngs.contains { $0.lastPathComponent == "test-049.PNG" })
+    }
+
+    func testEvictionAtMaxCandidateLogsIncludesExistingFiles() throws {
+        for i in 0..<51 {
+            let name = "test-\(String(format: "%03d", i))_20200101-000000_sudrfToken_candidates.txt"
+            let url = diagnosticsDir.appendingPathComponent(name)
+            try Data("old-\(i)".utf8).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(i))],
+                ofItemAtPath: url.path
+            )
+        }
+        let unrelated = diagnosticsDir.appendingPathComponent("unrelated.txt")
+        try Data("keep".utf8).write(to: unrelated)
+
+        let savedURL = log.logCandidates(
+            host: "new.sudrf.ru", kind: .sudrfToken, submitted: "12345",
+            confidence: 0.9, alternatives: [], preprocessed: false
+        )
+        XCTAssertNotNil(savedURL)
+
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: diagnosticsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )
+        let candidates = entries.filter { $0.lastPathComponent.hasSuffix("_candidates.txt") }
+        XCTAssertEqual(candidates.count, 50)
+        XCTAssertFalse(candidates.contains { $0.lastPathComponent.hasPrefix("test-000_") })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
     func testFourthRotationKeepsBoundedGenerations() {

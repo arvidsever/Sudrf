@@ -336,3 +336,36 @@ compatibility). Scratch directory: `/private/tmp/sudrf-179-hearing-reopen-build`
 This is same-process disk reopen, not cold-process preferences recovery or proof
 of atomicity across SwiftData and preferences. No application, working database,
 TestFlight, full-suite run, new CI run or cutover is represented by this check.
+
+## Build and CI continuation — 10 October 2026
+
+The source checkpoint `5b59978decfea22492a6d942c3e97573de16a01b` passed
+[CI run 38010553513](https://github.com/arvidsever/Sudrf/actions/runs/38010553513).
+The PR workflow tested synthetic merge `a97c8a4` of that head with main `bd06f4e`.
+The XCTest run reported 2,080 cases, 20 skipped, and zero failures. The hosted
+`build-test` and `package-app` jobs succeeded; the Xcode 27 wrapper job did not
+execute its SDK build/test steps. It is not hosted Xcode 27 coverage.
+
+The earlier local application-build deferral was subsequently lifted by the
+author's explicit permission to build/register without launching. At the same
+source checkpoint, `xcodegen generate` and this local build succeeded:
+
+```sh
+xcodebuild -project Sudrf.xcodeproj -scheme Sudrf -configuration Debug \
+  -destination 'platform=macOS' \
+  -derivedDataPath /private/tmp/sudrf-179-xcode-20261010 \
+  CODE_SIGNING_ALLOWED=NO build
+```
+
+The installed compiler was **Xcode 27.0 (27A266a)**. This is an unsigned local
+application build, not an Xcode 26 run, a signed release, or a native UI/system
+acceptance. The built bundle has identifier `ru.sudrf.app`; it was not launched.
+Neither the working database nor TestFlight was accessed.
+
+| Local artifact | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-179-xcode-20261010.log` | `59a88887a8921424d43e22cba7015a9c48225931301016ba222694a0cd71107d` |
+| `/private/tmp/sudrf-179-xcode-20261010/Build/Products/Debug/Sudrf.app/Contents/MacOS/Sudrf` | `968c979384e77f6eafa352a7c57a55b649aceb3ae77b2a19cd5b962daff380bc` |
+
+The known/notified migration decision, reschedule-row visual approval, and full
+downstream shadow gate remain open. These build results do not authorize cutover.

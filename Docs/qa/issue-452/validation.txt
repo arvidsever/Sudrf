@@ -1,0 +1,22 @@
+Verification: 2026-10-10; base f7c3e0dab342ab133a0825d48b97e62b73fbe237
+Synthetic evidence only; no live court responses or user data.
+Initial RED: 2 tests, 3 failures.
+Final focused: 97 XCTest, 1 skipped, 0 failures.
+Final full: 2045 XCTest, 21 skipped, 0 failures; 28 Swift Testing, 0 failures.
+ScriptTests: 27 tests, 6 skipped, 0 failures.
+Unsigned Debug Xcode 27.0 build: PASS; app not launched.
+Independent code review: Ship.
+SHA-256 logs (local only):
+89e2c467a89e60abe4fdd0aa244c5027cbc08ce6dea43a0583f9022f628ed51a  sudrf-222-finalform-red.log
+3c22c8d05a98a069af789886afe0c8940a225582007f85767445eab77ae4f1d1  sudrf-452-main-focused-final2.log
+8ed9d62be3a6150f072f535438655cf68de752bf4357de38aad445a95f70e5fb  sudrf-452-full-final2.log
+b22a72d507b14e3dc5876e06e60806b972d94e8c32cb4ea978748a1f125d5ddf  sudrf-452-xcode-final-build.log
+3e3b5a1770eb1a43a60e6fa96668f6912e7f6001f1f6c8bab76c1381df8460b4  sudrf-452-script-tests.log
+SHA-256 final source/test files:
+c50282ffa20dbffcbd4922d573607bf623411370f79749398295affbfa2d9658  Sources/SudrfApp/DeadlineRuleEngine.swift
+1ba9bf31d756a37c38cc2f248fefb6de53fb236709ab840466b1c48b888c67f4  Tests/SudrfAppTests/DeadlineRuleEngineTests.swift
+2174e7d8ba6aa1f3982ebcdda1786100cc7a83e357dfdce053d271d8d4f05874  Tests/SudrfAppTests/Issue128DeadlineTests.swift
+
+Initial implementation CI: 38024142599, success, SHA d29168e2a04896ad59ce826c9c84b610e35d174d
+Hosted Xcode27 build/tests: skipped (SDK unavailable); local build confirmed above
+Assigned release: 0.64.8 (260); final release CI required before merge

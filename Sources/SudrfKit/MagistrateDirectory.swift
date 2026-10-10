@@ -90,14 +90,18 @@ public enum MagistrateCourtParser {
 public actor MagistrateCourtResolver {
     private let client: SudrfClient
     private let cacheURL: URL?
+    private var moscowDirectoryClient: MoscowMagistrateKoAPClient?
     private var cache: [String: MagistrateCourt] = [:]
     private var loadedSubjects: Set<String> = []
+    private var loadedMoscowUnits: [MoscowMagistrateUnit]?
     private var diskLoaded = false
 
     public init(client: SudrfClient = SudrfClient(),
-                cacheURL: URL? = MagistrateCourtResolver.defaultCacheURL()) {
+                cacheURL: URL? = MagistrateCourtResolver.defaultCacheURL(),
+                moscowDirectoryClient: MoscowMagistrateKoAPClient? = nil) {
         self.client = client
         self.cacheURL = cacheURL
+        self.moscowDirectoryClient = moscowDirectoryClient
     }
 
     public static func defaultCacheURL() -> URL? {
@@ -115,8 +119,20 @@ public actor MagistrateCourtResolver {
     /// То же, но по коду субъекта (идентификация региона под капотом — кодом).
     public func courts(forSubjectCode num: String) async throws -> [MagistrateCourt] {
         try await ensureDiskLoaded()
+        if CourtDirectory.normalizedSubjectCode(num) == MoscowMagistrateDirectoryParser.subjectCode {
+            if loadedMoscowUnits == nil { _ = try await fetchMoscowUnits() }
+            return subjectCourts(MoscowMagistrateDirectoryParser.subjectCode)
+        }
         if !loadedSubjects.contains(num) { _ = try await fetchSubject(num) }
         return subjectCourts(num)
+    }
+
+    /// Актуальные действующие участки Москвы с отдельными alias, кодом и
+    /// идентификатором опубликованного URL пути.
+    public func moscowUnits() async throws -> [MoscowMagistrateUnit] {
+        try await ensureDiskLoaded()
+        if let loadedMoscowUnits { return loadedMoscowUnits }
+        return try await fetchMoscowUnits()
     }
 
     @discardableResult
@@ -138,12 +154,45 @@ public actor MagistrateCourtResolver {
 
     @discardableResult
     private func fetchSubject(_ num: String) async throws -> Int {
+        if CourtDirectory.normalizedSubjectCode(num) == MoscowMagistrateDirectoryParser.subjectCode {
+            try await ensureDiskLoaded()
+            return try await fetchMoscowUnits().count
+        }
         let html = try await client.fetchHTML(subjectURL(num))
         let parsed = MagistrateCourtParser.parse(html: html, portalSubject: num)
         for c in parsed { cache[c.code] = c }
         if !parsed.isEmpty { loadedSubjects.insert(num) }
         persist()
         return parsed.count
+    }
+
+    private func fetchMoscowUnits() async throws -> [MoscowMagistrateUnit] {
+        let directoryClient: MoscowMagistrateKoAPClient
+        if let moscowDirectoryClient {
+            directoryClient = moscowDirectoryClient
+        } else {
+            directoryClient = MoscowMagistrateKoAPClient()
+            moscowDirectoryClient = directoryClient
+        }
+        let html = try await directoryClient.fetchDirectory()
+        let parsed = try MoscowMagistrateDirectoryParser.parse(html: html)
+        let active = parsed.filter(\.isActive)
+        guard !active.isEmpty else {
+            throw SudrfError.parsing("В справочнике нет действующих участков мировых судей Москвы")
+        }
+
+        loadedMoscowUnits = active
+        cache = cache.filter {
+            ($0.value.portalSubject ?? CourtDirectory.normalizedSubjectCode($0.value.code))
+                != MoscowMagistrateDirectoryParser.subjectCode
+        }
+        for unit in active {
+            let court = unit.magistrateCourt
+            cache[court.code] = court
+        }
+        loadedSubjects.insert(MoscowMagistrateDirectoryParser.subjectCode)
+        persist()
+        return active
     }
 
     private func subjectURL(_ code: String) -> URL {

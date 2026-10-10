@@ -122,6 +122,9 @@ public struct MosGorSudCard: Sendable, Equatable {
     public var receiptDate: String?
     public var legalForceDate: String?
     public var higherNumber: String?
+    /// Номер производства в карточке нижестоящего суда, опубликованный этой
+    /// карточкой. Нужен только для точной проверки связи следующего звена.
+    public var lowerNumber: String?
     public var sessions: [CaseSession]
     public var participants: [String]
     public var actFiles: [MosGorSudActLink]
@@ -132,19 +135,26 @@ public struct MosGorSudCard: Sendable, Equatable {
     public init(uid: String? = nil, caseNumber: String? = nil, court: String? = nil,
                 judge: String? = nil, category: String? = nil, result: String? = nil,
                 receiptDate: String? = nil, legalForceDate: String? = nil,
-                higherNumber: String? = nil, sessions: [CaseSession] = [],
+                higherNumber: String? = nil, lowerNumber: String? = nil,
+                sessions: [CaseSession] = [],
                 participants: [String] = [], actLinks: [URL] = [],
                 actFiles: [MosGorSudActLink] = [], rawText: String = "") {
         self.uid = uid; self.caseNumber = caseNumber; self.court = court
         self.judge = judge; self.category = category; self.result = result
         self.receiptDate = receiptDate; self.legalForceDate = legalForceDate
-        self.higherNumber = higherNumber; self.sessions = sessions
+        self.higherNumber = higherNumber; self.lowerNumber = lowerNumber
+        self.sessions = sessions
         self.participants = participants
         let files = actFiles.isEmpty ? actLinks.map { MosGorSudActLink(url: $0) } : actFiles
         self.actFiles = files
         self.actLinks = files.map(\.url)
         self.rawText = rawText
     }
+}
+
+struct MosGorSudCardFetchResult: Sendable {
+    let card: MosGorSudCard
+    let responseURL: URL
 }
 
 public enum MosGorSudRouting {

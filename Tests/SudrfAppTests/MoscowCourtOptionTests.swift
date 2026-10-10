@@ -65,4 +65,61 @@ final class MoscowCourtOptionTests: XCTestCase {
             XCTAssertFalse(court.alias.isEmpty)
         }
     }
+
+    @MainActor
+    func testMoscowMagistrateOptionKeepsPublishedTitleCodeAndNativeUnitIDSeparate() throws {
+        let data = Data(#"{"url":"https://mos-sud.ru/rs/424","name":"Участок 424","alias":"0424","courtFullNameWithMunicipal":"Участок мирового судьи № 424 (Синтетический район)","id":"11111111-1111-4111-8111-111111111111","code":"77MS0424","rsCourtId":"22222222-2222-4222-8222-222222222222","canceledAt":""}"#.utf8)
+        let unit = try JSONDecoder().decode(MoscowMagistrateUnit.self, from: data)
+        let option = try XCTUnwrap(SearchModel.moscowCourtOption(for: unit))
+
+        XCTAssertEqual(option.domain, "mos-sud.ru")
+        XCTAssertEqual(option.id, "mos-sud.ru#77MS0424")
+        XCTAssertEqual(option.code, "77MS0424")
+        XCTAssertEqual(option.number, 424)
+        XCTAssertEqual(option.title, unit.courtFullNameWithMunicipal)
+        XCTAssertNotEqual(option.title, unit.url)
+        XCTAssertEqual(option.moscowMagistrateUnitPathID, "424")
+        XCTAssertNil(option.mosGorSudAlias)
+        XCTAssertTrue(option.supportsSearch)
+
+        let canceled = Data(#"{"url":"https://mos-sud.ru/rs/424","name":"Участок 424","alias":"0424","courtFullNameWithMunicipal":"Участок мирового судьи № 424","id":"11111111-1111-4111-8111-111111111111","code":"77MS0424","rsCourtId":"22222222-2222-4222-8222-222222222222","canceledAt":"2026-01-01"}"#.utf8)
+        XCTAssertNil(SearchModel.moscowCourtOption(
+            for: try JSONDecoder().decode(MoscowMagistrateUnit.self, from: canceled)))
+    }
+
+    @MainActor
+    func testMoscowMagistrateOptionsFollowPublishedNumberOrder() throws {
+        let numbers = [90, 8, 100, 2, 89, 471, 9, 1, 10]
+        let options = try numbers.map { number in
+            let code = String(format: "77MS%04d", number + 500)
+            let nativeID = String(1000 - number)
+            let data = Data("""
+                {"url":"https://mos-sud.ru/rs/\(nativeID)","name":"Участок",
+                "alias":"alias-\(nativeID)","courtFullNameWithMunicipal":"Участок мирового судьи № \(number)",
+                "id":"unit-\(number)","code":"\(code)","rsCourtId":"group","canceledAt":""}
+                """.utf8)
+            let unit = try JSONDecoder().decode(MoscowMagistrateUnit.self, from: data)
+            let option = try XCTUnwrap(SearchModel.moscowCourtOption(for: unit))
+            XCTAssertEqual(option.code, code)
+            XCTAssertEqual(option.moscowMagistrateUnitPathID, nativeID)
+            XCTAssertEqual(option.title, unit.courtFullNameWithMunicipal)
+            return option
+        }
+
+        XCTAssertEqual(SearchModel.ordered(options).map(\.number),
+                       [1, 2, 8, 9, 10, 89, 90, 100, 471])
+    }
+
+    @MainActor
+    func testEntirePublishedMoscowDirectoryFollowsVisibleUnitNumbers() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("SudrfKitTests/Fixtures/moscow_magistrate_directory.html")
+        let units = try MoscowMagistrateDirectoryParser.parse(html: String(contentsOf: fixture, encoding: .utf8))
+        let options = units.compactMap(SearchModel.moscowCourtOption(for:))
+        XCTAssertEqual(options.count, 471)
+        XCTAssertEqual(SearchModel.ordered(options).map(\.number), (1...471).map(Optional.some))
+        let unit48 = try XCTUnwrap(options.first { $0.moscowMagistrateUnitPathID == "48" })
+        XCTAssertEqual(unit48.code, "77MS0439")
+        XCTAssertEqual(unit48.number, 48)
+    }
 }

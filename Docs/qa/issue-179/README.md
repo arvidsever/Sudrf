@@ -1,7 +1,8 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
 This note records **stage 1** (legacy renderer extraction), **stage 2** (published-act
-shadow), and **stage 3** (hearing-family shadow, including a narrow reschedule projection);
+shadow), **stage 3** (hearing-family shadow, including a narrow reschedule projection),
+and **stage 4** (three existing KoAP-KSOYU complaint milestones);
 none passes the full downstream shadow gate or authorizes cutover.
 `AppRouter.reload` prepares ordered value-only inputs and calls
 `LegacyFeedProjection.project`; the focused renderer tests call that same pure function
@@ -133,7 +134,7 @@ badge, and UI callers are not switched.
 - The stage 1 pure oracle is the extracted current renderer, not an independent
   reconstruction. Its field assertions alone do not prove parity between legacy rows
   and journal events; stage 2 adds comparison only for published acts.
-- Full history parity and the downstream shadow gate remain open. Generic movement,
+- Full history parity and the downstream shadow gate remain open. Other generic movement,
   Treasury-to-journal semantics, out-of-window history, evidence-backed cancellation,
   production source provenance, notification/deep-link/badge behavior, and user
   preference behavior still need their own confirmed inputs and comparison.
@@ -369,3 +370,64 @@ Neither the working database nor TestFlight was accessed.
 
 The known/notified migration decision, reschedule-row visual approval, and full
 downstream shadow gate remain open. These build results do not authorize cutover.
+
+## Stage 4: existing KoAP-KSOYU complaint milestones — 10 October 2026
+
+`KoAPJournalFeedProjection` compares persisted `caseFileRequested`,
+`requestedCaseReceived`, and `complaintReviewResult` events with the actual
+`LegacyFeedProjection` output. It reuses the existing complaint candidate grammar;
+no new procedural event or rule is introduced. The shadow independently constructs
+each row and compares its presentation and navigation fields with the legacy row.
+
+Admission requires one exact current session, matching occurrence, kind, source,
+raw date, time, event and result, one own instance observation and one own movement
+instance, and an unambiguous native `adm3` KSOYU card. A present source URL must
+itself resolve to that native card and register; saved known-card metadata cannot
+mask a contradictory URL. A missing URL retains the existing known-card proof.
+Competing persisted event IDs for the same record and occurrence are counted
+before individual evidence and date-window checks. An invalid or stale competitor
+therefore blocks the otherwise valid row. Conflicting current results also block
+admission. Every raw legacy ID participates in collision detection before filtering
+the complaint family or the inclusive 0–45-day window.
+
+An exact alias reads the existing read mark without changing it. No known/notified
+mark migration or preference write is performed. A quiet baseline with no persisted
+event stays unmapped. No production caller invokes this projector: feed,
+notifications, badges, UI and the pending reschedule familiarity choice stay as they
+were. Synthetic checks cover three milestones, evidence/owner conflicts,
+cross-family ID collisions, competing persisted occurrences, contradictory native
+URLs, and an independently observed presentation mismatch. Days -1, 0, 45 and 46
+are checked against the actual legacy renderer. Valid duplicate occurrences wholly
+outside the window stay quiet; stale evidence for a current in-window occurrence
+still blocks admission.
+
+The temporary disk fixture uses the real store commit and append paths, replays
+already identified persisted events, reopens the same explicit temporary store,
+and projects twice. It checks the three preserved IDs, aliases, record bytes and
+absence of pending writes. It does not instantiate `AppRouter` or access production
+preferences. This is same-process disk reopen, not cold-process system acceptance.
+
+Independent review identified the stale persisted competitor bug; a directed test
+failed before the early occurrence barrier. A second directed test demonstrated
+that saved `adm3` metadata could mask a present URL with another `delo_id`; the
+shadow-only native URL guard fixed it without changing the shared identity helper.
+An earlier fixture replayed a raw transition as if it were a persisted occurrence;
+the real journal correctly assigned another occurrence. The corrected fixture
+replays the identified persisted IDs and separately verifies that deriving an
+unchanged snapshot emits no events. That correction does not alter journal behavior.
+
+The final narrow profile passed **9 XCTest cases, zero failures, no skips**:
+
+```sh
+swift test --scratch-path /private/tmp/sudrf-179-reschedule-scratch \
+  --skip-update --filter SudrfAppTests.KoAPJournalFeedProjectionTests
+```
+
+| Local log | SHA-256 |
+| --- | --- |
+| `/private/tmp/sudrf-179-koap-shadow-final6-profile.log` | `319ee76b70ba8d79ec838cad059846212eca65b3b2d6dcb63fef5949f9c535be` |
+| `/private/tmp/sudrf-179-koap-occurrence-red.log` | `21ca230bf0a3b9fb8c0676dd40de4776c6ae51b9303aeae158060c265e39258b` |
+| `/private/tmp/sudrf-179-koap-native-url-red3.log` | `13af03cc227b73bfe425e1939271a95c3b7ad18e04f48ebac3db0f9bdebd5e25` |
+
+The earlier full CI and Xcode evidence above predates this layer and does not prove
+the new source. The full downstream gate and #179 remain open.

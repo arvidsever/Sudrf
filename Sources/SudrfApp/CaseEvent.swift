@@ -484,7 +484,7 @@ enum CaseEventDeriver {
         }
     }
 
-    private static func complaintTimelineCandidate(_ value: StoredSession)
+    static func complaintTimelineCandidate(_ value: StoredSession)
         -> (kind: CaseEventKind, source: String, dateKey: String, resultKey: String, key: String)? {
         guard let source = koapKSOYUCardSource(for: value),
               let date = DateUtil.parse(value.dateRaw) else { return nil }

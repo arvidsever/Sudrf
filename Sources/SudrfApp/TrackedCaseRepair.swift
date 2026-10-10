@@ -1322,15 +1322,20 @@ final class TrackedCaseRepairCoordinator {
             ($0.lastSuccessAt ?? $0.lastAttemptAt ?? .distantPast)
                 < ($1.lastSuccessAt ?? $1.lastAttemptAt ?? .distantPast)
         }
-        survivor.enforcementRecords = enforcementRecords.reduce(into: [EnforcementRecord]()) {
+        let mergedEnforcement = enforcementRecords.reduce(into: [EnforcementRecord]()) {
             records, record in
             records = TrackedStore.reconciledEnforcementRecords(
                 existing: records, updates: [record], courtDocuments: courtDocuments)
         }
+        survivor.enforcementData = try JSONEncoder().encode(mergedEnforcement)
         // Identity repair is not itself a case event. Preserve every existing
         // append-only journal and fail the whole transaction on corruption or
         // an event-ID collision with a different payload.
-        var mergedJournal = try CaseEventJournal.merged(journals)
+        var mergedJournal = try TreasuryEventJournal.merged(journals, preferred: journals[0])
+        try mergedJournal.append(TreasuryEventJournal.additions(
+            records: mergedEnforcement,
+            logicalCaseID: TrackedCaseIdentity.ensuredLogicalCaseID(for: survivor),
+            journal: mergedJournal))
         if hasLegacyFacts || ambiguousLegacyCards {
             var baselines = mergedJournal.semanticBaselines ?? CaseEventBaselines()
             baselines.unprocessedCardIDs = (baselines.unprocessedCardIDs ?? []).union(legacyCardIDs)

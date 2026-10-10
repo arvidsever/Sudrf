@@ -1,0 +1,350 @@
+// © 2026 Воробьёв Виктор Викторович
+// SPDX-License-Identifier: CC-BY-NC-ND-4.0
+import XCTest
+import SwiftData
+@testable import SudrfKit
+@testable import SudrfApp
+
+@MainActor
+final class TreasuryEventJournalTests: XCTestCase {
+    private let observed = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func rss(_ guid: String?, text: String = "Документ принят",
+                     date: Date? = nil, order: Int = 0) -> EnforcementEvent {
+        EnforcementEvent(guid: guid, dateRaw: "01.10.2026", date: date,
+                         text: text, sourceOrder: order)
+    }
+
+    private func source(_ events: [EnforcementEvent]) -> EnforcementRecord {
+        EnforcementRecord(courtDocumentID: "writ-454", source: .treasury,
+                          sourceRecordID: "synthetic-treasury-454", status: "Исполняется",
+                          events: events, lastAttemptAt: observed, lastSuccessAt: observed)
+    }
+
+    private func journal(_ items: [EnforcementEvent], caseID: UUID) throws -> CaseEventJournal {
+        var journal = CaseEventJournal()
+        try journal.append(TreasuryEventJournal.additions(records: [source(items)],
+            logicalCaseID: caseID, journal: journal))
+        return journal
+    }
+
+    func testPublishedGUIDScopesIdentityToLogicalCaseAndIgnoresPresentationChanges() throws {
+        let caseID = UUID()
+        let original = try journal([rss("guid-1", date: observed)], caseID: caseID)
+        let event = try XCTUnwrap(original.events.first)
+        XCTAssertEqual(event.kind, .treasuryRSSPublished)
+        XCTAssertEqual(event.evidence.rssGUID, "guid-1")
+        XCTAssertEqual(event.evidence.rssPublishedAtRef, observed.timeIntervalSinceReferenceDate)
+        XCTAssertEqual(event.evidence.event, "Документ принят")
+        let revised = source([rss("guid-1", text: "Текст исправлен", date: .distantPast, order: 5)])
+        XCTAssertTrue(TreasuryEventJournal.additions(
+            records: [revised], logicalCaseID: caseID, journal: original).isEmpty)
+        let separate = try journal([rss("guid-1")], caseID: UUID())
+        XCTAssertNotEqual(separate.events.first?.id, event.id)
+    }
+
+    func testReorderedDuplicatesAreSilentAndMissingGUIDIsNotInvented() throws {
+        let caseID = UUID()
+        let first = rss("guid-1")
+        let second = rss("guid-2", order: 1)
+        let initial = try journal([first, second, first, rss(nil), rss("  ")], caseID: caseID)
+        XCTAssertEqual(initial.events.count, 2)
+        XCTAssertTrue(TreasuryEventJournal.additions(
+            records: [source([second, first])], logicalCaseID: caseID, journal: initial).isEmpty)
+        var bailiff = source([first])
+        bailiff.source = .bailiffs
+        XCTAssertTrue(TreasuryEventJournal.additions(
+            records: [bailiff], logicalCaseID: caseID, journal: .init()).isEmpty)
+    }
+
+    func testProvenDossierMergeKeepsSurvivorBindingAndRetiredIDs() throws {
+        let survivor = try journal([rss("guid-1")], caseID: UUID())
+        let duplicate = try journal([rss("guid-1", text: "Уточнённый текст")], caseID: UUID())
+        let merged = try TreasuryEventJournal.merged([survivor, duplicate], preferred: survivor)
+        let result = try XCTUnwrap(merged.events.first)
+        XCTAssertEqual(merged.events.count, 1)
+        XCTAssertEqual(result.id, survivor.events.first?.id)
+        XCTAssertEqual(result.evidence.event, survivor.events.first?.evidence.event)
+        XCTAssertEqual(result.evidence.eventIDAliases, duplicate.events.map(\.id))
+        XCTAssertEqual(TreasuryEventJournal.legacyFeedIDs(recordKey: "new", legacyKeys: ["old"],
+                                                         event: result),
+                       ["new#enforcement#guid-1", "old#enforcement#guid-1"])
+        XCTAssertTrue(TreasuryEventJournal.additions(records: [source([rss("guid-1")])],
+            logicalCaseID: UUID(), journal: merged).isEmpty)
+        let repeated = try TreasuryEventJournal.merged([merged, duplicate], preferred: merged)
+        XCTAssertEqual(repeated, merged)
+    }
+
+    func testMergePreservesCourtJournalBaselinesAndStillRejectsCourtIDConflicts() throws {
+        var court = CaseEventJournal()
+        court.semanticBaselines = CaseEventBaselines()
+        let courtEvent = CaseEvent.make(kind: .instanceDiscovered, occurrence: ["card"],
+            observedAt: observed, evidence: .init(sourceCardID: "card", caseNumber: "2-1/2026"))
+        try court.append([courtEvent])
+        let treasury = try journal([rss("guid-1")], caseID: UUID())
+        let merged = try TreasuryEventJournal.merged([court, treasury], preferred: court)
+        XCTAssertEqual(merged.semanticBaselines, court.semanticBaselines)
+        XCTAssertTrue(merged.events.contains(courtEvent))
+        var conflict = CaseEventJournal()
+        try conflict.append([CaseEvent(id: courtEvent.id, kind: courtEvent.kind,
+            observedAtRef: courtEvent.observedAtRef, evidence: .init(caseNumber: "2-OTHER/2026"))])
+        XCTAssertThrowsError(try TreasuryEventJournal.merged([court, conflict], preferred: court))
+    }
+
+    private func context(_ number: String = "2-454/2026") -> MovementContext {
+        MovementContext(branchRaw: CourtBranch.general.rawValue, region: "Тестовый регион",
+            searchDomain: "test--region.sudrf.ru", displayDomain: "test--region.sudrf.ru",
+            courtTitle: "Тестовый суд", courtLevelRaw: CourtLevel.district.rawValue,
+            courtCode: "00RS0001", cartotekaId: "g1",
+            cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: number, caseID: "454",
+            caseUID: "synthetic-454")
+    }
+
+    private func movement() -> CaseMovement {
+        var movement = CaseMovement(uid: "", caseNumber: "2-454/2026", inForce: false,
+                                    instances: [], complaints: [:], acts: [])
+        movement.executionDocuments = [CourtEnforcementDocument(id: "writ-454",
+                                                                blankNumber: "ФС № 454")]
+        return movement
+    }
+
+    private func directory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("sudrf-454-\(UUID())")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func seedAndPrepare(_ directory: URL) throws -> (String, String, Date) {
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: directory.appendingPathComponent("fixture.store"))
+        let store = try TrackedStore(container: container, prepared: true)
+        let record = try store.upsert(context: context(), snapshot: nil,
+                                      movement: movement(), collections: ["Тестовая подборка"])
+        record.enforcementRecords = [source([rss("guid-old", date: observed)])]
+        record.seenAt = observed
+        try store.save()
+        XCTAssertTrue(try TrackedStorePreparation.prepare(context: container.mainContext))
+        let eventID = try XCTUnwrap(record.eventJournal?.events.first?.id)
+        XCTAssertEqual(record.seenAt, observed)
+        XCTAssertFalse(try TrackedStorePreparation.prepare(context: container.mainContext))
+        return (record.key, eventID, observed)
+    }
+
+    func testStoredRSSBackfillReopensAndRepeatUpdatePreservesBindingAndUserState() throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (key, eventID, seen) = try seedAndPrepare(directory)
+        let container = try SudrfModelContainerFactory.make(
+            inMemory: false, storeURL: directory.appendingPathComponent("fixture.store"))
+        let store = try TrackedStore(container: container)
+        let record = try XCTUnwrap(store.record(forKey: key))
+        XCTAssertEqual(record.eventJournal?.events.map(\.id), [eventID])
+        XCTAssertEqual(record.seenAt, seen)
+        try store.applyEnforcementUpdates(forLocator: key,
+            updates: [source([rss("guid-old", date: observed)])], openedKey: nil)
+        XCTAssertEqual(record.eventJournal?.events.map(\.id), [eventID])
+        XCTAssertEqual(record.seenAt, seen)
+        XCTAssertEqual(record.collectionNames, ["Тестовая подборка"])
+        try store.applyEnforcementUpdates(forLocator: key,
+            updates: [source([rss("guid-old"), rss("guid-new", order: 1)])], openedKey: nil)
+        XCTAssertEqual(record.eventJournal?.events.count, 2)
+        XCTAssertNil(record.seenAt)
+    }
+
+    func testAtomicDossierMergePersistsGUIDBindingsAliasesAndCourtHistory() throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("fixture.store")
+        var survivorID = ""
+        var retiredID = ""
+        var key = ""
+        var oldKey = ""
+        var courtEventID = ""
+        do {
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container, prepared: true)
+            let survivor = try store.upsert(context: context(), snapshot: nil,
+                                           movement: movement(), collections: ["Основная"])
+            var duplicateContext = context("М-454/2026")
+            duplicateContext.caseID = "duplicate-454"
+            duplicateContext.caseUID = "duplicate-guid-454"
+            let duplicate = try store.upsert(context: duplicateContext, snapshot: nil,
+                                            movement: movement(), collections: ["Вторая"])
+            try store.applyEnforcementUpdates(forLocator: survivor.key,
+                updates: [source([rss("guid-shared")])], openedKey: nil)
+            try store.applyEnforcementUpdates(forLocator: duplicate.key,
+                updates: [source([rss("guid-shared"), rss("guid-other")])], openedKey: nil)
+            survivorID = try XCTUnwrap(survivor.eventJournal?.events.first?.id)
+            retiredID = try XCTUnwrap(duplicate.eventJournal?.events.first?.id)
+            let courtEvent = CaseEvent.make(kind: .instanceDiscovered, occurrence: ["court-454"],
+                observedAt: observed, evidence: .init(sourceCardID: "court-454"))
+            courtEventID = courtEvent.id
+            var original = try store.requiredEventJournal(for: survivor)
+            try original.append([courtEvent])
+            original.semanticBaselines = CaseEventBaselines()
+            survivor.eventJournalData = try JSONEncoder().encode(original)
+            var duplicateJournal = try store.requiredEventJournal(for: duplicate)
+            duplicateJournal.semanticBaselines = CaseEventBaselines()
+            duplicate.eventJournalData = try JSONEncoder().encode(duplicateJournal)
+            try store.save()
+            oldKey = duplicate.key
+            _ = try TrackedCaseRepairCoordinator.atomicMerge(store: store, survivor: survivor,
+                duplicates: [duplicate], canonicalContext: context(), canonicalCard: nil)
+            key = survivor.key
+            XCTAssertEqual(store.all().count, 1)
+            XCTAssertTrue(survivor.legacyKeyAliases.contains(oldKey))
+            XCTAssertTrue(try store.requiredEventJournal(for: survivor).events.contains(courtEvent))
+            XCTAssertEqual(survivor.eventJournal?.semanticBaselines, original.semanticBaselines)
+        }
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+        let store = try TrackedStore(container: container)
+        let record = try XCTUnwrap(store.record(forKey: key))
+        let journal = try store.requiredEventJournal(for: record)
+        XCTAssertTrue(record.legacyKeyAliases.contains(oldKey))
+        XCTAssertTrue(journal.events.contains { $0.id == courtEventID })
+        XCTAssertEqual(journal.semanticBaselines, CaseEventBaselines())
+        let shared = try XCTUnwrap(journal.events.first { $0.evidence.rssGUID == "guid-shared" })
+        XCTAssertEqual(shared.id, survivorID)
+        XCTAssertEqual(shared.evidence.eventIDAliases, [retiredID])
+        XCTAssertEqual(journal.events.filter { $0.kind == .treasuryRSSPublished }.count, 2)
+        XCTAssertEqual(Set(record.collectionNames), ["Основная", "Вторая"])
+        try store.applyEnforcementUpdates(forLocator: key,
+            updates: [source([rss("guid-other"), rss("guid-shared", text: "Уточнено")])],
+            openedKey: nil)
+        XCTAssertEqual(record.eventJournal, journal)
+    }
+
+    func testNativeTreasuryClientRefreshPersistsHistoryAndReplaysAfterRestart() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("fixture.store")
+        var key = ""
+        var eventIDs: [String] = []
+        for pass in 0..<2 {
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container)
+            if pass == 0 {
+                key = try store.upsert(context: context(), snapshot: nil,
+                                       movement: movement(), collections: []).key
+            }
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [Treasury454URLProtocol.self]
+            config.httpCookieStorage = nil
+            config.httpShouldSetCookies = false
+            config.urlCache = nil
+            let session = URLSession(configuration: config)
+            defer { session.invalidateAndCancel() }
+            let client = TreasuryClient(session: session, minInterval: 0,
+                baseURL: URL(string: "https://treasury454.test")!, maxAttempts: 1)
+            let center = RefreshCenter(store: store, client: TestNetworkGuard.sudrfClient(),
+                serviceBuilder: { _ in Treasury454UnusedMovement() },
+                treasuryDiscover: { document, number, court in
+                    try await client.discover(document: document, caseNumber: number, court: court)
+                }, vsrfProvider: Treasury454UnusedVSRF(), fsspAutoModelEnabled: false,
+                fsspDiscover: { _ in .notFound(.init(state: .notFound, record: nil)) })
+            var callbacks: [String] = []
+            center.onEnforcementRefreshed = { callbacks.append($0) }
+            let task = try XCTUnwrap(center.refreshEnforcement(key: key))
+            await task.value
+            XCTAssertNil(center.enforcementError(forKey: key))
+            XCTAssertEqual(callbacks, [key])
+            let record = try XCTUnwrap(store.record(forKey: key))
+            let treasury = try XCTUnwrap(record.enforcementRecords.first { $0.source == .treasury })
+            XCTAssertEqual(treasury.events.map(\.guid), ["native-guid-1", "native-guid-2"])
+            XCTAssertEqual(treasury.sourceURL?.host, "treasury454.test")
+            let currentIDs = try store.requiredEventJournal(for: record).events.map(\.id)
+            XCTAssertEqual(currentIDs.count, 2)
+            if pass == 0 { eventIDs = currentIDs }
+            else { XCTAssertEqual(currentIDs, eventIDs) }
+        }
+    }
+
+    func testJournalAppendEncodingAndSaveFailuresRollbackWholeEnforcementTransition() throws {
+        for failure in 0..<3 {
+            let directory = try directory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let container = try SudrfModelContainerFactory.make(
+                inMemory: false, storeURL: directory.appendingPathComponent("fixture.store"))
+            let store = try TrackedStore(container: container, prepared: true)
+            let record = try store.upsert(context: context(), snapshot: nil,
+                                          movement: movement(), collections: [])
+            record.seenAt = observed
+            try store.save()
+            let priorEnforcement = record.enforcementData
+            let priorJournal = record.eventJournalData
+            if failure == 0 { store.failNextJournalAppendForTesting = true }
+            if failure == 1 { store.failNextJournalEncodingForTesting = true }
+            if failure == 2 { store.failNextSaveForTesting = true }
+            XCTAssertThrowsError(try store.applyEnforcementUpdates(forLocator: record.key,
+                updates: [source([rss("new")])], openedKey: nil))
+            let restored = try XCTUnwrap(store.record(forKey: record.key))
+            XCTAssertEqual(restored.enforcementData, priorEnforcement)
+            XCTAssertEqual(restored.eventJournalData, priorJournal)
+            XCTAssertEqual(restored.seenAt, observed)
+        }
+    }
+}
+
+private struct Treasury454UnusedMovement: MovementProviding {
+    func movement(for base: CaseSearchResult, court: Court,
+                  cartoteka: Cartoteka) async throws -> CaseMovement {
+        XCTFail("enforcement refresh must not request court movement")
+        throw CancellationError()
+    }
+}
+
+private struct Treasury454UnusedVSRF: VSRFProviding {
+    func search(uniqueNumber: String?, oldCaseNumber: String?,
+                keywords: String?) async throws -> VSRFSearchResults {
+        XCTFail("enforcement refresh must not request VS RF")
+        throw CancellationError()
+    }
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        XCTFail("enforcement refresh must not request VS RF card")
+        throw CancellationError()
+    }
+}
+
+private final class Treasury454URLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, url.host == "treasury454.test" else {
+            XCTFail("unexpected URL in isolated Treasury refresh")
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+        let content: String
+        if url.path == "/roskazna/rss" {
+            let history = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.contains { $0.name == "documentId" } == true
+            if history {
+                content = """
+                <rss><channel>
+                <item><title>Документ принят</title><guid>native-guid-1</guid><pubDate>Thu, 01 Oct 2026 00:00:00</pubDate></item>
+                <item><title>Документ исполнен</title><guid>native-guid-2</guid><pubDate>Fri, 02 Oct 2026 00:00:00</pubDate></item>
+                </channel></rss>
+                """
+            } else {
+                content = """
+                <rss><channel><item><title>Исполнительный документ ФС № 454</title>
+                <link>https://treasury454.test/roskazna/spring/document_details?documentId=454</link>
+                <description><![CDATA[<b>Серия и номер исполнительного документа:</b>ФС № 454<br/><b>Номер судебного дела:</b>2-454/2026<br/><b>Наименование судебного органа:</b>Тестовый суд]]></description>
+                <guid>document-454</guid></item></channel></rss>
+                """
+            }
+        } else if url.path == "/roskazna/spring/document_details" {
+            content = "<html><body>Тестовый исполнительный документ</body></html>"
+        } else {
+            XCTFail("unexpected Treasury fixture path")
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+            return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200,
+            httpVersion: nil, headerFields: ["Content-Type": "text/xml; charset=utf-8"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(content.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}

@@ -157,7 +157,6 @@ final class RefreshCenter: ObservableObject {
     private let store: TrackedStore
     private let client: SudrfClient
     private let vsrfClient: any VSRFProviding
-    private let mosGorSudClient = MosGorSudClient()
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
     /// в init.
@@ -309,40 +308,52 @@ final class RefreshCenter: ObservableObject {
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
         // Локальные копии — чтобы default-замыкания не захватывали self
-        // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
+        // до завершения инициализации (vsrfClient — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
-        let mgs = mosGorSudClient
-        let magistrate = MagistrateClient(sudrfClient: client)
-        self.serviceBuilder = serviceBuilder ?? { ctx in
-            let provider: any CaseProviding = ctx.courtLevel == .magistrate
-                ? magistrate
-                : client
-            return ctx.makeService(client: provider, vsrf: vsrf,
-                                   mosgorsud: mgs, magistrate: magistrate)
+        if let serviceBuilder {
+            self.serviceBuilder = serviceBuilder
+        } else {
+            let mgs = MosGorSudClient()
+            let magistrate = MagistrateClient(sudrfClient: client)
+            self.serviceBuilder = { ctx in
+                let provider: any CaseProviding = ctx.courtLevel == .magistrate
+                    ? magistrate
+                    : client
+                return ctx.makeService(client: provider, vsrf: vsrf,
+                                       mosgorsud: mgs, magistrate: magistrate)
+            }
         }
         self.autoSolve = autoSolve ?? { url, c, s, settings in
             await AutoCaptchaSolver.solve(formURL: url, client: c,
                                           solver: s, settings: settings)
         }
-        let treasury = TreasuryClient()
-        self.treasuryDiscover = treasuryDiscover ?? { document, caseNumber, court in
-            try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
-        }
-        let fssp = fsspClient ?? FSSPClient()
-        let fsspModelEnabled = fsspAutoModelEnabled
-            ?? CaptchaSolverFactory.hasEligibleFSSPModel()
-        self.fsspDiscover = fsspDiscover ?? { document in
-            if let captchaSolver, let captchaSettings {
-                return await FSSPAutoCaptchaSolver.solve(
-                    document: document,
-                    client: fssp,
-                    solver: captchaSolver,
-                    enabled: fsspModelEnabled && captchaSettings.isEffectivelyEnabled,
-                    settings: .init(
-                        maxAttempts: captchaSettings.maxAttempts,
-                        minConfidence: captchaSettings.minConfidence))
+        if let treasuryDiscover {
+            self.treasuryDiscover = treasuryDiscover
+        } else {
+            let treasury = TreasuryClient()
+            self.treasuryDiscover = { document, caseNumber, court in
+                try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
             }
-            return try await fssp.discover(document: document)
+        }
+        if let fsspDiscover {
+            self.fsspDiscover = fsspDiscover
+        } else {
+            let fssp = fsspClient ?? FSSPClient()
+            let fsspModelEnabled = fsspAutoModelEnabled
+                ?? CaptchaSolverFactory.hasEligibleFSSPModel()
+            self.fsspDiscover = { document in
+                if let captchaSolver, let captchaSettings {
+                    return await FSSPAutoCaptchaSolver.solve(
+                        document: document,
+                        client: fssp,
+                        solver: captchaSolver,
+                        enabled: fsspModelEnabled && captchaSettings.isEffectivelyEnabled,
+                        settings: .init(
+                            maxAttempts: captchaSettings.maxAttempts,
+                            minConfidence: captchaSettings.minConfidence))
+                }
+                return try await fssp.discover(document: document)
+            }
         }
     }
 
@@ -677,20 +688,16 @@ final class RefreshCenter: ObservableObject {
                                   source: .bailiffs, attemptedAt: attemptedAt)
             enforcementErrors[key] = nil
         }
-        let documents = record.movement?.executionDocuments ?? []
-        let current = TrackedStore.reconciledEnforcementRecords(
-            existing: previous, updates: [update], courtDocuments: documents)
-        let changed = TrackedStore.enforcementHasUserVisibleChange(
-            previous: previous, current: current, courtDocuments: documents)
-        record.enforcementRecords = current
-        if changed && openedKey?() != key { record.seenAt = nil }
+        let effectiveKey: String
         do {
-            try store.save()
+            guard let persistedKey = try store.applyEnforcementUpdates(
+                forLocator: key, updates: [update], openedKey: openedKey?()) else { return }
+            effectiveKey = persistedKey
         } catch {
             enforcementErrors[key] = Self.persistenceFailureMessage
             throw error
         }
-        onEnforcementRefreshed?(key)
+        onEnforcementRefreshed?(effectiveKey)
     }
 
     private func startEnforcementRefresh(key: String, force: Bool) -> Task<Void, Never>? {
@@ -787,17 +794,11 @@ final class RefreshCenter: ObservableObject {
         // Сеть могла ждать CAPTCHA/throttle, пока ручной поток уже сохранил
         // более свежий результат. Сливаем в актуальное состояние записи, а не
         // в снимок, сделанный до await.
-        let latest = record.enforcementRecords
-        let current = TrackedStore.reconciledEnforcementRecords(
-            existing: latest, updates: updates,
-            courtDocuments: record.movement?.executionDocuments ?? [])
-        let changed = TrackedStore.enforcementHasUserVisibleChange(
-            previous: latest, current: current,
-            courtDocuments: record.movement?.executionDocuments ?? [])
-        record.enforcementRecords = current
-        if changed && openedKey?() != key { record.seenAt = nil }
+        let effectiveKey: String
         do {
-            try store.save()
+            guard let persistedKey = try store.applyEnforcementUpdates(
+                forLocator: key, updates: updates, openedKey: openedKey?()) else { return }
+            effectiveKey = persistedKey
         } catch {
             enforcementErrors[key] = Self.persistenceFailureMessage
             return
@@ -811,7 +812,7 @@ final class RefreshCenter: ObservableObject {
         } else {
             enforcementErrors[key] = errors.joined(separator: "\n")
         }
-        if hasSuccess { onEnforcementRefreshed?(key) }
+        if hasSuccess { onEnforcementRefreshed?(effectiveKey) }
     }
 
     /// Every court row with a searchable identifier belongs to FSSP; Treasury

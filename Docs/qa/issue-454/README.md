@@ -79,6 +79,28 @@ not established. No installed application or working database was opened.
   registry verification and project generation passed. The own Xcode Debug
   build succeeded without launching the app: `/private/tmp/sudrf-454-native-build.log`,
   SHA-256 `f7782742eb2a45bfcc2d268ebe4f962ce2c3b9f4a1b423d94d97ac2b5010a544`.
-  Current-head CI remains; no release version is assigned yet.
-- Changelog/history/release table at the actual merge order. Keep #454 open
-  until current-head CI and release gates pass.
+  At this historical source checkpoint current-head CI and version assignment
+  were pending; implementation CI and release preparation are recorded below.
+- Changelog/history/release table are prepared at the actual merge order below.
+  Keep #454 open until final current-head CI and release gates pass.
+
+## Implementation CI and release preparation — 10 October 2026
+
+Actual main remains `7f869f10d8ab540df20f974c72def39060a0289e`, version
+0.65.1 (262). Release metadata is prepared as patch 0.65.2 (263), after #455.
+Implementation head `12e85fdf4138a333840680b510aba3929f87265a`,
+[CI 38061683521](https://github.com/arvidsever/Sudrf/actions/runs/38061683521),
+passed: 2113 XCTest, 21 skips, zero failures; 28 Swift Testing; 27 Python,
+six skips. All ten TreasuryEventJournalTests actually executed and passed,
+including real native-client disk/replay and actual isolated feed/notifier
+submission filtering through merge/reopen. No OS notification delivery is claimed.
+Full log `/private/tmp/sudrf-454-ci-12e85fd.log`, SHA-256
+`5f16d9d05dc9b8da6bb6149475f03edd86f419efe075fc3f065e36e78451fbe2`.
+App, CLI, registry, model resources and packaging passed. Conditional hosted
+Xcode 27 build/test steps were skipped; own native build remains separate evidence.
+Independent Astra release review passed for all nine status paths (eight files
+after draft-to-release rename). Final release-head CI and own native build263
+remain pending;
+no release push or merge has been performed at this checkpoint.
+Open-issue inventory before closing #454 is 50; closing it leaves 49. #179
+remains open and its full cutover is not part of this release.

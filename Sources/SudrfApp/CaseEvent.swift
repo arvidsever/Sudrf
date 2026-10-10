@@ -23,6 +23,7 @@ enum CaseEventKind: String, Codable, CaseIterable, Sendable {
     case deadlineChanged
     case deadlineExpired
     case deadlineSuperseded
+    case treasuryRSSPublished
 }
 
 struct CaseEventEvidence: Codable, Equatable, Sendable {
@@ -39,6 +40,9 @@ struct CaseEventEvidence: Codable, Equatable, Sendable {
     var ruleID: String? = nil
     var occurrenceKey: String? = nil
     var relatedOccurrenceKey: String? = nil
+    var rssGUID: String? = nil
+    var rssPublishedAtRef: Double? = nil
+    var eventIDAliases: [String]? = nil
 }
 
 /// Stable identity for a repeatable transition inside one persisted event stream.

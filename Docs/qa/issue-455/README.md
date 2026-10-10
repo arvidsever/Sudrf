@@ -9,8 +9,8 @@ published rejection in the result. Supported refusal/return notes remain.
 
 The branch starts at actual main
 `8a7f0e8245d7275dcd879692b998560c33ef9d9f` (0.64.8, build 260).
-No release version, database migration, live request or application launch was
-performed. Working data, localization and deadline rules were not changed.
+At that initial checkpoint no release version, database migration, live request
+or application launch was performed. Working data, localization and deadline rules were not changed.
 
 ## Consumer audit
 
@@ -58,3 +58,18 @@ The registry generator check passed. All three CoreML models matched the
 checked-in manifests and are present in the built app resources. Models were
 copied from the previously verified #241 checkout; no court portal was queried.
 Current-head hosted full CI remains the final execution gate.
+
+## Release integration — 10 October 2026
+
+Merged actual main `fb3e2c7eadc8d56bb39010e30ecae7ddaef8bdc1`
+(0.65.0, build 261) without conflicts. Release 0.65.1, build 262 is a patch;
+production fix remains unchanged. Implementation CI `4af16e2`, run 38059189617,
+passed 2048 XCTest with 20 skips, 28 Swift Testing and 27 Python with six skips.
+All three new regressions executed, not skipped. Hosted Xcode 27 steps were
+skipped for unavailable SDK; the own Xcode build is separate evidence.
+Own release Xcode Debug rebuild passed without launch or signing; built Info.plist
+confirms 0.65.1 (262), all three model resources are present. Log SHA-256:
+`9c67c2663dc151d4c578f1d1d3d08035d92d8e24ed071efa2df13af6167ada18`.
+Independent Astra release review passed for metadata, history and changelog.
+Current release-head CI remains the final pending gate.
+No full local suite, live requests, production settings changes or app launch.

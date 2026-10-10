@@ -1,0 +1,22 @@
+{
+  "reviewDate": "2026-10-10",
+  "sanitization": "Only published identity, procedural metadata and events; removed scripts, input values, participants; judges/reporters replaced; internal anchor suffix redacted. No network.",
+  "sources": [
+    {
+      "role": "search",
+      "sourceURL": "https://www.vsrf.ru/lk/practice",
+      "sourceHTMLSHA256": "cfb914b9826ca0a8f87dac47a3b8be7248a25b0a5899b6d5762e2a2919505648",
+      "fixtureSHA256": "11506caad81cddc8ae1a6bb5084d4cd09e99db8714a77421e5e7a3ae85a323b7",
+      "itemCount": 7,
+      "fixture": "vsrf_supplied_criminal_search.html"
+    },
+    {
+      "role": "card",
+      "sourceURL": "https://www.vsrf.ru/lk/practice/claims/17-35241305",
+      "sourceHTMLSHA256": "f65a51c587f61a506d7a26403dc9ff6276c632c102162d81dfbe286b8a08f1ce",
+      "fixtureSHA256": "4d28c1fbb336028d11051ea0b975ab45e34270c76bd2f0b7ca924002d87f9ae0",
+      "itemCount": 4,
+      "fixture": "vsrf_supplied_criminal_card.html"
+    }
+  ]
+}

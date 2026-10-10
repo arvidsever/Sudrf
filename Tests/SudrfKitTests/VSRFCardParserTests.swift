@@ -362,15 +362,19 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertEqual(row.applicant, "Тестовый получатель")
     }
 
-    func testCurrentSearchRowPartiesStillRequireNonemptyApplicant() throws {
+    func testCurrentSearchRowWithoutApplicantIsReadableButCannotLink() throws {
         let html = try loadFixture("vsrf_current_search_row_parties")
         let missingValues = html.replacingOccurrences(of: #"<span class="CaseStyle_case_value__0SnjY">Тестовый заявитель</span>"#, with: "")
             .replacingOccurrences(of: #"<span class="CaseStyle_case_value__0SnjY">Тестовый получатель</span>"#, with: "")
-        XCTAssertThrowsError(try VSRFSearchParser.parse(html: missingValues))
+        let missingPage = try VSRFSearchParser.parse(html: missingValues)
+        XCTAssertTrue(missingPage.matching(VSRFLinkKey(firstInstanceCourt: "Тестовый городской суд",
+            firstInstanceCaseNumber: "2-1/2026", applicantName: "Тестовый получатель")).isEmpty)
         for replacement in ["", "   "] {
             let missing = html.replacingOccurrences(of: "Тестовый заявитель", with: replacement)
                 .replacingOccurrences(of: "Тестовый получатель", with: replacement)
-            XCTAssertThrowsError(try VSRFSearchParser.parse(html: missing))
+            let page = try VSRFSearchParser.parse(html: missing)
+            XCTAssertTrue(page.matching(VSRFLinkKey(firstInstanceCourt: "Тестовый городской суд",
+                firstInstanceCaseNumber: "2-1/2026", applicantName: "Тестовый получатель")).isEmpty)
         }
     }
 
@@ -399,9 +403,11 @@ final class VSRFCardParserTests: XCTestCase {
         XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
     }
 
-    func testCurrentRowWithoutLinkageEvidenceFailsClosed() {
+    func testCurrentRowWithoutLinkageEvidenceCannotMatchLowerCase() throws {
         let html = #"<div class="SearchPage_resultsBlock__test"><span>Найдено: 1</span><div class="CaseStyle_case_item__test"><a class="CaseStyle_case_link__test" href="/lk/practice/claims/12-34154493">3-КГ23-1-К3</a></div></div>"#
-        XCTAssertThrowsError(try VSRFSearchParser.parse(html: html))
+        let page = try VSRFSearchParser.parse(html: html)
+        XCTAssertEqual(page.results.count, 1)
+        XCTAssertTrue(page.matching(VSRFLinkKey(uid: "11RS0001-01-2021-021221-14")).isEmpty)
     }
 
     func testMalformedUIDWithoutFirstInstanceTripleFailsClosed() {

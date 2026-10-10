@@ -26,6 +26,15 @@ of history and marks, and no repeated notification for persisted events.
 For new undated judge/production/result events the user chose detection date
 with an explicit application-detection label; its first mockup still requires
 approval before implementation. The full downstream gate and #179 remain open.
+Independent Astra review of the compatibility delta passed. The registry is
+current; all three released model assets were fetched and verified against their
+tracked manifests. XcodeGen regenerated the project and Xcode 27.0 (`27A266a`)
+built the application at source checkpoint `0ed6f17` successfully, without launch.
+The failed first build preparation had no local model assets; it was not a
+production source failure. The subsequent verified-assets build passed.
+Build log `/private/tmp/sudrf-179-current-xcode-20261010.log`, SHA-256
+`291a3e705419b2635fff37940f5bf89013714fe61c63c389c1e07afd7c4e9228`;
+binary SHA-256 `ec7a7c2bba098637b0af61d33de51457ce9eb56902580cba6a3ccb6b7567e6ae`.
 New current-head CI is required after this compatibility change.
 
 This note records **stage 1** (legacy renderer extraction), **stage 2** (published-act

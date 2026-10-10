@@ -1,5 +1,18 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Released-prerequisite integration — 10 October 2026
+
+The pure import contract now includes released `main` `f0f0d5a` (#454,
+0.65.2 / 263), at merge checkpoint `30659da`. Conflict resolution preserves both
+event families and optional evidence, and uses the injected preferences for
+known-ID migration. Independent integration review passed.
+
+The integrated private profile passed 32 XCTest tests and 28 Swift Testing tests,
+with no failures or skips, including all ten Treasury persistence/notifier tests.
+Local log `/private/tmp/sudrf-179-history-import-integrated-tests.log`, SHA-256
+`445e45675e6263d845fa1332c81bbdc1ce318d55b2db3cdd0571416830c55c1d`.
+No production history import, mark replay or feed cutover is connected yet.
+
 ## Pure history-import contract — 10 October 2026
 
 `LegacyFeedHistoryImport` prepares one quiet import of every retained dated court

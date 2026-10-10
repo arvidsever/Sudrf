@@ -57,12 +57,13 @@ public actor SudrfClient {
     private var originSession: OriginSession?
     private let userAgent: String
     private let minInterval: TimeInterval
-    /// Все вызовы `URLSession.data` проходят через один actor-owned FIFO. Actor
+    /// Все вызовы `URLSession.data` проходят через один actor-owned gate. Actor
     /// reentrancy сама по себе не ограничивает работу после `await`, поэтому без
     /// этого gate несколько судов могли одновременно открыть TLS-соединения к
     /// одному backend.
     private struct RequestWaiter {
         let id: UInt64
+        let priority: TaskPriority
         let continuation: CheckedContinuation<Void, Error>
     }
     private var requestWaiters: [RequestWaiter] = []
@@ -910,7 +911,7 @@ public actor SudrfClient {
 
     // MARK: - serialized transport
 
-    /// Регистрирует waiter в FIFO и выдаёт слот только одному запросу. При
+    /// Регистрирует waiter с текущим приоритетом и выдаёт слот одному запросу. При
     /// отмене ожидающий continuation удаляется из очереди, поэтому отменённая
     /// задача не может оставить очередь навсегда заблокированной.
     private func acquireRequestSlot() async throws {
@@ -923,7 +924,8 @@ public actor SudrfClient {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                requestWaiters.append(RequestWaiter(id: id, continuation: continuation))
+                requestWaiters.append(RequestWaiter(id: id, priority: Task.currentPriority,
+                    continuation: continuation))
                 grantNextRequestSlot()
             }
         }, onCancel: {
@@ -936,7 +938,12 @@ public actor SudrfClient {
     private func grantNextRequestSlot() {
         guard !requestActive, !requestWaiters.isEmpty else { return }
         requestActive = true
-        let waiter = requestWaiters.removeFirst()
+        var next = 0
+        for index in requestWaiters.indices.dropFirst()
+            where requestWaiters[index].priority > requestWaiters[next].priority {
+            next = index
+        }
+        let waiter = requestWaiters.remove(at: next)
         waiter.continuation.resume()
     }
 
@@ -951,8 +958,8 @@ public actor SudrfClient {
         grantNextRequestSlot()
     }
 
-    /// Выполняет redirect chain. Каждый следующий hop заново встаёт в FIFO,
-    /// поэтому не обходит уже ожидающий ручной или фоновый запрос.
+    /// Выполняет redirect chain. Каждый следующий hop заново встаёт в очередь,
+    /// поэтому проходит тот же gate и выбор приоритета, что и остальные запросы.
     private func performSessionData(
         for request: URLRequest,
         protectsMagistrateCaptchaRedirects: Bool = false,

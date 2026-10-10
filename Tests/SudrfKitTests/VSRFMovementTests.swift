@@ -81,6 +81,69 @@ final class VSRFMovementTests: XCTestCase {
                  card: try VSRFCardParser.parse(html: try fixture("vsrf_card_vorobyev")))
     }
 
+    func testComplaintWithoutUIDOrCaseRequestKeepsOwnPublishedDataWithoutInferredRejection() throws {
+        let act = VSRFPublishedAct(
+            url: try XCTUnwrap(URL(string: "https://vsrf.ru/stor_pdf.php?id=455")),
+            date: "10.10.2026", title: "Определение")
+        let event = VSRFEvent(date: "09.10.2026", text: "Передано судье",
+                              details: "Синтетическое движение")
+        for publishedResult in [nil, "На рассмотрении", "Жалоба отклонена"] {
+            var production = VSRFProduction(cardID: "21-455", kind: .complaint,
+                number: "3-КФ26-455-К3", incomingDate: "08.10.2026",
+                rapporteur: "Судья Тестова", events: [event], publishedActs: [act])
+            production.publishedResult = publishedResult
+            XCTAssertNil(production.uid)
+            XCTAssertFalse(production.caseRequested)
+            let instance = MovementService.mapProduction(production)
+            XCTAssertNil(instance.note, "Only published result may describe the disposition")
+            XCTAssertEqual(instance.result, publishedResult ?? event.text)
+            XCTAssertEqual(instance.sessions, [CaseSession(date: event.date ?? "—",
+                event: event.text, result: event.details)])
+            XCTAssertEqual(instance.caseNumber, production.number)
+            XCTAssertEqual(instance.judge, production.rapporteur)
+            XCTAssertEqual(instance.sourceURL, production.cardURL)
+            XCTAssertEqual(instance.level, production.resolvedInstanceLevel)
+            XCTAssertFalse(instance.foundByUID)
+            XCTAssertEqual(instance.actURLs, [act.url])
+            XCTAssertEqual(instance.actIDs?.count, 1)
+        }
+        let noPublishedMovement = VSRFProduction(cardID: "21-456", kind: .complaint,
+            number: "3-КФ26-456-К3", incomingDate: "08.10.2026")
+        let instance = MovementService.mapProduction(noPublishedMovement)
+        XCTAssertNil(instance.note)
+        XCTAssertNil(instance.result)
+        XCTAssertEqual(instance.sessions,
+            [CaseSession(date: "08.10.2026", event: "Поступило в ВС РФ")])
+    }
+
+    func testPublishedRefusalAndReturnNotesRemainSupported() {
+        for (result, note) in [
+            ("Отказ в передаче дела", "отказ в передаче"),
+            ("Возврат без рассмотрения", "возврат без рассмотрения")
+        ] {
+            var production = VSRFProduction(cardID: "21-455", kind: .complaint,
+                number: "3-КФ26-455-К3")
+            production.publishedResult = result
+            let instance = MovementService.mapProduction(production)
+            XCTAssertEqual(instance.note, note)
+            XCTAssertEqual(instance.result, result)
+        }
+    }
+
+    func testIndependentCaseProductionRetainsUIDAndPublishedResult() {
+        var production = VSRFProduction(cardID: "12-455", kind: .caseFile,
+            number: "3-КГ26-455-К3", uid: uid,
+            events: [VSRFEvent(date: "10.10.2026", text: "Передано судье")])
+        production.publishedResult = "Рассмотрено"
+        let instance = MovementService.mapProduction(production)
+        XCTAssertNil(instance.note)
+        XCTAssertTrue(instance.foundByUID)
+        XCTAssertEqual(instance.result, "Рассмотрено")
+        XCTAssertEqual(instance.sourceURL, production.cardURL)
+        XCTAssertEqual(instance.caseNumber, production.number)
+        XCTAssertEqual(instance.sessions.count, 1)
+    }
+
     func testSecondCassationWiredFromVSRF() async throws {
         let client = MockCase(firstCardID: "900001", firstCard: try baseCard())
         let service = MovementService(client: client, higherCourtDomains: [], vsrf: try makeVSRF())

@@ -22,16 +22,22 @@ enum TrackedCaseIdentity {
         let known = context.sourceKnownCard
         let moscowCard = moscowCardIdentity(context)
         let vsrfCard = vsrfCardIdentity(context)
+        let moscowMagistrateCard = moscowMagistrateKoAPCardIdentity(context)
+        if claimsMoscowMagistrateSource(context), moscowMagistrateCard == nil {
+            return nil
+        }
         let sourceNativeID = vsrfCard?.sourceNativeID ?? moscowCard?.sourceNativeID
+            ?? moscowMagistrateCard?.sourceNativeID
             ?? nonEmpty(context.caseID) ?? nonEmpty(known?.caseID)
         guard let sourceNativeID else { return nil }
 
-        let sourceFamily = nonEmpty(attempt?.provenance.sourceFamily) ?? family(for: context)
+        let sourceFamily = moscowMagistrateCard?.sourceFamily
+            ?? nonEmpty(attempt?.provenance.sourceFamily) ?? family(for: context)
         let host = nonEmpty(attempt?.provenance.host) ?? context.searchDomain
         let provenance = attempt?.provenance ?? SourceProvenance(
             operation: .discovery, sourceFamily: sourceFamily, host: host,
             observedAt: observedAt)
-        let card = vsrfCard ?? moscowCard ?? SourceNativeCardIdentity(
+        let card = vsrfCard ?? moscowCard ?? moscowMagistrateCard ?? SourceNativeCardIdentity(
             sourceFamily: sourceFamily,
             courtKey: nonEmpty(context.courtCode)
                 ?? SudrfHost.moduleHost(known?.domain ?? context.searchDomain),
@@ -430,6 +436,9 @@ enum TrackedCaseIdentity {
         if context.cardURLString.flatMap(URL.init(string:))
             .flatMap({ SourceNativeCardLocator.vsrf(url: $0) }) != nil { return "vsrf" }
         if MosGorSudRouting.isMosGorSud(domain: context.searchDomain) { return "mosgorsud" }
+        if claimsMoscowMagistrateSource(context) {
+            return moscowMagistrateKoAPCardIdentity(context)?.sourceFamily ?? "legacy"
+        }
         return context.courtLevel == .magistrate ? "msudrf" : "sudrf"
     }
 
@@ -461,6 +470,42 @@ enum TrackedCaseIdentity {
                                                             cartoteka: cart) else { return nil }
         return SourceNativeCardIdentity(sourceFamily: "mosgorsud", courtKey: alias,
                                         cartotekaKey: cart.id, sourceNativeID: id)
+    }
+
+    /// Moscow magistrate cards have a published path identity which is distinct
+    /// from the court classification code and from the judicial UID. Do not
+    /// fall back to the generic magistrate key when a Moscow context claims
+    /// this source but its exact native URL or saved UUID contradicts it.
+    private static func moscowMagistrateKoAPCardIdentity(
+        _ context: MovementContext
+    ) -> SourceNativeCardIdentity? {
+        guard isMoscowMagistrateHost(context.searchDomain),
+              isMoscowMagistrateHost(context.displayDomain),
+              context.courtLevel == .magistrate,
+              context.cartotekaLevel == .magistrate,
+              context.cartotekaId == "adm",
+              let cartoteka = context.cartoteka,
+              let url = context.cardURLString.flatMap(URL.init(string:)),
+              let identity = SourceNativeCardLocator.moscowMagistrateKoAP(
+                url: url, cartoteka: cartoteka)?.identity else {
+            return nil
+        }
+        if let savedID = nonEmpty(context.caseID) {
+            guard let savedUUID = UUID(uuidString: savedID),
+                  savedUUID.uuidString.caseInsensitiveCompare(identity.sourceNativeID) == .orderedSame else {
+                return nil
+            }
+        }
+        return identity
+    }
+
+    private static func claimsMoscowMagistrateSource(_ context: MovementContext) -> Bool {
+        isMoscowMagistrateHost(context.searchDomain)
+            || isMoscowMagistrateHost(context.displayDomain)
+    }
+
+    private static func isMoscowMagistrateHost(_ value: String) -> Bool {
+        value.caseInsensitiveCompare(MoscowMagistrateDirectoryParser.host) == .orderedSame
     }
 
     private static func usableProvenance(for record: TrackedCaseRecord) -> SourceProvenance? {

@@ -144,6 +144,9 @@ final class SearchModel: ObservableObject {
         /// Код субъекта места нахождения суда. Для АСОЮ/КСОЮ он задан
         /// справочником явно и не выводится из территории подсудности.
         var seatRegionCode: String? = nil
+        /// Published `/rs/<id>` for a Moscow magistrate unit. This native ID
+        /// stays separate from the classification code used for routing.
+        var moscowMagistrateUnitPathID: String? = nil
         // Идентичность — по домену + коду: у судов Москвы домен один
         // (mos-gorsud.ru), различает их только код-алиас (tverskoj, …).
         var id: String { code.map { "\(domain)#\($0)" } ?? domain }
@@ -155,6 +158,23 @@ final class SearchModel: ObservableObject {
             Court(domain: CourtDirectory.dashVariant(of: domain) ?? domain,
                   title: title, level: level)
         }
+    }
+
+    static func moscowCourtOption(for unit: MoscowMagistrateUnit) -> CourtOption? {
+        guard unit.isActive,
+              let unitPathID = unit.unitPathID,
+              !unit.code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !unit.courtFullNameWithMunicipal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        // В Москве классификационный код может отличаться от опубликованного номера участка.
+        let number = unit.courtFullNameWithMunicipal.firstMatch(of: /№\s*([0-9]+)/)
+            .flatMap { Int($0.1) }
+        return CourtOption(domain: MoscowMagistrateDirectoryParser.host,
+                           title: unit.courtFullNameWithMunicipal,
+                           level: .magistrate, code: unit.code,
+                           number: number,
+                           moscowMagistrateUnitPathID: unitPathID)
     }
 
     /// Порядок судов в списке звена. Нумерованные суды (КСОЮ, апелляционные
@@ -204,6 +224,12 @@ final class SearchModel: ObservableObject {
     @Published var actFileError: String?
     @Published var actMissing = false
     @Published var hasSearched = false
+
+    /// UID queries are not source proof. Keep the query that produced each
+    /// published Moscow row separately until that row's exact card is checked.
+    private var expectedMoscowUIDByResultID: [String: String] = [:]
+    /// A judicial UID becomes usable only after fetching the exact native card.
+    private var verifiedMoscowUIDByIdentityID: [String: String] = [:]
 
     // Состояние
     @Published var status = ""
@@ -275,8 +301,9 @@ final class SearchModel: ObservableObject {
     private let resolver: DistrictCourtResolver
     private let magistrateResolver: MagistrateCourtResolver
     private let client: SudrfClient
+    private let moscowMagistrateClient: MoscowMagistrateKoAPClient
     private lazy var magistrateClient = MagistrateClient(sudrfClient: client)
-    private let vsrfClient = VSRFClient()
+    private lazy var vsrfClient = VSRFClient()
     private let mosGorSudClient: any MosGorSudProviding
     private let movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)?
     private let autoSolve: (URL, SudrfClient, CaptchaSolver,
@@ -313,6 +340,7 @@ final class SearchModel: ObservableObject {
          resolver: DistrictCourtResolver? = nil,
          magistrateResolver: MagistrateCourtResolver? = nil,
          mosGorSudClient: any MosGorSudProviding = MosGorSudClient(),
+         moscowMagistrateClient: MoscowMagistrateKoAPClient = MoscowMagistrateKoAPClient(),
          movementServiceFactory: ((CourtOption, CaseSearchResult) -> any MovementProviding)? = nil,
          selectedPublishedAct: PublishedActSelection? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
@@ -331,6 +359,7 @@ final class SearchModel: ObservableObject {
         self.magistrateResolver = magistrateResolver
             ?? MagistrateCourtResolver(client: client)
         self.mosGorSudClient = mosGorSudClient
+        self.moscowMagistrateClient = moscowMagistrateClient
         self.movementServiceFactory = movementServiceFactory
         self.selectedPublishedAct = selectedPublishedAct ?? PublishedActSelection()
         self.autoSolve = autoSolve ?? { url, client, solver, settings in
@@ -345,11 +374,17 @@ final class SearchModel: ObservableObject {
     /// с перезапросом из мониторинга).
     private func makeMovementService(for court: CourtOption,
                                      base: CaseSearchResult,
-                                     cartoteka: Cartoteka) -> any MovementProviding {
+                                     cartoteka: Cartoteka,
+                                     expectedMoscowUID: String? = nil) -> any MovementProviding {
         if let movementServiceFactory {
             return movementServiceFactory(court, base)
         }
-        let provider: any CaseProviding = court.level == .magistrate ? magistrateClient : client
+        let provider: any CaseProviding
+        if court.moscowMagistrateUnitPathID != nil {
+            provider = moscowMagistrateClient
+        } else {
+            provider = court.level == .magistrate ? magistrateClient : client
+        }
         let baseLevel = MovementContext.instanceLevel(
             cartotekaID: cartoteka.id, courtLevel: court.level)
         return MovementService(client: provider,
@@ -362,7 +397,10 @@ final class SearchModel: ObservableObject {
                                baseInstanceLevel: baseLevel,
                                vsrf: vsrfClient,
                                mosgorsud: mosGorSudClient,
-                               magistrate: magistrateClient, branch: branch)
+                               magistrate: magistrateClient,
+                               judicialUID: court.moscowMagistrateUnitPathID == nil
+                                    ? nil : expectedMoscowUID,
+                               branch: branch)
     }
 
     var busy: Bool { resolving || searching || loadingCard }
@@ -385,7 +423,9 @@ final class SearchModel: ObservableObject {
     }
 
     var usesRegion: Bool { searchDimensions.usesRegion }
-    var uidSearchEnabled: Bool { searchDimensions.supportsUID }
+    var uidSearchEnabled: Bool {
+        searchDimensions.supportsUID || selectedCourt?.moscowMagistrateUnitPathID != nil
+    }
 
     private var synchronizesRegionAndCourt: Bool {
         branch == .general && [.subject, .appeal, .cassation].contains(tier)
@@ -459,6 +499,8 @@ final class SearchModel: ObservableObject {
         invalidateSearch()
         invalidateCardLoad()
         results = []
+        expectedMoscowUIDByResultID = [:]
+        verifiedMoscowUIDByIdentityID = [:]
         selectedResultID = nil
         clearActPreview()
         hasSearched = false
@@ -534,17 +576,23 @@ final class SearchModel: ObservableObject {
             var resolvedMagistrateDistrictCourts: [DistrictCourt] = []
             switch (requestedBranch, requestedTier) {
             case (.general, .magistrate):
-                let magistrates = try await magistrateResolver.courts(forSubjectCode: requestedRegion)
                 resolvedMagistrateDistrictCourts =
                     ((try? await resolver.courts(forSubjectCode: requestedRegion)) ?? [])
-                list = magistrates.map { m in
-                    CourtOption(domain: m.domain,
-                                title: m.isSupported ? m.title : m.title + " — портал не подключён",
-                                level: .magistrate,
-                                code: m.code,
-                                supportsSearch: m.isSupported,
-                                unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.",
-                                number: m.number)
+                if CourtDirectory.normalizedSubjectCode(requestedRegion)
+                    == MoscowMagistrateDirectoryParser.subjectCode {
+                    list = try await magistrateResolver.moscowUnits()
+                        .compactMap(Self.moscowCourtOption(for:))
+                } else {
+                    let magistrates = try await magistrateResolver.courts(forSubjectCode: requestedRegion)
+                    list = magistrates.map { m in
+                        CourtOption(domain: m.domain,
+                                    title: m.isSupported ? m.title : m.title + " — портал не подключён",
+                                    level: .magistrate,
+                                    code: m.code,
+                                    supportsSearch: m.isSupported,
+                                    unsupportedReason: "Поиск по отдельным и внешним порталам мировых судей в этом заходе не подключён.",
+                                    number: m.number)
+                    }
                 }
             case (.general, .district):
                 // Единственная ступень с пикером региона. Районные суды Москвы
@@ -676,9 +724,64 @@ final class SearchModel: ObservableObject {
         invalidateCardLoad()
         searching = true; status = "Идёт поиск…"
         results = []; clearActPreview(); selectedResultIndex = nil
+        expectedMoscowUIDByResultID = [:]
+        verifiedMoscowUIDByIdentityID = [:]
         hasSearched = false
         defer {
             if isCurrentSearch(generation) { searching = false }
+        }
+
+        if let unitPathID = selected.moscowMagistrateUnitPathID {
+            let primary: (SearchField, String) = !uid.isEmpty ? (.uid, uid)
+                : !num.isEmpty ? (.caseNumber, num) : (.name, name)
+            do {
+                let outcome = try await moscowMagistrateClient.searchForUnit(
+                    court: court, cartoteka: cart, unitPathID: unitPathID,
+                    field: primary.0, value: primary.1)
+                guard isCurrentSearch(generation) else { return }
+                func publishRows(_ scopedRows: [CaseSearchResult]) {
+                    let filtered = scopedRows.filter { row in
+                        (num.isEmpty || primary.0 == .caseNumber
+                            || MoscowMagistrateKoAPNumber.matchesPublishedNumber(
+                                row.caseNumber, num))
+                            && (name.isEmpty || primary.0 == .name
+                                || (row.essence ?? "").localizedCaseInsensitiveContains(name))
+                    }
+                    expectedMoscowUIDByResultID = [:]
+                    if primary.0 == .uid {
+                        for row in filtered {
+                            expectedMoscowUIDByResultID[row.stableID] = primary.1
+                        }
+                    }
+                    results = filtered
+                    hasSearched = true
+                    if filtered.isEmpty {
+                        status = scopedRows.isEmpty
+                            ? "Нельзя подтвердить отсутствие дел по выбранному участку."
+                            : "Нельзя подтвердить карточку выбранного участка в этой выдаче."
+                    } else {
+                        status = "Найдено: \(filtered.count) (выдача неполная)"
+                    }
+                }
+                switch outcome {
+                case .partial(let rows, _): publishRows(rows ?? [])
+                case .usableSnapshot(let rows, _): publishRows(rows)
+                case .honestZero:
+                    results = []
+                    hasSearched = true
+                    status = "Нельзя подтвердить отсутствие дел по пустой выдаче."
+                case .captcha:
+                    status = "Поиск требует дополнительной проверки; продолжение пока недоступно."
+                case .maintenance, .transportFailure, .parserFailure:
+                    status = "Не удалось подтвердить выдачу. Попробуйте позже."
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard isCurrentSearch(generation) else { return }
+                status = "Не удалось подтвердить выдачу. Попробуйте позже."
+            }
+            return
         }
 
         // Суды Москвы — отдельный портал mos-gorsud.ru: свой /search (без капчи,
@@ -859,6 +962,8 @@ final class SearchModel: ObservableObject {
         invalidateCardLoad()
         queryCaseNumber = ""; queryName = ""; queryUID = ""
         results = []; clearActPreview(); selectedResultIndex = nil
+        expectedMoscowUIDByResultID = [:]
+        verifiedMoscowUIDByIdentityID = [:]
         hasSearched = false
         status = courts.isEmpty ? "" : "Судов в списке: \(courts.count)"
     }
@@ -874,6 +979,52 @@ final class SearchModel: ObservableObject {
               let cart = cartoteka,
               let court = selectedCourt?.searchCourt else { return }
         let r = results[index]
+
+        if let unitPathID = selectedCourt?.moscowMagistrateUnitPathID {
+            guard cart.id == "adm", let url = r.cardURL,
+                  let requested = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart),
+                  requested.courtKey == unitPathID else {
+                status = "Ссылка не подтверждает карточку выбранного участка Москвы."
+                return
+            }
+            selectedResultID = r.stableID
+            clearActPreview()
+            // A pending movement for this row may otherwise restore an older
+            // UID proof after this fresh card response has rejected it.
+            invalidateMovementLoad()
+            let generation = beginCardLoad()
+            let expectedUID = expectedMoscowUIDByResultID[r.stableID]
+            verifiedMoscowUIDByIdentityID.removeValue(forKey: requested.identity.id)
+            defer { finishCardLoad(generation, resultID: r.stableID) }
+            do {
+                let fetched = try await moscowMagistrateClient.fetchCardWithResponseURL(url: url)
+                guard isCurrentCardLoad(generation, resultID: r.stableID) else { return }
+                guard let response = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: fetched.responseURL, cartoteka: cart),
+                      response.identity == requested.identity,
+                      let number = fetched.card.caseNumber,
+                      MoscowMagistrateKoAPNumber.matchesPublishedNumber(number, r.caseNumber) else {
+                    throw SudrfError.caseCardTemporarilyUnavailable
+                }
+                if let expectedUID,
+                   !Self.matchesPublishedJudicialUID(fetched.card.uid, expectedUID) {
+                    throw SudrfError.caseCardTemporarilyUnavailable
+                }
+                if let ownUID = Self.publishedJudicialUID(fetched.card.uid) {
+                    verifiedMoscowUIDByIdentityID[requested.identity.id] = ownUID
+                }
+                let text = Self.publishedActText(from: fetched.card)
+                actMissing = text == nil
+                actText = text ?? ""
+                cardPDFMetadata = Self.makeCardPDFMetadata(
+                    fetched.card, caseNumber: r.caseNumber, courtName: selectedCourt?.title ?? court.title)
+            } catch {
+                reportCardLoadFailure(error, prefix: "Ошибка карточки мирового участка Москвы:",
+                                      generation: generation, resultID: r.stableID)
+            }
+            return
+        }
 
         // Карточка портала mos-gorsud — по ссылке из выдачи (case_id/case_uid
         // у портала нет); тексты актов публикуются вложениями, не инлайном.
@@ -1025,12 +1176,27 @@ final class SearchModel: ObservableObject {
                                 cartoteka: Cartoteka) -> Bool {
         let baseLevel = MovementContext.instanceLevel(
             cartotekaID: cartoteka.id, courtLevel: court.level, judicialUID: movement.uid)
+        let isMoscowMagistrate = court.level == .magistrate && cartoteka.id == "adm"
+            && SudrfHost.moduleHost(court.domain) == "mos-sud.ru"
         let matchingInstances = movement.instances.filter {
             $0.level == baseLevel
                 && SudrfHost.moduleHost($0.domain) == SudrfHost.moduleHost(court.domain)
-                && CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber)
+                && (isMoscowMagistrate
+                    ? MoscowMagistrateKoAPNumber.matchesPublishedNumber($0.caseNumber, row.caseNumber)
+                    : CaseOriginResolver.sameCaseNumber($0.caseNumber, row.caseNumber))
         }
         guard !matchingInstances.isEmpty else { return false }
+        if isMoscowMagistrate {
+            guard let url = verifiedExactCardURL(for: row, court: court),
+                  let selected = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cartoteka) else { return false }
+            return matchingInstances.contains { instance in
+                guard let sourceURL = instance.sourceURL,
+                      let cached = SourceNativeCardLocator.moscowMagistrateKoAP(
+                        url: sourceURL, cartoteka: cartoteka) else { return false }
+                return cached.identity == selected.identity
+            }
+        }
         guard let exactURL = verifiedDirectCardURLForCache(for: row, court: court) else {
             // При наличии пары идентификаторов непроверенная ссылка не участвует
             // в загрузке: карточка строится для выбранного суда и картотеки.
@@ -1153,8 +1319,23 @@ final class SearchModel: ObservableObject {
         guard pendingPickerChanges == 0 else { return }
         guard let index = currentIndex(for: result),
               let cart = cartoteka, let option = selectedCourt else { return }
+        if let unitPathID = option.moscowMagistrateUnitPathID {
+            guard cart.id == "adm", let url = results[index].cardURL,
+                  let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart),
+                  locator.courtKey == unitPathID else {
+                status = "Ссылка не подтверждает карточку выбранного участка Москвы."
+                return
+            }
+        }
         let court = option.searchCourt
         let base = results[index]
+        let expectedMoscowUID = expectedMoscowUIDByResultID[base.stableID]
+        if let expectedMoscowUID,
+           Self.publishedJudicialUID(expectedMoscowUID) == nil {
+            status = SudrfError.caseCardTemporarilyUnavailable.description
+            return
+        }
         invalidateCardLoad()
         clearActPreview()
         selectedResultID = base.stableID
@@ -1167,8 +1348,10 @@ final class SearchModel: ObservableObject {
                                                    courtCode: option.code,
                                                    caseNumber: base.caseNumber)
         openedMovementCacheKey = cacheKey
-        let service = makeMovementService(for: option, base: base, cartoteka: cart)
-        if let hit = MovementMemoryCache.shared.get(cacheKey),
+        let service = makeMovementService(for: option, base: base, cartoteka: cart,
+                                          expectedMoscowUID: expectedMoscowUID)
+        if expectedMoscowUID == nil,
+           let hit = MovementMemoryCache.shared.get(cacheKey),
            cachedMovement(hit.movement, matches: base, court: court, cartoteka: cart) {
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
             guard let resolved = await resolveMovementCaptchas(
@@ -1186,10 +1369,32 @@ final class SearchModel: ObservableObject {
             return
         }
 
+        if let url = base.cardURL,
+           let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                url: url, cartoteka: cart),
+           option.moscowMagistrateUnitPathID == locator.courtKey {
+            verifiedMoscowUIDByIdentityID.removeValue(forKey: locator.identity.id)
+        }
         movement = nil; expandedComplaints = []
         do {
             let mv = try await service.movement(for: base, court: court, cartoteka: cart)
             guard isCurrentMovementLoad(generation, resultID: base.stableID) else { return }
+            if let expectedMoscowUID {
+                guard Self.matchesPublishedJudicialUID(mv.uid, expectedMoscowUID) else {
+                    throw SudrfError.caseCardTemporarilyUnavailable
+                }
+            }
+            if let unitPathID = option.moscowMagistrateUnitPathID,
+               let url = base.cardURL,
+               let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart),
+               locator.courtKey == unitPathID,
+               let ownUID = Self.publishedJudicialUID(mv.uid),
+               Self.movementConfirmsMoscowAnchor(mv, locator: locator,
+                                                 caseNumber: base.caseNumber,
+                                                 cartoteka: cart) {
+                verifiedMoscowUIDByIdentityID[locator.identity.id] = ownUID
+            }
             guard let resolved = await resolveMovementCaptchas(
                 in: mv, service: service, base: base, court: court,
                 cartoteka: cart, generation: generation, resultID: base.stableID
@@ -1507,6 +1712,28 @@ final class SearchModel: ObservableObject {
     func currentContext() -> MovementContext? {
         guard let option = selectedCourt, let cart = cartoteka,
               let level = tier.level, let base = selectedResult else { return nil }
+        let expectedUID = expectedMoscowUIDByResultID[base.stableID]
+        var provenUID: String?
+        if let unitPathID = option.moscowMagistrateUnitPathID {
+            if let locator = base.cardURL.flatMap({
+                SourceNativeCardLocator.moscowMagistrateKoAP(url: $0, cartoteka: cart)
+            }), locator.courtKey == unitPathID {
+                if let expectedUID {
+                    guard let verifiedUID = verifiedMoscowUIDByIdentityID[locator.identity.id],
+                          Self.matchesPublishedJudicialUID(verifiedUID, expectedUID) else {
+                        return nil
+                    }
+                    provenUID = verifiedUID
+                } else {
+                    provenUID = verifiedMoscowUIDByIdentityID[locator.identity.id]
+                }
+            } else if expectedUID != nil {
+                return nil
+            }
+        } else if expectedUID != nil {
+            return nil
+        }
+
         var ctx = MovementContext(
             branchRaw: branch.rawValue,
             region: routingRegionName(for: base.caseNumber),
@@ -1526,9 +1753,43 @@ final class SearchModel: ObservableObject {
             decisionDate: base.decisionDate,
             resultText: base.result,
             legalForceDate: base.legalForceDate,
-            cardURLString: base.cardURL?.absoluteString)
+            cardURLString: base.cardURL?.absoluteString,
+            judicialUID: provenUID)
         ctx.higherCourtTargets = movementTargets(for: option, base: base)
         return ctx
+    }
+
+    private static func publishedJudicialUID(_ value: String?) -> String? {
+        guard let value,
+              JudicialUIDObservation.validity(of: value) == .valid else { return nil }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func matchesPublishedJudicialUID(
+        _ published: String?, _ expected: String
+    ) -> Bool {
+        guard let published = publishedJudicialUID(published),
+              let expected = publishedJudicialUID(expected) else { return false }
+        return JudicialUIDObservation.normalize(published)
+            == JudicialUIDObservation.normalize(expected)
+    }
+
+    private static func movementConfirmsMoscowAnchor(
+        _ movement: CaseMovement,
+        locator: SourceNativeCardLocator,
+        caseNumber: String,
+        cartoteka: Cartoteka
+    ) -> Bool {
+        movement.instances.contains { instance in
+            guard instance.level == .first,
+                  instance.domain.caseInsensitiveCompare(
+                    MoscowMagistrateDirectoryParser.host) == .orderedSame,
+                  let sourceURL = instance.sourceURL,
+                  let loaded = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: sourceURL, cartoteka: cartoteka) else { return false }
+            return loaded.identity == locator.identity
+                && MoscowMagistrateKoAPNumber.matchesPublishedNumber(instance.caseNumber, caseNumber)
+        }
     }
 
     /// Bootstrap-хуk (v0.38.9): если у нас есть PNG недавно

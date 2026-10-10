@@ -412,6 +412,7 @@ final class AppRouter: ObservableObject {
          modelContainer suppliedModelContainer: ModelContainer,
          modelContainerIsPrepared: Bool = false,
          captchaCorpus: CorpusStore = .shared,
+         configuredCaptchaSolver suppliedCaptchaSolver: CaptchaSolver? = nil,
          refreshCenterFactory: (@MainActor (TrackedStore, SudrfClient) -> RefreshCenter)? = nil,
          importVSRFProvider: (any VSRFProviding)? = nil,
          importMosGorSudProvider: (any MosGorSudProviding)? = nil,
@@ -479,7 +480,7 @@ final class AppRouter: ObservableObject {
         let mosGorSudProvider = importMosGorSudProvider ?? MosGorSudClient()
         self.importVSRFProvider = vsrfProvider
         self.importMosGorSudProvider = mosGorSudProvider
-        let configuredSolver = captchaSolverFactory(captchaSettings)
+        let configuredSolver = suppliedCaptchaSolver ?? captchaSolverFactory(captchaSettings)
         self.cardRecovery = CaseCardRecovery(provider: client)
         if let repairCoordinatorFactory {
             self.repairCoordinator = repairCoordinatorFactory(store, client)
@@ -631,7 +632,7 @@ final class AppRouter: ObservableObject {
         spotlightEnabled = enabled
         if spotlightOnboardingRequired {
             spotlightOnboardingDraft = enabled
-            SpotlightPreferenceStore().setEnabled(enabled)
+            SpotlightPreferenceStore(defaults: userDefaults).setEnabled(enabled)
             return
         }
         spotlightPreferenceRevision &+= 1

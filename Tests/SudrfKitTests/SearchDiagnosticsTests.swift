@@ -44,6 +44,19 @@ final class SearchDiagnosticsTests: XCTestCase {
         XCTAssertEqual(saved, html)
     }
 
+    func testOverrideCreatesOnlySelectedDirectoryAtWrite() throws {
+        let selected = tmpDir.appendingPathComponent("not-created/nested", isDirectory: true)
+        SearchDiagnostics.setDirForTesting(selected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selected.path))
+
+        let bytes = Data("isolated diagnostics".utf8)
+        SearchDiagnostics.dumpVariant(data: bytes, host: "example.sudrf.ru")
+
+        let files = try FileManager.default.contentsOfDirectory(at: selected, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(files.first)), bytes)
+    }
+
     /// Главный тест для v0.38.6: сырые байты пишутся в файл
     /// **verbatim** (без перекодирования). Берем настоящий cp1251
     /// байт-секвенс для «Россия» (`D0 CF E0 E2 E5 F0`), и проверяем

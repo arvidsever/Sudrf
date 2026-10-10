@@ -30,8 +30,18 @@ import Synchronization
 public enum SearchDiagnostics {
 
     public static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+        get { enabledOverride.withLock { $0 } ?? (UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true) }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+    }
+    private static let enabledOverride = Mutex<Bool?>(nil)
+
+    @discardableResult
+    static func setEnabledForTesting(_ enabled: Bool?) -> Bool? {
+        enabledOverride.withLock { previous in
+            let old = previous
+            previous = enabled
+            return old
+        }
     }
     private static let enabledKey = "captcha.diagnosticsEnabled"
 
@@ -46,7 +56,6 @@ public enum SearchDiagnostics {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dir = support.appendingPathComponent("Sudrf", isDirectory: true)
             .appendingPathComponent("diagnostics", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }())
 
@@ -123,6 +132,7 @@ public enum SearchDiagnostics {
             "\(safeHost)_\(timestampSafe())_\(kind).html"
         )
         do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
             // best-effort: ошибка записи не должна ломать основной поток

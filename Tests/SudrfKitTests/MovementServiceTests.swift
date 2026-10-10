@@ -9,6 +9,183 @@ import XCTest
 /// 3) частные жалобы под тем же УИД кругом апелляции не считаются и отсеиваются.
 final class MovementServiceTests: XCTestCase {
 
+    func testMagistrateCassationSearchesBothRoutesDespiteOldSavedRules() async throws {
+        let uid = "11MS0001-01-2025-000001-01"
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Мировой судья", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let old = [MovementSearchTarget(domain: "3kas.sudrf.ru", courtLevel: .cassation,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                        dateRule: .before2026),
+                   MovementSearchTarget(domain: "vs.komi.sudrf.ru", courtLevel: .subject,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g33"],
+                                        dateRule: .from2026)]
+        for lowerDate in ["09.05.2026", "10.05.2026"] {
+            let card = CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: "2-12/2025", legalForceDate: lowerDate,
+                                processKind: .civil)
+            let mock = MockClient(firstCardID: "base", firstCard: card,
+                                  higherResults: [], higherCards: [:],
+                                  homeDomain: court.domain, expectedUID: uid)
+            let service = MovementService(client: mock, higherCourtTargets: old,
+                                          judicialUID: uid)
+            _ = try await service.movement(
+                for: CaseSearchResult(caseNumber: "2-12/2025", caseID: "base"),
+                court: court, cartoteka: cart)
+            let locators = await mock.searchLocators
+            XCTAssertTrue(locators.contains { $0.hasSuffix("/g3") })
+            XCTAssertTrue(locators.contains { $0.hasSuffix("/g33") })
+        }
+    }
+
+    func testMagistrateCassationAdmitsOnlyOwnCardsFromBothRoutes() async throws {
+        let uid = "11MS0001-01-2025-000001-01"
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Мировой судья", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let ksoyu = try XCTUnwrap(CourtDirectory.cassationCourt(forSubjectCode: "11"))
+        let subject = try XCTUnwrap(CourtDirectory.subjectCourt(forSubjectCode: "11"))
+        let g3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
+        let p3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "p3"))
+        let g33 = try XCTUnwrap(CartotekaRegistry.find(level: .subject, id: "g33"))
+        func row(_ domain: String, _ level: CourtLevel, _ id: String,
+                 _ number: String, _ cartoteka: Cartoteka) throws -> CaseSearchResult {
+            let url = try SudrfURLBuilder(court: Court(domain: domain, title: domain,
+                                                       level: level))
+                .cardURL(caseID: id, caseUID: "link-\(id)",
+                         deloID: cartoteka.deloID, new: cartoteka.new)
+            return CaseSearchResult(caseNumber: number, caseID: id,
+                                    caseUID: "link-\(id)", cardURL: url)
+        }
+        let goodK = try row(ksoyu.domain, .cassation, "good-k", "8Г-10/2026", g3)
+        let wrongUID = try row(ksoyu.domain, .cassation, "wrong-uid", "8Г-11/2026", g3)
+        let wrongNumber = try row(ksoyu.domain, .cassation, "wrong-number", "8Г-12/2026", g3)
+        let wrongCart = try row(ksoyu.domain, .cassation, "wrong-cart", "8Г-13/2026", p3)
+        let goodS = try row(subject.domain, .subject, "good-s", "4Г-10/2026", g33)
+        let cards = [
+            "good-k": CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: "8Г-10/2026"),
+            "wrong-uid": CaseCard(rawText: "", actText: nil,
+                                   uid: "99MS0001-01-2025-000001-01", caseNumber: "8Г-11/2026"),
+            "wrong-number": CaseCard(rawText: "", actText: nil, uid: uid,
+                                      caseNumber: "8Г-99/2026"),
+            "wrong-cart": CaseCard(rawText: "", actText: nil, uid: uid,
+                                    caseNumber: "8Г-13/2026"),
+            "good-s": CaseCard(rawText: "", actText: nil, uid: uid, caseNumber: "4Г-10/2026")]
+        let mock = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil, uid: uid,
+                                caseNumber: "2-12/2025", processKind: .civil),
+            higherResults: [], higherCards: cards,
+            higherResultsByLocator: [
+                ksoyu.domain + "/g3": [goodK, wrongUID, wrongNumber, wrongCart],
+                (CourtDirectory.dashVariant(of: subject.domain) ?? subject.domain) + "/g33": [goodS]],
+            homeDomain: court.domain, expectedUID: uid)
+        let service = MovementService(client: mock,
+                                      higherCourtTargets: [MovementSearchTarget(
+                                        domain: ksoyu.domain, instanceLevel: .cassation,
+                                        cartotekaIDs: ["g3"], dateRule: .before2026)],
+                                      judicialUID: uid)
+        let movement = try await service.movement(
+            for: CaseSearchResult(caseNumber: "2-12/2025", caseID: "base"),
+            court: court, cartoteka: cart)
+        XCTAssertEqual(Set(movement.instances.filter { $0.level == .cassation }
+            .map(\.caseNumber)), ["8Г-10/2026", "4Г-10/2026"])
+        XCTAssertTrue(movement.instances.filter { $0.level == .cassation }
+            .allSatisfy { $0.sourceURL != nil })
+        let fetched = await mock.fetchedURLs
+        XCTAssertFalse(fetched.contains(wrongCart.cardURL!))
+    }
+
+    func testMagistrateSavedUIDFallbackStaysPartialAndConflictStopsSearch() async throws {
+        let saved = "11MS0001-01-2025-000001-01"
+        let court = Court(domain: "example.komi.msudrf.ru", title: "Мировой судья", level: .magistrate)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .magistrate, id: "g1"))
+        let old = [MovementSearchTarget(domain: "3kas.sudrf.ru", courtLevel: .cassation,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                        dateRule: .before2026)]
+        let base = CaseSearchResult(caseNumber: "2-12/2025", caseID: "base",
+                                    caseUID: "base-link")
+        let missing = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil,
+                                caseNumber: "2-12/2025", processKind: .civil),
+            higherResults: [], higherCards: [:], homeDomain: court.domain,
+            expectedUID: saved)
+        let missingMovement = try await MovementService(
+            client: missing, higherCourtTargets: old, judicialUID: saved)
+            .movement(for: base, court: court, cartoteka: cart)
+        let searched = await missing.searchLocators
+        XCTAssertTrue(searched.contains { $0.hasSuffix("/g3") })
+        XCTAssertTrue(searched.contains { $0.hasSuffix("/g33") })
+        XCTAssertTrue(missingMovement.sourceRefreshCoverage?.contains {
+            $0.courtKey == SudrfHost.moduleHost(court.domain) && $0.kind == .partial
+        } == true)
+
+        let conflicting = MockClient(
+            firstCardID: "base",
+            firstCard: CaseCard(rawText: "", actText: nil,
+                                uid: "99MS0001-01-2025-000001-01",
+                                caseNumber: "2-12/2025", processKind: .civil),
+            higherResults: [], higherCards: [:], homeDomain: court.domain,
+            expectedUID: saved)
+        let conflictMovement = try await MovementService(
+            client: conflicting, higherCourtTargets: old, judicialUID: saved)
+            .movement(for: base, court: court, cartoteka: cart)
+        let conflictSearches = await conflicting.searchLocators
+        XCTAssertTrue(conflictSearches.isEmpty)
+        XCTAssertTrue(conflictMovement.sourceRefreshCoverage?.contains {
+            $0.courtKey == SudrfHost.moduleHost(court.domain) && $0.kind == .partial
+        } == true)
+    }
+
+    func testDistrictMagistrateAppealWithLegacyFirstLevelUsesProvenOrigin() async throws {
+        let saved = "11MS0001-01-2025-000001-01"
+        let court = Court(domain: "district.komi.sudrf.ru", title: "Районный суд",
+                          level: .district)
+        let cart = try XCTUnwrap(CartotekaRegistry.find(level: .district, id: "g2"))
+        let ksoyu = try XCTUnwrap(CourtDirectory.cassationCourt(forSubjectCode: "11"))
+        let g3 = try XCTUnwrap(CartotekaRegistry.find(level: .cassation, id: "g3"))
+        let badURL = try SudrfURLBuilder(court: Court(
+            domain: ksoyu.domain, title: ksoyu.title, level: .cassation)).cardURL(
+            caseID: "bad", caseUID: "bad-link", deloID: g3.deloID, new: g3.new)
+        let bad = CaseSearchResult(caseNumber: "8Г-10/2026", caseID: "bad",
+                                   caseUID: "bad-link", cardURL: badURL)
+        let old = [MovementSearchTarget(domain: ksoyu.domain, courtLevel: .cassation,
+                                        instanceLevel: .cassation, cartotekaIDs: ["g3"],
+                                        dateRule: .before2026)]
+        let base = CaseSearchResult(caseNumber: "11-12/2025", caseID: "base",
+                                    caseUID: "base-link")
+        for (freshUID, shouldSearch) in [(Optional<String>.none, true),
+                                         (Optional("99MS0001-01-2025-000001-01"), false)] {
+            let card = CaseCard(rawText: "", actText: nil, uid: freshUID,
+                                caseNumber: "11-12/2025",
+                                lowerCourt: LowerCourtReference(
+                                    courtTitle: "Мировой судья судебного участка № 1",
+                                    caseNumber: "2-12/2025"), processKind: .civil)
+            XCTAssertNotNil(MovementTargetBuilder.magistrateGPKKASOriginProcess(
+                court: court, cartoteka: cart, card: card, expectedNumber: base.caseNumber))
+            let direct = MovementTargetBuilder.normalizedMagistrateCassationTargets(
+                old, court: court, cartoteka: cart, card: card,
+                expectedNumber: base.caseNumber, expectedUID: saved)
+            if freshUID == nil { XCTAssertTrue(direct.proven) }
+            let mock = MockClient(firstCardID: "base", firstCard: card,
+                                  higherResults: [], higherCards: [
+                                    "bad": CaseCard(rawText: "", actText: nil,
+                                                    uid: "99MS0001-01-2025-000001-01",
+                                                    caseNumber: "8Г-10/2026")],
+                                  higherResultsByLocator: [ksoyu.domain + "/g3": [bad]],
+                                  homeDomain: court.domain, expectedUID: saved)
+            let movement = try await MovementService(
+                client: mock, higherCourtTargets: old, baseInstanceLevel: .first,
+                judicialUID: saved).movement(for: base, court: court, cartoteka: cart)
+            let searched = await mock.searchLocators
+            XCTAssertEqual(searched.contains { $0.hasSuffix("/g3") }, shouldSearch)
+            XCTAssertEqual(searched.contains { $0.hasSuffix("/g33") }, shouldSearch)
+            XCTAssertTrue(movement.instances.filter { $0.level == .cassation }.isEmpty)
+            XCTAssertTrue(movement.sourceRefreshCoverage?.contains {
+                $0.courtKey == SudrfHost.moduleHost(court.domain) && $0.kind == .partial
+            } == true)
+        }
+    }
+
     /// GUID из href строки выдачи СГС — раньше ошибочно уходил в поиск как «УИД».
     private static let linkGUID = "0cec7ea2-1eae-47eb-988b-5df03f4f190c"
     private static let uid = "11RS0001-01-2025-011255-03"

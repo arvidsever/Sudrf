@@ -157,7 +157,7 @@ final class RefreshCenter: ObservableObject {
     private let store: TrackedStore
     private let client: SudrfClient
     private let vsrfClient: any VSRFProviding
-    private let mosGorSudClient = MosGorSudClient()
+    private let captchaTokenStore: CaptchaTokenStore
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
     /// в init.
@@ -289,6 +289,7 @@ final class RefreshCenter: ObservableObject {
          captchaSettings: CaptchaSettings? = nil,
          autoSolve: ((URL, SudrfClient, CaptchaSolver,
                       AutoCaptchaSolver.Settings) async -> AutoCaptchaSolver.SolveResult)? = nil,
+         captchaTokenStore: CaptchaTokenStore = .shared,
          serviceBuilder: ((MovementContext) -> any MovementProviding)? = nil,
          treasuryDiscover: ((CourtEnforcementDocument, String?, String?) async throws
             -> EnforcementLookup)? = nil,
@@ -301,6 +302,7 @@ final class RefreshCenter: ObservableObject {
          walkDiagnostics: RefreshWalkDiagnostics = .disabled) {
         self.store = store
         self.client = client
+        self.captchaTokenStore = captchaTokenStore
         let vsrf = vsrfProvider ?? VSRFClient()
         self.vsrfClient = vsrf
         self.captchaSolver = captchaSolver
@@ -309,40 +311,52 @@ final class RefreshCenter: ObservableObject {
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
         // Локальные копии — чтобы default-замыкания не захватывали self
-        // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
+        // до завершения инициализации (vsrfClient — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
-        let mgs = mosGorSudClient
-        let magistrate = MagistrateClient(sudrfClient: client)
-        self.serviceBuilder = serviceBuilder ?? { ctx in
-            let provider: any CaseProviding = ctx.courtLevel == .magistrate
-                ? magistrate
-                : client
-            return ctx.makeService(client: provider, vsrf: vsrf,
-                                   mosgorsud: mgs, magistrate: magistrate)
+        if let serviceBuilder {
+            self.serviceBuilder = serviceBuilder
+        } else {
+            let mgs = MosGorSudClient()
+            let magistrate = MagistrateClient(sudrfClient: client)
+            self.serviceBuilder = { ctx in
+                let provider: any CaseProviding = ctx.courtLevel == .magistrate
+                    ? magistrate
+                    : client
+                return ctx.makeService(client: provider, vsrf: vsrf,
+                                       mosgorsud: mgs, magistrate: magistrate)
+            }
         }
         self.autoSolve = autoSolve ?? { url, c, s, settings in
             await AutoCaptchaSolver.solve(formURL: url, client: c,
                                           solver: s, settings: settings)
         }
-        let treasury = TreasuryClient()
-        self.treasuryDiscover = treasuryDiscover ?? { document, caseNumber, court in
-            try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
-        }
-        let fssp = fsspClient ?? FSSPClient()
-        let fsspModelEnabled = fsspAutoModelEnabled
-            ?? CaptchaSolverFactory.hasEligibleFSSPModel()
-        self.fsspDiscover = fsspDiscover ?? { document in
-            if let captchaSolver, let captchaSettings {
-                return await FSSPAutoCaptchaSolver.solve(
-                    document: document,
-                    client: fssp,
-                    solver: captchaSolver,
-                    enabled: fsspModelEnabled && captchaSettings.isEffectivelyEnabled,
-                    settings: .init(
-                        maxAttempts: captchaSettings.maxAttempts,
-                        minConfidence: captchaSettings.minConfidence))
+        if let treasuryDiscover {
+            self.treasuryDiscover = treasuryDiscover
+        } else {
+            let treasury = TreasuryClient()
+            self.treasuryDiscover = { document, caseNumber, court in
+                try await treasury.discover(document: document, caseNumber: caseNumber, court: court)
             }
-            return try await fssp.discover(document: document)
+        }
+        if let fsspDiscover {
+            self.fsspDiscover = fsspDiscover
+        } else {
+            let fssp = fsspClient ?? FSSPClient()
+            let fsspModelEnabled = fsspAutoModelEnabled
+                ?? CaptchaSolverFactory.hasEligibleFSSPModel()
+            self.fsspDiscover = { document in
+                if let captchaSolver, let captchaSettings {
+                    return await FSSPAutoCaptchaSolver.solve(
+                        document: document,
+                        client: fssp,
+                        solver: captchaSolver,
+                        enabled: fsspModelEnabled && captchaSettings.isEffectivelyEnabled,
+                        settings: .init(
+                            maxAttempts: captchaSettings.maxAttempts,
+                            minConfidence: captchaSettings.minConfidence))
+                }
+                return try await fssp.discover(document: document)
+            }
         }
     }
 
@@ -1369,10 +1383,11 @@ final class RefreshCenter: ObservableObject {
         let solve = autoSolve
         let c = client
         let solverSettings = settings.autoSolverSettings
+        let tokenStore = captchaTokenStore
         let task = Task {
             let result = await solve(formURL, c, solver, solverSettings)
             if let token = result.token {
-                await CaptchaTokenStore.shared.store(token, domain: formURL.host ?? "")
+                await tokenStore.store(token, domain: formURL.host ?? "")
             }
             return result
         }

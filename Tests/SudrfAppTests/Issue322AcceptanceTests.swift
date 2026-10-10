@@ -238,6 +238,19 @@ private actor Issue322TransferCourtDirectory {
     func requests() -> [String] { requestedSubjects }
 }
 
+private struct Issue322DisabledVSRF: VSRFProviding {
+    func search(uniqueNumber: String?, oldCaseNumber: String?,
+                keywords: String?) async throws -> VSRFSearchResults {
+        XCTFail("Unexpected VSRF request in #322 offline profile")
+        throw URLError(.unsupportedURL)
+    }
+
+    func fetchCard(productionID: String, section: VSRFCardSection) async throws -> VSRFCard {
+        XCTFail("Unexpected VSRF request in #322 offline profile")
+        throw URLError(.unsupportedURL)
+    }
+}
+
 @MainActor
 final class Issue322AcceptanceTests: XCTestCase {
     private func offlineClient() -> SudrfClient {
@@ -334,12 +347,22 @@ final class Issue322AcceptanceTests: XCTestCase {
                             transferDirectory: Issue322TransferCourtDirectory,
                             afterRepair: ((String, String) -> Void)? = nil) -> RefreshCenter {
         let center = RefreshCenter(
-            store: store, client: client,
+            store: store, client: client, captchaTokenStore: CaptchaTokenStore(),
             serviceBuilder: { context in
                 self.makeOfflineService(context: context, client: sudrf,
                                         moscow: moscow,
                                         transferDirectory: transferDirectory)
-            }, fsspAutoModelEnabled: false)
+            },
+            treasuryDiscover: { _, _, _ in
+                XCTFail("Unexpected treasury request in #322 offline profile")
+                throw URLError(.unsupportedURL)
+            },
+            vsrfProvider: Issue322DisabledVSRF(),
+            fsspAutoModelEnabled: false,
+            fsspDiscover: { _ in
+                XCTFail("Unexpected FSSP request in #322 offline profile")
+                throw URLError(.unsupportedURL)
+            })
         center.repairBeforeRefresh = { key, force in
             let outcome = try await repair.repairIfNeeded(key: key, forceAttempt: force)
             afterRepair?(key, outcome.effectiveKey)

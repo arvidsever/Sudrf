@@ -99,6 +99,40 @@ swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter 'Iss
 диагностику OCR и provider/resolver dependencies). Само наличие двух DI-параметров
 не подтверждает изоляцию произвольного живого запуска.
 
+## Устранение оставшихся общих клиентов — 10 октября 2026 года
+
+Последующий аудит выявил ещё одну границу прежних профильных запусков:
+даже при custom `serviceBuilder` конструктор `RefreshCenter` создавал
+неиспользуемые Moscow, VSRF, Treasury и FSSP clients. В частности, production
+конфигурации Moscow/VSRF обращались к общему cookie storage. Поэтому прежние
+логи не подтверждают полную изоляцию от общего cookie storage.
+
+Переиспользована проверенная для #241 минимальная правка: при переданных
+service/enforcement closures неиспользуемые production clients не создаются.
+Обычные production defaults сохранены. Профиль #322 передаёт private CAPTCHA
+store, VSRF provider и enforcement closures, которые завершают неожиданный вызов
+ошибкой теста. Прежние providers, transfer-directory, ephemeral client, disk
+store и private UserDefaults остаются отдельными.
+
+Проверка финальной редакции выполнена той же командой четырёх тестов выше:
+4 XCTest, 0 ошибок и пропусков, 0,793 секунды; strict-concurrency compilation
+прошла. Основание — локальный `HEAD` `0e236f0` плюс незакоммиченные constructor
+и профильные изменения. Лог —
+`/private/tmp/sudrf-322-constructor-final-profile.log`, SHA-256:
+`081aeaf90717a49b4f8d4cc90fe96c443c019ae1bd00eada6c9d2de88a11508f`.
+
+Полный suite не запускался: его визуальные тесты прямо изменяют
+`UserDefaults.standard`, включая Spotlight preferences; диагностические тесты
+изменяют общий `SearchDiagnostics.enabled`. Такой запуск не соответствует
+ограничению на общие settings и системные публикации. Для полного локального
+suite требуется отдельная подтверждённая изоляция этих тестов.
+
+Живых попыток этой редакции нет. Pending criteria #322: актуальные полные
+ответы московских порталов и Тверского суда; штатный repair/refresh обеих
+апелляций и кассации с точными ссылками; повторное обновление, частичный отказ
+и холодное открытие с сохранностью пользовательских данных. Офлайн-фикстуры
+эти критерии не закрывают. GUI и основное приложение не запускались.
+
 ## Офлайн-профиль — 9 октября 2026 года
 
 Проверено на ветке `codex/moscow-chain-acceptance-322-post434`, основание —

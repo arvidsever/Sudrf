@@ -74,7 +74,11 @@ SHA-256 фактически полученного PDF:
   на известном устаревшем assertion и успехом не считается.
 - Unsigned Debug Xcode-сборка после пересоздания проекта: успешно,
   Xcode 27.0 (27A266a), Swift 6.4. Приложение не запускалось.
-- CI итогового SHA: будет проверен в PR; локальные результаты его не заменяют.
+- CI реализации `5174b9961a26e7f34c8cdfd8eae5d33eb11db02d`: build-test
+  и package-app успешны в [run 38021829808](https://github.com/arvidsever/Sudrf/actions/runs/38021829808).
+  Hosted Xcode 27 отсутствует: эта линия фактически не выполнялась;
+  локальная Xcode 27 сборка проверена отдельно. Выпускной SHA получает
+  отдельную проверку CI в [PR #451](https://github.com/arvidsever/Sudrf/pull/451).
 
 Хеши журналов и сравнение каталога с базой — в [validation.txt](validation.txt).
 

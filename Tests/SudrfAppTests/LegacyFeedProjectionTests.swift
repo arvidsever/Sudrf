@@ -116,6 +116,52 @@ final class LegacyFeedProjectionTests: XCTestCase {
         ])
     }
 
+    func testAllEntriesRetainsFutureAndOlderDatedHistoryBeforeWindowFiltering() {
+        let dates = [DateUtil.addDays(today, -46), DateUtil.addDays(today, 1)]
+        let sessions = dates.map {
+            session(date: $0, time: "15:00",
+                    event: "Дело сдано в отдел судебного делопроизводства")
+        }
+        let acts = dates.enumerated().map { index, date in
+            CaseAct(id: "history-act-\(index)", title: "Решение", date: rawDate(date),
+                    courtShort: "Суд", instanceLevel: .first)
+        }
+        let treasury = EnforcementRecord(
+            courtDocumentID: "history-exec", source: .treasury, status: "Открыто",
+            events: dates.enumerated().map { index, date in
+                EnforcementEvent(guid: "history-guid-\(index)", date: date,
+                                 text: "Событие Казначейства", sourceOrder: index)
+            })
+        let movement = CaseMovement(uid: "", caseNumber: caseNumber, inForce: false,
+                                    instances: [], complaints: [:], acts: acts)
+        let records = [input(snapshot: snapshot(sessions), movement: movement,
+                             enforcementRecords: [treasury])]
+        let history = LegacyFeedProjection.allEntries(records: records)
+
+        XCTAssertEqual(history.count, 6)
+        XCTAssertEqual(history.filter { $0.kind == .movement }.count, 2)
+        XCTAssertEqual(history.filter { $0.kind == .act }.count, 2)
+        XCTAssertEqual(history.filter { $0.kind == .enforcement }.count, 2)
+        XCTAssertTrue(history.allSatisfy { $0.dayHead == nil })
+        XCTAssertTrue(project(records).entries.isEmpty)
+    }
+
+    func testAllEntriesPreservesCollidingMaterialRowsForImportValidation() {
+        let date = DateUtil.parse("09.09.2026")!
+        let first = session(date: date, time: "14:00", event: "Принято к производству",
+                            level: .material, number: "13-1/2026", sourceCardID: "card-1")
+        let conflicting = session(date: date, time: "14:00", event: "Принято к производству",
+                                  level: .material, number: "13-2/2026", sourceCardID: "card-1")
+        let records = [input(snapshot: snapshot([first, conflicting]))]
+        let history = LegacyFeedProjection.allEntries(records: records)
+
+        XCTAssertEqual(history.count, 2)
+        XCTAssertEqual(history[0].id, history[1].id)
+        XCTAssertEqual(history.map(\.instanceCaseNumber), ["13-1/2026", "13-2/2026"])
+        XCTAssertEqual(project(records).entries.count, 1,
+                       "The existing display keeps its material-ID collapse.")
+    }
+
     func testMaterialDedupPreviousRegistrationAndScopedNavigationFields() throws {
         var context = fixtureContext()
         context.knownCards = [

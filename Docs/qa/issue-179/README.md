@@ -1,5 +1,22 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Full dated-history extraction — 10 October 2026
+
+`LegacyFeedProjection.allEntries` now shares the renderer's raw row builder and
+retains dated technical movements, acts, hearings and RSS outside the visible
+45-day window, including future dates. It preserves colliding material rows for
+the import validator. The existing renderer still applies its original date
+window before material transitions and ID collapse; its five existing tests pass.
+RSS rows will be excluded from the court-history import because #454 supplies
+their separate GUID-based journal family.
+
+All seven `LegacyFeedProjectionTests` passed with no failures or skips. The two
+new tests cover older/future history and conflicting material rows. The local
+focused log is `/private/tmp/sudrf-179-raw-history-tests.log`, SHA-256
+`546cfeaa5a9e8a445989547962f5d16f48e0e840d68d83d844af245ee0290151`.
+Independent source/test review passed. This is extraction proof only; persistent
+import, mark replay and runtime cutover remain unimplemented at this checkpoint.
+
 ## Cutover coverage inventory — 10 October 2026
 
 This inventory follows the actual `LegacyFeedProjection.project` branches and

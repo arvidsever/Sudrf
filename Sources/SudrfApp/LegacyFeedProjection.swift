@@ -113,15 +113,21 @@ struct LegacyFeedProjectionResult {
 }
 
 enum LegacyFeedProjection {
-    static func project(records: [LegacyFeedRecordInput], today: Date,
-                        readIDs: Set<String>, knownIDs: Set<String>,
-                        migrationState: MaterialFeedMigrationState)
-        -> LegacyFeedProjectionResult {
-        var entries = [FeedEntry]()
-        var materialFeedTransitions = [String: Set<String>]()
-        var unresolvedMaterialFeedCounts = [String: Int]()
-        var materialFeedIDs = Set<String>()
-        var normalFeedIDs = Set<String>()
+    private struct RawRow {
+        let entry: FeedEntry
+        let legacyID: String
+        let isMaterial: Bool
+    }
+
+    /// Retain all dated history before the display window or material-ID collapse.
+    static func allEntries(records: [LegacyFeedRecordInput], readIDs: Set<String> = [])
+        -> [FeedEntry] {
+        rawRows(records: records, readIDs: readIDs).map(\.entry)
+    }
+
+    private static func rawRows(records: [LegacyFeedRecordInput], readIDs: Set<String>)
+        -> [RawRow] {
+        var rows = [RawRow]()
 
         for record in records {
             for enforcement in record.enforcementRecords where enforcement.source == .treasury {
@@ -129,21 +135,18 @@ enum LegacyFeedProjection {
                     guard let date = event.date ?? event.dateRaw.flatMap(DateUtil.parse) else { continue }
                     guard let guid = event.guid?.trimmingCharacters(in: .whitespacesAndNewlines),
                           !guid.isEmpty else { continue }
-                    let diff = DateUtil.daysBetween(date, today)
-                    guard diff >= 0 && diff <= 45 else { continue }
                     let id = AppRouter.enforcementFeedID(recordKey: record.recordKey, guid: guid)
-                    entries.append(FeedEntry(
+                    rows.append(RawRow(entry: FeedEntry(
                         id: id, dayHead: nil, date: date, time: "—", recordKey: record.recordKey,
                         caseNumber: record.caseNumber, client: record.client, kind: .enforcement,
-                        text: event.text, actID: nil, isUnread: !readIDs.contains(id)))
+                        text: event.text, actID: nil, isUnread: !readIDs.contains(id)),
+                        legacyID: id, isMaterial: false))
                 }
             }
 
             guard let snapshot = record.snapshot else { continue }
             for session in snapshot.sessions {
                 guard let date = session.date else { continue }
-                let diff = DateUtil.daysBetween(date, today)
-                guard diff >= 0 && diff <= 45 else { continue }
                 let text = session.result ?? session.event
                 let kind = AppRouter.feedKind(for: session)
                 let legacyID = AppRouter.feedID(
@@ -155,17 +158,10 @@ enum LegacyFeedProjection {
                 if session.level == .material, let sourceCardID = session.sourceCardID {
                     id = AppRouter.materialFeedID(
                         legacyID: legacyID, sourceCardID: sourceCardID)
-                    materialFeedTransitions[legacyID, default: []].insert(id)
                 } else {
                     id = legacyID
-                    if session.level == .material {
-                        unresolvedMaterialFeedCounts[legacyID, default: 0] += 1
-                    } else {
-                        normalFeedIDs.insert(legacyID)
-                    }
                 }
-                if session.level == .material, !materialFeedIDs.insert(id).inserted { continue }
-                entries.append(FeedEntry(
+                rows.append(RawRow(entry: FeedEntry(
                     id: id, dayHead: nil, date: date, time: session.time ?? "—",
                     recordKey: record.recordKey, caseNumber: record.caseNumber,
                     client: record.client, kind: kind, text: text, actID: nil,
@@ -174,14 +170,13 @@ enum LegacyFeedProjection {
                         ?? (session.level == .material ? material.number : session.caseNumber),
                     instanceLevel: session.level, sourceCardID: session.sourceCardID,
                     sourceInstanceID: previousRegistration?.instance.id ?? material.instance?.id,
-                    previousRegistrationNumber: previousRegistration?.number))
+                    previousRegistrationNumber: previousRegistration?.number),
+                    legacyID: legacyID, isMaterial: session.level == .material))
             }
 
             if !record.acts.isEmpty {
                 for act in record.acts {
                     guard let date = DateUtil.parse(act.date) else { continue }
-                    let diff = DateUtil.daysBetween(date, today)
-                    guard diff >= 0 && diff <= 45 else { continue }
                     let text = "Опубликован судебный акт: \(act.title)"
                     let legacyID = AppRouter.feedID(
                         recordKey: record.recordKey, date: date, time: "—", text: act.id)
@@ -208,17 +203,10 @@ enum LegacyFeedProjection {
                     if sourceLevel == .material, let sourceCardID {
                         id = AppRouter.materialFeedID(
                             legacyID: legacyID, sourceCardID: sourceCardID)
-                        materialFeedTransitions[legacyID, default: []].insert(id)
                     } else {
                         id = legacyID
-                        if sourceLevel == .material {
-                            unresolvedMaterialFeedCounts[legacyID, default: 0] += 1
-                        } else {
-                            normalFeedIDs.insert(legacyID)
-                        }
                     }
-                    if sourceLevel == .material, !materialFeedIDs.insert(id).inserted { continue }
-                    entries.append(FeedEntry(
+                    rows.append(RawRow(entry: FeedEntry(
                         id: id, dayHead: nil, date: date, time: "—",
                         recordKey: record.recordKey, caseNumber: record.caseNumber,
                         client: record.client, kind: .act, text: text, actID: act.id,
@@ -231,9 +219,38 @@ enum LegacyFeedProjection {
                                     baseCaseNumber: record.caseNumber)),
                         instanceLevel: sourceLevel, sourceCardID: sourceCardID,
                         sourceInstanceID: exactOwner?.id ?? material?.id,
-                        previousRegistrationNumber: previousRegistrationNumber))
+                        previousRegistrationNumber: previousRegistrationNumber),
+                        legacyID: legacyID, isMaterial: sourceLevel == .material))
                 }
             }
+        }
+
+        return rows
+    }
+
+    static func project(records: [LegacyFeedRecordInput], today: Date,
+                        readIDs: Set<String>, knownIDs: Set<String>,
+                        migrationState: MaterialFeedMigrationState)
+        -> LegacyFeedProjectionResult {
+        var entries = [FeedEntry]()
+        var materialFeedTransitions = [String: Set<String>]()
+        var unresolvedMaterialFeedCounts = [String: Int]()
+        var materialFeedIDs = Set<String>()
+        var normalFeedIDs = Set<String>()
+        for row in rawRows(records: records, readIDs: readIDs) {
+            let diff = DateUtil.daysBetween(row.entry.date, today)
+            guard diff >= 0 && diff <= 45 else { continue }
+            if row.isMaterial {
+                if row.entry.sourceCardID != nil {
+                    materialFeedTransitions[row.legacyID, default: []].insert(row.entry.id)
+                } else {
+                    unresolvedMaterialFeedCounts[row.legacyID, default: 0] += 1
+                }
+                guard materialFeedIDs.insert(row.entry.id).inserted else { continue }
+            } else if row.entry.kind != .enforcement {
+                normalFeedIDs.insert(row.legacyID)
+            }
+            entries.append(row.entry)
         }
 
         let currentFeedIDs = Set(entries.map(\.id))

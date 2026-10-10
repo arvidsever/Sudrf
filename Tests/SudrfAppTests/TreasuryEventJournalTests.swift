@@ -259,6 +259,55 @@ final class TreasuryEventJournalTests: XCTestCase {
         }
     }
 
+    func testPreparationFailureRestoresRSSAndMoscowNormalizationInMemoryAndOnDisk() throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("fixture.store")
+        let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+        let store = try TrackedStore(container: container, prepared: true)
+        var moscow = context()
+        moscow.searchDomain = "mos-gorsud.ru"
+        moscow.displayDomain = "mos-gorsud.ru"
+        moscow.courtTitle = "Московский городской суд"
+        moscow.cardURLString = "https://mos-gorsud.ru/mgs/services/cases/appeal-civil/details/synthetic-454"
+        var sourceMovement = movement()
+        sourceMovement.instances = [CaseInstance(level: .appeal,
+            court: "Хамовнический районный суд", caseNumber: "33-454/2026", judge: nil,
+            domain: "mos-gorsud.ru", foundByUID: false, result: nil, sessions: [],
+            sourceURL: URL(string: moscow.cardURLString!))]
+        XCTAssertFalse(MovementDerivation.moscowOwnCourtCorrections(
+            in: sourceMovement, context: moscow).isEmpty)
+        let record = try store.upsert(context: moscow, snapshot: nil,
+                                      movement: sourceMovement, collections: [])
+        // Seed a legacy cache directly, before either preparation repair runs.
+        record.movementData = try JSONEncoder().encode(sourceMovement)
+        record.enforcementRecords = [source([rss("stored-guid")])]
+        record.eventJournalData = try JSONEncoder().encode(CaseEventJournal())
+        record.seenAt = observed
+        try store.save()
+        let key = record.key
+        let oldJournal = record.eventJournalData
+        let oldMovement = record.movementData
+        let oldSnapshot = record.snapshotData
+        XCTAssertThrowsError(try TrackedStorePreparation.prepare(context: container.mainContext,
+            save: { _ in
+                XCTAssertNotEqual(record.movementData, oldMovement)
+                XCTAssertNotEqual(record.eventJournalData, oldJournal)
+                throw CancellationError()
+            }))
+        XCTAssertEqual(record.eventJournalData, oldJournal)
+        XCTAssertEqual(record.movementData, oldMovement)
+        XCTAssertEqual(record.snapshotData, oldSnapshot)
+        XCTAssertEqual(record.seenAt, observed)
+        let reopenedContainer = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+        let reopened = try TrackedStore(container: reopenedContainer, prepared: true)
+        let saved = try XCTUnwrap(reopened.record(forKey: key))
+        XCTAssertEqual(saved.eventJournalData, oldJournal)
+        XCTAssertEqual(saved.movementData, oldMovement)
+        XCTAssertEqual(saved.snapshotData, oldSnapshot)
+        XCTAssertEqual(saved.seenAt, observed)
+    }
+
     func testJournalAppendEncodingAndSaveFailuresRollbackWholeEnforcementTransition() throws {
         for failure in 0..<3 {
             let directory = try directory()

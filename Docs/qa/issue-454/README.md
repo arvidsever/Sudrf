@@ -21,26 +21,33 @@ no live Treasury response is claimed. This is the separate prerequisite for
 
 ## Verified
 
-The eight new `TreasuryEventJournalTests` run with synthetic data and temporary
+The nine new `TreasuryEventJournalTests` run with synthetic data and temporary
 disk stores. The native-client test uses an ephemeral URLProtocol session,
 disabled cookies/cache, private court client stores and rejecting unused court
 providers. Conditional construction of injected RefreshCenter clients reuses
 the already reviewed #241 pattern; ordinary defaults are preserved.
 
-Result: **8 tests, 0 failures, 0 skips**. Final local log:
+Result: **9 tests, 0 failures, 0 skips**. Final local log:
 `/private/tmp/sudrf-454-isolated-final.log`; SHA-256
-`53bc0dca40cfe42a2d1f41964647c625029d9b5a2c78dae746445083a6071e8f`.
+`e6065f410a5cb5b5ba9cfeb1b6349353e554bbf4efeaf0456afd45923ec35ca6`.
 
 Covered: GUID identity, changed presentation, duplicate/reordered RSS, malformed
 GUIDs, FSSP exclusion, old history backfill, restart/replay, real native
 TreasuryClient → RefreshCenter → disk, real atomic dossier merge/reopen,
 survivor and retired IDs, collections, court events and compatible baselines,
-and journal append/encoding/save failure rollback.
+and journal append/encoding/save failure rollback. A combined preparation
+save failure also restores both Moscow normalization and RSS backfill, including
+retained model objects and reopened disk contents.
 
 An additional existing-class profile ran 152 tests without failures (7 Kit,
 85 RefreshCenter, 52 repair and 8 new journal tests). That broad profile is
 **not an isolation proof**: some older tests construct default dependencies
-and read shared settings. Log `/private/tmp/sudrf-454-focused.log`, SHA-256
+and access shared settings. `RefreshCenterTests` temporarily writes CAPTCHA
+autoSolve/minConfidence/maxAttempts and restores effective values, without
+restoring absent keys. Two existing tests construct AppRouter, whose reload may
+write known/read/material-migration feed preferences without a prior snapshot.
+It is not established whether these values changed or whether the XCTest
+defaults domain equals the installed app domain. Log `/private/tmp/sudrf-454-focused.log`, SHA-256
 `c49f597f3d00d9bd6ff1d12da1054eaefed3e5a093443eddac98623122ae3367`.
 A subsequent full local suite was stopped (exit 130) during Kit parser tests
 after this boundary was identified. Do not rerun the broad suite locally or
@@ -53,7 +60,6 @@ No installed application or working database was opened.
   private receiver. A successful RefreshCenter callback is not this proof.
   Reuse the private dependencies prepared in #250 rather than a second feed
   implementation; do not cut the production feed over in this issue.
-- Preparation failure with simultaneous Moscow normalization and RSS backfill.
 - Final independent review, registry/project generation, native build and
   current-head CI. No release version is assigned yet.
 - Changelog/history/release table at the actual merge order. Keep #454 open

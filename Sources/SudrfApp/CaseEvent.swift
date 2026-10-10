@@ -852,6 +852,16 @@ enum CaseSnapshotSourceIdentity {
            let native = SourceNativeCardLocator.vsrf(url: url) {
             return native.identity.id
         }
+        let hasMoscowSource = instance.domain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame
+            || instance.sourceURL?.host?.caseInsensitiveCompare(
+                "mos-sud.ru") == .orderedSame
+        if hasMoscowSource {
+            guard let url = instance.sourceURL,
+                  let cart = CartotekaRegistry.find(level: .magistrate, id: "adm"),
+                  let native = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart) else { return nil }
+            return native.identity.id
+        }
         if MosGorSudRouting.isMosGorSud(domain: instance.domain), let url = instance.sourceURL {
             let carts = CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }
             let identities = Set(carts.compactMap {

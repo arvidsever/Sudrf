@@ -157,7 +157,6 @@ final class RefreshCenter: ObservableObject {
     private let store: TrackedStore
     private let client: SudrfClient
     private let vsrfClient: any VSRFProviding
-    private let mosGorSudClient = MosGorSudClient()
     /// Опциональный авто-солвер капчи. `nil` — поведение прежнее
     /// (ручной ввод через CaptchaAssistSheet). Передаётся из AppRouter
     /// в init.
@@ -294,6 +293,8 @@ final class RefreshCenter: ObservableObject {
             -> EnforcementLookup)? = nil,
          fsspClient: FSSPClient? = nil,
          vsrfProvider: (any VSRFProviding)? = nil,
+         mosGorSudProvider: (any MosGorSudProviding)? = nil,
+         moscowMagistrateProvider: (any CaseProviding)? = nil,
          fsspAutoModelEnabled: Bool? = nil,
          fsspDiscover: ((CourtEnforcementDocument) async throws -> FSSPSearchStep)? = nil,
          initialTimerDelay: Duration = .seconds(5),
@@ -309,14 +310,22 @@ final class RefreshCenter: ObservableObject {
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
         // Локальные копии — чтобы default-замыкания не захватывали self
-        // до завершения инициализации (vsrfClient/mosGorSudClient — let stored,
+        // до завершения инициализации (клиенты — let stored,
         // self в escaping-замыкании до init-completion = ошибка компиляции).
-        let mgs = mosGorSudClient
+        let mgs = mosGorSudProvider ?? MosGorSudClient()
+        let moscowMagistrate = moscowMagistrateProvider ?? MoscowMagistrateKoAPClient()
         let magistrate = MagistrateClient(sudrfClient: client)
         self.serviceBuilder = serviceBuilder ?? { ctx in
-            let provider: any CaseProviding = ctx.courtLevel == .magistrate
-                ? magistrate
-                : client
+            let isMoscowMagistrateKoAP = ctx.searchDomain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame
+                && ctx.cartotekaId == "adm"
+            let provider: any CaseProviding
+            if isMoscowMagistrateKoAP {
+                provider = moscowMagistrate
+            } else if ctx.courtLevel == .magistrate {
+                provider = magistrate
+            } else {
+                provider = client
+            }
             return ctx.makeService(client: provider, vsrf: vsrf,
                                    mosgorsud: mgs, magistrate: magistrate)
         }
@@ -1180,9 +1189,15 @@ final class RefreshCenter: ObservableObject {
 
     private func fetchOutcome(service: any MovementProviding, ctx: MovementContext,
                               cart: Cartoteka) async throws -> SourceOutcome<CaseMovement> {
-        let family = MosGorSudRouting.isMosGorSud(domain: ctx.searchDomain)
-            ? "mosgorsud"
-            : (ctx.courtLevel == .magistrate ? "msudrf" : "sudrf")
+        let family: String
+        if ctx.searchDomain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame,
+           ctx.cartotekaId == "adm" {
+            family = "moscow-magistrate-koap"
+        } else if MosGorSudRouting.isMosGorSud(domain: ctx.searchDomain) {
+            family = "mosgorsud"
+        } else {
+            family = ctx.courtLevel == .magistrate ? "msudrf" : "sudrf"
+        }
         do {
             let movement = try await service.movement(for: ctx.baseResult,
                                                       court: ctx.searchCourt,

@@ -27,7 +27,14 @@ No shared settings, AppRouter initialization, working store, live transport or
 application launch. Log `/private/tmp/sudrf-179-movement-shadow-final-profile.log`,
 SHA-256 `2c8bfb34e023d68c5bb3c78e7e0cf669c13ec43a0cd06b7741a68a4c824f8f1c`.
 
-Independent Astra review found no blocker for this pure shadow scope. No live
+Independent Astra review found no blocker for this pure shadow scope.
+Actual main `fb3e2c7` (0.65.0, build 261) was subsequently integrated; the
+roadmap-only conflict retained the main #455/#454 P0 rows and removed the
+duplicate older #454 row. No product version is assigned to this draft. Independent Astra integration
+review passed; the same eight pure tests passed again after the source-identity
+helper inherited the main Moscow branch. Log
+`/private/tmp/sudrf-179-movement-shadow-main-profile.log`, SHA-256
+`bced789cfee41cde4e20c42907e8289fa4707f6e433036f66c6ffae7eb246c45`. No live
 feed, notifier, badge or mark-store adapter is connected. #454 and the full #179
 downstream gates remain open; current-head CI is a separate pending gate.
 

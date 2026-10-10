@@ -257,6 +257,8 @@ conversation display 8, 9, 10 and 88, 89, 90 respectively. The source used an
 offline fixture and no working database. The QA application and the two earlier
 QA instances were quit; inventory confirmed no running QA applications.
 
-User acceptance of the corrected screenshots and hosted current-commit CI
-remain separate gates. The previous classification-based review does not stand
-in for this final title-based review.
+On 10 October 2026 the user accepted the corrected picker order after reviewing
+the native screenshots. This accepts the offline picker order and selection;
+it does not accept live card/search completeness or the whole #106 scope.
+Hosted current-commit CI remains a separate gate. The previous classification-
+based review does not stand in for this final title-based review.

@@ -2613,6 +2613,7 @@ extension MovementService {
         if let uid, !uid.isEmpty {
             do {
                 let r = try await vsrf.search(uniqueNumber: uid, oldCaseNumber: nil, keywords: nil)
+                if !r.hasPublishedTotal || r.total > r.results.count { incomplete = true }
                 prods += r.results.filter {
                     VSRFLinkKey.normUID($0.uid) != nil
                         && VSRFLinkKey.normUID($0.uid) == VSRFLinkKey.normUID(uid)
@@ -2630,6 +2631,7 @@ extension MovementService {
         do {
             let r = try await vsrf.search(uniqueNumber: nil,
                                           oldCaseNumber: firstInstanceCaseNumber, keywords: nil)
+            if !r.hasPublishedTotal || r.total > r.results.count { incomplete = true }
             let court = VSRFLinkKey.normCourt(firstInstanceCourt)
             let caseNo = VSRFLinkKey.normCaseNo(firstInstanceCaseNumber)
             for p in r.results {
@@ -2868,7 +2870,6 @@ extension MovementService {
         let note: String?
         if joined.contains("возврат") { note = "возврат без рассмотрения" }
         else if joined.contains("отказ в передаче") { note = "отказ в передаче" }
-        else if p.kind == .complaint && p.uid == nil && !p.caseRequested { note = "жалоба отклонена" }
         else { note = nil }
 
         let publishedActs = mapPublishedActs(p)

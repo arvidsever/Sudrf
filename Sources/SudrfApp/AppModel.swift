@@ -2016,9 +2016,10 @@ final class AppRouter: ObservableObject {
     func storeCaptchaPair(host: String, token: CaptchaToken, originGeneration: Int? = nil) -> Task<Void, Never>? {
         guard !staleImportCaptcha(host: host, capturedGeneration: originGeneration) else { captcha = nil; return nil }
         pendingCaptchaRefresh = true
+        let tokenStore = captchaTokenStore
         return Task { [weak self] in
             guard let self else { return }
-            await self.captchaTokenStore.store(token, domain: host)
+            await tokenStore.store(token, domain: host)
             await MainActor.run {
                 guard !self.staleImportCaptcha(host: host, capturedGeneration: originGeneration) else { return }
                 self.captcha = nil

@@ -24,8 +24,7 @@ final class SudrfClientCaptchaTests: XCTestCase {
             .appendingPathComponent("SudrfClientCaptchaTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         originalDir = SearchDiagnostics.setDirForTesting(tmpDir)
-        originalEnabled = SearchDiagnostics.enabled
-        SearchDiagnostics.enabled = true
+        originalEnabled = SearchDiagnostics.setEnabledForTesting(true)
         // URLProtocol stub: каждый тест сбрасывает responseBody в setUp.
         CaptchaRejectionStub.reset()
         // Создаём СВОЮ URLSessionConfiguration, явно с protocol class
@@ -41,7 +40,7 @@ final class SudrfClientCaptchaTests: XCTestCase {
     override func tearDownWithError() throws {
         session.invalidateAndCancel()
         session = nil
-        SearchDiagnostics.enabled = originalEnabled
+        SearchDiagnostics.setEnabledForTesting(originalEnabled)
         SearchDiagnostics.setDirForTesting(originalDir)
         try? FileManager.default.removeItem(at: tmpDir)
         try super.tearDownWithError()
@@ -64,7 +63,8 @@ final class SudrfClientCaptchaTests: XCTestCase {
             CaptchaToken(value: "12345", id: "abc123"),
             domain: "spb.sudrf.ru"
         )
-        let client = SudrfClient(session: session, captchaStore: store)
+        let client = SudrfClient(session: session, variantStore: WorkingVariantStore(cacheURL: nil),
+                                 captchaStore: store)
 
         do {
             _ = try await client.search(
@@ -96,7 +96,8 @@ final class SudrfClientCaptchaTests: XCTestCase {
             CaptchaToken(value: "12345", id: "abc123"),
             domain: "spb.sudrf.ru"
         )
-        let client = SudrfClient(session: session, captchaStore: store)
+        let client = SudrfClient(session: session, variantStore: WorkingVariantStore(cacheURL: nil),
+                                 captchaStore: store)
 
         _ = try? await client.search(
             court: CaptchaRejectionStub.court,
@@ -128,7 +129,8 @@ final class SudrfClientCaptchaTests: XCTestCase {
 
         let store = CaptchaTokenStore()
         // НЕ сохраняем токен — captcha == nil в runVariants.
-        let client = SudrfClient(session: session, captchaStore: store)
+        let client = SudrfClient(session: session, variantStore: WorkingVariantStore(cacheURL: nil),
+                                 captchaStore: store)
 
         do {
             _ = try await client.search(
@@ -155,7 +157,8 @@ final class SudrfClientCaptchaTests: XCTestCase {
     func testCaptchaRejectedThrowsCaptchaRequiredForPrimary() async throws {
         CaptchaRejectionStub.responseBody = stubHTML(rejectionMarker: "Неверно указан проверочный код с картинки")
 
-        let client = SudrfClient(session: session)
+        let client = SudrfClient(session: session, variantStore: WorkingVariantStore(cacheURL: nil),
+                                 captchaStore: CaptchaTokenStore())
 
         do {
             _ = try await client.search(

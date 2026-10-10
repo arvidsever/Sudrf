@@ -15,15 +15,23 @@ final class SearchDiagnosticsTests: XCTestCase {
             .appendingPathComponent("SearchDiagnosticsTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         originalDir = SearchDiagnostics.setDirForTesting(tmpDir)
-        originalEnabled = SearchDiagnostics.enabled
-        SearchDiagnostics.enabled = true
+        originalEnabled = SearchDiagnostics.setEnabledForTesting(true)
     }
 
     override func tearDownWithError() throws {
-        SearchDiagnostics.enabled = originalEnabled
+        SearchDiagnostics.setEnabledForTesting(originalEnabled)
         SearchDiagnostics.setDirForTesting(originalDir)
         try? FileManager.default.removeItem(at: tmpDir)
         try super.tearDownWithError()
+    }
+
+    func testDirectoryOverrideCreatesOnlySelectedDirectoryOnWrite() {
+        let selected = tmpDir.appendingPathComponent("selected")
+        SearchDiagnostics.setDirForTesting(selected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selected.path))
+        SearchDiagnostics.dumpVariant(data: Data("private".utf8), host: "example.sudrf.ru")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: selected.path))
+        XCTAssertEqual((try? FileManager.default.contentsOfDirectory(atPath: selected.path))?.count, 1)
     }
 
     func testDumpVariantWritesFile() {
@@ -121,7 +129,7 @@ final class SearchDiagnosticsTests: XCTestCase {
     }
 
     func testToggleDisables() {
-        SearchDiagnostics.enabled = false
+        SearchDiagnostics.setEnabledForTesting(false)
         SearchDiagnostics.dumpVariant(data: Data([0x3C, 0x68, 0x74, 0x6D, 0x6C, 0x3E]),
                                  host: "x.sudrf.ru")
         let files = (try? FileManager.default.contentsOfDirectory(

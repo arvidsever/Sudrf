@@ -1,0 +1,113 @@
+{
+  "checkedDate": "2026-10-10",
+  "kind": "live-native-client",
+  "limit": 3,
+  "sourceBaseHEAD": "fda4833ddb59438b9719b70c8d74f3a85d2808f7",
+  "sourceManifestSHA256": "a247ab2b94a5b9f8501a0c22222e3b4803c8268c9ec5a9687c8091e9e58b3e62",
+  "privateReferenceSHA256": "ee50369621b1b051e5247140837bac102dc8b4fbdf77dc550c86b32cf30746a9",
+  "runs": [
+    {
+      "attempt": 1,
+      "privateReportSHA256": "0eb8b28eed947b68a86d4f5d274485e07234dd12063628dacf19b7fccbc79d8e",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:53:41Z",
+          "reference": "A",
+          "startedAt": "2026-10-10T12:53:12Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 4,
+          "savedActCount": 0
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:53:56Z",
+          "reference": "B",
+          "startedAt": "2026-10-10T12:53:41Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 0,
+          "savedActCount": 0
+        }
+      ],
+      "privateFileCount": 19
+    },
+    {
+      "attempt": 2,
+      "privateReportSHA256": "0c810c9489cd0ed2bfef7e8e8d29b4ce0816269ab43e1072a83397c2afe4f99d",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:54:52Z",
+          "reference": "A",
+          "startedAt": "2026-10-10T12:54:21Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 4,
+          "savedActCount": 0
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:55:13Z",
+          "reference": "B",
+          "startedAt": "2026-10-10T12:54:52Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 0,
+          "savedActCount": 0
+        }
+      ],
+      "privateFileCount": 19
+    },
+    {
+      "attempt": 3,
+      "privateReportSHA256": "30f3216f62315c70a7e4d441f8dd46bcfadd3b8a674f931b65037ff8f5cf9701",
+      "results": [
+        {
+          "completedStages": [
+            "captchaRecognized",
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:55:50Z",
+          "reference": "A",
+          "startedAt": "2026-10-10T12:55:42Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 4,
+          "savedActCount": 0
+        },
+        {
+          "completedStages": [
+            "uidDiscovery"
+          ],
+          "errorType": "LiveFailure",
+          "finishedAt": "2026-10-10T12:55:54Z",
+          "reference": "B",
+          "startedAt": "2026-10-10T12:55:50Z",
+          "status": "incomplete",
+          "savedInstanceCount": 1,
+          "savedEventCount": 0,
+          "savedActCount": 0
+        }
+      ],
+      "privateFileCount": 19
+    }
+  ],
+  "fullAcceptancePassed": false
+}

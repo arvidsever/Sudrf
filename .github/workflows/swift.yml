@@ -77,6 +77,16 @@ jobs:
       - name: Build CLI product
         run: swift build --product sudrf-cli -Xswiftc -strict-concurrency=complete
 
+      - name: Run isolated issue 241 fixture before AppKit tests
+        run: |
+          set -o pipefail
+          swift test -Xswiftc -strict-concurrency=complete --filter Issue241AcceptanceTests 2>&1 | tee "$RUNNER_TEMP/issue-241-tests.log"
+          grep -F "Test Suite 'Issue241AcceptanceTests' passed" "$RUNNER_TEMP/issue-241-tests.log"
+          grep -F -- "-[SudrfAppTests.Issue241AcceptanceTests testFlappingCassationSearchAndCardPreserveCacheThenRecoverAfterCaptchaRejection]' passed" "$RUNNER_TEMP/issue-241-tests.log"
+          if grep -E "Issue241AcceptanceTests.*skipped|Test skipped" "$RUNNER_TEMP/issue-241-tests.log"; then
+            exit 1
+          fi
+
       - name: Run tests
         run: swift test -Xswiftc -strict-concurrency=complete
 

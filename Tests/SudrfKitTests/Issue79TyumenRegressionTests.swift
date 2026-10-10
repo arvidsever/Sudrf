@@ -64,7 +64,7 @@ final class Issue79CanonicalResponseURLTests: XCTestCase {
     private var session: URLSession!
     private var diagnosticsDir: URL!
     private var originalDiagnosticsDir: URL!
-    private var originalDiagnosticsEnabled = false
+    private var originalDiagnosticsEnabled: Bool?
 
     private let court = Court(
         domain: "legacy--tum.sudrf.ru",
@@ -93,13 +93,12 @@ final class Issue79CanonicalResponseURLTests: XCTestCase {
             .appendingPathComponent("Issue79CanonicalResponseURLTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: diagnosticsDir, withIntermediateDirectories: true)
         originalDiagnosticsDir = SearchDiagnostics.setDirForTesting(diagnosticsDir)
-        originalDiagnosticsEnabled = SearchDiagnostics.enabled
-        SearchDiagnostics.enabled = true
+        originalDiagnosticsEnabled = SearchDiagnostics.setEnabledForTesting(true)
     }
 
     override func tearDownWithError() throws {
         session.invalidateAndCancel()
-        SearchDiagnostics.enabled = originalDiagnosticsEnabled
+        SearchDiagnostics.setEnabledForTesting(originalDiagnosticsEnabled)
         SearchDiagnostics.setDirForTesting(originalDiagnosticsDir)
         try? FileManager.default.removeItem(at: diagnosticsDir)
         CanonicalResponseURLStub.reset()
@@ -116,7 +115,7 @@ final class Issue79CanonicalResponseURLTests: XCTestCase {
         let client = SudrfClient(
             session: session,
             minInterval: 0,
-            variantStore: WorkingVariantStore(),
+            variantStore: WorkingVariantStore(cacheURL: nil),
             captchaStore: tokenStore
         )
         await client.setMaxAttemptsForTesting(1)
@@ -141,7 +140,7 @@ final class Issue79CanonicalResponseURLTests: XCTestCase {
         let client = SudrfClient(
             session: session,
             minInterval: 0,
-            variantStore: WorkingVariantStore(),
+            variantStore: WorkingVariantStore(cacheURL: nil),
             captchaStore: CaptchaTokenStore()
         )
         await client.setMaxAttemptsForTesting(1)
@@ -172,7 +171,7 @@ final class Issue79CanonicalResponseURLTests: XCTestCase {
         let client = SudrfClient(
             session: session,
             minInterval: 0,
-            variantStore: WorkingVariantStore(),
+            variantStore: WorkingVariantStore(cacheURL: nil),
             captchaStore: tokenStore
         )
         await client.setMaxAttemptsForTesting(1)

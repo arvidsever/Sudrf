@@ -1,0 +1,335 @@
+# #241 — приёмка обновления 3 КСОЮ
+
+## Подготовка нового изолированного цикла — 10 октября 2026 года
+
+Согласованы отдельные `CaptchaSettings` и `CaptchaTokenStore`, изолированный
+transfer-directory, cookies, диагностика и права private evidence directory.
+Клиент использует ephemeral session и `WorkingVariantStore(cacheURL: nil)`;
+один private token store передаётся клиенту и обоим `RefreshCenter`.
+Настройки создаются в отдельном UserDefaults suite. Resolver каталога получает
+тот же клиент и `cacheURL: nil`; `MovementService` получает его через существующий
+`transferCourts`. Штатные правила targets, known cards, branch и UID сохранены.
+
+Когда переданы service/enforcement closures, `RefreshCenter` не создаёт
+неиспользуемые московский, magistrate, Treasury и FSSP клиенты. VSRF заменён
+провайдером, завершающим неожиданный вызов ошибкой. Обычные defaults сохранены.
+`SearchDiagnostics` создаёт выбранную папку только при записи; private override
+enabled исключает чтение общей настройки. OCR log, failures и candidates уже
+направлены в private run directory. Output root и run directory проверяются на
+права `0700` до обращений к источникам.
+
+Профильная локальная проверка выполнена без live opt-in:
+
+```sh
+swift test --disable-sandbox -Xswiftc -strict-concurrency=complete --filter 'Issue241AcceptanceTests|Issue241LiveAcceptanceTests|SearchDiagnosticsTests'
+```
+
+Результат: 10 XCTest, один штатный пропуск live, 0 ошибок. Из них восемь
+проверяют диагностику (включая создание только выбранного каталога при записи),
+один — синтетическое восстановление #241. Лог —
+`/private/tmp/sudrf-241-isolation-profile.log`, SHA-256:
+`edea9ef4e14cbd6a9afe359a30ab8c5a8b198228495319470feb9c3f02bc27ed`.
+После усиления проверки прав output root финальный live harness отдельно
+пересобран с теми же concurrency flags и фильтром `Issue241LiveAcceptanceTests`:
+один штатный пропуск, 0 ошибок, сетевых запросов не было. Лог —
+`/private/tmp/sudrf-241-final-harness-build.log`, SHA-256:
+`9aa28bcb923e2b2addfde4334ac32a0a9b368506b99039d8e976c50223d0ffa0`.
+Это не выполнение private-path или живых ветвей opt-in профиля.
+
+Независимый review восьми изменённых файлов не обнаружил блокирующих замечаний.
+Пользователь явно согласовал сетевую область: «Штатный справочник и опубликованные
+связанные карточки». Разрешён новый цикл не более трёх последовательных прогонов
+с остановкой при полном успехе, без подмены параметров ссылок. Этот цикл выполнен;
+после третьей попытки новые обращения не выполняются.
+
+### Новый живой цикл — 10 октября 2026 года
+
+[Санитизированные результаты](live-2026-10-10.json) относятся к трём отдельным
+прогонам с 15:53:12 до 15:55:54 по Москве. База исходников —
+`fda4833ddb59438b9719b70c8d74f3a85d2808f7` с рассмотренным локальным diff;
+SHA-256 private manifest файлов —
+`a247ab2b94a5b9f8501a0c22222e3b4803c8268c9ec5a9687c8091e9e58b3e62`.
+Модели numeric и numeric-specialist сверены с tracked manifest этой ветки;
+хеш минимальных references совпал с прежним. Каталог результатов имеет права
+`0700`, логи создавались с `umask 077`; исходники ответов остаются локально.
+
+В каждом прогоне A прошёл распознавание CAPTCHA и обнаружение по УИД,
+B — обнаружение по УИД. Ни один не прошёл `completeRefresh`: после частичного
+обновления A имеет четыре события без актов, B — без движения и актов.
+Фактические ссылки выдачи использовались без замены параметров. Это не
+приёмка карточки, опубликованного уголовного акта, повторного полного
+обновления или дискового открытия успешного живого снимка.
+
+Дополнительные диагностические GET, выполняемые harness после отказа,
+по-прежнему отделены от исходных ответов refresh. Причина неполного ответа
+этим результатом не установлена. После трёх попыток сетевой цикл остановлен;
+активных тестовых процессов не осталось. #241 остаётся открытой, PR #404 —
+draft; версия и выпуск не назначаются. Рабочая база, настройки установленного
+приложения и TestFlight не использовались. Прежние отчёты ниже сохранены.
+
+### Final offline verification before commit - 10 October 2026
+
+Live opt-in and private-path environment variables were explicitly removed.
+The focused profile executed 10 XCTest: synthetic acceptance and eight diagnostic
+checks passed; the live method was skipped as expected, with no failures.
+The full offline suite passed: 2038 XCTest, 23 expected skips, 0 failures;
+28 Swift Testing, 0 failures. Python gate: 26 tests, 6 skips, 0 failures.
+The legal-deadline registry is current.
+
+The Xcode project was regenerated and the local Debug app build passed without
+launching. All three bundled models and FSSP eligibility match their tracked
+manifests. DI preserves existing defaults; the live service retains targets,
+known cards, base level, branch and UID with its own resolver. #262 baseline
+and journal assertions were preserved.
+
+All three safe reports match private evidence hashes, stages, timestamps, status,
+instance/session/act counts and file counts. Private directories have mode 0700.
+This verifies the report of three partial results; full live acceptance remains
+unpassed. No new court requests were made. Main localization was read for its
+hash only and was not edited. Hosted current-commit CI remains a separate gate.
+
+Isolation boundary for the full suite: it used the ordinary XCTest process,
+without intercepting UserDefaults.standard or replacing its home directory.
+CalendarDeadlineVisualTests and the #128/#372 visual methods were skipped at
+their opt-in guards before preference writes. SearchDiagnosticsTests uses the
+private diagnostic override; SudrfClientCaptchaTests still reads and writes the
+standard diagnostic toggle, restoring its prior Bool in teardown, which does
+not restore a previously absent key. Other full-suite standard preference
+accesses were not exhaustively audited. The statement about no installed app
+settings use describes the three isolated live runs, not this full suite.
+
+Follow-up audit of direct standard preference accesses (before any full rerun):
+
+- ActPresentationTests/testRapidSelectionUsesExactStoredSnapshotEndToEnd and
+  CorrectivePassTests/testBootstrapPublishesReadyOnlyAfterPreparedContainerArrives
+  executed and save/restore the original onboarding object or key absence.
+- MyCasesModelTests/testDeleteCollectionKeepsCasesAndRefreshesCounters and
+  testRefreshCallbackRemapsOpenedAliasToSurvivor executed and restore their
+  original collection/feed/onboarding objects or absent keys.
+- CaseLifecyclePresentationCacheTests' four direct-default methods executed;
+  their onboarding and repair-completion object restoration is explicit.
+- CaseOpeningSeenStateTests uses isolateFeedDefaults with deferred restoration
+  of original feed/material/collection objects or key absence.
+- CalendarMonthViewTests temporarily modifies the argument volatile domain and
+  restores that domain. Its native tests create and close XCTest-owned windows
+  and activate NSApplication, so a blanket claim of no UI is not supported.
+  The standalone installed Sudrf app was not launched by these commands.
+- The opt-in calendar/#128/#222/#372/private-complaint visual methods and opening
+  benchmark were skipped before preference writes.
+- Issue79CanonicalResponseURLTests had the same pre-existing diagnostic Bool
+  restoration gap as SudrfClientCaptchaTests. Both now use the existing private
+  diagnostic override. Their fixture clients now use cacheURL:nil and own token
+  stores, avoiding the previous shared working-variant cache path.
+
+The previously recorded full-suite pass predates these final test-only fixes.
+No normal user preferences or caches were restored without a known baseline.
+No full suite was repeated after discovering these boundaries. Independent
+Astra review of the final three-file isolation diff passed; current-SHA hosted
+gates remain pending for this follow-up.
+
+The final private Kit profile executed 15 tests (8 diagnostics, 4 captcha
+client, 3 canonical-response URL), all passed. Log: `/private/tmp/sudrf-241-diagnostic-isolation-private-followup.log`,
+SHA-256 `31defa76ab8049d08b71d482bff40acb40d27dce973afae729e52c019434a496`.
+
+Verification logs (SHA-256):
+- `/private/tmp/sudrf-241-final-offline-profile.log`: `0f00bd43b4281481c863d0219d83be00ee5003a5ddfca1b3d86919431a40181a`.
+- `/private/tmp/sudrf-241-final-offline-full.log`: `5e7bc26298cbc6cde76c65e430a259c4cb49ee6000a0243a217e98335962dcde`.
+- `/private/tmp/sudrf-241-final-script-tests.log`: `9e02bbb429e8c5e1a83534f3649827ef28e6bde8e7d1bcef8675297c42412544`.
+- `/private/tmp/sudrf-241-final-xcodebuild.log`: `802feeb95202d9903e3d17c323d17fc4e0c4ca6e3ee40b0869c61cdda44f1b04`.
+
+## Возобновление 8 октября 2026 года
+
+Существующая ветка PR #404 обновлена на `origin/main` `836bea9`, версия 0.62.9 (246). В Xcode подтверждена запущенная собственная сборка этой версии; распознавание CAPTCHA в её консоли не является доказательством получения карточки или акта.
+
+Прежние временные файлы и предоставленная копия базы больше не доступны. Минимальные references восстановлены из истории прежней проверки; SHA-256 точно совпал с ранее зафиксированным `ee50369621b1b051e5247140837bac102dc8b4fbdf77dc550c86b32cf30746a9`. Рабочий контейнер и TestFlight не использовались. Проведены **три** свежих живых прогона; после третьего обращения к суду прекращены.
+
+Проверки адаптированы к #262: события старого журнала сохраняются, доступный районный суд может получить подтверждённую базу при отказе 3 КСОЮ, а кассационная база появляется только после полного подтверждения. Повторная живая загрузка теперь использует заново открытое дисковое хранилище. Проверки исполнения отключены через существующие seams; опубликованный акт уголовного reference обязателен. Существующий каталог `run-N` повторно использовать нельзя.
+
+В отчёте отдельно фиксируются этапы CAPTCHA, поиска, полного refresh, движения/акта, дискового открытия и повторного обновления. Точная обнаруженная ссылка и partial-движение сохраняются только локально. Дополнительный диагностический GET явно помечен в имени файла; его декодированный HTML не является исходным ответом неудачного refresh и не выдаётся за сетевые байты.
+
+Локальная синтетическая проверка после адаптации прошла: 2 теста, 1 ожидаемый пропуск live, без ошибок. Полный локальный набор: **1952 XCTest (21 штатный пропуск) и 28 Swift Testing, 0 ошибок**. SHA-256 полного лога: `68c5c33b104b0a7bf70bd92c896e7d9171af11c1960592e88baf563f1fea07df`. Registry актуален; проект пересоздан, собственная Xcode 27.0 (27A266a) Debug-сборка прошла без запуска приложения. Числовая и specialist модели в собранном приложении совпадают с tracked manifest. Независимый review обновлённых проверок не обнаружил блокирующих замечаний. Локализация основной копии сохранена (SHA-256 `5ee47f8aae21f13328d59468f0495c0c43019ab103310a44f3916594928440d7`). CI обновлённого SHA проверяется в PR #404; живой gate остаётся незавершённым.
+
+### Свежие живые результаты
+
+[Санитизированные отчёты и хеши](live-2026-10-08.json) фиксируют три прогона 8 октября 2026 года: с 22:54:23 до 22:59:01 (Москва). Во всех обычный поиск по УИД нашёл оба ожидаемых производства; фактические параметры ссылок не подменялись.
+
+| Reference | Результат всех трёх прогонов |
+| --- | --- |
+| A · КоАП | Частичный refresh; сохранены четыре события, без текста акта. Дополнительный GET возвращает собственную карточку с ожидаемыми номером, УИД и разделом движения. Полнота остальных запросов этого суда не подтверждена. |
+| B · уголовное | Частичный refresh; движение и акт не получены. Дополнительный GET точной ссылки выдачи возвращает общий каркас сайта, без ожидаемых реквизитов, раздела движения и акта. |
+
+У B выдача вновь использует `delo_id=4&new=2450001`. Это параметр фактической ссылки; он не исправлялся на сохранённое старое значение. Дополнительный GET не доказывает содержимое исходного ответа refresh. Маркера техработ в дополнительных ответах нет; причина уголовного сбоя не устанавливается как дефект парсера или конкретного параметра без соответствующего доказательства.
+
+Живой gate **не пройден**. Перезапуск и повторный успешный refresh с живыми движением и актом не проверены, потому что исходное полное обновление не состоялось. Синтетические проверки и собственная сборка не заменяют этот критерий. #241 остаётся открытой, PR #404 — draft, выпуск не назначается.
+
+### Отдельная находка для плана исправления
+
+В `MovementService.courtForUIDRegistration` региональный суффикс домена проверяется до ветки совпадающего суда. `CourtDirectory.regionCode(forDomain: "3kas.sudrf.ru")` возвращает `nil`, поэтому строка UID-выдачи с заполненным названием суда будет отклонена даже при ссылке на этот же 3 КСОЮ. Такая ошибка способна пометить суд как partial. Это установленное по коду условие отказа; исходный ответ UID-регистраций текущего прогона не сохранён, поэтому причиной наблюдаемого отказа A оно **не объявляется**.
+
+Отдельное исправление требует синтетической регрессии собственной регистрации односегментного суда и переноса проверки регионов в ветку перехода между разными судами. Проверки ID карточки, картотеки и названия суда должны сохраняться. Расширение `r_juid` и изменение производственного кода в этот приёмочный PR не включены; план исправления подлежит отдельному согласованию.
+
+## Граница доказательств
+
+Проверка выполняется 4 октября 2026 года на ветке от main 0.61.8 (234). Производственный код, UI, API и схема хранилища не меняются.
+
+Пользователь согласовал разделение: успешные поиск по УИД, карточка и опубликованный акт проверяются на живом сайте; техработы и отказ CAPTCHA воспроизводятся отдельной изолированной регрессией через штатный клиент. Искусственные ответы не подтверждают состояние портала.
+
+Из предоставленной копии SQLite read-only извлечены минимальные private references A (КоАП) и B (уголовное). Эти данные не доказывают нынешнюю доступность. Номера, УИД, точные адреса, участники, оригинальные тексты, cookies и CAPTCHA-токены в публичные материалы не включаются. Рабочий контейнер, TestFlight и production-приложение не открываются.
+
+## Воспроизводимость
+
+Обычный запуск тестов не обращается в сеть: `Issue241LiveAcceptanceTests` требует `SUDRF_241_LIVE=1`. Дополнительно нужны абсолютные пути `SUDRF_241_REFERENCES` (private JSON двух references), `SUDRF_241_OUTPUT` (private каталог), `SUDRF_241_MODEL_DIR` (те же проверенные артефакты numeric и numeric-specialist, что пакетируются приложением), и `SUDRF_241_ATTEMPT` от 1 до 3. У reference поля: `label`, `uid`, `cartotekaID`, `number`, `requiresAct`. Реальные значения не публикуются. SHA-256 минимального private reference JSON: `ee50369621b1b051e5247140837bac102dc8b4fbdf77dc550c86b32cf30746a9`.
+
+Тест сначала выполняет обычный поиск по УИД, без known card кассации. Только после однозначного совпадения создаёт изолированную запись производства 3 КСОЮ по фактической ссылке выдачи; `RefreshCenter` и `MovementService` сохраняют движение/акт, затем повторяют обновление и проверяют дисковое открытие и существующую модель панели актов. Это проверка источника 3 КСОЮ, а не живой обход всех нижестоящих судов.
+
+Сохраняются штатные интервалы, три попытки и паузы клиента. Используются временные cookies, неперсистентный кэш вариантов и процессный CAPTCHA-store. Native Vision/CoreML providers и `AutoCaptchaSolver` выполняются без браузера и ручного ввода, журналы и HTML-диагностика перенаправлены в private каталог. Порог уверенности не снижается. HTML успеха сохраняется как декодированный UTF-8, не выдаётся за исходные сетевые байты. Старые диагностические данные приложения не читаются.
+
+Private результаты включают время, число событий/актов и SHA-256 сохранённого движения. `report.json` не содержит reference или CAPTCHA-токенов; приватные ошибки, декодированный HTML и движение остаются локально. В CI нужны только синтетические тесты, live-тест пропускается.
+
+## Результаты
+
+Живой gate **не пройден**. Выполнены три прогона; дополнительных обращений после исчерпания лимита не было. #241 остаётся открытой. Последовательный успех поиска, карточки, движения и опубликованного акта не подтверждён.
+
+Первый подготовительный запуск выявил ошибку настройки test reference A и отсутствие app-bundle моделей в XCTest-процессе для B. CAPTCHA не была решена Vision fallback. Исправлены только параметры тестовой проверки: текущая картотека A и явные пути к проверенным release-моделям. Это не установленная регрессия производственного солвера и не успешная приёмка.
+
+### Живые результаты
+
+- Прогон 1: A — ошибка параметра тестового reference, до сетевой проверки; B — CAPTCHA не решена без release-моделей. Подготовительный прогон, не доказательство дефекта приложения.
+- Прогон 2: штатный CoreML-солвер принял ответ; обычный поиск нашёл оба ожидаемых производства. Обновление A сохранило четыре события, но результат остался partial; конфигурация ещё допускала обращение к ВС РФ. У B подробное движение/акт не получены. Этот прогон не принимается за завершённую проверку.
+- Прогон 3, проверка ограничена 3 КСОЮ: A — после авто-решения повторный поиск вновь потребовал CAPTCHA; B — поиск нашёл нужную строку, но штатный refresh сохранил partial с неполным источником 3 КСОЮ, без подтверждённых событий и текста акта. Полный успех отсутствует.
+
+Дополнительное наблюдение по B: live-выдача вернула `delo_id=4&new=2450001`, а в предоставленной копии у той же карточки сохранено `delo_id=2450001&new=2450001`; `case_id` и `case_uid` совпадают. Это проверенная разница адресов, но не доказательство ошибки первого URL: исходный ответ этого GET не сохранён. Не выполнялись замена параметров или новый сетевой прогон.
+
+Причина неполного ответа B не установлена по свежему исходному HTML. Нельзя объявлять это maintenance, ошибкой параметров ссылки или регрессией парсера. Тестовые настройки изменены, производственный код не изменён. Автоматические сценарии искусственных перебоев отделены от этих результатов.
+
+Время прогона 3: A — 4 октября 2026 года, 16:01:30–16:01:52 (Москва); B — 16:01:52–16:02:16. Private отчёт содержит исходные UTC timestamps. Успешные диагностические HTML-снимки карточек отсутствуют: проверка не дошла до подтверждённого успеха карточки.
+
+### Хеши private отчётов
+
+Хеш относится только к локальному отчёту результатов, не к свежему исходному HTML суда.
+
+- Прогон 1, SHA-256: `c06a30468b0956ee2ca3023075636fbbbfce2e6a324790cf7f3b2050fafcb06d`.
+- Прогон 2, SHA-256: `a1188391a13d9fb63d6c2af1f497a765ff0412c9342af1d500279bb83832639c`.
+- Прогон 3, SHA-256: `fb9cb5f6d801fa44a6aa170fc61974a46492dd4d3a3aa757ce44b71b0c555595`.
+
+## Локальные проверки
+
+Синтетическая сквозная проверка использует штатные `SudrfClient` → `MovementService` → `RefreshCenter` и временный дисковый store. Подменены только HTTP-ответы через `URLProtocol`; другие порталы и автоматическая проверка исполнения выключены. Отдельно закреплены:
+
+- три ответа техработ выдачи; при отказе найденной карточки и fallback к уже сохранённой — по три попытки на тот же URL: прежние движение, текст акта, snapshot, TTL полного успеха, прочитанность, подборка, пользовательский срок и журнал сохраняются;
+- отклонённый код инвалидируется отдельно от maintenance и попадает в очередь CAPTCHA; кэш и пользовательские данные защищены;
+- выдача и точная карточка независимо проходят «техработы → техработы → успех» на одинаковых URL, после чего время полного успеха продвигается;
+- повторное дисковое открытие сохраняет сами события движения, связь акта с карточкой, точный URL и текст в модели панели; успешное восстановление и повторное обновление не создают дубли карточки, акта или старых событий журнала.
+
+Синтетические номера и HTML созданы для регрессии и не выдаются за ответы двух живых примеров. Начальный cached instance содержит точную ссылку, доказательства карточки, ранее известное заседание и согласованные `actID`/`actIDs`, как современная модель; миграция legacy связей не является предметом этого теста. Начальный порядок карточек вычислен штатным `registrationOrder`. Первый live-поиск, в отличие от проверки сохранённой цепочки, не использует известную кассационную карточку.
+
+Профильный набор: **158 тестов, 1 штатный пропуск live-проверки, 0 ошибок**. Полный набор: **1861 тест, 13 штатных пропусков, 0 ошибок**. Эти прогоны предшествуют последнему усилению проверки дискового движения и согласованию синтетического seed; окончательная сквозная проверка повторена отдельно, весь набор финальной редакции проверяется CI. Логи остаются локально. SHA-256 полного локального лога: `fdd9dec88658669df7cfd3966845917c8e4b61e38c309bce3e81f6004d00eb7c`.
+
+Окончательный сквозной прогон: **2 теста, 1 ожидаемый пропуск live, 0 ошибок**. Тест с подменёнными ответами завершён, живой тест без opt-in пропущен; новых обращений к сайту не было.
+
+Генератор registry `--check` актуален. Проект пересоздан; собственная Xcode 27 Debug-сборка main 0.61.8 (234) с тестовыми изменениями прошла (`BUILD SUCCEEDED`), без запуска приложения. Локализация основной копии сохранена. Независимый review проверил изоляцию, сохранность и отсутствие ложного live-успеха; финальный CI отслеживается в [draft PR #404](https://github.com/arvidsever/Sudrf/pull/404). Успех этих автоматических проверок не закрывает живой gate.
+
+## Проверка rebase и изоляции — 10 октября 2026 года
+
+Ветка обновлена на `origin/main` `bd06f4ef19922f311ece19df3167296a80d26756`.
+Проверенный исходный код — `50fd6838e4bed5dc978fa758371d3034f9b754cc`.
+Конфликты затрагивали только строку #241 в roadmap: сохранены результаты
+трёх попыток 8 октября и отдельная уже слитая регрессия собственной регистрации
+суда. Исторические QA-материалы и `live-2026-10-08.json` сохранены.
+Производственный код и локализация не менялись.
+
+Выполнена только компиляция `swift build --build-tests`: успешна,
+1,03 секунды, тесты этой командой не исполнялись. Лог
+`/private/tmp/sudrf-241-rebased-compile.log`, SHA-256 `4505823f29e861e152633f1cc0ba15d5e1c9d0ed44e07f8b24de76638b7cb6d2`.
+До уточнения compile-only gate был начат отдельный запуск точного live-теста
+с явно удалённым `SUDRF_241_LIVE`. Он завершился на первом guard:
+0 успешных проверок, 1 штатный пропуск, 0 ошибок, 0,001 секунды.
+Это проверка выключенного opt-in, не офлайн-приёмка и не live-успех.
+Лог `/private/tmp/sudrf-241-disabled-optin.log`, SHA-256 `6b842a83c92a58a74ac784482a5f47152d756a9acf2b2ec3a65ff12a7840c9a6`.
+Живой код после guard, solver и сетевые обращения не выполнялись.
+
+Аудит не разрешает запуск текущего офлайн-профиля при строгой изоляции:
+
+- `SearchDiagnostics.setDirForTesting` инициализирует default directory,
+  создающий стандартную папку `Application Support/Sudrf/diagnostics` до подмены.
+  Нужна уже подготовленная в #339 ленивая инициализация; производственное
+  исправление в эту ветку не дублировалось.
+- `ctx.makeService(client:)` оставляет default transfer-directory resolver;
+  для исполнения нужны явные fixture-backed `transferCourts`, а не глобальная
+  подмена всех HTTP-запросов. Временный ephemeral fixture-client, variant store
+  и дисковый test store уже присутствуют. Неожиданные запросы клиента
+  перехватываются, но это не изолирует отдельно созданные клиенты directory resolver.
+- Офлайн-тест не создаёт solver, поэтому OCR не нужен. В live-профиле пока
+  используются `CaptchaSettings.shared` и `CaptchaTokenStore.shared` с очисткой
+  домена; нужны собственные suite settings и token store (существующие seams).
+  Temp logger уже есть. Необходимы явные bundle/NSApp guards и private permissions
+  evidence-каталога/файлов перед будущим запуском.
+
+Live-профиль дополнительно выполняет отдельный diagnostic GET после неуспешного
+refresh и после успеха. Он не является исходным ответом неудачного refresh.
+Новая попытка этим аудитом не разрешена: три живых прогона 8 октября исчерпаны.
+Зависимость от #339 и test-only изоляция должны быть отдельно проверены до
+следующего runtime gate; production API/seams в этой ветке не менялись.
+
+По чтению текущего исходного кода #434 сохраняет отсутствующие акты только
+для совпавшей точной карточки, уровня и совместимой картотеки; свежие тексты
+и конфликтующие публикации не заменяются кешем. Соответствующие регрессии
+`MovementCachePolicyTests` присутствуют в main. В тесте #241 сохранены проверки
+#262: недоступный суд не получает confirmed baseline, восстановленный получает
+собственную baseline, повторный refresh и disk reopen не повторяют исходные
+события. Это статическая проверка наличия требований, не новый runtime-результат
+#434/#262 или разрешение на более свободное слияние кеша.
+
+Полный набор и офлайн-сценарий #241 не исполнялись. Живые критерии остаются:
+подтверждённые поиск по УИД, точная карточка, непустое движение, связанный
+опубликованный акт для reference B, полное обновление, повторное полное
+обновление и точное дисковое открытие без потери актов/журнала. Новые запросы,
+рабочая база, приложение, UI и TestFlight не использовались.
+
+### Подготовка test-only изоляции
+
+После аудита добавлены entry guards в offline и opt-in live методы: production
+bundle отклоняется, наличие `NSApp` даёт пропуск до каталогов, settings и clients.
+Оба offline service builder теперь создают `MovementService` по тем же параметрам
+`MovementContext`: expanded higher domains, exact targets либо штатный target
+builder, known cards, base level, УИД и branch. Единственная дополнительная
+граница — actor-backed `transferCourts`: любой вызов завершает тест ошибкой
+и бросает ошибку, не возвращая выдуманный пустой список. Default directory
+resolver в offline service больше не создаётся.
+
+HTTP fixture contract ограничен GET по HTTPS `/modules.php` без credentials
+или явного port, двумя существующими synthetic hosts, `name=sud_delo` и
+операциями `sf`/`r`/`case`. Для `case` проверяются опубликованные fixture
+case ID, GUID, register, `new` и server instance каждого из двух hosts.
+Неизвестный URL, host, операция, locator или метод дают `XCTFail` и transport
+error; прежний общий ответ «данных нет» удалён. Разрешённые hosts и операции
+не расширены. Существующие assertions #262/#434 не ослаблялись.
+
+Выполнена только `swift build --build-tests`: успешно, 2,60 секунды,
+без warnings/errors. Выполненных сценариев — 0; runtime-проверка ограничений
+в этой редакции не заявляется. Лог `/private/tmp/sudrf-241-isolation-prep-compile.log`,
+SHA-256 `536aeffda897d82fd094b9f43d51a16692b802107cc94ffec927d8d3df044e6e`. Production-файлы не менялись.
+
+Ленивая инициализация `SearchDiagnostics` из #339 остаётся зависимостью перед
+offline runtime. В live всё ещё pending собственные suite `CaptchaSettings`,
+`CaptchaTokenStore`, directory providers и private permissions. Эти подмены
+не сделаны через перенос production-кода #339; opt-in/live и solver не запускались.
+Новые network-запросы и запуск приложения отсутствуют.
+
+### Hosted CI и отдельный офлайн gate
+
+CI [38000368648](https://github.com/arvidsever/Sudrf/actions/runs/38000368648)
+на `efd361519040b10cd43f9844f3748ce94bfe80cf` успешен: 2037 XCTest,
+22 пропуска, 0 ошибок; 28 Swift Testing; 26 Python, 6 пропусков, 0 ошибок.
+Оба метода #241 остановились на `NSApp` guard, поэтому выполненных сценариев
+#241 — 0. Этот green не является офлайн- или живой приёмкой задачи.
+Hosted Xcode 26.6 сборка и упаковка прошли; сборка и тесты Xcode 27
+не выполнялись из-за отсутствия SDK на runner. Лог
+`/private/tmp/sudrf-241-ci-38000368648.log`, SHA-256
+`0a9730f4a8944c76a50382abe605d835c60895a385b2bafd993f1a419ad21c81`.
+
+Добавлен отдельный шаг CI с точным офлайн-профилем в новом процессе перед
+полным набором. Шаг требует фактического завершения теста без пропуска;
+guard не ослаблен. Opt-in live-тест не входит в фильтр. Этот шаг выполняется
+на временном hosted runner: локальный runtime по-прежнему ждёт зависимости
+#339. Результат нового шага до запуска CI не заявляется.

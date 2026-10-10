@@ -6,7 +6,7 @@ import SudrfKit
 
 /// In-memory facts only; callers must confirm the outcome of the host's own operation.
 struct SourceHealthState: Sendable {
-    enum Family: String, Sendable {
+    enum Family: String, Codable, Sendable {
         case sudrf, msudrf, mosgorsud, vsrf
 
         func accepts(_ host: String) -> Bool {
@@ -19,7 +19,7 @@ struct SourceHealthState: Sendable {
         }
     }
 
-    struct Fact: Equatable, Sendable {
+    struct Fact: Codable, Equatable, Sendable {
         let host: String
         let family: Family
         let operation: SourceOperation
@@ -27,11 +27,15 @@ struct SourceHealthState: Sendable {
         let observedAt: Date
         let httpStatus: Int?
         let errorCode: Int?
-        let transportCategory: SourceTransportFailureCategory?
         let attemptCount: Int?
+
+        var transportCategory: SourceTransportFailureCategory? {
+            guard kind == .transportFailure, httpStatus == nil, let errorCode else { return nil }
+            return SourceTransportFailureCategory.classify(URLError.Code(rawValue: errorCode))
+        }
     }
 
-    struct HostState: Equatable, Sendable {
+    struct HostState: Codable, Equatable, Sendable {
         var lastObserved: Fact?
         var lastSuccess: Fact?
         var lastError: Fact?
@@ -47,8 +51,7 @@ struct SourceHealthState: Sendable {
         let fact = Fact(host: host, family: family, operation: provenance.operation,
                         kind: attempt.kind, observedAt: provenance.observedAt,
                         httpStatus: provenance.httpStatus.flatMap { (100...599).contains($0) ? $0 : nil },
-                        errorCode: provenance.errorCode.flatMap(Int.init),
-                        transportCategory: attempt.transportFailureCategory,
+                        errorCode: provenance.httpStatus == nil ? provenance.errorCode.flatMap(Int.init) : nil,
                         attemptCount: provenance.attemptCount.flatMap { $0 > 0 ? $0 : nil })
         var state = hosts[host] ?? HostState()
         if state.lastObserved == nil || fact.observedAt > state.lastObserved!.observedAt {
@@ -69,6 +72,41 @@ struct SourceHealthState: Sendable {
             state.lastError = fact
         }
         hosts[host] = state
+    }
+
+    mutating func restore(_ saved: HostState, for candidateHost: String) {
+        guard let host = Self.validatedHost(candidateHost), host == candidateHost,
+              let lastObserved = Self.validated(saved.lastObserved, for: host, slot: .observed) else { return }
+        let state = HostState(
+            lastObserved: lastObserved,
+            lastSuccess: Self.validated(saved.lastSuccess, for: host, slot: .success),
+            lastError: Self.validated(saved.lastError, for: host, slot: .error)
+        )
+        hosts[host] = state
+    }
+
+    private enum FactSlot { case observed, success, error }
+
+    private static func validated(_ fact: Fact?, for host: String, slot: FactSlot) -> Fact? {
+        guard let fact, fact.host == host, validatedHost(fact.host) == host,
+              fact.family.accepts(host), fact.observedAt.timeIntervalSince1970.isFinite else { return nil }
+        let status = fact.httpStatus.flatMap { (100...599).contains($0) ? $0 : nil }
+        let errorCode = fact.httpStatus == nil ? fact.errorCode : nil
+        let attemptCount = fact.attemptCount.flatMap { $0 > 0 ? $0 : nil }
+        switch slot {
+        case .observed:
+            break
+        case .success:
+            guard [.usableSnapshot, .honestZero].contains(fact.kind),
+                  fact.httpStatus.map({ (200...299).contains($0) }) != false,
+                  fact.errorCode == nil else { return nil }
+        case .error:
+            guard [.maintenance, .transportFailure, .parserFailure].contains(fact.kind),
+                  fact.errorCode != URLError.cancelled.rawValue else { return nil }
+        }
+        return Fact(host: host, family: fact.family, operation: fact.operation, kind: fact.kind,
+                    observedAt: fact.observedAt, httpStatus: status, errorCode: errorCode,
+                    attemptCount: attemptCount)
     }
 
     private static func validatedHost(_ raw: String) -> String? {

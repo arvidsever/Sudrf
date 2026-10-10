@@ -5,7 +5,8 @@ import os.log
 /// `Application Support` с ротацией (1 МБ × 3 поколения). Дополнительно
 /// сохраняет PNG-картинки, на которых солвер сдался, в
 /// `captcha-failures/` (≤ 50 файлов, FIFO) — для ручной отладки
-/// точности и регрессий.
+/// точности и регрессий. Candidate-логи в `diagnostics/` также ограничены
+/// 50 файлами по FIFO, включая уже существующие.
 ///
 /// Используется из `RefreshCenter.tryAutoSolve`, `SearchModel.runSearch`,
 /// `AppRouter.beginCaptcha(for:)` и из самого `CaptchaSolver` — для
@@ -26,6 +27,7 @@ public final class CaptchaSolverLog: @unchecked Sendable {
     private let maxBytes: Int = 1_048_576   // 1 MB
     private let maxRotations: Int = 3
     private let maxFailureImages: Int = 50
+    private let maxCandidateLogs: Int = 50
 
     private init() {
         let fm = FileManager.default
@@ -94,8 +96,8 @@ public final class CaptchaSolverLog: @unchecked Sendable {
     /// одной попытки распознавания. Файл пишется в `diagnosticsDir`
     /// (рядом с `failuresDir`). Используется `AutoCaptchaSolver` для
     /// офлайн-разбора: «почему солвер выбрал именно этот текст» и
-    /// «что ещё увидел Vision». Не подлежит FIFO-вытеснению —
-    /// кандидаты это десятки байт, а пользователь сам смотрит папку.
+    /// «что ещё увидел Vision». В папке остаются не более 50 таких
+    /// файлов; самые старые вытесняются, включая существовавшие до обновления.
     @discardableResult
     public func logCandidates(host: String,
                               kind: CaptchaKind,
@@ -122,6 +124,9 @@ public final class CaptchaSolverLog: @unchecked Sendable {
         let payload = (lines.joined(separator: "\n") + "\n").data(using: .utf8) ?? Data()
         do {
             try payload.write(to: url, options: .atomic)
+            evictOldFilesIfNeeded(in: dir, limit: maxCandidateLogs) {
+                $0.lastPathComponent.hasSuffix("_candidates.txt")
+            }
             return url
         } catch {
             osLog.error("failed to write candidates diagnostic: \(error.localizedDescription, privacy: .public)")
@@ -215,21 +220,30 @@ public final class CaptchaSolverLog: @unchecked Sendable {
     }
 
     private func evictOldFailuresIfNeeded(in dir: URL) {
+        evictOldFilesIfNeeded(in: dir, limit: maxFailureImages) {
+            $0.pathExtension.lowercased() == "png"
+        }
+    }
+
+    private func evictOldFilesIfNeeded(in dir: URL, limit: Int, matching predicate: (URL) -> Bool) {
         let fm = FileManager.default
-        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
         guard let entries = try? fm.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else { return }
-        let pngs = entries.filter { $0.pathExtension.lowercased() == "png" }
-        guard pngs.count > maxFailureImages else { return }
-        let sorted: [URL] = pngs.sorted { (lhs: URL, rhs: URL) -> Bool in
-            let l = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let r = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return l < r
+        let files = entries.filter {
+            predicate($0)
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         }
-        let toDelete = sorted.prefix(pngs.count - maxFailureImages)
+        guard files.count > limit else { return }
+        let sorted = files.sorted { lhs, rhs in
+            let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left == right ? lhs.lastPathComponent < rhs.lastPathComponent : left < right
+        }
+        let toDelete = sorted.prefix(files.count - limit)
         for url in toDelete {
             try? fm.removeItem(at: url)
         }

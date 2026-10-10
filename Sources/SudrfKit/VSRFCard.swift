@@ -359,7 +359,8 @@ public enum VSRFSearchParser {
             throw SudrfError.parsing("Неизвестный формат выдачи ВС РФ")
         }
         let results = try VSRFDOM.extractSearchProductions(doc)
-        guard results.allSatisfy(Self.isLinkable) else {
+        let currentRows = VSRFDOM.firstEl(doc, "[class*=CaseStyle_case_item__]") != nil
+        guard results.allSatisfy({ Self.isAdmissible($0, currentRow: currentRows) }) else {
             throw SudrfError.parsing("Строка выдачи ВС РФ не содержит ссылку, номер или ключ привязки")
         }
         guard let total = Self.foundCount(doc) else {
@@ -388,8 +389,15 @@ public enum VSRFSearchParser {
         return nil
     }
 
-    private static func isLinkable(_ result: VSRFProduction) -> Bool {
+    private static func isAdmissible(_ result: VSRFProduction, currentRow: Bool) -> Bool {
         guard result.cardID?.isEmpty == false, result.number?.isEmpty == false else { return false }
+        // A published current row can be read without having enough evidence to
+        // link it to a lower case. VSRFLinkKey still enforces that separate gate.
+        if currentRow && result.cardSection == .claims {
+            guard result.cardID.flatMap(VSRFDOM.currentKind) != nil,
+                  result.cardURL != nil else { return false }
+            if result.uid?.trimmed.isEmpty != false { return true }
+        }
         if JudicialUIDObservation.validity(of: result.uid) == .valid { return true }
         return [result.firstInstance.court, result.firstInstance.caseNumber,
                 result.applicant ?? result.claimants.first]
@@ -471,7 +479,7 @@ enum VSRFDOM {
         }
 
         let uid = meta["уникальный идентификатор дела:"]
-        let kind = kind(header: item, uid: uid, cardID: link?.id)
+        let kind = link.flatMap { currentKind(cardID: $0.id) } ?? .complaint
         return VSRFProduction(
             cardID: link?.id,
             cardSection: link?.section ?? (kind == .complaint ? .appeals : .cases),
@@ -522,6 +530,7 @@ enum VSRFDOM {
     private static func buildCurrentCardItem(_ item: Element) throws -> VSRFProduction {
         guard let title = firstEl(item, "[class*=CaseStyle_cardTitleRow__]"),
               let cardID = currentCardID(in: title),
+              let kind = currentKind(cardID: cardID),
               let number = currentCardNumber(in: title) else {
             throw SudrfError.parsing("В карточке ВС РФ нет проверяемого номера или ID производства")
         }
@@ -529,7 +538,6 @@ enum VSRFDOM {
         let current = currentMetadata(in: item)
         let meta = current.fields
         let uid = meta["уникальный идентификатор дела:"]
-        let kind: VSRFProductionKind = cardID.hasPrefix("12-") ? .caseFile : .complaint
         let complaintDisposition = kind == .complaint && firstEl(item, "[class*=CaseStyle_eventsRow__]") == nil
         var events = try currentCardEvents(in: item, complaintDisposition: complaintDisposition)
         let complaintResult = complaintDisposition ? events.last.map {
@@ -582,7 +590,7 @@ enum VSRFDOM {
     private static func currentCardID(in title: Element) -> String? {
         for anchor in (try? title.select("a[id]").array()) ?? [] {
             guard let id = try? anchor.attr("id"),
-                  let match = id.firstMatch(of: /^(?:anchor)?(12-\d+|21-\d+)(?:-|$)/) else { continue }
+                  let match = id.firstMatch(of: /^(?:anchor)?((?:12|17|21|22)-\d+)(?:-|$)/) else { continue }
             return String(match.1)
         }
         return nil
@@ -786,7 +794,9 @@ enum VSRFDOM {
     private static func searchCardLink(of item: Element) -> (id: String, section: VSRFCardSection?, number: String?)? {
         guard let title = firstEl(item, "[class*=CaseStyle_case_link__]"),
               let href = try? title.attr("href"),
-              let match = href.firstMatch(of: /\/lk\/practice\/(cases|appeals|claims)\/([0-9-]+)/) else { return nil }
+              let url = URL(string: href, relativeTo: URL(string: "https://www.vsrf.ru"))?.absoluteURL,
+              url.scheme == "https", ["vsrf.ru", "www.vsrf.ru"].contains(url.host ?? ""),
+              let match = url.path.firstMatch(of: /^\/lk\/practice\/(cases|appeals|claims)\/([0-9-]+)$/) else { return nil }
         return (String(match.2), VSRFCardSection(rawValue: String(match.1)),
                 clean((try? title.text()) ?? "").nonEmpty)
     }
@@ -931,6 +941,11 @@ enum VSRFDOM {
         let t = clean((try? header.text()) ?? "")
         if t.range(of: "Жалоб", options: .caseInsensitive) != nil { return .complaint }
         return .complaint
+    }
+
+    static func currentKind(cardID: String) -> VSRFProductionKind? {
+        guard let match = cardID.firstMatch(of: /^(12|17|21|22)-\d+$/) else { return nil }
+        return ["12", "17"].contains(String(match.1)) ? .caseFile : .complaint
     }
 
     // MARK: составная ячейка «Суд 1-ой инстанции»

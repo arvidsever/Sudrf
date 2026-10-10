@@ -1,5 +1,36 @@
 # #179 — legacy renderer oracle and event-family journal shadows
 
+## Undated movement projection — 10 October 2026
+
+The accepted judge/production/result rows now have a pure journal projection into
+existing FeedEntry movement rows, without a separate detection label. Dates use
+persisted observedAt, not a fabricated judicial date. The existing 7/45-day
+recent-feed filters remain unchanged; the shadow admits the same inclusive
+0...45-day source window as existing projections. Material numbers and exact
+source navigation use existing row fields and subtitle.
+
+Historical judge/result text uses immutable published evidence even when the
+current exact owner later changes. Production court comes from the current
+proven exact owner (the event evidence has no stored court). Unique event ID,
+source, level and number are required; foreign/ambiguous owners remain unmapped.
+A persisted occurrence origin must match the current record key: legitimate
+reanchor/merged-dossier historical events remain unmapped until explicit alias
+proof exists. This is not full merged-dossier coverage.
+
+Eight isolated pure tests passed without failures/skips: accepted text/date,
+actual existing recent-feed filtering, material source/subtitle, absent/foreign
+evidence, duplicate IDs/foreign origin, independent read/known event-ID marks,
+actual journal repeated-transition occurrence identity and private JSON file
+reopen, and historical values after later owner changes. The reopen test is a
+journal serialization test, not SwiftData dossier/notification integration.
+No shared settings, AppRouter initialization, working store, live transport or
+application launch. Log `/private/tmp/sudrf-179-movement-shadow-final-profile.log`,
+SHA-256 `2c8bfb34e023d68c5bb3c78e7e0cf669c13ec43a0cd06b7741a68a4c824f8f1c`.
+
+Independent Astra review found no blocker for this pure shadow scope. No live
+feed, notifier, badge or mark-store adapter is connected. #454 and the full #179
+downstream gates remain open; current-head CI is a separate pending gate.
+
 ## Current acceptance checkpoint — 10 October 2026
 
 The user has accepted the single reschedule row, sorting by the new hearing date,

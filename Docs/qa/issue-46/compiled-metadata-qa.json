@@ -1,10 +1,10 @@
 {
-  "checkedAtUTC": "2026-10-10T15:16:21.930827+00:00",
-  "baseMain": "7f869f1",
+  "checkedAtUTC": "2026-10-10T15:46:31.297518+00:00",
+  "baseMain": "f0f0d5a",
   "bundleIdentifier": "ru.sudrf.qa.issue46",
   "configuration": "Debug; SUDRF_QA_46; ad hoc own sandbox entitlements",
-  "metadataSHA256": "77337ebe4f34244e0e6b6c418093e9f5c808f7f3a5abeed2303fa606e1bbc872",
-  "buildLogSHA256": "abc64d3680ebc066551ebc29480b75904a5eee41a011a80c57494d2822eae410",
+  "metadataSHA256": "b0dda7acd51a49d32bfef29544a210a9c1d83f6b4e1c83140a55da9a791caf27",
+  "buildLogSHA256": "23dc00d0f0fa4703226d0f34b28591ee673bdb239b7ce39ff6f591d86cdb0169",
   "appLaunched": false,
   "launchBoundary": "First CUA request blocked by locked Mac; no native setup or Shortcuts created",
   "actions": [

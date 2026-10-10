@@ -312,8 +312,7 @@ final class RefreshCenter: ObservableObject {
         self.initialTimerDelay = initialTimerDelay
         self.timerInterval = timerInterval
         self.walkDiagnostics = walkDiagnostics
-        // Локальные копии — чтобы default-замыкания не захватывали self
-        // Default clients are constructed only for the default service path.
+        // Default clients are local captures, created only when no builder is injected.
         if let serviceBuilder {
             self.serviceBuilder = serviceBuilder
         } else {
@@ -700,20 +699,16 @@ final class RefreshCenter: ObservableObject {
                                   source: .bailiffs, attemptedAt: attemptedAt)
             enforcementErrors[key] = nil
         }
-        let documents = record.movement?.executionDocuments ?? []
-        let current = TrackedStore.reconciledEnforcementRecords(
-            existing: previous, updates: [update], courtDocuments: documents)
-        let changed = TrackedStore.enforcementHasUserVisibleChange(
-            previous: previous, current: current, courtDocuments: documents)
-        record.enforcementRecords = current
-        if changed && openedKey?() != key { record.seenAt = nil }
+        let effectiveKey: String
         do {
-            try store.save()
+            guard let persistedKey = try store.applyEnforcementUpdates(
+                forLocator: key, updates: [update], openedKey: openedKey?()) else { return }
+            effectiveKey = persistedKey
         } catch {
             enforcementErrors[key] = Self.persistenceFailureMessage
             throw error
         }
-        onEnforcementRefreshed?(key)
+        onEnforcementRefreshed?(effectiveKey)
     }
 
     private func startEnforcementRefresh(key: String, force: Bool) -> Task<Void, Never>? {
@@ -810,17 +805,11 @@ final class RefreshCenter: ObservableObject {
         // Сеть могла ждать CAPTCHA/throttle, пока ручной поток уже сохранил
         // более свежий результат. Сливаем в актуальное состояние записи, а не
         // в снимок, сделанный до await.
-        let latest = record.enforcementRecords
-        let current = TrackedStore.reconciledEnforcementRecords(
-            existing: latest, updates: updates,
-            courtDocuments: record.movement?.executionDocuments ?? [])
-        let changed = TrackedStore.enforcementHasUserVisibleChange(
-            previous: latest, current: current,
-            courtDocuments: record.movement?.executionDocuments ?? [])
-        record.enforcementRecords = current
-        if changed && openedKey?() != key { record.seenAt = nil }
+        let effectiveKey: String
         do {
-            try store.save()
+            guard let persistedKey = try store.applyEnforcementUpdates(
+                forLocator: key, updates: updates, openedKey: openedKey?()) else { return }
+            effectiveKey = persistedKey
         } catch {
             enforcementErrors[key] = Self.persistenceFailureMessage
             return
@@ -834,7 +823,7 @@ final class RefreshCenter: ObservableObject {
         } else {
             enforcementErrors[key] = errors.joined(separator: "\n")
         }
-        if hasSuccess { onEnforcementRefreshed?(key) }
+        if hasSuccess { onEnforcementRefreshed?(effectiveKey) }
     }
 
     /// Every court row with a searchable identifier belongs to FSSP; Treasury

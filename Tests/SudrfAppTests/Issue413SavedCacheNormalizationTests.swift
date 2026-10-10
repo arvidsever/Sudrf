@@ -267,7 +267,7 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         }?.court, ownCourt)
 
         let firstJournal = try XCTUnwrap(afterFirst.journal)
-        XCTAssertEqual(firstJournal.events, seed.journal.events)
+        XCTAssertEqual(semanticJournalEvents(firstJournal), seed.journal.events)
         let moscowBaseline = try XCTUnwrap(
             firstJournal.semanticBaselines?.courts["mosgorsud|mgs"])
         XCTAssertEqual(moscowBaseline.instances.first { $0.sourceCardID == ownCardID }?.court,
@@ -304,7 +304,7 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         XCTAssertNil(after.movement?.instances.first { $0.sourceURL == ownURL }?.judge)
         XCTAssertEqual(after.seenAt, seenAt,
                        "техническая коррекция без новых фактов не сбрасывает прочитанность")
-        XCTAssertEqual(after.journal?.events, seed.journal.events)
+        XCTAssertEqual(semanticJournalEvents(after.journal), seed.journal.events)
         XCTAssertEqual(after.journal?.events.filter { $0.kind == .judgeChanged }.count, 0)
         XCTAssertEqual(after.journal?.events.filter { $0.kind == .judicialActPublished }.count, 0)
     }
@@ -399,7 +399,7 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
                                                 movement: unconfirmedB)
         XCTAssertEqual(displayOnly.movement?.instances.first { $0.sourceURL == ownURL }?.judge,
                        "Синтетический судья Б.Б.")
-        XCTAssertEqual(displayOnly.journal?.events, seed.journal.events,
+        XCTAssertEqual(semanticJournalEvents(displayOnly.journal), seed.journal.events,
                        "неподтверждённый display update не потребляет semantic transition")
         let retainedBaseline = try XCTUnwrap(displayOnly.journal?.semanticBaselines?
             .courts["mosgorsud|mgs"]?.instances.first { $0.sourceCardID == seed.ownCardID })
@@ -524,7 +524,7 @@ final class Issue413SavedCacheNormalizationTests: XCTestCase {
         XCTAssertEqual(afterRefresh.seenAt, seenAt)
         XCTAssertEqual(afterRefresh.key, seed.key)
         XCTAssertEqual(afterRefresh.logicalCaseID, seed.logicalCaseID)
-        XCTAssertEqual(afterRefresh.journal?.events.map(\.id), seed.journal.events.map(\.id))
+        XCTAssertEqual(semanticJournalEvents(afterRefresh.journal)?.map(\.id), seed.journal.events.map(\.id))
 
         let reopened = try courtActProjection(at: storeURL, key: seed.key)
         XCTAssertEqual(reopened.court, ownCourt)

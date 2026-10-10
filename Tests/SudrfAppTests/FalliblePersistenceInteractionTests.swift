@@ -92,7 +92,7 @@ final class FalliblePersistenceInteractionTests: XCTestCase {
         XCTAssertEqual(router.persistenceError, "Изменения не сохранены. Повторите попытку.")
         let store = try TrackedStore(container: router.modelContainer)
         let key = try XCTUnwrap(router.cases.first?.recordKey)
-        XCTAssertTrue(store.record(forKey: key)?.eventJournal?.events.isEmpty == true)
+        XCTAssertTrue(semanticJournalEvents(store.record(forKey: key)?.eventJournal)?.isEmpty == true)
     }
 
     func testDeadlineConfirmationAndOverrideAppendJournalOnce() throws {
@@ -106,13 +106,13 @@ final class FalliblePersistenceInteractionTests: XCTestCase {
 
         router.confirm(deadline.id)
         router.confirm(deadline.id)
-        XCTAssertEqual(store.record(forKey: key)?.eventJournal?.events.map(\.kind),
+        XCTAssertEqual(semanticJournalEvents(store.record(forKey: key)?.eventJournal)?.map(\.kind),
                        [.deadlineConfirmed])
 
         router.beginEdit(deadline.id)
         router.step(1)
         router.save(deadline.id)
-        XCTAssertEqual(store.record(forKey: key)?.eventJournal?.events.map(\.kind),
+        XCTAssertEqual(semanticJournalEvents(store.record(forKey: key)?.eventJournal)?.map(\.kind),
                        [.deadlineConfirmed, .deadlineChanged])
     }
 

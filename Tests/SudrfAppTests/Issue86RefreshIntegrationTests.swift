@@ -58,7 +58,7 @@ final class Issue86RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(refreshed.snapshot?.statusText, "Оставлено без изменения")
         XCTAssertEqual(refreshed.eventJournal?.derivationVersion,
                        CaseEventJournal.currentDerivationVersion)
-        XCTAssertEqual(refreshed.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(refreshed.eventJournal), [seed])
         XCTAssertEqual(refreshed.collectionNames, ["КоАП"])
 
         let second = await center.refresh(key: record.key)?.value
@@ -70,7 +70,7 @@ final class Issue86RefreshIntegrationTests: XCTestCase {
         XCTAssertNotNil(afterPartial.movement?.instances.first {
             $0.caseNumber == "12-77/2026"
         })
-        XCTAssertEqual(afterPartial.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(afterPartial.eventJournal), [seed])
         let requests = await service.requests()
         XCTAssertEqual(requests, ["5-469/2026", "5-469/2026"])
 
@@ -81,7 +81,7 @@ final class Issue86RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(reopened.all().count, 1)
         XCTAssertTrue(try XCTUnwrap(persisted.snapshot).inForce)
         XCTAssertEqual(persisted.snapshot?.statusText, "Оставлено без изменения")
-        XCTAssertEqual(persisted.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(persisted.eventJournal), [seed])
         XCTAssertEqual(persisted.collectionNames, ["КоАП"])
     }
 

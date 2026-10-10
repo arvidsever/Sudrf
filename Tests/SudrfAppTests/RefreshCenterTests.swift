@@ -2405,7 +2405,7 @@ final class RefreshCenterTests: XCTestCase {
         XCTAssertEqual(snapshot.sessions.map(\.event), instance.sessions.map(\.event))
         XCTAssertEqual(snapshot.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(snapshot.statusText, normalizedResult)
-        XCTAssertEqual(Set(refreshed.eventJournal?.events.map(\.kind) ?? []), [
+        XCTAssertEqual(Set(semanticJournalEvents(refreshed.eventJournal)?.map(\.kind) ?? []), [
             .caseFileRequested, .requestedCaseReceived, .complaintReviewResult,
         ])
 
@@ -2508,7 +2508,7 @@ final class RefreshCenterTests: XCTestCase {
         let refreshed = try XCTUnwrap(localStore.record(forKey: record.key))
         XCTAssertEqual(refreshed.movement?.instances.first?.sessions.count, 4)
         XCTAssertEqual(refreshed.snapshot?.sessions.count, 4)
-        XCTAssertEqual(Set(refreshed.eventJournal?.events.map(\.kind) ?? []),
+        XCTAssertEqual(Set(semanticJournalEvents(refreshed.eventJournal)?.map(\.kind) ?? []),
                        [.caseFileRequested, .requestedCaseReceived, .complaintReviewResult])
         XCTAssertEqual(refreshed.sourceRefreshAttempt?.kind, .partial)
         XCTAssertEqual(refreshed.movementFetchedAt, ttlBefore)

@@ -142,6 +142,62 @@ final class LegacyFeedHistoryPersistenceTests: XCTestCase {
         }
     }
 
+    func testMalformedImportRestoresPreparationMigrationsOnRetainedRecordAndDisk() throws {
+        try disk { url in
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let record = try seed(container)
+            record.folderName = "Исходный доверитель"
+            record.collectionNames = []
+            record.logicalCaseID = nil
+            record.identityStateData = nil
+            record.judicialUID = nil
+            var pendingContext = context()
+            pendingContext.judicialUID = "synthetic-179-pending-uid"
+            record.contextData = try JSONEncoder().encode(pendingContext)
+            record.legacyKeyAliases = ["synthetic-179-original-alias"]
+            record.snapshotData = Data("malformed-synthetic-179".utf8)
+            try container.mainContext.save()
+            let originalContext = record.contextData
+            let originalSnapshot = record.snapshotData
+            let originalAliases = record.legacyKeyAliases
+            XCTAssertThrowsError(try TrackedStorePreparation.prepare(context: container.mainContext))
+            func assertOriginal(_ value: TrackedCaseRecord) {
+                XCTAssertEqual(value.folderName, "Исходный доверитель")
+                XCTAssertEqual(value.collectionNames, [])
+                XCTAssertNil(value.logicalCaseID)
+                XCTAssertNil(value.identityStateData)
+                XCTAssertNil(value.judicialUID)
+                XCTAssertNil(value.eventJournalData)
+                XCTAssertEqual(value.contextData, originalContext)
+                XCTAssertEqual(value.snapshotData, originalSnapshot)
+                XCTAssertEqual(value.legacyKeyAliases, originalAliases)
+                XCTAssertEqual(value.seenAt, observed)
+                XCTAssertEqual(value.movementFetchedAt, observed)
+            }
+            assertOriginal(record)
+            assertOriginal(try XCTUnwrap(try container.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first))
+            XCTAssertFalse(container.mainContext.hasChanges)
+            let reopened = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let repaired = try XCTUnwrap(try reopened.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first)
+            assertOriginal(repaired)
+            repaired.snapshotData = try JSONEncoder().encode(snapshot("Исходная история"))
+            try reopened.mainContext.save()
+            XCTAssertTrue(try TrackedStorePreparation.prepare(context: reopened.mainContext))
+            XCTAssertNotNil(repaired.logicalCaseID)
+            XCTAssertNotNil(repaired.judicialUID)
+            XCTAssertTrue(repaired.collectionNames.contains("Исходный доверитель"))
+            XCTAssertEqual(repaired.folderName, "")
+            XCTAssertEqual(repaired.eventJournal?.legacyFeedImportVersion, 1)
+            XCTAssertEqual(repaired.eventJournal?.events.compactMap(\.evidence.legacyFeedHistory).map(\.text), ["Исходная история"])
+            XCTAssertFalse(try TrackedStorePreparation.prepare(context: reopened.mainContext))
+            let finalDisk = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let finalRecord = try XCTUnwrap(try finalDisk.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first)
+            XCTAssertEqual(finalRecord.eventJournalData, repaired.eventJournalData)
+            XCTAssertEqual(finalRecord.seenAt, observed)
+            XCTAssertEqual(finalRecord.movementFetchedAt, observed)
+        }
+    }
+
     func testPreparationSaveFailureRestoresOriginalNilJournalInRetainedObjectAndDisk() throws {
         try disk { url in
             do {
@@ -173,11 +229,70 @@ final class LegacyFeedHistoryPersistenceTests: XCTestCase {
                 XCTAssertEqual(record.seenAt, observed)
                 XCTAssertEqual(record.movementFetchedAt, observed)
                 XCTAssertFalse(container.mainContext.hasChanges)
+                XCTAssertEqual(try store.recordForMutation(forKey: record.key)?.snapshotData, record.snapshotData)
+                let failedDisk = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+                let failedRecord = try XCTUnwrap(try failedDisk.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first)
+                XCTAssertNil(failedRecord.eventJournalData)
+                XCTAssertEqual(failedRecord.snapshot?.sessions.first?.event, "Исходная история")
+                let retry = try store.upsert(context: context(), snapshot: snapshot("Повторный ответ"), collections: [])
+                XCTAssertEqual(retry.snapshot?.sessions.first?.event, "Повторный ответ")
+                XCTAssertEqual(retry.eventJournal?.events.compactMap(\.evidence.legacyFeedHistory).map(\.text), ["Исходная история"])
             }
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
             let record = try XCTUnwrap(try container.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first)
-            XCTAssertNil(record.eventJournalData)
-            XCTAssertEqual(record.snapshot?.sessions.first?.event, "Исходная история")
+            XCTAssertEqual(record.eventJournal?.legacyFeedImportVersion, 1)
+            XCTAssertEqual(record.snapshot?.sessions.first?.event, "Повторный ответ")
+        }
+    }
+
+    func testMarkedRecordNestedMutationRestoresEarliestCheckpoint() throws {
+        try disk { url in
+            let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            let store = try TrackedStore(container: container, prepared: true)
+            let record = try seed(container)
+            try store.commit { try store.ensureLegacyFeedHistory(for: record) }
+            let originalJournal = try XCTUnwrap(record.eventJournalData)
+            let originalContext = record.contextData
+            let originalSnapshot = record.snapshotData
+            let originalAliases = record.legacyKeyAliases
+            let originalCollections = record.collectionNames
+            let originalIdentity = record.identityStateData
+            let originalLogicalID = record.logicalCaseID
+            var completedNestedWrites = false
+            XCTAssertThrowsError(try store.commit {
+                try store.ensureLegacyFeedHistory(for: record)
+                record.legacyKeyAliases.append("synthetic-179-uncommitted-alias")
+                record.seenAt = nil
+                var changed = self.context()
+                changed.courtTitle = "Неподтверждённое изменение"
+                _ = try store.reconcileAndUpsert(context: changed, snapshot: self.snapshot("Первое изменение"),
+                    collections: ["Неподтверждённая подборка"], saveChanges: false)
+                _ = try store.reconcileAndUpsert(context: changed, snapshot: self.snapshot("Второе изменение"),
+                    collections: [], saveChanges: false)
+                XCTAssertEqual(record.snapshot?.sessions.first?.event, "Второе изменение")
+                XCTAssertTrue(record.legacyKeyAliases.contains("synthetic-179-uncommitted-alias"))
+                XCTAssertTrue(record.collectionNames.contains("Неподтверждённая подборка"))
+                XCTAssertNil(record.seenAt)
+                completedNestedWrites = true
+                throw CocoaError(.fileWriteUnknown)
+            })
+            XCTAssertTrue(completedNestedWrites)
+            func assertOriginal(_ value: TrackedCaseRecord) {
+                XCTAssertEqual(value.eventJournalData, originalJournal)
+                XCTAssertEqual(value.contextData, originalContext)
+                XCTAssertEqual(value.snapshotData, originalSnapshot)
+                XCTAssertEqual(value.legacyKeyAliases, originalAliases)
+                XCTAssertEqual(value.collectionNames, originalCollections)
+                XCTAssertEqual(value.identityStateData, originalIdentity)
+                XCTAssertEqual(value.logicalCaseID, originalLogicalID)
+                XCTAssertEqual(value.seenAt, observed)
+                XCTAssertEqual(value.movementFetchedAt, observed)
+            }
+            assertOriginal(record)
+            assertOriginal(try XCTUnwrap(try store.recordForMutation(forKey: record.key)))
+            XCTAssertFalse(container.mainContext.hasChanges)
+            let reopened = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
+            assertOriginal(try XCTUnwrap(try reopened.mainContext.fetch(FetchDescriptor<TrackedCaseRecord>()).first))
         }
     }
 

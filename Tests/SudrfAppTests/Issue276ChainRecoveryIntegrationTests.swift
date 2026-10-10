@@ -258,7 +258,7 @@ final class Issue276ChainRecoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(repair.effectiveKey, stableKey)
         let afterRepair = try XCTUnwrap(store.record(forKey: stableKey))
         XCTAssertEqual(afterRepair.seenAt, seenAt)
-        XCTAssertEqual(afterRepair.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(afterRepair.eventJournal), [seed])
         XCTAssertTrue(afterRepair.movement?.acts.contains { $0.id == "preserved-act" } == true)
         XCTAssertEqual(afterRepair.movement?.actBodies["preserved-act"],
                        "Сохраненный текст акта")

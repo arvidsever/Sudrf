@@ -114,7 +114,7 @@ final class Issue284RefreshIntegrationTests: XCTestCase {
                        try XCTUnwrap(old.cardURLString.flatMap(URL.init(string:))))
         XCTAssertTrue(firstMovement.acts.contains { $0.id == oldAct })
         XCTAssertEqual(firstMovement.actBodies[oldAct], "Отказано в принятии")
-        XCTAssertEqual(journalIDs, Set([existingEvent.id]),
+        XCTAssertEqual(Set(try XCTUnwrap(semanticJournalEvents(promoted.eventJournal)).map(\.id)), Set([existingEvent.id]),
                        "legacy refresh retains the journal without inventing historical events")
         let firstFetchedAt = promoted.movementFetchedAt
 

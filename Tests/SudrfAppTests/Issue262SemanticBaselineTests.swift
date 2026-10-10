@@ -189,7 +189,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         guard let first, case .partial = first.outcome else {
             return XCTFail("ошибка вышестоящего суда должна сохранить partial outcome")
         }
-        var events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        var events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья A")
         XCTAssertEqual(events.first?.evidence.value, "Судья B")
@@ -201,7 +201,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         guard let second, case .partial = second.outcome else {
             return XCTFail("повторная неполная загрузка вышестоящего суда должна остаться partial")
         }
-        events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(
             store.record(forKey: record.key)?.eventJournal?.semanticBaselines?.courts.values
@@ -214,7 +214,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let completed = await center(store: store, movements: [completeFinal, completeFinal])
             .refresh(key: record.key)?.value
         XCTAssertEqual(completed?.outcome, .refreshed)
-        events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         let judgeChanges = events.filter { $0.kind == .judgeChanged }
         XCTAssertEqual(judgeChanges.count, 2)
         XCTAssertEqual(Set(judgeChanges.compactMap(\.evidence.previousValue)), ["Судья A", "Судья X"])
@@ -238,12 +238,12 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let unprovenExecution = await center(store: store, movements: [unproven])
             .refresh(key: record.key)?.value
         XCTAssertEqual(unprovenExecution?.outcome, .refreshed)
-        XCTAssertTrue(store.record(forKey: record.key)?.eventJournal?.events.isEmpty == true)
+        XCTAssertTrue(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal)?.isEmpty == true)
         XCTAssertEqual(store.record(forKey: record.key)?.eventJournal?.semanticBaselines, baseline)
 
         let complete = try movement(rootJudge: "Судья B")
         _ = await center(store: store, movements: [complete]).refresh(key: record.key)?.value
-        let events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        let events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья A")
         XCTAssertEqual(events.first?.evidence.value, "Судья B")
@@ -283,7 +283,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
 
         let success = await changedCenter.refresh(key: record.key)?.value
         XCTAssertEqual(success?.outcome, .refreshed)
-        let events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        let events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья A")
         XCTAssertEqual(events.first?.evidence.value, "Судья B")
@@ -300,12 +300,12 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let first = await center(store: store, movements: [initial]).refresh(key: record.key)?.value
         XCTAssertEqual(first?.outcome, .refreshed)
         let journal = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal)
-        XCTAssertTrue(journal.events.isEmpty)
+        XCTAssertTrue(semanticJournalEvents(journal)?.isEmpty == true)
         XCTAssertNotNil(journal.semanticBaselines)
 
         let changed = try movement(rootJudge: "Судья B")
         _ = await center(store: store, movements: [changed]).refresh(key: record.key)?.value
-        let events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        let events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья A")
         XCTAssertEqual(events.first?.evidence.value, "Судья B")
@@ -328,7 +328,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         guard let partialResult, case .partial = partialResult.outcome else {
             return XCTFail("ошибка одного алиаса должна оставить обновление partial")
         }
-        var events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        var events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья T1")
         XCTAssertEqual(events.first?.evidence.value, "Судья T2")
@@ -337,7 +337,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         let finalResult = await center(store: store, movements: [final])
             .refresh(key: record.key)?.value
         XCTAssertEqual(finalResult?.outcome, .refreshed)
-        events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         let changes = events.filter { $0.kind == .judgeChanged }
         XCTAssertEqual(changes.count, 2)
         XCTAssertEqual(Set(changes.compactMap(\.evidence.previousValue)), ["Судья H1", "Судья T1"])
@@ -469,7 +469,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         empty.sourceRefreshCoverage?.append(MovementCourtCoverage(
             sourceFamily: "sudrf", courtKey: "2kas.sudrf.ru", kind: .honestZero))
         _ = await center(store: store, movements: [empty]).refresh(key: record.key)?.value
-        XCTAssertEqual(store.record(forKey: record.key)?.eventJournal?.events.map(\.kind), [.judgeChanged])
+        XCTAssertEqual(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal)?.map(\.kind), [.judgeChanged])
         XCTAssertEqual(store.record(forKey: record.key)?.eventJournal?.semanticBaselines?.global, oldGlobal)
         XCTAssertTrue(store.record(forKey: record.key)?.movement?.instances.contains {
             $0.caseNumber == "88-262/2026" && $0.judge == "Судья X"
@@ -477,7 +477,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
         var complete = try movement(rootJudge: "Судья B", higherJudge: "Судья X")
         complete.inForce = true
         _ = await center(store: store, movements: [complete]).refresh(key: record.key)?.value
-        XCTAssertEqual(Set(store.record(forKey: record.key)?.eventJournal?.events.map(\.kind) ?? []),
+        XCTAssertEqual(Set(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal)?.map(\.kind) ?? []),
                        [.judgeChanged, .entryIntoForceRecorded])
     }
 
@@ -653,11 +653,11 @@ final class Issue262SemanticBaselineTests: XCTestCase {
 
         let first = await refreshCenter.refresh(key: record.key)?.value
         XCTAssertEqual(first?.outcome, .refreshed)
-        XCTAssertTrue(store.record(forKey: record.key)?.eventJournal?.events.isEmpty == true)
+        XCTAssertTrue(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal)?.isEmpty == true)
 
         let second = await refreshCenter.refresh(key: record.key)?.value
         XCTAssertEqual(second?.outcome, .refreshed)
-        let events = try XCTUnwrap(store.record(forKey: record.key)?.eventJournal?.events)
+        let events = try XCTUnwrap(semanticJournalEvents(store.record(forKey: record.key)?.eventJournal))
         XCTAssertEqual(events.map(\.kind), [.judgeChanged])
         XCTAssertEqual(events.first?.evidence.previousValue, "Судья A")
         XCTAssertEqual(events.first?.evidence.value, "Судья B")
@@ -667,7 +667,7 @@ final class Issue262SemanticBaselineTests: XCTestCase {
                                              expectedJudge: String) {
         let saved = store.record(forKey: key)
         XCTAssertEqual(saved?.movement?.instances.first?.judge, expectedJudge)
-        XCTAssertTrue(saved?.eventJournal?.events.isEmpty == true)
+        XCTAssertTrue(semanticJournalEvents(saved?.eventJournal)?.isEmpty == true)
         XCTAssertEqual(
             saved?.eventJournal?.semanticBaselines?.courts.values.first?.instances.first?.judge,
             expectedJudge)

@@ -51,6 +51,76 @@ enum TrackedStoreCommitError: Error, LocalizedError, Sendable {
     }
 }
 
+// SwiftData rollback can leave held model values stale on supported macOS.
+// Capture before preparation or the first mutation; restore the journal last.
+private struct ImportCheckpoint {
+    let record: TrackedCaseRecord
+    let key: String
+    let logicalCaseID: UUID?
+    let identityStateData: Data?
+    let legacyKeyAliases: [String]
+    let addedAt: Date
+    let seenAt: Date?
+    let folderName: String
+    let collectionNames: [String]
+    let caseNumber: String
+    let courtTitle: String
+    let displayDomain: String
+    let judicialUID: String?
+    let contextData: Data
+    let snapshotData: Data?
+    let movementData: Data?
+    let movementFetchedAt: Date?
+    let sourceRefreshAttemptData: Data?
+    let enforcementData: Data?
+    let eventJournalData: Data?
+
+    init(_ record: TrackedCaseRecord) {
+        self.record = record
+        key = record.key
+        logicalCaseID = record.logicalCaseID
+        identityStateData = record.identityStateData
+        legacyKeyAliases = record.legacyKeyAliases
+        addedAt = record.addedAt
+        seenAt = record.seenAt
+        folderName = record.folderName
+        collectionNames = record.collectionNames
+        caseNumber = record.caseNumber
+        courtTitle = record.courtTitle
+        displayDomain = record.displayDomain
+        judicialUID = record.judicialUID
+        contextData = record.contextData
+        snapshotData = record.snapshotData
+        movementData = record.movementData
+        movementFetchedAt = record.movementFetchedAt
+        sourceRefreshAttemptData = record.sourceRefreshAttemptData
+        enforcementData = record.enforcementData
+        eventJournalData = record.eventJournalData
+    }
+
+    func restore() {
+        record.key = key
+        record.logicalCaseID = logicalCaseID
+        record.identityStateData = identityStateData
+        record.legacyKeyAliases = legacyKeyAliases
+        record.addedAt = addedAt
+        record.seenAt = seenAt
+        record.folderName = folderName
+        record.collectionNames = collectionNames
+        record.caseNumber = caseNumber
+        record.courtTitle = courtTitle
+        record.displayDomain = displayDomain
+        record.judicialUID = judicialUID
+        record.contextData = contextData
+        record.snapshotData = snapshotData
+        record.movementData = movementData
+        record.movementFetchedAt = movementFetchedAt
+        record.sourceRefreshAttemptData = sourceRefreshAttemptData
+        record.enforcementData = enforcementData
+        record.eventJournalData = eventJournalData
+    }
+}
+
 /// Общая реализация подготовки store. Она не привязана к mainContext и может
 /// выполняться как production bootstrap в actor с собственным ModelContext.
 enum TrackedStorePreparation {
@@ -64,7 +134,7 @@ enum TrackedStorePreparation {
         var moscowSnapshots: [(record: TrackedCaseRecord, snapshot: Data?, movement: Data?, journal: Data?)] = []
         var treasurySnapshots: [(record: TrackedCaseRecord, journal: Data?)] = []
         let originalJournals = try context.fetch(FetchDescriptor<TrackedCaseRecord>())
-            .map { (record: $0, data: $0.eventJournalData) }
+            .map { ImportCheckpoint($0) }
         do {
             try migrateFolders(context: context)
             try migrateJudicialUIDs(context: context)
@@ -101,7 +171,7 @@ enum TrackedStorePreparation {
             for snapshot in treasurySnapshots {
                 snapshot.record.eventJournalData = snapshot.journal
             }
-            for original in originalJournals { original.record.eventJournalData = original.data }
+            for original in originalJournals { original.restore() }
             context.rollback()
             throw error
         }
@@ -929,7 +999,7 @@ final class TrackedStore {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
     private let projectionSynchronizer: ProjectionSynchronizer
-    private var originalImportJournals: [(record: TrackedCaseRecord, data: Data?)] = []
+    private var originalImportJournals: [ImportCheckpoint] = []
     /// Test seam for the rollback path used by the atomic identity merge.
     var failNextSaveForTesting = false
     /// Test seams for journal failures before the SwiftData save.
@@ -1013,15 +1083,15 @@ final class TrackedStore {
     }
 
     func ensureLegacyFeedHistory(for record: TrackedCaseRecord) throws {
-        guard try requiredEventJournal(for: record).legacyFeedImportVersion == nil else { return }
         if !originalImportJournals.contains(where: { $0.record === record }) {
-            originalImportJournals.append((record, record.eventJournalData))
+            originalImportJournals.append(ImportCheckpoint(record))
         }
+        guard try requiredEventJournal(for: record).legacyFeedImportVersion == nil else { return }
         try TrackedStorePreparation.importLegacyHistory(record)
     }
 
     private func restoreOriginalImportJournals() {
-        for original in originalImportJournals { original.record.eventJournalData = original.data }
+        for original in originalImportJournals { original.restore() }
         originalImportJournals.removeAll()
     }
 
@@ -1652,7 +1722,10 @@ final class TrackedStore {
             throw TrackedStoreCommitError.projectionSynchronization(
                 details: error.localizedDescription)
         }
-        guard context.hasChanges else { return }
+        guard context.hasChanges else {
+            originalImportJournals.removeAll()
+            return
+        }
         try saveContext()
     }
 

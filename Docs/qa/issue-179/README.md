@@ -32,6 +32,59 @@ The existing feed, read/known preferences, badges and notification consumers
 remain unchanged. Import is quiet persistence, not event delivery or full #179
 cutover. Runtime projection and mark replay remain a separate required stage.
 
+## Hosted compatibility checkpoint — 10 October 2026
+
+Hosted run [38066632073](https://github.com/arvidsever/Sudrf/actions/runs/38066632073)
+at `bf6cbcc` failed: **2218 XCTest, 21 skipped, 131 failed assertions across
+44 test cases**. This is not a completed downstream gate. Many prior tests expect
+only semantic events or an entirely empty journal and now observe the quiet
+initial history. Those expectations require explicit compatibility checks; an
+invalid synthetic legacy snapshot is also rejected by the strict decoder.
+
+Two new persistence tests exposed a separate retained-object rollback boundary
+on the hosted SDK: disk reopen and clean-context checks passed, while held objects
+still exposed failed snapshot/enforcement/seen values. The existing pending
+checkpoint now retains the affected record value fields once per transaction,
+restores the original journal last before context rollback, and clears only on
+successful save (including no-op commits) or rollback. Preparation captures the
+same full record checkpoint before the first normalizer: strict import failure
+also restores pending legacy folder, UID, alias and identity migrations. The
+failed-update regression checks a fresh lookup, an independent disk reopen before
+retry, and successful retry/reopen. Two further private disk cases prove marked
+record nested writes keep the earliest checkpoint and corrupt preparation can be
+repaired, retried and reopened without consuming its receipt.
+The initial isolated rollback follow-up passed **27 XCTest, zero failures/skips**;
+`/private/tmp/sudrf-179-retained-rollback-final-profile.log`, SHA-256
+`45a105c496e3261b6a26712b3da4cd3674d6e52e79083145730bc59bb4b25af6`.
+This local pass does not establish hosted SDK compatibility; the corrected
+current-head full CI remains required. Failed hosted log SHA-256:
+`3c7c595e420650da71086aa7479e79a185b70efc582dc404869c3dd17cebed77`.
+After adding the marked nested-transaction and pending preparation-migration
+oracles, the final isolated profile passed **29 XCTest, zero failures/skips**
+(11 private disk + 8 pure importer + 10 Treasury cases). Log
+`/private/tmp/sudrf-179-retained-preparation-final-profile.log`, SHA-256
+`b143802e3774c77abd4fbaab81ef2d5d185e765ea544b0a2d20b0294bc14e30e`.
+The preparation fixture starts with empty collections and a legacy folder,
+matching the existing folder migration; successful retry moves that folder into
+collections. It also has a pending context UID with nil stored UID and nil logical
+identity, proving their failed bootstrap values are restored.
+
+Four narrowly selected private migration tests also passed, zero failures/skips:
+V3/V4/V6 preparation and the historical V3–V7 fixture reopen. They assert the
+versioned quiet receipt, exact preserved source bytes and published act provenance,
+while retaining the empty semantic-baseline contract. The invalid synthetic
+snapshot was replaced with valid encoded source; malformed payload rejection
+remains covered separately. Log
+`/private/tmp/sudrf-179-migration-compatibility-profile.log`, SHA-256
+`e02592586050d46a97e9e8ddff711ce0d2a272f2b2e22b62b0aa541e08511c85`.
+Independent source review passed for the bounded rollback correction, both new
+private disk oracles and the migration assertions. The own no-launch Xcode Debug
+build passed at inherited main 0.65.3 / 264:
+`/private/tmp/sudrf-179-retained-rollback-xcodebuild.log`, SHA-256
+`6f5fae7fa314efe276234f1892a7707c947fab41e93dd084ac34ed16c68fc9b7`.
+No legacy broad suite was repeated locally, and no shared preference rollback
+was attempted without an original baseline.
+
 ## Integration after #104 — 10 October 2026
 
 Quiet persistence commit `b33f563` is integrated with actual released main

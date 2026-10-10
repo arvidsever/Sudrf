@@ -105,7 +105,7 @@ final class Issue275RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(completedSnapshot?.statusText, result)
         XCTAssertFalse(try XCTUnwrap(completedSnapshot).inForce)
         XCTAssertEqual(completedMovement?.instances.first?.sessions.last?.result, result)
-        XCTAssertEqual(completed.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(completed.eventJournal), [seed])
         XCTAssertEqual(completed.seenAt, seenAt)
         XCTAssertEqual(completed.collectionNames, ["Гражданские"])
 
@@ -117,7 +117,7 @@ final class Issue275RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(afterPartial.movement, completedMovement)
         XCTAssertEqual(afterPartial.snapshot, completedSnapshot)
         XCTAssertEqual(afterPartial.movementFetchedAt, completedFetchedAt)
-        XCTAssertEqual(afterPartial.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(afterPartial.eventJournal), [seed])
 
         let unavailable = await center.refresh(key: record.key)?.value
         guard case .failed = unavailable?.outcome else {
@@ -126,7 +126,7 @@ final class Issue275RefreshIntegrationTests: XCTestCase {
         let afterFailure = try XCTUnwrap(store.record(forKey: record.key))
         XCTAssertEqual(afterFailure.movement, completedMovement)
         XCTAssertEqual(afterFailure.snapshot, completedSnapshot)
-        XCTAssertEqual(afterFailure.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(afterFailure.eventJournal), [seed])
         let requests = await service.requests()
         XCTAssertEqual(requests, [
             "8Г-162/2019", "8Г-162/2019", "8Г-162/2019",
@@ -140,7 +140,7 @@ final class Issue275RefreshIntegrationTests: XCTestCase {
         XCTAssertEqual(persisted.snapshot?.stageRaw, CaseStageKind.done.rawValue)
         XCTAssertEqual(persisted.snapshot?.statusText, result)
         XCTAssertFalse(try XCTUnwrap(persisted.snapshot).inForce)
-        XCTAssertEqual(persisted.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(persisted.eventJournal), [seed])
 
         let router = try AppRouter(
             modelContainer: reopenedContainer, modelContainerIsPrepared: true)

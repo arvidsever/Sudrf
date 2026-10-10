@@ -881,12 +881,14 @@ final class TrackedStoreIdentityTests: XCTestCase {
             XCTAssertEqual(record.movementFetchedAt, oldFetchedAt)
             XCTAssertEqual(record.collectionNames, oldCollections)
             XCTAssertEqual(record.eventJournalData, oldJournalData)
-            XCTAssertTrue(record.eventJournal?.events.isEmpty == true)
+            let importedJournalData = record.eventJournalData
+            XCTAssertTrue(semanticJournalEvents(record.eventJournal)?.isEmpty == true)
 
             let snapshotData = record.snapshotData
             XCTAssertFalse(try TrackedStorePreparation.prepare(
                 context: container.mainContext, today: calendarTestToday))
             XCTAssertEqual(record.snapshotData, snapshotData)
+            XCTAssertEqual(record.eventJournalData, importedJournalData)
         }
 
         let finalContainer = try SudrfModelContainerFactory.make(inMemory: false,
@@ -962,13 +964,15 @@ final class TrackedStoreIdentityTests: XCTestCase {
         XCTAssertEqual(refreshed.movement?.acts, movement.acts)
         XCTAssertEqual(refreshed.movement?.actBodies, movement.actBodies)
         XCTAssertEqual(refreshed.eventJournal, oldJournal)
-        XCTAssertTrue(refreshed.eventJournal?.events.isEmpty == true)
+        let importedJournalData = refreshed.eventJournalData
+        XCTAssertTrue(semanticJournalEvents(refreshed.eventJournal)?.isEmpty == true)
         XCTAssertNotEqual(refreshed.movementFetchedAt, Date(timeIntervalSince1970: 1_700_000_011))
 
         let firstDeadlines = refreshed.snapshot?.deadlines
         let repeated = await center.refresh(key: record.key, manually: true)?.value
         XCTAssertEqual(repeated?.outcome, .refreshed)
         XCTAssertEqual(refreshed.snapshot?.deadlines, firstDeadlines)
+        XCTAssertEqual(refreshed.eventJournalData, importedJournalData)
         XCTAssertEqual(refreshed.snapshot?.deadlines.filter {
             $0.occurrenceKey == deadline.occurrenceKey
         }.count, 1)
@@ -1245,7 +1249,7 @@ final class TrackedStoreIdentityTests: XCTestCase {
         let record = try store.reconcileAndUpsert(
             context: value, snapshot: nil, movement: movement(for: value), collections: [])
 
-        XCTAssertEqual(record.eventJournal, CaseEventJournal())
+        assertSemanticJournalEqual(record.eventJournal, CaseEventJournal())
     }
 
     func testVerifiedRecoveredAppealKeepsExistingFirstInstancePresentation() throws {

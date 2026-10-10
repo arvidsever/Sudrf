@@ -306,7 +306,9 @@ final class DataCatalogTests: XCTestCase {
         let identity = try JSONDecoder().decode(LogicalCaseState.self, from: identityData)
         XCTAssertEqual(identity.cards.count, 1)
         XCTAssertEqual(identity.cards.first?.identity.sourceFamily, "legacy")
-        XCTAssertEqual(migratedStore.all().first?.eventJournal, CaseEventJournal())
+        var expectedJournal = CaseEventJournal()
+        expectedJournal.legacyFeedImportVersion = 1
+        XCTAssertEqual(migratedStore.all().first?.eventJournal, expectedJournal)
     }
 
     @MainActor
@@ -324,7 +326,10 @@ final class DataCatalogTests: XCTestCase {
             courtCode: "77", cartotekaId: "g1",
             cartotekaLevelRaw: CourtLevel.district.rawValue, caseNumber: "2-9/2025")
         let lastSuccess = Date(timeIntervalSince1970: 1_700_000_000)
-        let snapshotData = Data("legacy-snapshot".utf8)
+        let snapshotData = try JSONEncoder().encode(MovementDerivation.snapshot(
+            from: syntheticMovement(caseNumber: legacyContext.caseNumber, actID: "v4-act",
+                                    uid: "77RS0001-01-2025-000001-11"),
+            context: legacyContext))
         let movementData = try JSONEncoder().encode(
             syntheticMovement(caseNumber: legacyContext.caseNumber, actID: "v4-act",
                               uid: "77RS0001-01-2025-000001-11"))
@@ -551,7 +556,9 @@ final class DataCatalogTests: XCTestCase {
         let store = try TrackedStore(container: container)
         let record = try XCTUnwrap(store.all().first)
         XCTAssertEqual(record.key, movementContext.key)
-        XCTAssertEqual(record.eventJournal, CaseEventJournal())
+        var expectedJournal = CaseEventJournal()
+        expectedJournal.legacyFeedImportVersion = 1
+        XCTAssertEqual(record.eventJournal, expectedJournal)
         XCTAssertEqual(store.courtActDocument(caseKey: movementContext.key,
                                               sourceActID: "v6-act")?.sourceText,
                        "Synthetic judgment text")

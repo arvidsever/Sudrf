@@ -202,7 +202,7 @@ final class Issue128DeadlineTests: XCTestCase {
             XCTAssertEqual(refreshed.movement?.acts, current.acts)
             XCTAssertEqual(refreshed.movementFetchedAt, fetchedAt)
             XCTAssertEqual(persisted.collectionNames, ["Проверка"])
-            XCTAssertEqual(persisted.eventJournal?.events, [seed])
+            XCTAssertEqual(semanticJournalEvents(persisted.eventJournal), [seed])
         }
     }
 
@@ -676,7 +676,7 @@ final class Issue128DeadlineTests: XCTestCase {
         XCTAssertEqual(prepared.collectionNames, ["Проверка"])
         XCTAssertEqual(prepared.movement?.acts, initial.acts)
         XCTAssertEqual(prepared.movementFetchedAt, fetchedAt)
-        XCTAssertEqual(prepared.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(prepared.eventJournal), [seed])
 
         let reopened = try TrackedStore(container: SudrfModelContainerFactory.make(
             inMemory: false, storeURL: url), prepared: true)
@@ -685,7 +685,7 @@ final class Issue128DeadlineTests: XCTestCase {
         XCTAssertEqual(persisted.collectionNames, ["Проверка"])
         XCTAssertEqual(persisted.movement?.acts, initial.acts)
         XCTAssertEqual(persisted.movementFetchedAt, fetchedAt)
-        XCTAssertEqual(persisted.eventJournal?.events, [seed])
+        XCTAssertEqual(semanticJournalEvents(persisted.eventJournal), [seed])
 
         let persistedDeadlines = persisted.snapshot?.deadlines
         let journal = persisted.eventJournal

@@ -82,7 +82,20 @@ final class Issue264HistoricalStoreTests: XCTestCase {
                                    fixture.name)
                     let logicalCaseID = try XCTUnwrap(record.logicalCaseID, fixture.name)
                     firstIdentities[key] = logicalCaseID
-                    XCTAssertEqual(record.eventJournal, CaseEventJournal(), fixture.name)
+                    var journal = try XCTUnwrap(record.eventJournal, fixture.name)
+                    XCTAssertEqual(journal.legacyFeedImportVersion, 1, fixture.name)
+                    XCTAssertEqual(journal.events.map(\.kind), [.legacyFeedImported], fixture.name)
+                    let history = try XCTUnwrap(journal.events.first?.evidence.legacyFeedHistory, fixture.name)
+                    XCTAssertEqual(history.originRecordKey, key, fixture.name)
+                    XCTAssertEqual(history.actID, "fixture-act-\(index)", fixture.name)
+                    if case .act(let act) = history.source {
+                        XCTAssertEqual(act.date, "01.02.2024", fixture.name)
+                    } else {
+                        XCTFail("Expected original published act history: \(fixture.name)")
+                    }
+                    journal.events = []
+                    journal.legacyFeedImportVersion = nil
+                    XCTAssertEqual(journal, CaseEventJournal(), fixture.name)
 
                     let acts = try container.mainContext.fetch(
                         FetchDescriptor<CourtActRecord>()).filter { $0.caseKey == key }

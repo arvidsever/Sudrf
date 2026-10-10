@@ -148,6 +148,7 @@ final class KoAPJournalFeedProjectionTests: XCTestCase {
         let url = root.appendingPathComponent("test.store")
         let f = fixture()
         var persistedIDs = [String]()
+        var semanticIDs = [String]()
         do {
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
             let store = try TrackedStore(container: container, prepared: true)
@@ -165,7 +166,15 @@ final class KoAPJournalFeedProjectionTests: XCTestCase {
                 return rec
             }
             persistedIDs = try XCTUnwrap(rec.eventJournal).events.map(\.id)
-            XCTAssertEqual(persistedIDs.count, 3)
+            semanticIDs = try XCTUnwrap(semanticJournalEvents(rec.eventJournal)).map(\.id)
+            XCTAssertEqual(semanticIDs.count, 3)
+            let history = try XCTUnwrap(rec.eventJournal).events.filter { $0.kind == .legacyFeedImported }
+            XCTAssertEqual(history.count, 3)
+            XCTAssertEqual(history.compactMap { event -> StoredSession? in
+                guard case .session(let session)? = event.evidence.legacyFeedHistory?.source else { return nil }
+                return session
+            }, f.snapshot.sessions)
+            XCTAssertEqual(persistedIDs.count, semanticIDs.count + history.count)
         }
         do {
             let container = try SudrfModelContainerFactory.make(inMemory: false, storeURL: url)
@@ -181,7 +190,7 @@ final class KoAPJournalFeedProjectionTests: XCTestCase {
                 let result = KoAPJournalFeedProjection.project(records: [input],
                     journalsByRecordKey: [rec.key: journal], today: today,
                     readIDs: [], legacyEntries: legacy.entries)
-                XCTAssertEqual(Set(result.entries.map(\.id)), Set(persistedIDs))
+                XCTAssertEqual(Set(result.entries.map(\.id)), Set(semanticIDs))
                 XCTAssertEqual(result.aliases.count, 3)
                 XCTAssertTrue(result.fieldMismatches.isEmpty)
                 XCTAssertTrue(result.unmappedEvents.isEmpty)

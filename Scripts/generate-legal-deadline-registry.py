@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-EXPECTED_RULE_COUNTS = {"GPK": 23, "KAS": 20, "KOAP": 10, "UPK": 14}
+EXPECTED_RULE_COUNTS = {"GPK": 23, "KAS": 22, "KOAP": 10, "UPK": 14}
 SOURCE_FILES = {
     "GPK": "gpk-appeal-deadlines.md",
     "KAS": "kas-appeal-deadlines.md",
@@ -268,6 +268,30 @@ def _normalize_rule(item: Any, meta: dict[str, Any], index: int) -> dict[str, An
     if "notes" not in item or (item["notes"] is not None and not isinstance(item["notes"], str)):
         raise RegistryError(f"{where}: 'notes' must be a string or null")
     result = _with_context(item, meta)
+    if "sourceHash" in item:
+        source_hash = _string(item, "sourceHash", where)
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", source_hash or ""):
+            raise RegistryError(f"{where}.sourceHash: expected a SHA-256 hex digest")
+        supplements = meta["payload"].get("supplementalSources", [])
+        if not isinstance(supplements, list):
+            raise RegistryError(f"{where}: supplementalSources must be an array")
+        declared = False
+        for supplement in supplements:
+            if not isinstance(supplement, dict):
+                raise RegistryError(f"{where}: supplementalSources entry must be an object")
+            rule_ids = supplement.get("ruleIDs", [])
+            if not isinstance(rule_ids, list) or not all(isinstance(rule_id, str) for rule_id in rule_ids):
+                raise RegistryError(f"{where}: supplementalSources ruleIDs must be an array of strings")
+            if item["rule_id"] not in rule_ids:
+                continue
+            declared_hash = _string(supplement, "sha256", f"{where}.supplementalSources")
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", declared_hash or ""):
+                raise RegistryError(f"{where}.supplementalSources.sha256: expected a SHA-256 hex digest")
+            if declared_hash == source_hash:
+                declared = True
+        if not declared:
+            raise RegistryError(f"{where}.sourceHash: no supplemental source declared for this rule and hash")
+        result["sourceHash"] = source_hash
     original_duration = item.get("duration")
     result["durationText"] = original_duration
     result["duration"] = normalize_duration(original_duration, f"{where}.duration")

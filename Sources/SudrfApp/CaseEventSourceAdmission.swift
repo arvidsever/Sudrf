@@ -7,6 +7,14 @@ enum CaseEventSourceAdmission {
         if let url = instance.sourceURL, let locator = SourceNativeCardLocator.vsrf(url: url) {
             return locator.identity
         }
+        if instance.domain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame {
+            guard instance.level == .first,
+                  let url = instance.sourceURL,
+                  let cart = CartotekaRegistry.find(level: .magistrate, id: "adm"),
+                  let locator = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart) else { return nil }
+            return locator.identity
+        }
         if instance.caseNumber == context.caseNumber,
            instance.level == context.baseInstanceLevel,
            SudrfHost.moduleHost(instance.domain) == SudrfHost.moduleHost(context.searchDomain),
@@ -96,6 +104,17 @@ enum CaseEventSourceAdmission {
                                        context: MovementContext) -> SourceNativeCardIdentity? {
         if native.sourceFamily == "vsrf", let url = instance.sourceURL {
             return SourceNativeCardLocator.vsrf(url: url)?.identity
+        }
+        if native.sourceFamily == "moscow-magistrate-koap" {
+            guard instance.domain.caseInsensitiveCompare("mos-sud.ru") == .orderedSame,
+                  instance.level == .first,
+                  let url = instance.sourceURL,
+                  let cart = CartotekaRegistry.find(level: .magistrate,
+                                                    id: native.cartotekaKey),
+                  let identity = SourceNativeCardLocator.moscowMagistrateKoAP(
+                    url: url, cartoteka: cart)?.identity,
+                  identity == native else { return nil }
+            return identity
         }
         let carts = CourtLevel.allCases.flatMap { CartotekaRegistry.sets(for: $0) }
             .filter { $0.id == native.cartotekaKey }

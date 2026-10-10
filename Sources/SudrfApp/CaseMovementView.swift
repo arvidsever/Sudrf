@@ -872,7 +872,9 @@ struct InstanceBlock: View {
                     .accessibilityLabel("Открыть карточку на сайте суда")
                 }
                 if instance.foundByUID { TinyChip(text: "по УИД", color: instance.level.tint) }
-                if let note = instance.note {
+                if let note = instance.note,
+                   !(SudrfHost.moduleHost(instance.domain) == "vsrf.ru"
+                     && note == "жалоба отклонена") {
                     TinyChip(text: note, color: Color(red: 0.72, green: 0.20, blue: 0.30))
                 }
                 // Акт-вложение (mos-gorsud публикует тексты файлами, не инлайном).

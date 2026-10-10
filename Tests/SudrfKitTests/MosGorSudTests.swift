@@ -242,6 +242,18 @@ final class MosGorSudTests: XCTestCase {
         XCTAssertEqual(card.higherNumber, "33-2/2026")
     }
 
+    func testCardParserPreservesPublishedLowerNumberForMirovoyCase() throws {
+        let card = try MosGorSudCardParser.parse(html: """
+        <div class="left">Уникальный идентификатор дела</div><div class="right">77RS0032-01-2020-000111-11</div>
+        <div class="left">Номер жалобы ~ дела</div><div class="right">4а-35/2026</div>
+        <div class="left">Номер дела в суде нижестоящей инстанции</div><div class="right">05-0042/424/2026</div>
+        """)
+
+        XCTAssertEqual(card.caseNumber, "4а-35/2026")
+        XCTAssertEqual(card.lowerNumber, "05-0042/424/2026")
+        XCTAssertNil(card.higherNumber)
+    }
+
     func testIssue413DistrictOwnCourtMatchesShortAndFullDirectoryTitleOnly() throws {
         let sourceURL = try XCTUnwrap(URL(string:
             "https://mos-gorsud.ru/rs/cheremushkinskij/services/cases/first-civil/details/synthetic"))
